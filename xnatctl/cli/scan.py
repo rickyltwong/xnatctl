@@ -169,6 +169,7 @@ def scan_delete(
     failed = []
 
     def delete_scan(scan_id: str) -> tuple[str, bool, str]:
+        """Delete a scan and return status and error message."""
         try:
             resp = client.delete(f"/data/experiments/{session_id}/scans/{scan_id}")
             return scan_id, resp.status_code in (200, 204), ""

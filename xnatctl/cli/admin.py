@@ -101,6 +101,7 @@ def admin_refresh_catalogs(
     failed = []
 
     def refresh_one(exp: tuple) -> tuple[str, bool, str]:
+        """Refresh a single experiment catalog and return status."""
         subject_id, exp_id = exp
         resource_path = f"/archive/projects/{project}/subjects/{subject_id}/experiments/{exp_id}"
         params = {"resource": resource_path}

@@ -129,6 +129,7 @@ def global_options(f: F) -> F:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
+        """Populate context from global options and invoke the command."""
         ctx.profile_name = profile
         ctx.output_format = OutputFormat.from_string(output_format)
         ctx.quiet = quiet
@@ -155,6 +156,7 @@ def require_auth(f: F) -> F:
 
     @wraps(f)
     def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> Any:
+        """Ensure the context client is authenticated before running."""
         client = ctx.get_client()
 
         # Try to authenticate if no session token
@@ -190,10 +192,12 @@ def confirm_destructive(message: str) -> Callable[[F], F]:
     """Require confirmation for destructive operations."""
 
     def decorator(f: F) -> F:
+        """Wrap a command to enforce confirmation/dry-run behavior."""
         @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
         @click.option("--dry-run", is_flag=True, help="Preview without making changes")
         @wraps(f)
         def wrapper(*args: Any, yes: bool, dry_run: bool, **kwargs: Any) -> Any:
+            """Handle yes/dry-run flags and invoke the command."""
             if dry_run:
                 click.echo("[DRY-RUN] Preview mode - no changes will be made", err=True)
                 kwargs["dry_run"] = True
@@ -225,6 +229,7 @@ def batch_option(f: F) -> F:
     )
     @wraps(f)
     def wrapper(*args: Any, batch: Optional[str], **kwargs: Any) -> Any:
+        """Load batch IDs from file and inject into kwargs."""
         if batch:
             with open(batch) as file:
                 content = file.read().strip()
@@ -255,6 +260,7 @@ def parallel_options(f: F) -> F:
     )
     @wraps(f)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        """Pass through parallel options to the command."""
         return f(*args, **kwargs)
 
     return wrapper  # type: ignore
@@ -270,6 +276,7 @@ def handle_errors(f: F) -> F:
 
     @wraps(f)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        """Capture errors and exit with consistent messaging."""
         try:
             return f(*args, **kwargs)
         except XNATCtlError as e:
