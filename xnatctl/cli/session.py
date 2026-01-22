@@ -202,12 +202,14 @@ def session_show(ctx: Context, session_id: str) -> None:
 
 @session.command("download")
 @click.argument("session_id")
-@click.option("--out", "-o", required=True, type=click.Path(), help="Output directory")
+@click.option("--out", required=True, type=click.Path(), help="Output directory")
 @click.option("--include-resources", is_flag=True, help="Include session-level resources")
 @click.option("--include-assessors", is_flag=True, help="Include assessor data")
 @click.option("--pattern", help="File pattern filter (e.g., '*.dcm')")
 @click.option("--resume", is_flag=True, help="Resume interrupted download")
 @click.option("--verify", is_flag=True, help="Verify checksums after download")
+@click.option("--unzip/--no-unzip", default=False, help="Extract downloaded ZIPs")
+@click.option("--cleanup/--no-cleanup", default=True, help="Remove ZIPs after successful extraction (with --unzip)")
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @parallel_options
 @global_options
@@ -222,6 +224,8 @@ def session_download(
     pattern: Optional[str],
     resume: bool,
     verify: bool,
+    unzip: bool,
+    cleanup: bool,
     dry_run: bool,
     parallel: bool,
     workers: int,
@@ -230,8 +234,9 @@ def session_download(
 
     Example:
         xnatctl session download XNAT_E00001 --out ./data
-        xnatctl session download XNAT_E00001 -o ./data --include-resources
-        xnatctl session download XNAT_E00001 -o ./data --dry-run
+        xnatctl session download XNAT_E00001 --out ./data --include-resources
+        xnatctl session download XNAT_E00001 --out ./data --unzip --cleanup
+        xnatctl session download XNAT_E00001 --out ./data --dry-run
     """
     from xnatctl.core.validation import validate_session_id, validate_path_writable
 
@@ -317,6 +322,10 @@ def session_download(
             except Exception as e:
                 progress.update(task2, description=f"Resources: {e}")
 
+    # Extract ZIPs if requested
+    if unzip:
+        _extract_session_zips(session_dir, cleanup=cleanup, quiet=ctx.quiet)
+
     print_success(f"Downloaded session to: {session_dir}")
 
 
@@ -325,10 +334,85 @@ def session_download(
 @click.option("--project", "-P", required=True, help="Project ID")
 @click.option("--subject", "-S", required=True, help="Subject ID")
 @click.option("--session", "-E", required=True, help="Session label")
-@click.option("--transport", type=click.Choice(["rest", "dicom-store"]), default="rest", help="Upload transport")
-@click.option("--batches", type=int, default=4, help="Number of parallel batches")
-@click.option("--overwrite", type=click.Choice(["none", "append", "delete"]), default="delete")
-@parallel_options
+@click.option(
+    "--transport",
+    type=click.Choice(["rest", "dicom-store"]),
+    default="rest",
+    help="Upload transport (default: rest)",
+)
+# REST upload options
+@click.option(
+    "--archive-format",
+    type=click.Choice(["tar", "zip"]),
+    default="tar",
+    help="Archive format for REST upload (default: tar)",
+)
+@click.option(
+    "--batch-size",
+    type=int,
+    default=500,
+    help="Files per batch (default: 500)",
+)
+@click.option(
+    "--upload-workers",
+    type=int,
+    default=4,
+    help="Parallel upload workers (default: 4)",
+)
+@click.option(
+    "--archive-workers",
+    type=int,
+    default=4,
+    help="Parallel archive workers (default: 4)",
+)
+@click.option(
+    "--overwrite",
+    type=click.Choice(["none", "append", "delete"]),
+    default="delete",
+    help="Overwrite mode (default: delete)",
+)
+@click.option(
+    "--direct-archive/--prearchive",
+    default=True,
+    help="Direct archive or use prearchive (default: direct)",
+)
+@click.option(
+    "--ignore-unparsable/--no-ignore-unparsable",
+    default=True,
+    help="Skip unparsable DICOM files (default: yes)",
+)
+# DICOM C-STORE options
+@click.option(
+    "--dicom-host",
+    envvar="XNAT_DICOM_HOST",
+    help="DICOM SCP host (env: XNAT_DICOM_HOST)",
+)
+@click.option(
+    "--dicom-port",
+    type=int,
+    default=104,
+    envvar="XNAT_DICOM_PORT",
+    help="DICOM SCP port (default: 104, env: XNAT_DICOM_PORT)",
+)
+@click.option(
+    "--called-aet",
+    envvar="XNAT_DICOM_CALLED_AET",
+    help="Called AE Title (env: XNAT_DICOM_CALLED_AET)",
+)
+@click.option(
+    "--calling-aet",
+    default="XNATCTL",
+    envvar="XNAT_DICOM_CALLING_AET",
+    help="Calling AE Title (default: XNATCTL, env: XNAT_DICOM_CALLING_AET)",
+)
+@click.option(
+    "--dicom-workers",
+    type=int,
+    default=4,
+    help="Parallel DICOM C-STORE associations (default: 4)",
+)
+# Common options
+@click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
 @require_auth
 @handle_errors
@@ -339,66 +423,520 @@ def session_upload(
     subject: str,
     session: str,
     transport: str,
-    batches: int,
+    archive_format: str,
+    batch_size: int,
+    upload_workers: int,
+    archive_workers: int,
     overwrite: str,
-    parallel: bool,
-    workers: int,
+    direct_archive: bool,
+    ignore_unparsable: bool,
+    dicom_host: Optional[str],
+    dicom_port: int,
+    called_aet: Optional[str],
+    calling_aet: str,
+    dicom_workers: int,
+    dry_run: bool,
 ) -> None:
     """Upload DICOM session via REST import or DICOM C-STORE.
 
-    Example:
-        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001
+    Supports both single archive files and directories of DICOM files.
+    For directories, files are batched and uploaded in parallel.
+
+    REST Upload Examples:
+
+        # Upload a single archive
         xnatctl session upload ./archive.zip -P MYPROJ -S SUB001 -E SESS001
+
+        # Upload a directory with parallel batching
+        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001
+
+        # High-throughput settings for fast storage/network
+        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 \\
+            --upload-workers 16 --archive-workers 8 --batch-size 200
+
+    DICOM C-STORE Examples:
+
+        # Using DICOM network transfer
+        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 \\
+            --transport dicom-store --dicom-host xnat.example.org \\
+            --called-aet XNAT --dicom-port 8104
     """
-    from xnatctl.core.validation import validate_project_id, validate_subject_id, validate_session_id
-    from xnatctl.core.output import create_progress
+    from xnatctl.core.validation import (
+        validate_project_id,
+        validate_subject_id,
+        validate_session_id,
+    )
 
     project = validate_project_id(project)
     subject = validate_subject_id(subject)
     session = validate_session_id(session)
 
-    input_path = Path(input_path)
+    source_path = Path(input_path)
     client = ctx.get_client()
 
+    # Dry run handling
+    if dry_run:
+        click.echo("[DRY-RUN] Would upload with the following settings:")
+        click.echo(f"  Source: {source_path}")
+        click.echo(f"  Project: {project}")
+        click.echo(f"  Subject: {subject}")
+        click.echo(f"  Session: {session}")
+        click.echo(f"  Transport: {transport}")
+        if transport == "rest":
+            click.echo(f"  Archive format: {archive_format}")
+            click.echo(f"  Batch size: {batch_size}")
+            click.echo(f"  Upload workers: {upload_workers}")
+            click.echo(f"  Archive workers: {archive_workers}")
+            click.echo(f"  Overwrite: {overwrite}")
+            click.echo(f"  Direct archive: {direct_archive}")
+        else:
+            click.echo(f"  DICOM host: {dicom_host}")
+            click.echo(f"  DICOM port: {dicom_port}")
+            click.echo(f"  Called AET: {called_aet}")
+            click.echo(f"  Calling AET: {calling_aet}")
+            click.echo(f"  Workers: {dicom_workers}")
+        return
+
+    # DICOM C-STORE transport
     if transport == "dicom-store":
-        print_error("DICOM C-STORE transport not yet implemented in xnatctl")
-        raise SystemExit(1)
+        _upload_dicom_store(
+            ctx=ctx,
+            source_path=source_path,
+            dicom_host=dicom_host,
+            dicom_port=dicom_port,
+            called_aet=called_aet,
+            calling_aet=calling_aet,
+            dicom_workers=dicom_workers,
+        )
+        return
 
-    # REST upload
-    if input_path.is_file():
+    # REST transport
+    if source_path.is_file():
         # Single archive upload
+        _upload_single_archive(
+            ctx=ctx,
+            archive_path=source_path,
+            project=project,
+            subject=subject,
+            session=session,
+            overwrite=overwrite,
+            direct_archive=direct_archive,
+            ignore_unparsable=ignore_unparsable,
+        )
+    elif source_path.is_dir():
+        # Directory upload with parallel batching
+        _upload_directory_parallel(
+            ctx=ctx,
+            source_dir=source_path,
+            project=project,
+            subject=subject,
+            session=session,
+            batch_size=batch_size,
+            upload_workers=upload_workers,
+            archive_workers=archive_workers,
+            archive_format=archive_format,
+            overwrite=overwrite,
+            direct_archive=direct_archive,
+            ignore_unparsable=ignore_unparsable,
+        )
+
+
+def _upload_single_archive(
+    ctx: Context,
+    archive_path: Path,
+    project: str,
+    subject: str,
+    session: str,
+    overwrite: str,
+    direct_archive: bool,
+    ignore_unparsable: bool,
+) -> None:
+    """Upload a single archive file."""
+    from xnatctl.core.output import create_progress
+
+    client = ctx.get_client()
+
+    # Only show progress for table output and not quiet
+    show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
+
+    if show_progress:
+        from xnatctl.core.output import create_progress
         with create_progress() as progress:
-            task = progress.add_task(f"Uploading {input_path.name}...", total=100)
+            task = progress.add_task(f"Uploading {archive_path.name}...", total=100)
 
-            with open(input_path, "rb") as f:
-                content_type = "application/zip" if input_path.suffix == ".zip" else "application/x-tar"
-
-                resp = client.post(
-                    "/data/services/import",
-                    params={
-                        "import-handler": "DICOM-zip",
-                        "project": project,
-                        "subject": subject,
-                        "session": session,
-                        "overwrite": overwrite,
-                        "Direct-Archive": "true",
-                        "inbody": "true",
-                    },
-                    data=f,
-                    headers={"Content-Type": content_type},
-                    timeout=600,  # 10 minute timeout for uploads
-                )
+            _do_single_upload(
+                client, archive_path, project, subject, session,
+                overwrite, direct_archive, ignore_unparsable,
+            )
 
             progress.update(task, completed=100)
+    else:
+        _do_single_upload(
+            client, archive_path, project, subject, session,
+            overwrite, direct_archive, ignore_unparsable,
+        )
 
-        if resp.status_code == 200:
-            print_success(f"Uploaded {input_path.name}")
+    if ctx.output_format == OutputFormat.JSON:
+        print_output(
+            {"success": True, "file": str(archive_path), "session": session},
+            format=OutputFormat.JSON,
+        )
+    else:
+        print_success(f"Uploaded {archive_path.name}")
+
+
+def _do_single_upload(
+    client,
+    archive_path: Path,
+    project: str,
+    subject: str,
+    session: str,
+    overwrite: str,
+    direct_archive: bool,
+    ignore_unparsable: bool,
+) -> None:
+    """Execute the actual upload."""
+    content_type = (
+        "application/zip" if archive_path.suffix.lower() == ".zip"
+        else "application/x-tar"
+    )
+
+    with open(archive_path, "rb") as f:
+        resp = client.post(
+            "/data/services/import",
+            params={
+                "import-handler": "DICOM-zip",
+                "project": project,
+                "subject": subject,
+                "session": session,
+                "overwrite": overwrite,
+                "Direct-Archive": "true" if direct_archive else "false",
+                "Ignore-Unparsable": "true" if ignore_unparsable else "false",
+                "inbody": "true",
+            },
+            data=f,
+            headers={"Content-Type": content_type},
+            timeout=10800,  # 3 hour timeout
+        )
+
+    if resp.status_code != 200:
+        print_error(f"Upload failed: {resp.text[:200]}")
+        raise SystemExit(1)
+
+
+def _upload_directory_parallel(
+    ctx: Context,
+    source_dir: Path,
+    project: str,
+    subject: str,
+    session: str,
+    batch_size: int,
+    upload_workers: int,
+    archive_workers: int,
+    archive_format: str,
+    overwrite: str,
+    direct_archive: bool,
+    ignore_unparsable: bool,
+) -> None:
+    """Upload a directory of DICOM files using parallel batching."""
+    from xnatctl.uploaders.parallel_rest import (
+        UploadProgress,
+        upload_dicom_parallel_rest,
+    )
+    from xnatctl.core.config import get_credentials
+
+    client = ctx.get_client()
+    username, password = get_credentials()
+
+    # Ensure we have credentials for parallel uploads (each thread authenticates)
+    if not username or not password:
+        print_error(
+            "Directory upload requires XNAT_USER and XNAT_PASS environment variables "
+            "(parallel workers need credentials for individual sessions)"
+        )
+        raise SystemExit(1)
+
+    # Progress callback - only for table output and not quiet
+    show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
+
+    if show_progress:
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            transient=True,
+        ) as progress:
+            task_id = progress.add_task("Preparing...", total=None)
+
+            def progress_callback(p: UploadProgress) -> None:
+                """Update the Rich progress UI for parallel uploads."""
+                if p.total > 0:
+                    progress.update(task_id, total=p.total, completed=p.current)
+                progress.update(task_id, description=f"[{p.phase}] {p.message}")
+
+            summary = upload_dicom_parallel_rest(
+                base_url=client.base_url,
+                username=username,
+                password=password,
+                verify_ssl=client.verify_ssl,
+                source_dir=source_dir,
+                project=project,
+                subject=subject,
+                session=session,
+                batch_size=batch_size,
+                upload_workers=upload_workers,
+                archive_workers=archive_workers,
+                archive_format=archive_format,
+                overwrite=overwrite,
+                direct_archive=direct_archive,
+                ignore_unparsable=ignore_unparsable,
+                progress_callback=progress_callback,
+            )
+    else:
+        summary = upload_dicom_parallel_rest(
+            base_url=client.base_url,
+            username=username,
+            password=password,
+            verify_ssl=client.verify_ssl,
+            source_dir=source_dir,
+            project=project,
+            subject=subject,
+            session=session,
+            batch_size=batch_size,
+            upload_workers=upload_workers,
+            archive_workers=archive_workers,
+            archive_format=archive_format,
+            overwrite=overwrite,
+            direct_archive=direct_archive,
+            ignore_unparsable=ignore_unparsable,
+        )
+
+    # Output results
+    if ctx.output_format == OutputFormat.JSON:
+        print_output(
+            {
+                "success": summary.success,
+                "total_files": summary.total_files,
+                "total_size_mb": round(summary.total_size_mb, 2),
+                "duration_seconds": round(summary.duration, 2),
+                "batches_succeeded": summary.batches_succeeded,
+                "batches_failed": summary.batches_failed,
+                "errors": summary.errors,
+            },
+            format=OutputFormat.JSON,
+        )
+    else:
+        if summary.success:
+            print_success(
+                f"Uploaded {summary.total_files} files "
+                f"({summary.total_size_mb:.1f} MB) in {summary.duration:.1f}s"
+            )
         else:
-            print_error(f"Upload failed: {resp.text}")
+            print_error(
+                f"Upload completed with errors: "
+                f"{summary.batches_failed}/{summary.batches_succeeded + summary.batches_failed} batches failed"
+            )
+            for error in summary.errors[:5]:  # Show first 5 errors
+                click.echo(f"  - {error}", err=True)
+            if len(summary.errors) > 5:
+                click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
             raise SystemExit(1)
 
-    elif input_path.is_dir():
-        # Directory upload - would need parallel batching
-        print_error("Directory upload requires parallel batching (not yet implemented)")
-        click.echo("Tip: Zip the directory first: zip -r archive.zip ./dicoms")
+
+def _upload_dicom_store(
+    ctx: Context,
+    source_path: Path,
+    dicom_host: Optional[str],
+    dicom_port: int,
+    called_aet: Optional[str],
+    calling_aet: str,
+    dicom_workers: int,
+) -> None:
+    """Upload via DICOM C-STORE protocol."""
+    # Validate required options
+    if not dicom_host:
+        print_error(
+            "DICOM C-STORE requires --dicom-host or XNAT_DICOM_HOST environment variable"
+        )
         raise SystemExit(1)
+
+    if not called_aet:
+        print_error(
+            "DICOM C-STORE requires --called-aet or XNAT_DICOM_CALLED_AET environment variable"
+        )
+        raise SystemExit(1)
+
+    if not source_path.is_dir():
+        print_error("DICOM C-STORE requires a directory of DICOM files, not an archive")
+        raise SystemExit(1)
+
+    # Lazy import to avoid requiring pynetdicom for non-DICOM operations
+    try:
+        from xnatctl.uploaders.dicom_store import send_dicom_store
+    except ImportError as e:
+        print_error(
+            "DICOM C-STORE requires pydicom and pynetdicom. "
+            "Install with: pip install xnatctl[dicom]"
+        )
+        raise SystemExit(1) from e
+
+    # Execute upload
+    if not ctx.quiet:
+        click.echo(f"Sending DICOM files to {dicom_host}:{dicom_port} ({called_aet})...")
+
+    summary = send_dicom_store(
+        dicom_root=source_path,
+        host=dicom_host,
+        port=dicom_port,
+        called_aet=called_aet,
+        calling_aet=calling_aet,
+        workers=dicom_workers,
+        cleanup=True,
+    )
+
+    # Output results
+    if ctx.output_format == OutputFormat.JSON:
+        print_output(
+            {
+                "success": summary.success,
+                "total_files": summary.total_files,
+                "sent": summary.sent,
+                "failed": summary.failed,
+            },
+            format=OutputFormat.JSON,
+        )
+    else:
+        if summary.success:
+            print_success(f"Sent {summary.sent}/{summary.total_files} DICOM files")
+        else:
+            print_error(
+                f"DICOM C-STORE completed with errors: "
+                f"{summary.failed}/{summary.total_files} files failed"
+            )
+            click.echo(f"Check logs in: {summary.log_dir}", err=True)
+            raise SystemExit(1)
+
+
+def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool = False) -> None:
+    """Extract all ZIP files in a session directory.
+
+    Args:
+        session_dir: Path to session directory containing ZIPs
+        cleanup: Remove ZIPs after successful extraction
+        quiet: Suppress progress output
+    """
+    import zipfile
+
+    zip_files = list(session_dir.glob("*.zip"))
+    if not zip_files:
+        return
+
+    for zip_path in zip_files:
+        extract_dir = session_dir / zip_path.stem
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        if not quiet:
+            click.echo(f"Extracting {zip_path.name}...")
+
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(extract_dir)
+
+            if cleanup:
+                zip_path.unlink()
+                if not quiet:
+                    click.echo(f"  Removed {zip_path.name}")
+        except zipfile.BadZipFile:
+            print_error(f"Invalid ZIP file: {zip_path.name}")
+
+
+# =============================================================================
+# Local Commands (for offline processing)
+# =============================================================================
+
+
+@click.group()
+def local() -> None:
+    """Local file operations (no XNAT connection required)."""
+    pass
+
+
+@local.command("extract")
+@click.argument("input_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--cleanup/--no-cleanup", default=True, help="Remove ZIPs after extraction")
+@click.option("--recursive", "-r", is_flag=True, help="Process subdirectories")
+@click.option("--dry-run", is_flag=True, help="Preview what would be extracted")
+@handle_errors
+def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool) -> None:
+    """Extract downloaded XNAT session ZIPs.
+
+    This command extracts ZIP files from previously downloaded sessions,
+    creating organized subdirectories. Use after downloading without --unzip,
+    or to re-process existing downloads.
+
+    Example:
+        # Extract a single session directory
+        xnatctl local extract ./data/XNAT_E00001
+
+        # Extract all sessions, keeping ZIPs
+        xnatctl local extract ./data --recursive --no-cleanup
+
+        # Preview extraction
+        xnatctl local extract ./data --recursive --dry-run
+    """
+    import zipfile
+
+    input_path = Path(input_dir)
+
+    # Find ZIP files
+    if recursive:
+        zip_files = list(input_path.rglob("*.zip"))
+    else:
+        zip_files = list(input_path.glob("*.zip"))
+
+    if not zip_files:
+        click.echo("No ZIP files found.")
+        return
+
+    click.echo(f"Found {len(zip_files)} ZIP file(s)")
+
+    if dry_run:
+        click.echo("\n[DRY-RUN] Would extract:")
+        for zf in zip_files:
+            extract_dir = zf.parent / zf.stem
+            click.echo(f"  {zf} -> {extract_dir}/")
+            if cleanup:
+                click.echo(f"    (would remove {zf.name})")
+        return
+
+    extracted = 0
+    failed = 0
+
+    for zip_path in zip_files:
+        extract_dir = zip_path.parent / zip_path.stem
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        click.echo(f"Extracting {zip_path.name}...")
+
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(extract_dir)
+            extracted += 1
+
+            if cleanup:
+                zip_path.unlink()
+                click.echo(f"  Removed {zip_path.name}")
+        except zipfile.BadZipFile:
+            print_error(f"Invalid ZIP file: {zip_path.name}")
+            failed += 1
+        except Exception as e:
+            print_error(f"Failed to extract {zip_path.name}: {e}")
+            failed += 1
+
+    if failed:
+        click.echo(f"\nExtracted: {extracted}, Failed: {failed}")
+    else:
+        print_success(f"Extracted {extracted} ZIP file(s)")

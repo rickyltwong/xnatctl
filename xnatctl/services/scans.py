@@ -157,6 +157,7 @@ class ScanService(BaseService):
         }
 
         def delete_scan(scan_id: str) -> tuple[str, bool, str]:
+            """Delete a single scan and return status."""
             try:
                 self.delete(session_id, scan_id, project=project, remove_files=remove_files)
                 return (scan_id, True, "")

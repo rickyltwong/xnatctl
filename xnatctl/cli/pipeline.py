@@ -153,6 +153,7 @@ def pipeline_run(
             click.echo(f"Waiting for job {job_id} to complete...")
 
             def progress_callback(status: dict) -> None:
+                """Print pipeline job status updates during wait."""
                 job_status = status.get("status", "unknown")
                 click.echo(f"  Status: {job_status}")
 
@@ -215,6 +216,7 @@ def pipeline_status(
             click.echo(f"Watching job {job_id}...")
 
             def progress_callback(status: dict) -> None:
+                """Print pipeline job status updates during watch."""
                 job_status = status.get("status", "unknown")
                 click.echo(f"  Status: {job_status}")
 

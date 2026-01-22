@@ -60,6 +60,7 @@ class AdminService(BaseService):
         option_str = ",".join(options) if options else ""
 
         def refresh_experiment(exp_id: str) -> tuple[str, bool, str]:
+            """Refresh a single experiment and return status."""
             try:
                 path = f"/data/experiments/{exp_id}"
                 params: dict[str, Any] = {"pullDataFromHeaders": "true"}
