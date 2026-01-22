@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -44,7 +44,7 @@ class Profile:
     url: str
     verify_ssl: bool = True
     timeout: int = 30
-    default_project: Optional[str] = None
+    default_project: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -56,7 +56,7 @@ class Profile:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Profile":
+    def from_dict(cls, data: dict[str, Any]) -> Profile:
         """Create from dictionary."""
         return cls(
             url=data.get("url", ""),
@@ -80,7 +80,7 @@ class Config:
     profiles: dict[str, Profile] = field(default_factory=dict)
 
     @classmethod
-    def load(cls, config_path: Optional[Path] = None) -> "Config":
+    def load(cls, config_path: Path | None = None) -> Config:
         """Load config from file with environment variable overrides.
 
         Priority (highest to lowest):
@@ -109,7 +109,7 @@ class Config:
                 for name, pdata in data.get("profiles", {}).items():
                     config.profiles[name] = Profile.from_dict(pdata)
             except Exception as e:
-                raise ConfigurationError(f"Failed to load config: {e}")
+                raise ConfigurationError(f"Failed to load config: {e}") from e
 
         # Environment variable overrides
         if url := os.getenv(ENV_URL):
@@ -127,7 +127,7 @@ class Config:
 
         return config
 
-    def save(self, config_path: Optional[Path] = None) -> None:
+    def save(self, config_path: Path | None = None) -> None:
         """Save config to file (excludes secrets).
 
         Args:
@@ -145,7 +145,7 @@ class Config:
         with open(path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
-    def get_profile(self, name: Optional[str] = None) -> Profile:
+    def get_profile(self, name: str | None = None) -> Profile:
         """Get profile by name or default.
 
         Args:
@@ -172,7 +172,7 @@ class Config:
         url: str,
         verify_ssl: bool = True,
         timeout: int = 30,
-        default_project: Optional[str] = None,
+        default_project: str | None = None,
     ) -> Profile:
         """Add or update a profile.
 
@@ -223,7 +223,7 @@ class Config:
         self.default_profile = name
 
 
-def get_credentials(profile: Optional[Profile] = None) -> tuple[Optional[str], Optional[str]]:
+def get_credentials(profile: Profile | None = None) -> tuple[str | None, str | None]:
     """Get credentials from environment variables.
 
     Args:
@@ -237,7 +237,7 @@ def get_credentials(profile: Optional[Profile] = None) -> tuple[Optional[str], O
     return username, password
 
 
-def get_token() -> Optional[str]:
+def get_token() -> str | None:
     """Get session token from environment variable.
 
     Returns:

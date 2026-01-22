@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import builtins
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
-from xnatctl.core.exceptions import ResourceNotFoundError, OperationError
+from xnatctl.core.exceptions import OperationError, ResourceNotFoundError
 
 from .base import BaseService
 
@@ -15,8 +17,8 @@ class PipelineService(BaseService):
 
     def list(
         self,
-        project: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+        project: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
         """List available pipelines.
 
         Args:
@@ -37,7 +39,7 @@ class PipelineService(BaseService):
     def get(
         self,
         pipeline_name: str,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> dict[str, Any]:
         """Get pipeline details.
 
@@ -68,15 +70,15 @@ class PipelineService(BaseService):
             raise ResourceNotFoundError("pipeline", pipeline_name)
         except Exception as e:
             if "404" in str(e):
-                raise ResourceNotFoundError("pipeline", pipeline_name)
+                raise ResourceNotFoundError("pipeline", pipeline_name) from e
             raise
 
     def run(
         self,
         pipeline_name: str,
         experiment_id: str,
-        project: Optional[str] = None,
-        params: Optional[dict[str, Any]] = None,
+        project: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run a pipeline on an experiment.
 
@@ -141,7 +143,7 @@ class PipelineService(BaseService):
         job_id: str,
         timeout: int = 3600,
         poll_interval: int = 30,
-        progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Wait for a pipeline job to complete.
 
@@ -203,11 +205,11 @@ class PipelineService(BaseService):
 
     def list_jobs(
         self,
-        experiment_id: Optional[str] = None,
-        project: Optional[str] = None,
-        status: Optional[str] = None,
+        experiment_id: str | None = None,
+        project: str | None = None,
+        status: str | None = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
+    ) -> builtins.list[dict[str, Any]]:
         """List pipeline jobs.
 
         Args:

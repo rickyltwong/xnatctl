@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import Field
 
 from .base import XNATResource
@@ -12,20 +10,18 @@ from .base import XNATResource
 class Subject(XNATResource):
     """XNAT subject resource."""
 
-    project: Optional[str] = Field(None, description="Parent project ID")
-    group: Optional[str] = Field(None, description="Subject group")
-    src: Optional[str] = Field(None, description="Source")
-    gender: Optional[str] = Field(None, description="Gender")
-    handedness: Optional[str] = Field(None, description="Handedness")
-    yob: Optional[int] = Field(None, description="Year of birth")
-    dob: Optional[str] = Field(None, description="Date of birth")
-    education: Optional[str] = Field(None, description="Education level")
-    ses: Optional[str] = Field(None, description="Socioeconomic status")
-    race: Optional[str] = Field(None, description="Race")
-    ethnicity: Optional[str] = Field(None, description="Ethnicity")
-    session_count: Optional[int] = Field(
-        None, alias="experiments", description="Number of sessions"
-    )
+    project: str | None = Field(None, description="Parent project ID")
+    group: str | None = Field(None, description="Subject group")
+    src: str | None = Field(None, description="Source")
+    gender: str | None = Field(None, description="Gender")
+    handedness: str | None = Field(None, description="Handedness")
+    yob: int | None = Field(None, description="Year of birth")
+    dob: str | None = Field(None, description="Date of birth")
+    education: str | None = Field(None, description="Education level")
+    ses: str | None = Field(None, description="Socioeconomic status")
+    race: str | None = Field(None, description="Race")
+    ethnicity: str | None = Field(None, description="Ethnicity")
+    session_count: int | None = Field(None, alias="experiments", description="Number of sessions")
 
     @classmethod
     def table_columns(cls) -> list[str]:

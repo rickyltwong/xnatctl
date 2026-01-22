@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Optional
+from typing import Any
 
-from xnatctl.models.scan import Scan
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.models.scan import Scan
 
 from .base import BaseService
 
@@ -17,9 +19,9 @@ class ScanService(BaseService):
     def list(
         self,
         session_id: str,
-        project: Optional[str] = None,
-        columns: Optional[list[str]] = None,
-    ) -> list[Scan]:
+        project: str | None = None,
+        columns: builtins.list[str] | None = None,
+    ) -> builtins.list[Scan]:
         """List scans in a session.
 
         Args:
@@ -55,7 +57,7 @@ class ScanService(BaseService):
         self,
         session_id: str,
         scan_id: str,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> Scan:
         """Get scan details.
 
@@ -88,14 +90,14 @@ class ScanService(BaseService):
             raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}")
         except Exception as e:
             if "404" in str(e):
-                raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}")
+                raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}") from e
             raise
 
     def delete(
         self,
         session_id: str,
         scan_id: str,
-        project: Optional[str] = None,
+        project: str | None = None,
         remove_files: bool = False,
     ) -> bool:
         """Delete a scan.
@@ -123,12 +125,12 @@ class ScanService(BaseService):
     def delete_multiple(
         self,
         session_id: str,
-        scan_ids: list[str],
-        project: Optional[str] = None,
+        scan_ids: builtins.list[str],
+        project: str | None = None,
         remove_files: bool = False,
         parallel: bool = True,
         workers: int = 4,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> dict[str, Any]:
         """Delete multiple scans.
 
@@ -149,7 +151,7 @@ class ScanService(BaseService):
             scans = self.list(session_id, project=project)
             scan_ids = [s.id for s in scans]
 
-        results = {
+        results: dict[str, Any] = {
             "deleted": [],
             "failed": [],
             "errors": [],
@@ -166,10 +168,7 @@ class ScanService(BaseService):
 
         if parallel and len(scan_ids) > 1:
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(delete_scan, scan_id): scan_id
-                    for scan_id in scan_ids
-                }
+                futures = {executor.submit(delete_scan, scan_id): scan_id for scan_id in scan_ids}
 
                 for i, future in enumerate(as_completed(futures)):
                     scan_id, success, error = future.result()
@@ -199,8 +198,8 @@ class ScanService(BaseService):
         self,
         session_id: str,
         scan_id: str,
-        project: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+        project: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
         """Get resources for a scan.
 
         Args:
@@ -225,7 +224,7 @@ class ScanService(BaseService):
         session_id: str,
         scan_id: str,
         quality: str,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> bool:
         """Set scan quality assessment.
 
@@ -252,7 +251,7 @@ class ScanService(BaseService):
         session_id: str,
         scan_id: str,
         note: str,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> bool:
         """Set scan note.
 

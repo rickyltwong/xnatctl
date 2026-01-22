@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
-from typing import Optional
 
 import click
 
@@ -16,13 +16,18 @@ from xnatctl.core.output import (
 )
 
 
+def _normalize_errors(errors: object) -> list[str]:
+    """Normalize error values to a list of strings."""
+    if isinstance(errors, list):
+        return [str(err) for err in errors]
+    if errors:
+        return [str(errors)]
+    return []
+
+
 def check_pydicom() -> bool:
     """Check if pydicom is available."""
-    try:
-        import pydicom
-        return True
-    except ImportError:
-        return False
+    return importlib.util.find_spec("pydicom") is not None
 
 
 @click.group()
@@ -107,42 +112,51 @@ def dicom_validate(
             else:
                 invalid_count += 1
 
-            results.append({
-                "file": str(file_path),
-                "valid": is_valid,
-                "errors": errors,
-                "warnings": warnings,
-                "patient_id": getattr(ds, "PatientID", ""),
-                "modality": getattr(ds, "Modality", ""),
-            })
+            results.append(
+                {
+                    "file": str(file_path),
+                    "valid": is_valid,
+                    "errors": errors,
+                    "warnings": warnings,
+                    "patient_id": getattr(ds, "PatientID", ""),
+                    "modality": getattr(ds, "Modality", ""),
+                }
+            )
 
         except pydicom.errors.InvalidDicomError:
             invalid_count += 1
-            results.append({
-                "file": str(file_path),
-                "valid": False,
-                "errors": ["Not a valid DICOM file"],
-                "warnings": [],
-            })
+            results.append(
+                {
+                    "file": str(file_path),
+                    "valid": False,
+                    "errors": ["Not a valid DICOM file"],
+                    "warnings": [],
+                }
+            )
         except Exception as e:
             invalid_count += 1
-            results.append({
-                "file": str(file_path),
-                "valid": False,
-                "errors": [str(e)],
-                "warnings": [],
-            })
+            results.append(
+                {
+                    "file": str(file_path),
+                    "valid": False,
+                    "errors": [str(e)],
+                    "warnings": [],
+                }
+            )
 
     if quiet:
         for r in results:
             if not r["valid"]:
-                click.echo(f"{r['file']}: {', '.join(r['errors'])}")
+                errors_list = _normalize_errors(r.get("errors"))
+                click.echo(f"{r['file']}: {', '.join(errors_list)}")
     elif output == "json":
-        print_json({
-            "valid_count": valid_count,
-            "invalid_count": invalid_count,
-            "files": results,
-        })
+        print_json(
+            {
+                "valid_count": valid_count,
+                "invalid_count": invalid_count,
+                "files": results,
+            }
+        )
     else:
         click.echo(f"Validated {len(files)} files")
         click.echo(f"  Valid: {valid_count}")
@@ -153,7 +167,8 @@ def dicom_validate(
             for r in results:
                 if not r["valid"]:
                     click.echo(f"  {r['file']}")
-                    for err in r["errors"]:
+                    errors_list = _normalize_errors(r.get("errors"))
+                    for err in errors_list:
                         click.echo(f"    - {err}")
 
 
@@ -184,12 +199,12 @@ def dicom_inspect(
 
     try:
         ds = pydicom.dcmread(str(file_path), stop_before_pixels=True)
-    except pydicom.errors.InvalidDicomError:
+    except pydicom.errors.InvalidDicomError as e:
         print_error(f"Not a valid DICOM file: {file}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
     except Exception as e:
         print_error(f"Error reading file: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     # Build header dict
     headers = {}
@@ -270,12 +285,12 @@ def dicom_list_tags(
 
     try:
         ds = pydicom.dcmread(str(file_path), stop_before_pixels=True)
-    except pydicom.errors.InvalidDicomError:
+    except pydicom.errors.InvalidDicomError as e:
         print_error(f"Not a valid DICOM file: {file}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
     except Exception as e:
         print_error(f"Error reading file: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     tags = []
     for elem in ds:
@@ -287,12 +302,14 @@ def dicom_list_tags(
         name = elem.keyword if hasattr(elem, "keyword") else ""
         value = str(elem.value)[:50] if elem.value else ""  # Truncate
 
-        tags.append({
-            "tag": tag_str,
-            "vr": vr,
-            "name": name,
-            "value": value,
-        })
+        tags.append(
+            {
+                "tag": tag_str,
+                "vr": vr,
+                "name": name,
+                "value": value,
+            }
+        )
 
     if output == "json":
         print_json(tags)
@@ -312,8 +329,8 @@ def dicom_list_tags(
 def dicom_anonymize(
     input_path: str,
     output_path: str,
-    patient_id: Optional[str],
-    patient_name: Optional[str],
+    patient_id: str | None,
+    patient_name: str | None,
     remove_private: bool,
     recursive: bool,
     dry_run: bool,

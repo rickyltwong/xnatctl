@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import builtins
 import re
-from typing import Any, Optional
+from typing import Any
 
-from xnatctl.models.subject import Subject
 from xnatctl.core.exceptions import ResourceNotFoundError, ValidationError
+from xnatctl.models.subject import Subject
 
 from .base import BaseService
 
@@ -16,10 +17,10 @@ class SubjectService(BaseService):
 
     def list(
         self,
-        project: Optional[str] = None,
-        limit: Optional[int] = None,
-        columns: Optional[list[str]] = None,
-    ) -> list[Subject]:
+        project: str | None = None,
+        limit: int | None = None,
+        columns: builtins.list[str] | None = None,
+    ) -> builtins.list[Subject]:
         """List subjects.
 
         Args:
@@ -50,7 +51,7 @@ class SubjectService(BaseService):
     def get(
         self,
         subject_id: str,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> Subject:
         """Get subject details.
 
@@ -79,16 +80,16 @@ class SubjectService(BaseService):
             raise ResourceNotFoundError("subject", subject_id)
         except Exception as e:
             if "404" in str(e):
-                raise ResourceNotFoundError("subject", subject_id)
+                raise ResourceNotFoundError("subject", subject_id) from e
             raise
 
     def create(
         self,
         project: str,
         label: str,
-        group: Optional[str] = None,
-        gender: Optional[str] = None,
-        yob: Optional[int] = None,
+        group: str | None = None,
+        gender: str | None = None,
+        yob: int | None = None,
     ) -> Subject:
         """Create a new subject.
 
@@ -118,7 +119,7 @@ class SubjectService(BaseService):
     def delete(
         self,
         subject_id: str,
-        project: Optional[str] = None,
+        project: str | None = None,
         remove_files: bool = False,
     ) -> bool:
         """Delete a subject.
@@ -146,7 +147,7 @@ class SubjectService(BaseService):
         self,
         subject_id: str,
         new_label: str,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> Subject:
         """Rename a subject.
 
@@ -184,7 +185,7 @@ class SubjectService(BaseService):
         Returns:
             Summary dict with renamed, skipped, errors
         """
-        results = {
+        results: dict[str, Any] = {
             "renamed": [],
             "skipped": [],
             "errors": [],
@@ -196,26 +197,34 @@ class SubjectService(BaseService):
                 if dry_run:
                     # Verify subject exists
                     self.get(old_label, project=project)
-                    results["renamed"].append({
-                        "from": old_label,
-                        "to": new_label,
-                    })
+                    results["renamed"].append(
+                        {
+                            "from": old_label,
+                            "to": new_label,
+                        }
+                    )
                 else:
                     self.rename(old_label, new_label, project=project)
-                    results["renamed"].append({
-                        "from": old_label,
-                        "to": new_label,
-                    })
+                    results["renamed"].append(
+                        {
+                            "from": old_label,
+                            "to": new_label,
+                        }
+                    )
             except ResourceNotFoundError:
-                results["skipped"].append({
-                    "label": old_label,
-                    "reason": "not found",
-                })
+                results["skipped"].append(
+                    {
+                        "label": old_label,
+                        "reason": "not found",
+                    }
+                )
             except Exception as e:
-                results["errors"].append({
-                    "label": old_label,
-                    "error": str(e),
-                })
+                results["errors"].append(
+                    {
+                        "label": old_label,
+                        "error": str(e),
+                    }
+                )
 
         return results
 
@@ -242,10 +251,10 @@ class SubjectService(BaseService):
         try:
             pattern = re.compile(match_pattern)
         except re.error as e:
-            raise ValidationError(f"Invalid regex pattern: {e}")
+            raise ValidationError(f"Invalid regex pattern: {e}") from e
 
         subjects = self.list(project=project)
-        results = {
+        results: dict[str, Any] = {
             "renamed": [],
             "merged": [],
             "skipped": [],
@@ -266,7 +275,7 @@ class SubjectService(BaseService):
                 mapping[label] = new_label
 
         # Check for duplicates (merges)
-        target_labels: dict[str, list[str]] = {}
+        target_labels: dict[str, builtins.list[str]] = {}
         for old_label, new_label in mapping.items():
             if new_label not in target_labels:
                 target_labels[new_label] = []
@@ -279,60 +288,76 @@ class SubjectService(BaseService):
                 if merge:
                     for old_label in old_labels:
                         if dry_run:
-                            results["merged"].append({
-                                "from": old_label,
-                                "to": new_label,
-                            })
+                            results["merged"].append(
+                                {
+                                    "from": old_label,
+                                    "to": new_label,
+                                }
+                            )
                         else:
                             try:
                                 self.rename(old_label, new_label, project=project)
-                                results["merged"].append({
-                                    "from": old_label,
-                                    "to": new_label,
-                                })
+                                results["merged"].append(
+                                    {
+                                        "from": old_label,
+                                        "to": new_label,
+                                    }
+                                )
                             except Exception as e:
-                                results["errors"].append({
-                                    "label": old_label,
-                                    "error": str(e),
-                                })
+                                results["errors"].append(
+                                    {
+                                        "label": old_label,
+                                        "error": str(e),
+                                    }
+                                )
                 else:
                     for old_label in old_labels:
-                        results["skipped"].append({
-                            "label": old_label,
-                            "reason": f"would merge into {new_label} (use --merge)",
-                        })
+                        results["skipped"].append(
+                            {
+                                "label": old_label,
+                                "reason": f"would merge into {new_label} (use --merge)",
+                            }
+                        )
             else:
                 old_label = old_labels[0]
                 if old_label == new_label:
-                    results["skipped"].append({
-                        "label": old_label,
-                        "reason": "no change",
-                    })
+                    results["skipped"].append(
+                        {
+                            "label": old_label,
+                            "reason": "no change",
+                        }
+                    )
                 elif dry_run:
-                    results["renamed"].append({
-                        "from": old_label,
-                        "to": new_label,
-                    })
+                    results["renamed"].append(
+                        {
+                            "from": old_label,
+                            "to": new_label,
+                        }
+                    )
                 else:
                     try:
                         self.rename(old_label, new_label, project=project)
-                        results["renamed"].append({
-                            "from": old_label,
-                            "to": new_label,
-                        })
+                        results["renamed"].append(
+                            {
+                                "from": old_label,
+                                "to": new_label,
+                            }
+                        )
                     except Exception as e:
-                        results["errors"].append({
-                            "label": old_label,
-                            "error": str(e),
-                        })
+                        results["errors"].append(
+                            {
+                                "label": old_label,
+                                "error": str(e),
+                            }
+                        )
 
         return results
 
     def get_sessions(
         self,
         subject_id: str,
-        project: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+        project: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
         """Get sessions for a subject.
 
         Args:
@@ -382,13 +407,13 @@ class SubjectService(BaseService):
             ResourceNotFoundError: If source or target not found
         """
         # Verify both subjects exist
-        source = self.get(source_label, project=project)
+        self.get(source_label, project=project)
         target = self.get(target_label, project=project)
 
         # Get experiments from source
         experiments = self.get_sessions(source_label, project=project)
 
-        result = {
+        result: dict[str, Any] = {
             "source": source_label,
             "target": target_label,
             "experiments_moved": 0,

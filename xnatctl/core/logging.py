@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Generator, Optional
+from typing import Any
 
 # =============================================================================
 # Constants
@@ -79,7 +80,7 @@ class LogContext:
     def __init__(
         self,
         operation: str,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
         **context: Any,
     ):
         """Initialize log context.
@@ -92,9 +93,9 @@ class LogContext:
         self.operation = operation
         self.logger = logger or get_logger(__name__)
         self.context = context
-        self.start_time: Optional[datetime] = None
+        self.start_time: datetime | None = None
 
-    def __enter__(self) -> "LogContext":
+    def __enter__(self) -> LogContext:
         """Enter context and log start."""
         self.start_time = datetime.now()
         ctx_str = ", ".join(f"{k}={v}" for k, v in self.context.items())
@@ -147,7 +148,7 @@ class LogContext:
 @contextmanager
 def log_context(
     operation: str,
-    logger: Optional[logging.Logger] = None,
+    logger: logging.Logger | None = None,
     **context: Any,
 ) -> Generator[LogContext, None, None]:
     """Context manager for structured logging.
@@ -173,7 +174,7 @@ def log_context(
 class AuditLogger:
     """Logger for audit trail of operations."""
 
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: logging.Logger | None = None):
         """Initialize audit logger.
 
         Args:
@@ -185,12 +186,12 @@ class AuditLogger:
         self,
         operation: str,
         *,
-        project: Optional[str] = None,
-        subject: Optional[str] = None,
-        session: Optional[str] = None,
-        user: Optional[str] = None,
+        project: str | None = None,
+        subject: str | None = None,
+        session: str | None = None,
+        user: str | None = None,
         success: bool = True,
-        details: Optional[dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         """Log an auditable operation.
 

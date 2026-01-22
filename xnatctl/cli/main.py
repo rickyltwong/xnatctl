@@ -5,21 +5,20 @@ from __future__ import annotations
 import click
 
 from xnatctl import __version__
+from xnatctl.cli.admin import admin
+from xnatctl.cli.api import api
+from xnatctl.cli.auth import auth
 
 # Import command groups
 from xnatctl.cli.config_cmd import config
-from xnatctl.cli.auth import auth
-from xnatctl.cli.project import project
-from xnatctl.cli.subject import subject
-from xnatctl.cli.session import session, local
-from xnatctl.cli.scan import scan
-from xnatctl.cli.resource import resource
-from xnatctl.cli.prearchive import prearchive
-from xnatctl.cli.pipeline import pipeline
-from xnatctl.cli.admin import admin
-from xnatctl.cli.api import api
 from xnatctl.cli.dicom_cmd import dicom
-
+from xnatctl.cli.pipeline import pipeline
+from xnatctl.cli.prearchive import prearchive
+from xnatctl.cli.project import project
+from xnatctl.cli.resource import resource
+from xnatctl.cli.scan import scan
+from xnatctl.cli.session import local, session
+from xnatctl.cli.subject import subject
 
 # =============================================================================
 # Main CLI Group
@@ -75,12 +74,14 @@ cli.add_command(local)
 @click.pass_context
 def whoami(ctx: click.Context) -> None:
     """Show current user and authentication context."""
-    from xnatctl.cli.common import Context, pass_context, global_options
-    from xnatctl.core.output import print_output, print_error, OutputFormat
+    from xnatctl.cli.common import Context
+    from xnatctl.core.output import OutputFormat, print_error, print_output
 
     # Create context manually since we're not using decorators
     cli_ctx = Context()
-    cli_ctx.config = cli_ctx.config or __import__("xnatctl.core.config", fromlist=["Config"]).Config.load()
+    cli_ctx.config = (
+        cli_ctx.config or __import__("xnatctl.core.config", fromlist=["Config"]).Config.load()
+    )
 
     try:
         client = cli_ctx.get_client()
@@ -133,10 +134,12 @@ def health() -> None:
 def health_ping(ctx: click.Context, output: str) -> None:
     """Check server connectivity and authentication."""
     from xnatctl.cli.common import Context
-    from xnatctl.core.output import print_output, print_error, print_success, OutputFormat
+    from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
 
     cli_ctx = Context()
-    cli_ctx.config = cli_ctx.config or __import__("xnatctl.core.config", fromlist=["Config"]).Config.load()
+    cli_ctx.config = (
+        cli_ctx.config or __import__("xnatctl.core.config", fromlist=["Config"]).Config.load()
+    )
 
     try:
         client = cli_ctx.get_client()
@@ -178,8 +181,6 @@ def completion_bash() -> None:
     Install with:
       xnatctl completion bash > ~/.local/share/bash-completion/completions/xnatctl
     """
-    import os
-    import sys
 
     # Get the completion script using Click's built-in support
     prog_name = "xnatctl"

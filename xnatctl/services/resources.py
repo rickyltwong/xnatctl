@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from xnatctl.models.resource import Resource, ResourceFile
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.models.resource import Resource, ResourceFile
 
 from .base import BaseService
 
@@ -17,9 +18,9 @@ class ResourceService(BaseService):
     def list(
         self,
         session_id: str,
-        scan_id: Optional[str] = None,
-        project: Optional[str] = None,
-    ) -> list[Resource]:
+        scan_id: str | None = None,
+        project: str | None = None,
+    ) -> builtins.list[Resource]:
         """List resources for a session or scan.
 
         Args:
@@ -32,7 +33,9 @@ class ResourceService(BaseService):
         """
         if scan_id:
             if project:
-                path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}/resources"
+                path = (
+                    f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}/resources"
+                )
             else:
                 path = f"/data/experiments/{session_id}/scans/{scan_id}/resources"
         else:
@@ -60,8 +63,8 @@ class ResourceService(BaseService):
         self,
         session_id: str,
         resource_label: str,
-        scan_id: Optional[str] = None,
-        project: Optional[str] = None,
+        scan_id: str | None = None,
+        project: str | None = None,
     ) -> Resource:
         """Get resource details.
 
@@ -88,9 +91,9 @@ class ResourceService(BaseService):
         self,
         session_id: str,
         resource_label: str,
-        scan_id: Optional[str] = None,
-        project: Optional[str] = None,
-    ) -> list[ResourceFile]:
+        scan_id: str | None = None,
+        project: str | None = None,
+    ) -> builtins.list[ResourceFile]:
         """List files in a resource.
 
         Args:
@@ -123,10 +126,10 @@ class ResourceService(BaseService):
         self,
         session_id: str,
         resource_label: str,
-        scan_id: Optional[str] = None,
-        project: Optional[str] = None,
-        format: Optional[str] = None,
-        content: Optional[str] = None,
+        scan_id: str | None = None,
+        project: str | None = None,
+        format: str | None = None,
+        content: str | None = None,
     ) -> Resource:
         """Create a new resource.
 
@@ -148,7 +151,9 @@ class ResourceService(BaseService):
                 path = f"/data/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}"
         else:
             if project:
-                path = f"/data/projects/{project}/experiments/{session_id}/resources/{resource_label}"
+                path = (
+                    f"/data/projects/{project}/experiments/{session_id}/resources/{resource_label}"
+                )
             else:
                 path = f"/data/experiments/{session_id}/resources/{resource_label}"
 
@@ -165,8 +170,8 @@ class ResourceService(BaseService):
         self,
         session_id: str,
         resource_label: str,
-        scan_id: Optional[str] = None,
-        project: Optional[str] = None,
+        scan_id: str | None = None,
+        project: str | None = None,
         remove_files: bool = True,
     ) -> bool:
         """Delete a resource.
@@ -188,7 +193,9 @@ class ResourceService(BaseService):
                 path = f"/data/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}"
         else:
             if project:
-                path = f"/data/projects/{project}/experiments/{session_id}/resources/{resource_label}"
+                path = (
+                    f"/data/projects/{project}/experiments/{session_id}/resources/{resource_label}"
+                )
             else:
                 path = f"/data/experiments/{session_id}/resources/{resource_label}"
 
@@ -203,8 +210,8 @@ class ResourceService(BaseService):
         session_id: str,
         resource_label: str,
         file_path: Path,
-        scan_id: Optional[str] = None,
-        project: Optional[str] = None,
+        scan_id: str | None = None,
+        project: str | None = None,
         extract: bool = False,
         overwrite: bool = False,
     ) -> dict[str, Any]:
@@ -259,10 +266,10 @@ class ResourceService(BaseService):
         elif suffix in (".txt", ".csv"):
             content_type = "text/plain"
 
-        resp = self.client.put(
+        self.client.put(
             path,
             params=params,
-            content=content,
+            data=content,
             headers={"Content-Type": content_type},
         )
 
@@ -278,8 +285,8 @@ class ResourceService(BaseService):
         session_id: str,
         resource_label: str,
         directory_path: Path,
-        scan_id: Optional[str] = None,
-        project: Optional[str] = None,
+        scan_id: str | None = None,
+        project: str | None = None,
         overwrite: bool = False,
     ) -> dict[str, Any]:
         """Upload a directory to a resource (creates ZIP first).

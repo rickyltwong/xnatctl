@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Optional
-
-from xnatctl.core.exceptions import OperationError
+from typing import Any, cast
 
 from .base import BaseService
 
@@ -16,12 +15,12 @@ class AdminService(BaseService):
     def refresh_catalogs(
         self,
         project: str,
-        experiments: Optional[list[str]] = None,
-        options: Optional[list[str]] = None,
-        limit: Optional[int] = None,
+        experiments: list[str] | None = None,
+        options: list[str] | None = None,
+        limit: int | None = None,
         parallel: bool = True,
         workers: int = 4,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> dict[str, Any]:
         """Refresh catalog XMLs for project experiments.
 
@@ -42,14 +41,14 @@ class AdminService(BaseService):
             path = f"/data/projects/{project}/experiments"
             params = {"format": "json", "columns": "ID"}
             data = self._get(path, params=params)
-            results = self._extract_results(data)
-            experiments = [r.get("ID") for r in results if r.get("ID")]
+            experiment_rows = self._extract_results(data)
+            experiments = [str(r["ID"]) for r in experiment_rows if r.get("ID")]
 
         if limit:
             experiments = experiments[:limit]
 
         total = len(experiments)
-        results = {
+        summary: dict[str, Any] = {
             "refreshed": [],
             "failed": [],
             "errors": [],
@@ -75,17 +74,16 @@ class AdminService(BaseService):
         if parallel and total > 1:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
-                    executor.submit(refresh_experiment, exp_id): exp_id
-                    for exp_id in experiments
+                    executor.submit(refresh_experiment, exp_id): exp_id for exp_id in experiments
                 }
 
                 for i, future in enumerate(as_completed(futures)):
                     exp_id, success, error = future.result()
                     if success:
-                        results["refreshed"].append(exp_id)
+                        summary["refreshed"].append(exp_id)
                     else:
-                        results["failed"].append(exp_id)
-                        results["errors"].append({"experiment": exp_id, "error": error})
+                        summary["failed"].append(exp_id)
+                        summary["errors"].append({"experiment": exp_id, "error": error})
 
                     if progress_callback:
                         progress_callback(i + 1, total, exp_id)
@@ -93,21 +91,21 @@ class AdminService(BaseService):
             for i, exp_id in enumerate(experiments):
                 exp_id, success, error = refresh_experiment(exp_id)
                 if success:
-                    results["refreshed"].append(exp_id)
+                    summary["refreshed"].append(exp_id)
                 else:
-                    results["failed"].append(exp_id)
-                    results["errors"].append({"experiment": exp_id, "error": error})
+                    summary["failed"].append(exp_id)
+                    summary["errors"].append({"experiment": exp_id, "error": error})
 
                 if progress_callback:
                     progress_callback(i + 1, total, exp_id)
 
-        return results
+        return summary
 
     def add_user_to_groups(
         self,
         username: str,
         groups: list[str],
-        projects: Optional[list[str]] = None,
+        projects: list[str] | None = None,
         role: str = "member",
     ) -> dict[str, Any]:
         """Add a user to XNAT groups.
@@ -121,14 +119,14 @@ class AdminService(BaseService):
         Returns:
             Summary dict with added, failed, errors
         """
-        results = {
+        results: dict[str, Any] = {
             "added": [],
             "failed": [],
             "errors": [],
         }
 
         # Expand groups with projects if provided
-        target_groups = []
+        target_groups: list[str] = []
         if projects:
             for project in projects:
                 for group in groups:
@@ -151,7 +149,7 @@ class AdminService(BaseService):
         self,
         username: str,
         groups: list[str],
-        projects: Optional[list[str]] = None,
+        projects: list[str] | None = None,
     ) -> dict[str, Any]:
         """Remove a user from XNAT groups.
 
@@ -163,13 +161,13 @@ class AdminService(BaseService):
         Returns:
             Summary dict with removed, failed, errors
         """
-        results = {
+        results: dict[str, Any] = {
             "removed": [],
             "failed": [],
             "errors": [],
         }
 
-        target_groups = []
+        target_groups: list[str] = []
         if projects:
             for project in projects:
                 for group in groups:
@@ -193,7 +191,7 @@ class AdminService(BaseService):
 
     def list_users(
         self,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> list[dict[str, Any]]:
         """List users.
 
@@ -237,10 +235,10 @@ class AdminService(BaseService):
 
     def audit_log(
         self,
-        project: Optional[str] = None,
-        username: Optional[str] = None,
-        action: Optional[str] = None,
-        since: Optional[str] = None,
+        project: str | None = None,
+        username: str | None = None,
+        action: str | None = None,
+        since: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Get audit log entries.
@@ -277,11 +275,11 @@ class AdminService(BaseService):
             Server info dict with version, build info, etc.
         """
         path = "/data/version"
-        return self._get(path)
+        return cast(dict[str, Any], self._get(path))
 
     def get_site_config(
         self,
-        key: Optional[str] = None,
+        key: str | None = None,
     ) -> dict[str, Any]:
         """Get site configuration.
 
@@ -296,7 +294,7 @@ class AdminService(BaseService):
         else:
             path = "/xapi/siteConfig"
 
-        return self._get(path)
+        return cast(dict[str, Any], self._get(path))
 
     def set_site_config(
         self,

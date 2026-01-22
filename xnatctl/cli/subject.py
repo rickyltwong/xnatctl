@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import click
 
-from xnatctl.cli.common import Context, global_options, require_auth, handle_errors, confirm_destructive
-from xnatctl.core.output import print_output, print_error, print_success, OutputFormat
+from xnatctl.cli.common import (
+    Context,
+    confirm_destructive,
+    global_options,
+    handle_errors,
+    require_auth,
+)
+from xnatctl.core.output import print_error, print_output, print_success
 
 
 @click.group()
@@ -22,7 +26,7 @@ def subject() -> None:
 @global_options
 @require_auth
 @handle_errors
-def subject_list(ctx: Context, project: str, filter_expr: Optional[str]) -> None:
+def subject_list(ctx: Context, project: str, filter_expr: str | None) -> None:
     """List subjects in a project.
 
     Example:
@@ -51,13 +55,16 @@ def subject_list(ctx: Context, project: str, filter_expr: Optional[str]) -> None
             field, pattern = filter_expr.split(":", 1)
             if field == "label":
                 import fnmatch
+
                 if not fnmatch.fnmatch(label, pattern):
                     continue
 
-        subjects.append({
-            "id": r.get("ID", ""),
-            "label": label,
-        })
+        subjects.append(
+            {
+                "id": r.get("ID", ""),
+                "label": label,
+            }
+        )
 
     # Get session counts (if not too many subjects)
     if len(subjects) <= 50 and not ctx.quiet:
@@ -110,9 +117,7 @@ def subject_show(ctx: Context, subject_id: str, project: str) -> None:
 
     # Get sessions
     try:
-        sess_resp = client.get_json(
-            f"/data/projects/{project}/subjects/{subject_id}/experiments"
-        )
+        sess_resp = client.get_json(f"/data/projects/{project}/subjects/{subject_id}/experiments")
         sessions = sess_resp.get("ResultSet", {}).get("Result", [])
         session_labels = [s.get("label", s.get("ID", "")) for s in sessions]
     except Exception:
@@ -173,7 +178,9 @@ def subject_delete(ctx: Context, subject_id: str, project: str, dry_run: bool) -
 
 @subject.command("rename")
 @click.option("--project", "-P", required=True, help="Project ID")
-@click.option("--mapping", type=click.Path(exists=True), help="JSON file with old->new label mapping")
+@click.option(
+    "--mapping", type=click.Path(exists=True), help="JSON file with old->new label mapping"
+)
 @click.option("--pattern", help="Regex pattern with capture groups")
 @click.option("--to", "to_template", help="Template for new label (use {1}, {2} for groups)")
 @click.option("--dry-run", is_flag=True, help="Preview changes without applying")
@@ -183,9 +190,9 @@ def subject_delete(ctx: Context, subject_id: str, project: str, dry_run: bool) -
 def subject_rename(
     ctx: Context,
     project: str,
-    mapping: Optional[str],
-    pattern: Optional[str],
-    to_template: Optional[str],
+    mapping: str | None,
+    pattern: str | None,
+    to_template: str | None,
     dry_run: bool,
 ) -> None:
     """Rename subjects using mapping file or pattern.
@@ -200,7 +207,7 @@ def subject_rename(
         xnatctl subject rename -P MYPROJ --pattern "^(\\w+)_visit\\d+$" --to "{1}"
     """
     import json
-    import re
+
     from xnatctl.core.validation import validate_project_id, validate_regex_pattern
     from xnatctl.services.subjects import SubjectService
 
@@ -256,7 +263,9 @@ def subject_rename(
                         merged[old_label] = new_label
                         current_labels.discard(old_label)
                         if not ctx.quiet:
-                            click.echo(f"  Merged {old_label} -> {new_label} ({result['experiments_moved']} experiments)")
+                            click.echo(
+                                f"  Merged {old_label} -> {new_label} ({result['experiments_moved']} experiments)"
+                            )
                     except Exception as e:
                         skipped.append((old_label, f"merge failed: {e}"))
                 else:
@@ -312,7 +321,9 @@ def subject_rename(
                         merged[label] = target
                         current_labels.discard(label)
                         if not ctx.quiet:
-                            click.echo(f"  Merged {label} -> {target} ({result['experiments_moved']} experiments)")
+                            click.echo(
+                                f"  Merged {label} -> {target} ({result['experiments_moved']} experiments)"
+                            )
                     except Exception as e:
                         skipped.append((label, f"merge failed: {e}"))
                 else:

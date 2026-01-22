@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import hashlib
-import shutil
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
-from typing import Any, Callable, Optional
-import zipfile
 import time
+import zipfile
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 from xnatctl.models.progress import (
     DownloadProgress,
     DownloadSummary,
     OperationPhase,
 )
-from xnatctl.core.exceptions import DownloadError
 
 from .base import BaseService
 
@@ -27,15 +25,15 @@ class DownloadService(BaseService):
         self,
         session_id: str,
         output_dir: Path,
-        project: Optional[str] = None,
+        project: str | None = None,
         include_resources: bool = True,
         include_assessors: bool = False,
-        pattern: Optional[str] = None,
+        pattern: str | None = None,
         resume: bool = False,
         verify: bool = False,
         parallel: bool = True,
         workers: int = 4,
-        progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+        progress_callback: Callable[[DownloadProgress], None] | None = None,
     ) -> DownloadSummary:
         """Download session data.
 
@@ -71,17 +69,20 @@ class DownloadService(BaseService):
 
         # Download ZIP
         if progress_callback:
-            progress_callback(DownloadProgress(
-                phase=OperationPhase.PREPARING,
-                message=f"Preparing download for {session_id}",
-            ))
+            progress_callback(
+                DownloadProgress(
+                    phase=OperationPhase.PREPARING,
+                    message=f"Preparing download for {session_id}",
+                )
+            )
 
         zip_path = output_dir / f"{session_id}.zip"
 
         try:
             # Stream download
             total_bytes = 0
-            with self.client._client.stream("GET", path, params=params) as response:
+            client = self.client._get_client()
+            with client.stream("GET", path, params=params) as response:
                 response.raise_for_status()
                 total_size = int(response.headers.get("content-length", 0))
 
@@ -91,20 +92,24 @@ class DownloadService(BaseService):
                         total_bytes += len(chunk)
 
                         if progress_callback:
-                            progress_callback(DownloadProgress(
-                                phase=OperationPhase.DOWNLOADING,
-                                bytes_received=total_bytes,
-                                total_bytes=total_size,
-                                file_path=str(zip_path),
-                                message=f"Downloading {session_id}",
-                            ))
+                            progress_callback(
+                                DownloadProgress(
+                                    phase=OperationPhase.DOWNLOADING,
+                                    bytes_received=total_bytes,
+                                    total_bytes=total_size,
+                                    file_path=str(zip_path),
+                                    message=f"Downloading {session_id}",
+                                )
+                            )
 
             # Extract if needed
             if progress_callback:
-                progress_callback(DownloadProgress(
-                    phase=OperationPhase.PROCESSING,
-                    message=f"Extracting {session_id}",
-                ))
+                progress_callback(
+                    DownloadProgress(
+                        phase=OperationPhase.PROCESSING,
+                        message=f"Extracting {session_id}",
+                    )
+                )
 
             extract_dir = output_dir / session_id
             with zipfile.ZipFile(zip_path, "r") as zf:
@@ -122,11 +127,13 @@ class DownloadService(BaseService):
                 verified = self._verify_download(session_id, extract_dir, project)
 
             if progress_callback:
-                progress_callback(DownloadProgress(
-                    phase=OperationPhase.COMPLETE,
-                    message=f"Download complete: {file_count} files",
-                    success=True,
-                ))
+                progress_callback(
+                    DownloadProgress(
+                        phase=OperationPhase.COMPLETE,
+                        message=f"Download complete: {file_count} files",
+                        success=True,
+                    )
+                )
 
             duration = time.time() - start_time
             return DownloadSummary(
@@ -144,12 +151,14 @@ class DownloadService(BaseService):
 
         except Exception as e:
             if progress_callback:
-                progress_callback(DownloadProgress(
-                    phase=OperationPhase.ERROR,
-                    message=str(e),
-                    success=False,
-                    errors=[str(e)],
-                ))
+                progress_callback(
+                    DownloadProgress(
+                        phase=OperationPhase.ERROR,
+                        message=str(e),
+                        success=False,
+                        errors=[str(e)],
+                    )
+                )
 
             duration = time.time() - start_time
             return DownloadSummary(
@@ -167,10 +176,10 @@ class DownloadService(BaseService):
         session_id: str,
         resource_label: str,
         output_dir: Path,
-        scan_id: Optional[str] = None,
-        project: Optional[str] = None,
+        scan_id: str | None = None,
+        project: str | None = None,
         extract: bool = True,
-        progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+        progress_callback: Callable[[DownloadProgress], None] | None = None,
     ) -> DownloadSummary:
         """Download a specific resource.
 
@@ -208,7 +217,8 @@ class DownloadService(BaseService):
 
         try:
             total_bytes = 0
-            with self.client._client.stream("GET", path, params=params) as response:
+            client = self.client._get_client()
+            with client.stream("GET", path, params=params) as response:
                 response.raise_for_status()
                 total_size = int(response.headers.get("content-length", 0))
 
@@ -218,12 +228,14 @@ class DownloadService(BaseService):
                         total_bytes += len(chunk)
 
                         if progress_callback:
-                            progress_callback(DownloadProgress(
-                                phase=OperationPhase.DOWNLOADING,
-                                bytes_received=total_bytes,
-                                total_bytes=total_size,
-                                file_path=str(zip_path),
-                            ))
+                            progress_callback(
+                                DownloadProgress(
+                                    phase=OperationPhase.DOWNLOADING,
+                                    bytes_received=total_bytes,
+                                    total_bytes=total_size,
+                                    file_path=str(zip_path),
+                                )
+                            )
 
             file_count = 1
             if extract:
@@ -263,9 +275,9 @@ class DownloadService(BaseService):
         session_id: str,
         scan_id: str,
         output_dir: Path,
-        project: Optional[str] = None,
+        project: str | None = None,
         resource: str = "DICOM",
-        progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+        progress_callback: Callable[[DownloadProgress], None] | None = None,
     ) -> DownloadSummary:
         """Download a specific scan.
 
@@ -293,7 +305,7 @@ class DownloadService(BaseService):
         self,
         session_id: str,
         download_dir: Path,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> bool:
         """Verify downloaded files against server checksums.
 

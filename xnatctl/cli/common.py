@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
 
 import click
 
 from xnatctl.core.auth import AuthManager
 from xnatctl.core.client import XNATClient
-from xnatctl.core.config import Config, get_credentials, get_token
+from xnatctl.core.config import Config, get_credentials
 from xnatctl.core.exceptions import (
     AuthenticationError,
     ConfigurationError,
@@ -33,9 +34,9 @@ class Context:
     """CLI context object passed to commands."""
 
     def __init__(self) -> None:
-        self.config: Optional[Config] = None
-        self.client: Optional[XNATClient] = None
-        self.profile_name: Optional[str] = None
+        self.config: Config | None = None
+        self.client: XNATClient | None = None
+        self.profile_name: str | None = None
         self.output_format: OutputFormat = OutputFormat.TABLE
         self.quiet: bool = False
         self.verbose: bool = False
@@ -59,11 +60,11 @@ class Context:
 
         try:
             profile = self.config.get_profile(self.profile_name)
-        except ProfileNotFoundError:
+        except ProfileNotFoundError as e:
             raise ConfigurationError(
                 f"Profile '{self.profile_name or 'default'}' not found. "
                 "Run 'xnatctl config init' to create one."
-            )
+            ) from e
 
         # Get credentials
         username, password = get_credentials()
@@ -122,7 +123,7 @@ def global_options(f: F) -> F:
     @wraps(f)
     def wrapper(
         ctx: Context,
-        profile: Optional[str],
+        profile: str | None,
         output_format: str,
         quiet: bool,
         verbose: bool,
@@ -172,7 +173,7 @@ def require_auth(f: F) -> F:
                         username=username,
                     )
                 except AuthenticationError as e:
-                    raise click.ClickException(str(e))
+                    raise click.ClickException(str(e)) from e
             else:
                 raise click.ClickException(
                     "Not authenticated. Run 'xnatctl auth login' or set XNAT_USER/XNAT_PASS."
@@ -193,6 +194,7 @@ def confirm_destructive(message: str) -> Callable[[F], F]:
 
     def decorator(f: F) -> F:
         """Wrap a command to enforce confirmation/dry-run behavior."""
+
         @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
         @click.option("--dry-run", is_flag=True, help="Preview without making changes")
         @wraps(f)
@@ -228,7 +230,7 @@ def batch_option(f: F) -> F:
         help="File with IDs (one per line) or JSON array",
     )
     @wraps(f)
-    def wrapper(*args: Any, batch: Optional[str], **kwargs: Any) -> Any:
+    def wrapper(*args: Any, batch: str | None, **kwargs: Any) -> Any:
         """Load batch IDs from file and inject into kwargs."""
         if batch:
             with open(batch) as file:
@@ -236,9 +238,7 @@ def batch_option(f: F) -> F:
                 if content.startswith("["):
                     kwargs["ids"] = json.loads(content)
                 else:
-                    kwargs["ids"] = [
-                        line.strip() for line in content.splitlines() if line.strip()
-                    ]
+                    kwargs["ids"] = [line.strip() for line in content.splitlines() if line.strip()]
         return f(*args, **kwargs)
 
     return wrapper  # type: ignore

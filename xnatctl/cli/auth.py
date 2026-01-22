@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import click
 
-from xnatctl.core.config import Config
-from xnatctl.core.client import XNATClient
 from xnatctl.core.auth import AuthManager
+from xnatctl.core.client import XNATClient
+from xnatctl.core.config import Config
 from xnatctl.core.exceptions import (
     AuthenticationError,
     ProfileNotFoundError,
 )
 from xnatctl.core.output import (
-    OutputFormat,
     print_error,
     print_json,
     print_key_value,
@@ -35,9 +32,9 @@ def auth() -> None:
 @click.option("--password", help="Password (will prompt if not provided)")
 @click.option("--output", "-o", type=click.Choice(["table", "json"]), default="table")
 def auth_login(
-    profile_name: Optional[str],
-    username: Optional[str],
-    password: Optional[str],
+    profile_name: str | None,
+    username: str | None,
+    password: str | None,
     output: str,
 ) -> None:
     """Login and create a session.
@@ -99,18 +96,19 @@ def auth_login(
         )
 
         if output == "json":
-            print_json({
-                "status": "authenticated",
-                "username": actual_user,
-                "url": profile.url,
-                "expires_at": session.expires_at.isoformat() if session.expires_at else None,
-            })
+            print_json(
+                {
+                    "status": "authenticated",
+                    "username": actual_user,
+                    "url": profile.url,
+                    "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+                }
+            )
         else:
             print_success(f"Logged in as {actual_user}")
             if actual_user != user:
                 print_warning(
-                    f"Credentials authenticated as {actual_user} "
-                    f"(requested username was {user})"
+                    f"Credentials authenticated as {actual_user} (requested username was {user})"
                 )
             click.echo(f"Session cached until {session.expires_at}")
 
@@ -123,7 +121,7 @@ def auth_login(
 
 @auth.command("logout")
 @click.option("--profile", "-p", "profile_name", help="Profile to logout")
-def auth_logout(profile_name: Optional[str]) -> None:
+def auth_logout(profile_name: str | None) -> None:
     """Clear cached session.
 
     Example:
@@ -161,7 +159,7 @@ def auth_logout(profile_name: Optional[str]) -> None:
 @auth.command("status")
 @click.option("--profile", "-p", "profile_name", help="Profile to check")
 @click.option("--output", "-o", type=click.Choice(["table", "json"]), default="table")
-def auth_status(profile_name: Optional[str], output: str) -> None:
+def auth_status(profile_name: str | None, output: str) -> None:
     """Check authentication status.
 
     Example:
@@ -191,12 +189,14 @@ def auth_status(profile_name: Optional[str], output: str) -> None:
     }
 
     if session_info:
-        status.update({
-            "session_username": session_info["username"],
-            "session_created": session_info["created_at"],
-            "session_expires": session_info["expires_at"],
-            "session_expired": session_info["is_expired"],
-        })
+        status.update(
+            {
+                "session_username": session_info["username"],
+                "session_created": session_info["created_at"],
+                "session_expires": session_info["expires_at"],
+                "session_expired": session_info["is_expired"],
+            }
+        )
 
     if output == "json":
         print_json(status)
@@ -207,7 +207,7 @@ def auth_status(profile_name: Optional[str], output: str) -> None:
 @auth.command("test")
 @click.option("--profile", "-p", "profile_name", help="Profile to test")
 @click.option("--output", "-o", type=click.Choice(["table", "json"]), default="table")
-def auth_test(profile_name: Optional[str], output: str) -> None:
+def auth_test(profile_name: str | None, output: str) -> None:
     """Test authentication by connecting to server.
 
     Example:
@@ -228,7 +228,7 @@ def auth_test(profile_name: Optional[str], output: str) -> None:
     env_user, env_pass = auth_mgr.get_credentials()
 
     if session_token:
-        click.echo(f"Testing with cached session...")
+        click.echo("Testing with cached session...")
         client = XNATClient(
             base_url=profile.url,
             session_token=session_token,
@@ -236,7 +236,7 @@ def auth_test(profile_name: Optional[str], output: str) -> None:
             timeout=profile.timeout,
         )
     elif env_user and env_pass:
-        click.echo(f"Testing with credentials...")
+        click.echo("Testing with credentials...")
         client = XNATClient(
             base_url=profile.url,
             username=env_user,
@@ -257,11 +257,13 @@ def auth_test(profile_name: Optional[str], output: str) -> None:
         user_info = client.whoami()
 
         if output == "json":
-            print_json({
-                "status": "authenticated",
-                "url": profile.url,
-                **user_info,
-            })
+            print_json(
+                {
+                    "status": "authenticated",
+                    "url": profile.url,
+                    **user_info,
+                }
+            )
         else:
             print_success("Authentication successful")
             click.echo(f"User: {user_info.get('username', 'unknown')}")

@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import click
 
-from xnatctl.core.config import Config
-from xnatctl.core.client import XNATClient
 from xnatctl.core.auth import AuthManager
+from xnatctl.core.client import XNATClient
+from xnatctl.core.config import Config
 from xnatctl.core.exceptions import (
     AuthenticationError,
-    ProfileNotFoundError,
     ResourceNotFoundError,
 )
 from xnatctl.core.output import (
@@ -19,12 +16,11 @@ from xnatctl.core.output import (
     print_json,
     print_success,
     print_table,
-    print_warning,
 )
 from xnatctl.services.prearchive import PrearchiveService
 
 
-def get_client(profile_name: Optional[str] = None) -> XNATClient:
+def get_client(profile_name: str | None = None) -> XNATClient:
     """Get authenticated client."""
     config = Config.load()
     auth_mgr = AuthManager()
@@ -66,8 +62,8 @@ def prearchive() -> None:
 @click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
 @click.option("--quiet", "-q", is_flag=True, help="Only output session paths")
 def prearchive_list(
-    profile_name: Optional[str],
-    project: Optional[str],
+    profile_name: str | None,
+    project: str | None,
     output: str,
     quiet: bool,
 ) -> None:
@@ -117,9 +113,9 @@ def prearchive_archive(
     project: str,
     timestamp: str,
     session_name: str,
-    profile_name: Optional[str],
-    subject: Optional[str],
-    label: Optional[str],
+    profile_name: str | None,
+    subject: str | None,
+    label: str | None,
     overwrite: bool,
     output: str,
 ) -> None:
@@ -171,7 +167,7 @@ def prearchive_delete(
     project: str,
     timestamp: str,
     session_name: str,
-    profile_name: Optional[str],
+    profile_name: str | None,
     yes: bool,
 ) -> None:
     """Delete a session from prearchive.
@@ -220,7 +216,7 @@ def prearchive_rebuild(
     project: str,
     timestamp: str,
     session_name: str,
-    profile_name: Optional[str],
+    profile_name: str | None,
 ) -> None:
     """Rebuild/refresh a prearchive session.
 
@@ -261,7 +257,7 @@ def prearchive_move(
     timestamp: str,
     session_name: str,
     target_project: str,
-    profile_name: Optional[str],
+    profile_name: str | None,
 ) -> None:
     """Move a prearchive session to another project.
 

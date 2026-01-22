@@ -2,30 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import click
 
-from xnatctl.core.config import Config
-from xnatctl.core.client import XNATClient
 from xnatctl.core.auth import AuthManager
+from xnatctl.core.client import XNATClient
+from xnatctl.core.config import Config
 from xnatctl.core.exceptions import (
     AuthenticationError,
-    ProfileNotFoundError,
-    ResourceNotFoundError,
     OperationError,
+    ResourceNotFoundError,
 )
 from xnatctl.core.output import (
     print_error,
     print_json,
     print_success,
     print_table,
-    print_warning,
 )
 from xnatctl.services.pipelines import PipelineService
 
 
-def get_client(profile_name: Optional[str] = None) -> XNATClient:
+def get_client(profile_name: str | None = None) -> XNATClient:
     """Get authenticated client."""
     config = Config.load()
     auth_mgr = AuthManager()
@@ -67,8 +63,8 @@ def pipeline() -> None:
 @click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
 @click.option("--quiet", "-q", is_flag=True, help="Only output pipeline names")
 def pipeline_list(
-    profile_name: Optional[str],
-    project: Optional[str],
+    profile_name: str | None,
+    project: str | None,
     output: str,
     quiet: bool,
 ) -> None:
@@ -114,7 +110,7 @@ def pipeline_list(
 @click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
 def pipeline_run(
     pipeline_name: str,
-    profile_name: Optional[str],
+    profile_name: str | None,
     experiment: str,
     param: tuple[str, ...],
     wait: bool,
@@ -197,7 +193,7 @@ def pipeline_run(
 @click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
 def pipeline_status(
     job_id: str,
-    profile_name: Optional[str],
+    profile_name: str | None,
     watch: bool,
     interval: int,
     output: str,
@@ -266,7 +262,7 @@ def pipeline_status(
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
 def pipeline_cancel(
     job_id: str,
-    profile_name: Optional[str],
+    profile_name: str | None,
     yes: bool,
 ) -> None:
     """Cancel a running pipeline job.
@@ -303,10 +299,10 @@ def pipeline_cancel(
 @click.option("--limit", type=int, default=100, help="Maximum results")
 @click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
 def pipeline_jobs(
-    profile_name: Optional[str],
-    experiment: Optional[str],
-    project: Optional[str],
-    status: Optional[str],
+    profile_name: str | None,
+    experiment: str | None,
+    project: str | None,
+    status: str | None,
     limit: int,
     output: str,
 ) -> None:
