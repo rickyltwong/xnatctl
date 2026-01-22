@@ -77,6 +77,34 @@ profiles:
     verify_ssl: false
 ```
 
+### Getting Started with Profiles
+
+```bash
+# Create an initial config (prompts for URL and optional defaults)
+xnatctl config init --url https://xnat.example.org
+
+# Add additional profiles
+xnatctl config add-profile dev --url https://xnat-dev.example.org --no-verify-ssl
+
+# Switch the active profile
+xnatctl config use-context dev
+
+# Show the active profile and config
+xnatctl config show
+```
+
+### Authentication Flow
+
+```bash
+# Login and cache a session token
+xnatctl auth login
+
+# Check current user/session context
+xnatctl whoami
+```
+
+Session tokens are cached under `~/.config/xnatctl/.session` and used automatically.
+
 ### Environment Variables
 
 | Variable | Description |
@@ -86,6 +114,11 @@ profiles:
 | `XNAT_PASS` | Password |
 | `XNAT_TOKEN` | Session token |
 | `XNAT_PROFILE` | Config profile |
+
+Notes:
+- `XNAT_TOKEN` takes precedence over cached sessions and username/password.
+- `XNAT_URL` and `XNAT_PROFILE` override values from `config.yaml` for the current shell.
+- Use `XNAT_USER`/`XNAT_PASS` for non-interactive auth (CI, scripts).
 
 ## Development
 
