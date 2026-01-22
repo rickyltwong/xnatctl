@@ -350,3 +350,73 @@ class SubjectService(BaseService):
         params = {"format": "json"}
         data = self._get(path, params=params)
         return self._extract_results(data)
+
+    def merge_subjects(
+        self,
+        project: str,
+        source_label: str,
+        target_label: str,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Merge source subject into target subject.
+
+        This moves all experiments/sessions from the source subject to the
+        target subject, then deletes the empty source subject.
+
+        Use this when renaming would result in a duplicate - the experiments
+        are consolidated under the target subject.
+
+        Args:
+            project: Project ID
+            source_label: Source subject label (will be deleted)
+            target_label: Target subject label (will receive experiments)
+            dry_run: Preview changes without applying
+
+        Returns:
+            Summary dict with:
+            - experiments_moved: number of experiments moved
+            - source_deleted: whether source was deleted
+            - experiments: list of moved experiment IDs
+
+        Raises:
+            ResourceNotFoundError: If source or target not found
+        """
+        # Verify both subjects exist
+        source = self.get(source_label, project=project)
+        target = self.get(target_label, project=project)
+
+        # Get experiments from source
+        experiments = self.get_sessions(source_label, project=project)
+
+        result = {
+            "source": source_label,
+            "target": target_label,
+            "experiments_moved": 0,
+            "source_deleted": False,
+            "experiments": [],
+            "dry_run": dry_run,
+        }
+
+        if dry_run:
+            result["experiments_moved"] = len(experiments)
+            result["experiments"] = [e.get("ID") for e in experiments]
+            result["source_deleted"] = True
+            return result
+
+        # Move each experiment to target
+        target_id = target.id or target_label
+        for exp in experiments:
+            exp_id = exp.get("ID")
+            if exp_id:
+                # Update experiment's subject_ID to point to target
+                path = f"/data/experiments/{exp_id}"
+                params = {"xnat:experimentData/subject_ID": target_id}
+                self._put(path, params=params)
+                result["experiments"].append(exp_id)
+                result["experiments_moved"] += 1
+
+        # Delete the now-empty source subject
+        self.delete(source_label, project=project)
+        result["source_deleted"] = True
+
+        return result

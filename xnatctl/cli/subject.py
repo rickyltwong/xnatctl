@@ -202,6 +202,7 @@ def subject_rename(
     import json
     import re
     from xnatctl.core.validation import validate_project_id, validate_regex_pattern
+    from xnatctl.services.subjects import SubjectService
 
     project = validate_project_id(project)
     client = ctx.get_client()
@@ -243,8 +244,21 @@ def subject_rename(
             else:
                 # Execute rename/merge
                 if target_exists:
-                    # TODO: Implement merge logic (move experiments)
-                    merged[old_label] = new_label
+                    # Merge: move all experiments from source to target
+                    subject_svc = SubjectService(ctx.get_client())
+                    try:
+                        result = subject_svc.merge_subjects(
+                            project=project,
+                            source_label=old_label,
+                            target_label=new_label,
+                            dry_run=False,
+                        )
+                        merged[old_label] = new_label
+                        current_labels.discard(old_label)
+                        if not ctx.quiet:
+                            click.echo(f"  Merged {old_label} -> {new_label} ({result['experiments_moved']} experiments)")
+                    except Exception as e:
+                        skipped.append((old_label, f"merge failed: {e}"))
                 else:
                     resp = client.put(
                         f"/data/projects/{project}/subjects/{old_label}",
@@ -286,8 +300,21 @@ def subject_rename(
                     renamed[label] = target
             else:
                 if target_exists:
-                    # Merge: would need to move experiments
-                    merged[label] = target
+                    # Merge: move all experiments from source to target
+                    subject_svc = SubjectService(ctx.get_client())
+                    try:
+                        result = subject_svc.merge_subjects(
+                            project=project,
+                            source_label=label,
+                            target_label=target,
+                            dry_run=False,
+                        )
+                        merged[label] = target
+                        current_labels.discard(label)
+                        if not ctx.quiet:
+                            click.echo(f"  Merged {label} -> {target} ({result['experiments_moved']} experiments)")
+                    except Exception as e:
+                        skipped.append((label, f"merge failed: {e}"))
                 else:
                     resp = client.put(
                         f"/data/projects/{project}/subjects/{label}",
