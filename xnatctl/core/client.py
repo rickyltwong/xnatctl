@@ -428,9 +428,26 @@ class XNATClient:
             result = resp
         elif isinstance(resp, dict):
             result = resp.get("ResultSet", {}).get("Result", [])
+        elif isinstance(resp, str):
+            return {
+                "username": resp.strip() or "unknown",
+                "firstname": "",
+                "lastname": "",
+                "email": "",
+                "enabled": True,
+            }
         else:
             result = []
+
         user_info = result[0] if result else {}
+        if isinstance(user_info, str):
+            return {
+                "username": user_info.strip() or "unknown",
+                "firstname": "",
+                "lastname": "",
+                "email": "",
+                "enabled": True,
+            }
 
         return {
             "username": user_info.get("login", "unknown"),
