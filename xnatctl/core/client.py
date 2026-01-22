@@ -424,7 +424,12 @@ class XNATClient:
             AuthenticationError: If not authenticated.
         """
         resp = self.get_json("/data/user")
-        result = resp.get("ResultSet", {}).get("Result", [{}])
+        if isinstance(resp, list):
+            result = resp
+        elif isinstance(resp, dict):
+            result = resp.get("ResultSet", {}).get("Result", [])
+        else:
+            result = []
         user_info = result[0] if result else {}
 
         return {
