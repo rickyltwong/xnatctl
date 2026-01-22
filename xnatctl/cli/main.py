@@ -11,7 +11,7 @@ from xnatctl.cli.config_cmd import config
 from xnatctl.cli.auth import auth
 from xnatctl.cli.project import project
 from xnatctl.cli.subject import subject
-from xnatctl.cli.session import session
+from xnatctl.cli.session import session, local
 from xnatctl.cli.scan import scan
 from xnatctl.cli.resource import resource
 from xnatctl.cli.prearchive import prearchive
@@ -63,6 +63,7 @@ cli.add_command(pipeline)
 cli.add_command(admin)
 cli.add_command(api)
 cli.add_command(dicom)
+cli.add_command(local)
 
 
 # =============================================================================
