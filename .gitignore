@@ -82,3 +82,6 @@ Thumbs.db
 # Project specific
 *.log
 .sessions/
+
+scripts/
+.omc/
