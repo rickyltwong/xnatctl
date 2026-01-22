@@ -68,6 +68,17 @@ packages = ["xnatctl"]
 [tool.uv]
 package = true
 
+[dependency-groups]
+dev = [
+    "mypy>=1.8.0",
+    "pre-commit>=3.7.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.4.0",
+    "types-PyYAML>=6.0.0",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
