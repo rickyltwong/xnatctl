@@ -1145,6 +1145,17 @@ dicom = [
     { name = "pynetdicom" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+    { name = "ruff" },
+    { name = "types-pyyaml" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
@@ -1165,6 +1176,17 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.0" },
 ]
 provides-extras = ["dicom", "dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.8.0" },
+    { name = "pre-commit", specifier = ">=3.7.0" },
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "pytest-mock", specifier = ">=3.12.0" },
+    { name = "ruff", specifier = ">=0.4.0" },
+    { name = "types-pyyaml", specifier = ">=6.0.0" },
+]
 
 [[package]]
 name = "zipp"
