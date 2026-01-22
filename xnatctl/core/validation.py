@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Optional, Union
 from urllib.parse import urlparse
 
 from xnatctl.core.exceptions import (
@@ -83,7 +82,7 @@ def validate_server_url(url: str) -> str:
     return url.rstrip("/")
 
 
-def validate_url_or_none(url: Optional[str]) -> Optional[str]:
+def validate_url_or_none(url: str | None) -> str | None:
     """Validate URL if provided, or return None."""
     if url is None or (isinstance(url, str) and not url.strip()):
         return None
@@ -95,7 +94,7 @@ def validate_url_or_none(url: Optional[str]) -> Optional[str]:
 # =============================================================================
 
 
-def validate_port(port: Union[int, str, None], allow_none: bool = False) -> Optional[int]:
+def validate_port(port: int | str | None, allow_none: bool = False) -> int | None:
     """Validate port number.
 
     Args:
@@ -263,7 +262,7 @@ def validate_ae_title(ae_title: str, field_name: str = "AE Title") -> str:
 
 
 def validate_path_exists(
-    path: Union[str, Path],
+    path: str | Path,
     *,
     must_be_file: bool = False,
     must_be_dir: bool = False,
@@ -304,7 +303,7 @@ def validate_path_exists(
 
 
 def validate_path_writable(
-    path: Union[str, Path],
+    path: str | Path,
     description: str = "path",
 ) -> Path:
     """Validate that a path is writable (parent directory exists and is writable).
@@ -340,7 +339,7 @@ def validate_path_writable(
     return path.resolve()
 
 
-def validate_archive_path(path: Union[str, Path]) -> Path:
+def validate_archive_path(path: str | Path) -> Path:
     """Validate that path is a supported archive file.
 
     Args:
@@ -369,7 +368,7 @@ def validate_archive_path(path: Union[str, Path]) -> Path:
     return resolved
 
 
-def validate_dicom_directory(path: Union[str, Path]) -> Path:
+def validate_dicom_directory(path: str | Path) -> Path:
     """Validate that path is a directory suitable for DICOM files."""
     resolved = validate_path_exists(path, must_be_dir=True, description="DICOM directory")
 
@@ -385,7 +384,7 @@ def validate_dicom_directory(path: Union[str, Path]) -> Path:
 
 
 def validate_timeout(
-    value: Union[int, float, str, None],
+    value: int | float | str | None,
     field_name: str = "timeout",
     *,
     min_value: int = 1,
@@ -412,12 +411,12 @@ def validate_timeout(
 
     try:
         timeout = int(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as e:
         raise ConfigurationError(
             f"{field_name} must be a valid integer",
             field_name,
             value,
-        )
+        ) from e
 
     if timeout < min_value:
         raise ConfigurationError(
@@ -437,7 +436,7 @@ def validate_timeout(
 
 
 def validate_workers(
-    value: Union[int, str, None],
+    value: int | str | None,
     field_name: str = "workers",
     *,
     min_value: int = 1,
@@ -464,12 +463,12 @@ def validate_workers(
 
     try:
         workers = int(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as e:
         raise ConfigurationError(
             f"{field_name} must be a valid integer",
             field_name,
             value,
-        )
+        ) from e
 
     if workers < min_value:
         raise ConfigurationError(
@@ -511,7 +510,7 @@ def validate_regex_pattern(pattern: str, field_name: str = "pattern") -> re.Patt
             f"Invalid regex pattern: {e}",
             field_name,
             pattern,
-        )
+        ) from e
 
 
 # =============================================================================
@@ -519,7 +518,7 @@ def validate_regex_pattern(pattern: str, field_name: str = "pattern") -> re.Patt
 # =============================================================================
 
 
-def validate_scan_ids_input(scan_input: str) -> Optional[list[str]]:
+def validate_scan_ids_input(scan_input: str) -> list[str] | None:
     """Validate and parse scan IDs input from CLI.
 
     Accepts:

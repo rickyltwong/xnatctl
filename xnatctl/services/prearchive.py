@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import builtins
+from typing import Any
 
-from xnatctl.core.exceptions import ResourceNotFoundError, OperationError
+from xnatctl.core.exceptions import ResourceNotFoundError
 
 from .base import BaseService
 
@@ -14,8 +15,8 @@ class PrearchiveService(BaseService):
 
     def list(
         self,
-        project: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+        project: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
         """List prearchive sessions.
 
         Args:
@@ -60,10 +61,15 @@ class PrearchiveService(BaseService):
             results = self._extract_results(data)
             if results:
                 return results[0]
-            raise ResourceNotFoundError("prearchive session", f"{project}/{timestamp}/{session_name}")
+            raise ResourceNotFoundError(
+                "prearchive session", f"{project}/{timestamp}/{session_name}"
+            )
         except Exception as e:
             if "404" in str(e):
-                raise ResourceNotFoundError("prearchive session", f"{project}/{timestamp}/{session_name}")
+                raise ResourceNotFoundError(
+                    "prearchive session",
+                    f"{project}/{timestamp}/{session_name}",
+                ) from e
             raise
 
     def archive(
@@ -71,8 +77,8 @@ class PrearchiveService(BaseService):
         project: str,
         timestamp: str,
         session_name: str,
-        subject: Optional[str] = None,
-        experiment_label: Optional[str] = None,
+        subject: str | None = None,
+        experiment_label: str | None = None,
         overwrite: bool = False,
     ) -> dict[str, Any]:
         """Archive a session from prearchive.
@@ -197,7 +203,7 @@ class PrearchiveService(BaseService):
         project: str,
         timestamp: str,
         session_name: str,
-    ) -> list[dict[str, Any]]:
+    ) -> builtins.list[dict[str, Any]]:
         """Get scans from a prearchive session.
 
         Args:

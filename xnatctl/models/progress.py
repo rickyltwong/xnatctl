@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
 
 
 class OperationPhase(Enum):
@@ -31,7 +30,7 @@ class Progress:
     total: int = 0
     message: str = ""
     success: bool = True
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     @property
     def percent(self) -> float:
@@ -114,7 +113,7 @@ class OperationResult:
     succeeded: int
     failed: int
     duration: float
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     @property
     def success_rate(self) -> float:

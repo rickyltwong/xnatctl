@@ -15,10 +15,10 @@ import shutil
 import tarfile
 import tempfile
 import time
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
@@ -52,7 +52,7 @@ class UploadProgress:
     message: str = ""
     batch_id: int = 0
     success: bool = True
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -77,7 +77,7 @@ class UploadSummary:
     duration: float
     batches_succeeded: int
     batches_failed: int
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 # =============================================================================
@@ -85,7 +85,7 @@ class UploadSummary:
 # =============================================================================
 
 
-def create_tar_archive(files: List[Path], output_path: Path, base_dir: Path) -> int:
+def create_tar_archive(files: list[Path], output_path: Path, base_dir: Path) -> int:
     """Create a TAR archive from files.
 
     Args:
@@ -103,7 +103,7 @@ def create_tar_archive(files: List[Path], output_path: Path, base_dir: Path) -> 
     return output_path.stat().st_size
 
 
-def create_zip_archive(files: List[Path], output_path: Path, base_dir: Path) -> int:
+def create_zip_archive(files: list[Path], output_path: Path, base_dir: Path) -> int:
     """Create a ZIP archive from files.
 
     Args:
@@ -122,7 +122,7 @@ def create_zip_archive(files: List[Path], output_path: Path, base_dir: Path) -> 
 
 
 def create_archive(
-    files: List[Path],
+    files: list[Path],
     output_path: Path,
     base_dir: Path,
     archive_format: str,
@@ -168,7 +168,7 @@ def _upload_single_archive(
     ignore_unparsable: bool,
     overwrite: str,
     direct_archive: bool,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Upload a single archive file to XNAT.
 
     Creates a fresh httpx client for thread-safety in parallel execution.
@@ -336,7 +336,7 @@ def upload_dicom_parallel_rest(
     overwrite: str = DEFAULT_OVERWRITE,
     direct_archive: bool = True,
     timeout: int = DEFAULT_TIMEOUT,
-    progress_callback: Optional[Callable[[UploadProgress], None]] = None,
+    progress_callback: Callable[[UploadProgress], None] | None = None,
 ) -> UploadSummary:
     """Upload DICOM files using parallel batched archives via REST import.
 
@@ -370,7 +370,7 @@ def upload_dicom_parallel_rest(
         UploadSummary with results.
     """
     total_start = time.time()
-    errors: List[str] = []
+    errors: list[str] = []
 
     def report(progress: UploadProgress) -> None:
         """Invoke the progress callback if provided."""
@@ -406,15 +406,17 @@ def upload_dicom_parallel_rest(
 
     # Phase 2: Split into batches
     batches = split_into_batches(files, batch_size)
-    report(UploadProgress(
-        phase="preparing",
-        message=f"Split {len(files)} files into {len(batches)} batches",
-    ))
+    report(
+        UploadProgress(
+            phase="preparing",
+            message=f"Split {len(files)} files into {len(batches)} batches",
+        )
+    )
 
     # Phase 3: Create archives
     ext = ".tar" if archive_format == "tar" else ".zip"
     temp_dir = Path(tempfile.mkdtemp(prefix="xnatctl_upload_"))
-    archive_paths: List[Path] = []
+    archive_paths: list[Path] = []
     total_archive_size = 0
 
     try:
@@ -422,44 +424,48 @@ def upload_dicom_parallel_rest(
         for i in range(len(batches)):
             archive_paths.append(temp_dir / f"batch_{i + 1}{ext}")
 
-        report(UploadProgress(
-            phase="archiving",
-            total=len(batches),
-            message="Creating archives...",
-        ))
+        report(
+            UploadProgress(
+                phase="archiving",
+                total=len(batches),
+                message="Creating archives...",
+            )
+        )
 
         # Create archives in parallel
         archive_workers = max(1, min(archive_workers, len(batches)))
         source_path = source_dir.expanduser().resolve()
 
-        with ThreadPoolExecutor(max_workers=archive_workers) as executor:
-            futures: Dict[Future[int], int] = {}
+        with ThreadPoolExecutor(max_workers=archive_workers) as archive_executor:
+            archive_futures: dict[Future[int], int] = {}
             for i, batch in enumerate(batches):
-                future = executor.submit(
+                archive_future = archive_executor.submit(
                     create_archive,
                     batch,
                     archive_paths[i],
                     source_path,
                     archive_format,
                 )
-                futures[future] = i
+                archive_futures[archive_future] = i
 
             completed = 0
-            for future in as_completed(futures):
+            for archive_future in as_completed(archive_futures):
                 completed += 1
                 try:
-                    size = future.result()
+                    size = archive_future.result()
                     total_archive_size += size
                 except Exception as e:
-                    idx = futures[future]
+                    idx = archive_futures[archive_future]
                     errors.append(f"Archive batch {idx + 1} failed: {e}")
 
-                report(UploadProgress(
-                    phase="archiving",
-                    current=completed,
-                    total=len(batches),
-                    message=f"Created archive {completed}/{len(batches)}",
-                ))
+                report(
+                    UploadProgress(
+                        phase="archiving",
+                        current=completed,
+                        total=len(batches),
+                        message=f"Created archive {completed}/{len(batches)}",
+                    )
+                )
 
         if errors:
             # Archive creation failed
@@ -474,19 +480,21 @@ def upload_dicom_parallel_rest(
             )
 
         # Phase 4: Upload archives
-        report(UploadProgress(
-            phase="uploading",
-            total=len(batches),
-            message="Starting uploads...",
-        ))
+        report(
+            UploadProgress(
+                phase="uploading",
+                total=len(batches),
+                message="Starting uploads...",
+            )
+        )
 
-        results: List[UploadResult] = []
+        results: list[UploadResult] = []
         upload_workers = max(1, min(upload_workers, len(batches)))
 
-        with ThreadPoolExecutor(max_workers=upload_workers) as executor:
-            upload_futures: Dict[Future[UploadResult], int] = {}
-            for i, (batch, archive_path) in enumerate(zip(batches, archive_paths)):
-                future = executor.submit(
+        with ThreadPoolExecutor(max_workers=upload_workers) as upload_executor:
+            upload_futures: dict[Future[UploadResult], int] = {}
+            for i, (batch, archive_path) in enumerate(zip(batches, archive_paths, strict=True)):
+                upload_future = upload_executor.submit(
                     _upload_batch,
                     base_url=base_url,
                     username=username,
@@ -504,24 +512,26 @@ def upload_dicom_parallel_rest(
                     overwrite=overwrite,
                     direct_archive=direct_archive,
                 )
-                upload_futures[future] = i + 1
+                upload_futures[upload_future] = i + 1
 
-            for future in as_completed(upload_futures):
-                result = future.result()
+            for upload_future in as_completed(upload_futures):
+                result = upload_future.result()
                 results.append(result)
 
                 if not result.success:
                     errors.append(f"Batch {result.batch_id}: {result.error}")
 
                 succeeded = sum(1 for r in results if r.success)
-                report(UploadProgress(
-                    phase="uploading",
-                    current=len(results),
-                    total=len(batches),
-                    batch_id=result.batch_id,
-                    success=result.success,
-                    message=f"Uploaded {len(results)}/{len(batches)} ({succeeded} succeeded)",
-                ))
+                report(
+                    UploadProgress(
+                        phase="uploading",
+                        current=len(results),
+                        total=len(batches),
+                        batch_id=result.batch_id,
+                        success=result.success,
+                        message=f"Uploaded {len(results)}/{len(batches)} ({succeeded} succeeded)",
+                    )
+                )
 
         # Phase 5: Complete
         total_duration = time.time() - total_start
@@ -529,18 +539,20 @@ def upload_dicom_parallel_rest(
         batches_failed = len(results) - batches_succeeded
         success = batches_failed == 0
 
-        report(UploadProgress(
-            phase="complete" if success else "error",
-            current=len(results),
-            total=len(batches),
-            message=(
-                "Upload complete!"
-                if success
-                else f"Upload completed with {batches_failed} failures"
-            ),
-            success=success,
-            errors=errors,
-        ))
+        report(
+            UploadProgress(
+                phase="complete" if success else "error",
+                current=len(results),
+                total=len(batches),
+                message=(
+                    "Upload complete!"
+                    if success
+                    else f"Upload completed with {batches_failed} failures"
+                ),
+                success=success,
+                errors=errors,
+            )
+        )
 
         if not success:
             logger.warning("Upload completed with %s failures", batches_failed)

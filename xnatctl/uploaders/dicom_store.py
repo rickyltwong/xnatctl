@@ -17,7 +17,6 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 from xnatctl.uploaders.common import collect_dicom_files, split_into_n_batches
 from xnatctl.uploaders.constants import (
@@ -66,6 +65,7 @@ def _get_storage_contexts():
     """Get storage presentation contexts with version compatibility."""
     try:
         from pynetdicom import StoragePresentationContexts
+
         return list(StoragePresentationContexts)
     except ImportError:
         from pynetdicom import sop_class as _sc
@@ -147,13 +147,13 @@ def c_echo(host: str, port: int, calling_aet: str, called_aet: str) -> bool:
 
 def send_batch(
     batch_id: str,
-    files: List[Path],
+    files: list[Path],
     host: str,
     port: int,
     calling_aet: str,
     called_aet: str,
     log_dir: Path,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """Send a batch of DICOM files over a single association.
 
     Args:

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Optional, TYPE_CHECKING
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
@@ -11,7 +12,7 @@ if TYPE_CHECKING:
 class BaseService:
     """Base service class with common functionality."""
 
-    def __init__(self, client: "XNATClient") -> None:
+    def __init__(self, client: XNATClient) -> None:
         """Initialize service with XNAT client.
 
         Args:
@@ -91,7 +92,11 @@ class BaseService:
         Yields:
             Individual result items
         """
-        yield from self.client.paginate(path, page_size, result_key)
+        yield from self.client.paginate(
+            path,
+            page_size=page_size,
+            result_key=result_key,
+        )
 
     def _extract_results(
         self,

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Optional
+import builtins
+from typing import Any
 
-from xnatctl.models.project import Project
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.models.project import Project
 
 from .base import BaseService
 
@@ -16,8 +17,8 @@ class ProjectService(BaseService):
     def list(
         self,
         accessible: bool = True,
-        limit: Optional[int] = None,
-    ) -> list[Project]:
+        limit: int | None = None,
+    ) -> builtins.list[Project]:
         """List projects.
 
         Args:
@@ -64,17 +65,17 @@ class ProjectService(BaseService):
             raise ResourceNotFoundError("project", project_id)
         except Exception as e:
             if "404" in str(e):
-                raise ResourceNotFoundError("project", project_id)
+                raise ResourceNotFoundError("project", project_id) from e
             raise
 
     def create(
         self,
         project_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        keywords: Optional[str] = None,
-        pi_firstname: Optional[str] = None,
-        pi_lastname: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
+        keywords: str | None = None,
+        pi_firstname: str | None = None,
+        pi_lastname: str | None = None,
         accessibility: str = "private",
     ) -> Project:
         """Create a new project.
@@ -135,8 +136,8 @@ class ProjectService(BaseService):
     def get_subjects(
         self,
         project_id: str,
-        limit: Optional[int] = None,
-    ) -> list[dict[str, Any]]:
+        limit: int | None = None,
+    ) -> builtins.list[dict[str, Any]]:
         """Get subjects in a project.
 
         Args:
@@ -160,8 +161,8 @@ class ProjectService(BaseService):
     def get_sessions(
         self,
         project_id: str,
-        limit: Optional[int] = None,
-    ) -> list[dict[str, Any]]:
+        limit: int | None = None,
+    ) -> builtins.list[dict[str, Any]]:
         """Get sessions/experiments in a project.
 
         Args:

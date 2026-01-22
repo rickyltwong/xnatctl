@@ -5,13 +5,13 @@ Provides typed exceptions for different failure modes with clear error messages.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
 class XNATCtlError(Exception):
     """Base exception for all xnatctl errors."""
 
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(message)
         self.message = message
         self.details = details or {}
@@ -34,7 +34,7 @@ class ConfigurationError(XNATCtlError):
     def __init__(
         self,
         message: str,
-        field: Optional[str] = None,
+        field: str | None = None,
         value: Any = None,
     ):
         details = {}
@@ -66,7 +66,7 @@ class ValidationError(XNATCtlError):
     def __init__(
         self,
         message: str,
-        field: Optional[str] = None,
+        field: str | None = None,
         value: Any = None,
     ):
         details = {}
@@ -132,7 +132,7 @@ class PathValidationError(ValidationError):
 class ConnectionError(XNATCtlError):
     """Base class for connection-related errors."""
 
-    def __init__(self, message: str, url: Optional[str] = None):
+    def __init__(self, message: str, url: str | None = None):
         details = {"url": url} if url else {}
         super().__init__(message, details)
         self.url = url
@@ -141,7 +141,7 @@ class ConnectionError(XNATCtlError):
 class NetworkError(ConnectionError):
     """Network-level error (DNS, TCP, TLS)."""
 
-    def __init__(self, url: str, cause: Optional[str] = None):
+    def __init__(self, url: str, cause: str | None = None):
         msg = f"Network error connecting to {url}"
         if cause:
             msg = f"{msg}: {cause}"
@@ -167,7 +167,7 @@ class TimeoutError(ConnectionError):
 class RetryExhaustedError(ConnectionError):
     """All retry attempts failed."""
 
-    def __init__(self, operation: str, attempts: int, last_error: Optional[Exception] = None):
+    def __init__(self, operation: str, attempts: int, last_error: Exception | None = None):
         msg = f"Operation '{operation}' failed after {attempts} attempts"
         if last_error:
             msg = f"{msg}: {last_error}"
@@ -185,7 +185,7 @@ class RetryExhaustedError(ConnectionError):
 class AuthenticationError(XNATCtlError):
     """Authentication failed."""
 
-    def __init__(self, url: Optional[str] = None, reason: str = ""):
+    def __init__(self, url: str | None = None, reason: str = ""):
         msg = "Authentication failed"
         if url:
             msg = f"{msg} for {url}"
@@ -200,7 +200,7 @@ class AuthenticationError(XNATCtlError):
 class SessionExpiredError(AuthenticationError):
     """Session has expired."""
 
-    def __init__(self, url: Optional[str] = None):
+    def __init__(self, url: str | None = None):
         super().__init__(url, "Session expired - please login again")
 
 
@@ -224,8 +224,8 @@ class ResourceError(XNATCtlError):
     def __init__(
         self,
         message: str,
-        resource_type: Optional[str] = None,
-        resource_id: Optional[str] = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
     ):
         details = {}
         if resource_type:
@@ -271,7 +271,7 @@ class OperationError(XNATCtlError):
         self,
         operation: str,
         message: str,
-        details: Optional[dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ):
         full_details = {"operation": operation}
         if details:
@@ -286,8 +286,8 @@ class UploadError(OperationError):
     def __init__(
         self,
         message: str,
-        file_path: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        file_path: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         full_details = details or {}
         if file_path:
@@ -302,8 +302,8 @@ class DownloadError(OperationError):
     def __init__(
         self,
         message: str,
-        resource: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        resource: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         full_details = details or {}
         if resource:
@@ -340,7 +340,7 @@ class BatchOperationError(OperationError):
 class DicomError(XNATCtlError):
     """Error related to DICOM operations."""
 
-    def __init__(self, message: str, file_path: Optional[str] = None):
+    def __init__(self, message: str, file_path: str | None = None):
         details = {"file": file_path} if file_path else {}
         super().__init__(message, details)
         self.file_path = file_path
@@ -360,7 +360,7 @@ class DicomParseError(DicomError):
 class DicomStoreError(DicomError):
     """DICOM C-STORE operation failed."""
 
-    def __init__(self, message: str, host: Optional[str] = None, port: Optional[int] = None):
+    def __init__(self, message: str, host: str | None = None, port: int | None = None):
         super().__init__(message)
         self.host = host
         self.port = port

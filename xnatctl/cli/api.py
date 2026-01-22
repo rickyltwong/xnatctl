@@ -5,8 +5,6 @@ Provides direct access to XNAT REST endpoints as an escape hatch.
 
 from __future__ import annotations
 
-from typing import Optional
-
 import click
 
 from xnatctl.cli.common import (
@@ -15,7 +13,7 @@ from xnatctl.cli.common import (
     handle_errors,
     require_auth,
 )
-from xnatctl.core.output import OutputFormat, print_error, print_json, print_output
+from xnatctl.core.output import OutputFormat, print_json, print_output
 
 
 @click.group()
@@ -125,8 +123,8 @@ def api_post(
     ctx: Context,
     path: str,
     params: tuple,
-    data: Optional[str],
-    file_path: Optional[str],
+    data: str | None,
+    file_path: str | None,
 ) -> None:
     """POST request to any XNAT endpoint.
 
@@ -205,8 +203,8 @@ def api_put(
     ctx: Context,
     path: str,
     params: tuple,
-    data: Optional[str],
-    file_path: Optional[str],
+    data: str | None,
+    file_path: str | None,
 ) -> None:
     """PUT request to any XNAT endpoint.
 

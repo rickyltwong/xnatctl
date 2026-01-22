@@ -6,13 +6,13 @@ Provides consistent output in JSON, table, and quiet modes using Rich.
 from __future__ import annotations
 
 import json
-import sys
+from collections.abc import Sequence
 from enum import Enum
-from typing import Any, Optional, Sequence
+from typing import Any
 
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 # =============================================================================
 # Console Instances
@@ -34,7 +34,7 @@ class OutputFormat(Enum):
     TABLE = "table"
 
     @classmethod
-    def from_string(cls, value: str) -> "OutputFormat":
+    def from_string(cls, value: str) -> OutputFormat:
         """Create from string value."""
         return cls(value.lower())
 
@@ -48,8 +48,8 @@ def print_table(
     rows: Sequence[dict[str, Any]],
     columns: Sequence[str],
     *,
-    title: Optional[str] = None,
-    column_labels: Optional[dict[str, str]] = None,
+    title: str | None = None,
+    column_labels: dict[str, str] | None = None,
 ) -> None:
     """Print data as a Rich table.
 
@@ -91,8 +91,8 @@ def print_table(
 def print_key_value(
     data: dict[str, Any],
     *,
-    title: Optional[str] = None,
-    key_labels: Optional[dict[str, str]] = None,
+    title: str | None = None,
+    key_labels: dict[str, str] | None = None,
 ) -> None:
     """Print key-value pairs in a formatted way.
 
@@ -143,9 +143,9 @@ def print_output(
     data: Any,
     *,
     format: OutputFormat = OutputFormat.TABLE,
-    columns: Optional[Sequence[str]] = None,
-    column_labels: Optional[dict[str, str]] = None,
-    title: Optional[str] = None,
+    columns: Sequence[str] | None = None,
+    column_labels: dict[str, str] | None = None,
+    title: str | None = None,
     quiet: bool = False,
     id_field: str = "id",
 ) -> None:

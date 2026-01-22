@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import Field
 
 from .base import XNATResource
@@ -12,29 +10,23 @@ from .base import XNATResource
 class Scan(XNATResource):
     """XNAT scan resource."""
 
-    type: Optional[str] = Field(None, description="Scan type")
-    series_description: Optional[str] = Field(
+    type: str | None = Field(None, description="Scan type")
+    series_description: str | None = Field(
         None, alias="series_description", description="DICOM series description"
     )
-    quality: Optional[str] = Field(None, description="Quality assessment")
-    condition: Optional[str] = Field(None, description="Condition")
-    note: Optional[str] = Field(None, description="Scan notes")
-    frames: Optional[int] = Field(None, description="Number of frames")
-    start_time: Optional[str] = Field(
-        None, alias="startTime", description="Acquisition start time"
-    )
-    scanner: Optional[str] = Field(None, description="Scanner")
-    modality: Optional[str] = Field(None, description="Modality")
-    file_count: Optional[int] = Field(
-        None, alias="file_count", description="Number of files"
-    )
-    file_size: Optional[int] = Field(
-        None, alias="file_size", description="Total file size in bytes"
-    )
+    quality: str | None = Field(None, description="Quality assessment")
+    condition: str | None = Field(None, description="Condition")
+    note: str | None = Field(None, description="Scan notes")
+    frames: int | None = Field(None, description="Number of frames")
+    start_time: str | None = Field(None, alias="startTime", description="Acquisition start time")
+    scanner: str | None = Field(None, description="Scanner")
+    modality: str | None = Field(None, description="Modality")
+    file_count: int | None = Field(None, alias="file_count", description="Number of files")
+    file_size: int | None = Field(None, alias="file_size", description="Total file size in bytes")
 
     # Parent references
-    session_id: Optional[str] = Field(None, description="Parent session ID")
-    project: Optional[str] = Field(None, description="Parent project ID")
+    session_id: str | None = Field(None, description="Parent session ID")
+    project: str | None = Field(None, description="Parent project ID")
 
     @classmethod
     def table_columns(cls) -> list[str]:

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import click
 
-from xnatctl.cli.common import Context, global_options, require_auth, handle_errors, parallel_options
-from xnatctl.core.output import print_output, print_error, print_success, OutputFormat
+from xnatctl.cli.common import (
+    Context,
+    global_options,
+    handle_errors,
+    parallel_options,
+    require_auth,
+)
+from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
 
 
 @click.group()
@@ -20,15 +25,17 @@ def session() -> None:
 @session.command("list")
 @click.option("--project", "-P", required=True, help="Project ID")
 @click.option("--subject", "-S", help="Filter by subject")
-@click.option("--modality", type=click.Choice(["MR", "PET", "CT", "EEG"]), help="Filter by modality")
+@click.option(
+    "--modality", type=click.Choice(["MR", "PET", "CT", "EEG"]), help="Filter by modality"
+)
 @global_options
 @require_auth
 @handle_errors
 def session_list(
     ctx: Context,
     project: str,
-    subject: Optional[str],
-    modality: Optional[str],
+    subject: str | None,
+    modality: str | None,
 ) -> None:
     """List sessions/experiments in a project.
 
@@ -78,13 +85,15 @@ def session_list(
         elif "EEGSession" in xsi_type:
             detected_modality = "EEG"
 
-        sessions.append({
-            "id": r.get("ID", ""),
-            "label": r.get("label", ""),
-            "subject": r.get("subject_label", ""),
-            "date": r.get("date", ""),
-            "modality": detected_modality,
-        })
+        sessions.append(
+            {
+                "id": r.get("ID", ""),
+                "label": r.get("label", ""),
+                "subject": r.get("subject_label", ""),
+                "date": r.get("date", ""),
+                "modality": detected_modality,
+            }
+        )
 
     print_output(
         sessions,
@@ -113,8 +122,8 @@ def session_show(ctx: Context, session_id: str) -> None:
     Example:
         xnatctl session show XNAT_E00001
     """
-    from xnatctl.core.validation import validate_session_id
     from xnatctl.core.output import print_table
+    from xnatctl.core.validation import validate_session_id
 
     session_id = validate_session_id(session_id)
     client = ctx.get_client()
@@ -169,17 +178,25 @@ def session_show(ctx: Context, session_id: str) -> None:
             click.echo(f"\n[Scans ({len(scans)})]")
             scan_rows = []
             for s in scans:
-                scan_rows.append({
-                    "id": s.get("ID", ""),
-                    "type": s.get("type", ""),
-                    "series": s.get("series_description", ""),
-                    "quality": s.get("quality", ""),
-                    "frames": s.get("frames", ""),
-                })
+                scan_rows.append(
+                    {
+                        "id": s.get("ID", ""),
+                        "type": s.get("type", ""),
+                        "series": s.get("series_description", ""),
+                        "quality": s.get("quality", ""),
+                        "frames": s.get("frames", ""),
+                    }
+                )
             print_table(
                 scan_rows,
                 ["id", "type", "series", "quality", "frames"],
-                column_labels={"id": "ID", "type": "Type", "series": "Series", "quality": "Quality", "frames": "Frames"},
+                column_labels={
+                    "id": "ID",
+                    "type": "Type",
+                    "series": "Series",
+                    "quality": "Quality",
+                    "frames": "Frames",
+                },
             )
 
         # Print resources table
@@ -187,16 +204,23 @@ def session_show(ctx: Context, session_id: str) -> None:
             click.echo(f"\n[Resources ({len(resources)})]")
             res_rows = []
             for r in resources:
-                res_rows.append({
-                    "label": r.get("label", ""),
-                    "format": r.get("format", ""),
-                    "count": r.get("file_count", ""),
-                    "size": r.get("file_size", ""),
-                })
+                res_rows.append(
+                    {
+                        "label": r.get("label", ""),
+                        "format": r.get("format", ""),
+                        "count": r.get("file_count", ""),
+                        "size": r.get("file_size", ""),
+                    }
+                )
             print_table(
                 res_rows,
                 ["label", "format", "count", "size"],
-                column_labels={"label": "Label", "format": "Format", "count": "Files", "size": "Size"},
+                column_labels={
+                    "label": "Label",
+                    "format": "Format",
+                    "count": "Files",
+                    "size": "Size",
+                },
             )
 
 
@@ -209,7 +233,11 @@ def session_show(ctx: Context, session_id: str) -> None:
 @click.option("--resume", is_flag=True, help="Resume interrupted download")
 @click.option("--verify", is_flag=True, help="Verify checksums after download")
 @click.option("--unzip/--no-unzip", default=False, help="Extract downloaded ZIPs")
-@click.option("--cleanup/--no-cleanup", default=True, help="Remove ZIPs after successful extraction (with --unzip)")
+@click.option(
+    "--cleanup/--no-cleanup",
+    default=True,
+    help="Remove ZIPs after successful extraction (with --unzip)",
+)
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @parallel_options
 @global_options
@@ -221,7 +249,7 @@ def session_download(
     out: str,
     include_resources: bool,
     include_assessors: bool,
-    pattern: Optional[str],
+    pattern: str | None,
     resume: bool,
     verify: bool,
     unzip: bool,
@@ -238,7 +266,7 @@ def session_download(
         xnatctl session download XNAT_E00001 --out ./data --unzip --cleanup
         xnatctl session download XNAT_E00001 --out ./data --dry-run
     """
-    from xnatctl.core.validation import validate_session_id, validate_path_writable
+    from xnatctl.core.validation import validate_path_writable, validate_session_id
 
     session_id = validate_session_id(session_id)
     out_path = Path(out)
@@ -281,11 +309,15 @@ def session_download(
         # Download scans
         task = progress.add_task("Downloading scans...", total=100)
 
-        scans_url = f"/data/projects/{project}/subjects/{subject}/experiments/{session_id}/scans/ALL/files"
+        scans_url = (
+            f"/data/projects/{project}/subjects/{subject}/experiments/{session_id}/scans/ALL/files"
+        )
         scans_zip = session_dir / "scans.zip"
 
         # Stream download
-        with client._get_client().stream("GET", scans_url, params={"format": "zip"}, cookies=client._get_cookies()) as resp:
+        with client._get_client().stream(
+            "GET", scans_url, params={"format": "zip"}, cookies=client._get_cookies()
+        ) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0
@@ -312,7 +344,9 @@ def session_download(
                     res_zip = session_dir / f"resources_{label}.zip"
                     files_url = f"{res_url}/{label}/files"
 
-                    with client._get_client().stream("GET", files_url, params={"format": "zip"}, cookies=client._get_cookies()) as resp:
+                    with client._get_client().stream(
+                        "GET", files_url, params={"format": "zip"}, cookies=client._get_cookies()
+                    ) as resp:
                         resp.raise_for_status()
                         with open(res_zip, "wb") as f:
                             for chunk in resp.iter_bytes():
@@ -430,9 +464,9 @@ def session_upload(
     overwrite: str,
     direct_archive: bool,
     ignore_unparsable: bool,
-    dicom_host: Optional[str],
+    dicom_host: str | None,
     dicom_port: int,
-    called_aet: Optional[str],
+    called_aet: str | None,
     calling_aet: str,
     dicom_workers: int,
     dry_run: bool,
@@ -463,8 +497,8 @@ def session_upload(
     """
     from xnatctl.core.validation import (
         validate_project_id,
-        validate_subject_id,
         validate_session_id,
+        validate_subject_id,
     )
 
     project = validate_project_id(project)
@@ -472,7 +506,6 @@ def session_upload(
     session = validate_session_id(session)
 
     source_path = Path(input_path)
-    client = ctx.get_client()
 
     # Dry run handling
     if dry_run:
@@ -561,19 +594,32 @@ def _upload_single_archive(
 
     if show_progress:
         from xnatctl.core.output import create_progress
+
         with create_progress() as progress:
             task = progress.add_task(f"Uploading {archive_path.name}...", total=100)
 
             _do_single_upload(
-                client, archive_path, project, subject, session,
-                overwrite, direct_archive, ignore_unparsable,
+                client,
+                archive_path,
+                project,
+                subject,
+                session,
+                overwrite,
+                direct_archive,
+                ignore_unparsable,
             )
 
             progress.update(task, completed=100)
     else:
         _do_single_upload(
-            client, archive_path, project, subject, session,
-            overwrite, direct_archive, ignore_unparsable,
+            client,
+            archive_path,
+            project,
+            subject,
+            session,
+            overwrite,
+            direct_archive,
+            ignore_unparsable,
         )
 
     if ctx.output_format == OutputFormat.JSON:
@@ -597,8 +643,7 @@ def _do_single_upload(
 ) -> None:
     """Execute the actual upload."""
     content_type = (
-        "application/zip" if archive_path.suffix.lower() == ".zip"
-        else "application/x-tar"
+        "application/zip" if archive_path.suffix.lower() == ".zip" else "application/x-tar"
     )
 
     with open(archive_path, "rb") as f:
@@ -639,11 +684,11 @@ def _upload_directory_parallel(
     ignore_unparsable: bool,
 ) -> None:
     """Upload a directory of DICOM files using parallel batching."""
+    from xnatctl.core.config import get_credentials
     from xnatctl.uploaders.parallel_rest import (
         UploadProgress,
         upload_dicom_parallel_rest,
     )
-    from xnatctl.core.config import get_credentials
 
     client = ctx.get_client()
     username, password = get_credentials()
@@ -660,7 +705,7 @@ def _upload_directory_parallel(
     show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
 
     if show_progress:
-        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+        from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
         with Progress(
             SpinnerColumn(),
@@ -749,18 +794,16 @@ def _upload_directory_parallel(
 def _upload_dicom_store(
     ctx: Context,
     source_path: Path,
-    dicom_host: Optional[str],
+    dicom_host: str | None,
     dicom_port: int,
-    called_aet: Optional[str],
+    called_aet: str | None,
     calling_aet: str,
     dicom_workers: int,
 ) -> None:
     """Upload via DICOM C-STORE protocol."""
     # Validate required options
     if not dicom_host:
-        print_error(
-            "DICOM C-STORE requires --dicom-host or XNAT_DICOM_HOST environment variable"
-        )
+        print_error("DICOM C-STORE requires --dicom-host or XNAT_DICOM_HOST environment variable")
         raise SystemExit(1)
 
     if not called_aet:
@@ -905,11 +948,11 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
 
     if dry_run:
         click.echo("\n[DRY-RUN] Would extract:")
-        for zf in zip_files:
-            extract_dir = zf.parent / zf.stem
-            click.echo(f"  {zf} -> {extract_dir}/")
+        for zip_file in zip_files:
+            extract_dir = zip_file.parent / zip_file.stem
+            click.echo(f"  {zip_file} -> {extract_dir}/")
             if cleanup:
-                click.echo(f"    (would remove {zf.name})")
+                click.echo(f"    (would remove {zip_file.name})")
         return
 
     extracted = 0

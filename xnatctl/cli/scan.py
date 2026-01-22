@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 import click
 
-from xnatctl.cli.common import Context, global_options, require_auth, handle_errors, confirm_destructive, parallel_options
-from xnatctl.core.output import print_output, print_error, print_success, OutputFormat
+from xnatctl.cli.common import (
+    Context,
+    confirm_destructive,
+    global_options,
+    handle_errors,
+    parallel_options,
+    require_auth,
+)
+from xnatctl.core.output import print_error, print_output, print_success
 
 
 @click.group()
@@ -41,14 +46,16 @@ def scan_list(ctx: Context, session_id: str) -> None:
     # Transform for output
     scans = []
     for r in results:
-        scans.append({
-            "id": r.get("ID", ""),
-            "type": r.get("type", ""),
-            "series_description": r.get("series_description", ""),
-            "quality": r.get("quality", ""),
-            "frames": r.get("frames", ""),
-            "note": r.get("note", ""),
-        })
+        scans.append(
+            {
+                "id": r.get("ID", ""),
+                "type": r.get("type", ""),
+                "series_description": r.get("series_description", ""),
+                "quality": r.get("quality", ""),
+                "frames": r.get("frames", ""),
+                "note": r.get("note", ""),
+            }
+        )
 
     print_output(
         scans,
@@ -78,7 +85,7 @@ def scan_show(ctx: Context, session_id: str, scan_id: str) -> None:
     Example:
         xnatctl scan show XNAT_E00001 1
     """
-    from xnatctl.core.validation import validate_session_id, validate_scan_id
+    from xnatctl.core.validation import validate_scan_id, validate_session_id
 
     session_id = validate_session_id(session_id)
     scan_id = validate_scan_id(scan_id)
@@ -143,7 +150,8 @@ def scan_delete(
         xnatctl scan delete XNAT_E00001 --scans 1,2 --dry-run
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from xnatctl.core.validation import validate_session_id, validate_scan_ids_input
+
+    from xnatctl.core.validation import validate_scan_ids_input, validate_session_id
 
     session_id = validate_session_id(session_id)
     scan_ids = validate_scan_ids_input(scans)

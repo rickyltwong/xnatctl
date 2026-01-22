@@ -14,13 +14,13 @@ __author__ = "CAMH KCNI"
 from xnatctl.core.client import XNATClient
 from xnatctl.core.config import Config, Profile
 from xnatctl.core.exceptions import (
-    XNATCtlError,
     AuthenticationError,
     ConfigurationError,
     ConnectionError,
     NetworkError,
     ResourceNotFoundError,
     ValidationError,
+    XNATCtlError,
 )
 
 __all__ = [

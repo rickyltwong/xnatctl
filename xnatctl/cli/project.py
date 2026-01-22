@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import click
 
-from xnatctl.cli.common import Context, global_options, require_auth, handle_errors
-from xnatctl.core.output import print_output, print_error, OutputFormat
+from xnatctl.cli.common import Context, global_options, handle_errors, require_auth
+from xnatctl.core.output import print_error, print_output
 
 
 @click.group()
@@ -37,12 +35,14 @@ def project_list(ctx: Context) -> None:
     # Transform for output
     projects = []
     for r in results:
-        projects.append({
-            "id": r.get("ID", ""),
-            "name": r.get("name", ""),
-            "pi": r.get("pi_lastname", ""),
-            "description": (r.get("description", "") or "")[:50],
-        })
+        projects.append(
+            {
+                "id": r.get("ID", ""),
+                "name": r.get("name", ""),
+                "pi": r.get("pi_lastname", ""),
+                "description": (r.get("description", "") or "")[:50],
+            }
+        )
 
     print_output(
         projects,
@@ -83,13 +83,13 @@ def project_show(ctx: Context, project_id: str) -> None:
     # Get counts
     try:
         subjects_resp = client.get_json(f"/data/projects/{project_id}/subjects")
-        subject_count = len(subjects_resp.get("ResultSet", {}).get("Result", []))
+        subject_count: int | str = len(subjects_resp.get("ResultSet", {}).get("Result", []))
     except Exception:
         subject_count = "?"
 
     try:
         sessions_resp = client.get_json(f"/data/projects/{project_id}/experiments")
-        session_count = len(sessions_resp.get("ResultSet", {}).get("Result", []))
+        session_count: int | str = len(sessions_resp.get("ResultSet", {}).get("Result", []))
     except Exception:
         session_count = "?"
 
@@ -117,16 +117,18 @@ def project_show(ctx: Context, project_id: str) -> None:
 @click.option("--name", help="Project name (defaults to ID)")
 @click.option("--description", help="Project description")
 @click.option("--pi", help="Principal investigator last name")
-@click.option("--accessibility", type=click.Choice(["public", "protected", "private"]), default="private")
+@click.option(
+    "--accessibility", type=click.Choice(["public", "protected", "private"]), default="private"
+)
 @global_options
 @require_auth
 @handle_errors
 def project_create(
     ctx: Context,
     project_id: str,
-    name: Optional[str],
-    description: Optional[str],
-    pi: Optional[str],
+    name: str | None,
+    description: str | None,
+    pi: str | None,
     accessibility: str,
 ) -> None:
     """Create a new project.
@@ -134,8 +136,8 @@ def project_create(
     Example:
         xnatctl project create NEWPROJ --name "New Project" --pi Smith
     """
-    from xnatctl.core.validation import validate_project_id
     from xnatctl.core.output import print_success
+    from xnatctl.core.validation import validate_project_id
 
     project_id = validate_project_id(project_id)
     client = ctx.get_client()

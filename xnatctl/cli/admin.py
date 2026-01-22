@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any
 
 import click
 
-from xnatctl.cli.common import Context, global_options, require_auth, handle_errors, parallel_options
-from xnatctl.core.output import print_output, print_error, print_success, OutputFormat
+from xnatctl.cli.common import (
+    Context,
+    global_options,
+    handle_errors,
+    parallel_options,
+    require_auth,
+)
+from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
 
 
 @click.group()
@@ -36,7 +42,7 @@ def admin_refresh_catalogs(
     project: str,
     option: tuple,
     experiment: tuple,
-    limit: Optional[int],
+    limit: int | None,
     parallel: bool,
     workers: int,
 ) -> None:
@@ -54,8 +60,9 @@ def admin_refresh_catalogs(
         xnatctl admin refresh-catalogs MYPROJ --experiment XNAT_E00001 --experiment XNAT_E00002
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from xnatctl.core.validation import validate_project_id
+
     from xnatctl.core.output import create_progress
+    from xnatctl.core.validation import validate_project_id
 
     project = validate_project_id(project)
     client = ctx.get_client()
@@ -137,12 +144,15 @@ def admin_refresh_catalogs(
                 progress.advance(task)
 
     if ctx.output_format == OutputFormat.JSON:
-        print_output({
-            "project": project,
-            "refreshed": refreshed,
-            "failed": [{"id": eid, "error": err} for eid, err in failed],
-            "count": len(refreshed),
-        }, format=OutputFormat.JSON)
+        print_output(
+            {
+                "project": project,
+                "refreshed": refreshed,
+                "failed": [{"id": eid, "error": err} for eid, err in failed],
+                "count": len(refreshed),
+            },
+            format=OutputFormat.JSON,
+        )
     else:
         if refreshed:
             print_success(f"Refreshed {len(refreshed)} experiments")
@@ -170,7 +180,7 @@ def user_add_to_groups(
     ctx: Context,
     username: str,
     groups: tuple,
-    projects: Optional[str],
+    projects: str | None,
     role: str,
 ) -> None:
     """Add user to XNAT groups.
@@ -242,10 +252,10 @@ def user_add_to_groups(
 @handle_errors
 def admin_audit(
     ctx: Context,
-    project: Optional[str],
-    username: Optional[str],
-    action: Optional[str],
-    since: Optional[str],
+    project: str | None,
+    username: str | None,
+    action: str | None,
+    since: str | None,
     limit: int,
 ) -> None:
     """View audit log (if available).
@@ -259,7 +269,7 @@ def admin_audit(
     client = ctx.get_client()
 
     # Build query params
-    params = {"limit": limit}
+    params: dict[str, Any] = {"limit": limit}
     if project:
         params["project"] = project
     if username:
@@ -291,4 +301,4 @@ def admin_audit(
         # Audit API may not be available
         print_error(f"Audit log not available: {e}")
         click.echo("Note: Audit logging may not be enabled on this XNAT server")
-        raise SystemExit(1)
+        raise SystemExit(1) from e

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import Field
 
 from .base import XNATResource
@@ -12,24 +10,14 @@ from .base import XNATResource
 class Project(XNATResource):
     """XNAT project resource."""
 
-    name: Optional[str] = Field(None, description="Project name")
-    secondary_id: Optional[str] = Field(
-        None, alias="secondary_ID", description="Secondary identifier"
-    )
-    description: Optional[str] = Field(None, description="Project description")
-    pi_firstname: Optional[str] = Field(
-        None, alias="pi_firstname", description="PI first name"
-    )
-    pi_lastname: Optional[str] = Field(
-        None, alias="pi_lastname", description="PI last name"
-    )
-    accessibility: Optional[str] = Field(
-        None, description="Access level (public, protected, private)"
-    )
-    subject_count: Optional[int] = Field(
-        None, alias="subjects", description="Number of subjects"
-    )
-    session_count: Optional[int] = Field(
+    name: str | None = Field(None, description="Project name")
+    secondary_id: str | None = Field(None, alias="secondary_ID", description="Secondary identifier")
+    description: str | None = Field(None, description="Project description")
+    pi_firstname: str | None = Field(None, alias="pi_firstname", description="PI first name")
+    pi_lastname: str | None = Field(None, alias="pi_lastname", description="PI last name")
+    accessibility: str | None = Field(None, description="Access level (public, protected, private)")
+    subject_count: int | None = Field(None, alias="subjects", description="Number of subjects")
+    session_count: int | None = Field(
         None, alias="experiments", description="Number of sessions/experiments"
     )
 

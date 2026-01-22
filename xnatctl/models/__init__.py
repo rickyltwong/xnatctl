@@ -6,20 +6,20 @@ Provides Pydantic models for XNAT resources and operation progress tracking.
 from __future__ import annotations
 
 from .base import BaseModel, XNATResource
-from .project import Project
-from .subject import Subject
-from .session import Session, Experiment
-from .scan import Scan
-from .resource import Resource, ResourceFile
 from .progress import (
+    DownloadProgress,
+    DownloadSummary,
     OperationPhase,
+    OperationResult,
     Progress,
     UploadProgress,
-    DownloadProgress,
-    OperationResult,
     UploadSummary,
-    DownloadSummary,
 )
+from .project import Project
+from .resource import Resource, ResourceFile
+from .scan import Scan
+from .session import Experiment, Session
+from .subject import Subject
 
 __all__ = [
     # Base

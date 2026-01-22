@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Optional
+from typing import Any
 
 import click
 
-from xnatctl.core.config import Config, CONFIG_FILE, Profile
-from xnatctl.core.output import print_output, print_success, print_error, print_key_value, OutputFormat
+from xnatctl.core.config import CONFIG_FILE, Config
+from xnatctl.core.output import (
+    OutputFormat,
+    print_error,
+    print_key_value,
+    print_output,
+    print_success,
+)
 from xnatctl.core.validation import validate_server_url
 
 
@@ -23,7 +28,7 @@ def config() -> None:
 @click.option("--profile", default="default", help="Profile name")
 @click.option("--project", default=None, help="Default project ID")
 @click.option("--force", is_flag=True, help="Overwrite existing config")
-def config_init(url: str, profile: str, project: Optional[str], force: bool) -> None:
+def config_init(url: str, profile: str, project: str | None, force: bool) -> None:
     """Create configuration file with a new profile.
 
     Example:
@@ -34,15 +39,13 @@ def config_init(url: str, profile: str, project: Optional[str], force: bool) -> 
         url = validate_server_url(url)
     except Exception as e:
         print_error(str(e))
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     # Check if config exists
     if CONFIG_FILE.exists() and not force:
         cfg = Config.load()
         if cfg.has_profile(profile):
-            print_error(
-                f"Profile '{profile}' already exists. Use --force to overwrite."
-            )
+            print_error(f"Profile '{profile}' already exists. Use --force to overwrite.")
             raise SystemExit(1)
     else:
         cfg = Config()
@@ -62,11 +65,13 @@ def config_init(url: str, profile: str, project: Optional[str], force: bool) -> 
     cfg.save()
 
     print_success(f"Configuration saved to {CONFIG_FILE}")
-    print_key_value({
-        "profile": profile,
-        "url": url,
-        "default_project": project or "-",
-    })
+    print_key_value(
+        {
+            "profile": profile,
+            "url": url,
+            "default_project": project or "-",
+        }
+    )
 
 
 @config.command("show")
@@ -77,13 +82,13 @@ def config_show(output: str) -> None:
         cfg = Config.load()
     except Exception as e:
         print_error(f"Failed to load config: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     if not cfg.profiles:
-        print_error(f"No configuration found. Run 'xnatctl config init' first.")
+        print_error("No configuration found. Run 'xnatctl config init' first.")
         raise SystemExit(1)
 
-    data = {
+    data: dict[str, Any] = {
         "config_file": str(CONFIG_FILE),
         "default_profile": cfg.default_profile,
         "output_format": cfg.output_format,
@@ -92,9 +97,7 @@ def config_show(output: str) -> None:
 
     if output == "json":
         # Include full profile details in JSON
-        data["profile_details"] = {
-            name: p.to_dict() for name, p in cfg.profiles.items()
-        }
+        data["profile_details"] = {name: p.to_dict() for name, p in cfg.profiles.items()}
         print_output(data, format=OutputFormat.JSON)
     else:
         print_key_value(data, title="Configuration")
@@ -127,7 +130,7 @@ def config_use_context(profile: str) -> None:
         cfg = Config.load()
     except Exception as e:
         print_error(f"Failed to load config: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     if not cfg.has_profile(profile):
         print_error(f"Profile '{profile}' not found.")
@@ -147,7 +150,7 @@ def config_current_context() -> None:
         cfg = Config.load()
     except Exception as e:
         print_error(f"Failed to load config: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     if not cfg.profiles:
         print_error("No configuration found.")
@@ -165,7 +168,7 @@ def config_current_context() -> None:
 def config_add_profile(
     name: str,
     url: str,
-    project: Optional[str],
+    project: str | None,
     timeout: int,
     no_verify_ssl: bool,
 ) -> None:
@@ -178,7 +181,7 @@ def config_add_profile(
         url = validate_server_url(url)
     except Exception as e:
         print_error(str(e))
-        raise SystemExit(1)
+        raise SystemExit(1) from e
 
     cfg = Config.load()
 
@@ -214,7 +217,7 @@ def config_remove_profile(name: str, yes: bool) -> None:
         raise SystemExit(1)
 
     if name == cfg.default_profile:
-        print_error(f"Cannot remove the default profile. Switch to another profile first.")
+        print_error("Cannot remove the default profile. Switch to another profile first.")
         raise SystemExit(1)
 
     if not yes:

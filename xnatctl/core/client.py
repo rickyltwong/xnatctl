@@ -6,8 +6,9 @@ Provides retry logic, pagination, and session-based authentication.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Optional
+from typing import Any
 
 import httpx
 
@@ -40,13 +41,13 @@ class XNATClient:
     """HTTP client for XNAT REST API with retry and pagination."""
 
     base_url: str
-    username: Optional[str] = None
-    password: Optional[str] = None
-    session_token: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
+    session_token: str | None = None
     timeout: int = DEFAULT_TIMEOUT
     max_retries: int = DEFAULT_MAX_RETRIES
     verify_ssl: bool = True
-    _client: Optional[httpx.Client] = field(init=False, default=None, repr=False)
+    _client: httpx.Client | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Validate and normalize URL."""
@@ -73,7 +74,7 @@ class XNATClient:
             self._client.close()
             self._client = None
 
-    def __enter__(self) -> "XNATClient":
+    def __enter__(self) -> XNATClient:
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -146,7 +147,7 @@ class XNATClient:
             return {"JSESSIONID": self.session_token}
         return {}
 
-    def _get_auth(self) -> Optional[tuple[str, str]]:
+    def _get_auth(self) -> tuple[str, str] | None:
         """Get basic auth tuple if no session token."""
         if not self.session_token and self.username and self.password:
             return (self.username, self.password)
@@ -157,12 +158,12 @@ class XNATClient:
         method: str,
         path: str,
         *,
-        params: Optional[dict[str, Any]] = None,
-        json: Optional[Any] = None,
-        data: Optional[Any] = None,
-        files: Optional[Any] = None,
-        headers: Optional[dict[str, str]] = None,
-        timeout: Optional[int] = None,
+        params: dict[str, Any] | None = None,
+        json: Any | None = None,
+        data: Any | None = None,
+        files: Any | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: int | None = None,
         stream: bool = False,
     ) -> httpx.Response:
         """Execute HTTP request with retry logic.
@@ -191,7 +192,7 @@ class XNATClient:
         auth = self._get_auth()
 
         request_timeout = timeout or self.timeout
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -233,9 +234,9 @@ class XNATClient:
                 resp.raise_for_status()
                 return resp
 
-            except httpx.ConnectError as e:
+            except httpx.ConnectError:
                 last_error = ServerUnreachableError(self.base_url)
-            except httpx.TimeoutException as e:
+            except httpx.TimeoutException:
                 last_error = NetworkError(self.base_url, f"Timeout after {request_timeout}s")
             except (AuthenticationError, ResourceNotFoundError):
                 raise
@@ -250,9 +251,9 @@ class XNATClient:
         self,
         path: str,
         *,
-        params: Optional[dict[str, Any]] = None,
-        headers: Optional[dict[str, str]] = None,
-        timeout: Optional[int] = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: int | None = None,
         stream: bool = False,
     ) -> httpx.Response:
         """GET request."""
@@ -269,12 +270,12 @@ class XNATClient:
         self,
         path: str,
         *,
-        params: Optional[dict[str, Any]] = None,
-        json: Optional[Any] = None,
-        data: Optional[Any] = None,
-        files: Optional[Any] = None,
-        headers: Optional[dict[str, str]] = None,
-        timeout: Optional[int] = None,
+        params: dict[str, Any] | None = None,
+        json: Any | None = None,
+        data: Any | None = None,
+        files: Any | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: int | None = None,
     ) -> httpx.Response:
         """POST request."""
         return self._request(
@@ -292,11 +293,11 @@ class XNATClient:
         self,
         path: str,
         *,
-        params: Optional[dict[str, Any]] = None,
-        json: Optional[Any] = None,
-        data: Optional[Any] = None,
-        headers: Optional[dict[str, str]] = None,
-        timeout: Optional[int] = None,
+        params: dict[str, Any] | None = None,
+        json: Any | None = None,
+        data: Any | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: int | None = None,
     ) -> httpx.Response:
         """PUT request."""
         return self._request(
@@ -313,9 +314,9 @@ class XNATClient:
         self,
         path: str,
         *,
-        params: Optional[dict[str, Any]] = None,
-        headers: Optional[dict[str, str]] = None,
-        timeout: Optional[int] = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: int | None = None,
     ) -> httpx.Response:
         """DELETE request."""
         return self._request(
@@ -334,7 +335,7 @@ class XNATClient:
         self,
         path: str,
         *,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
         page_size: int = 100,
         result_key: str = "ResultSet.Result",
     ) -> Iterator[dict[str, Any]]:
@@ -385,7 +386,7 @@ class XNATClient:
         self,
         path: str,
         *,
-        params: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
     ) -> Any:
         """GET request returning JSON."""
         if params is None:

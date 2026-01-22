@@ -10,7 +10,6 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 from xnatctl.core.config import CONFIG_DIR, ENV_PASS, ENV_TOKEN, ENV_USER
 
@@ -35,7 +34,7 @@ class CachedSession:
     url: str
     username: str
     created_at: datetime
-    expires_at: Optional[datetime] = None
+    expires_at: datetime | None = None
 
     def is_expired(self) -> bool:
         """Check if session has expired."""
@@ -54,7 +53,7 @@ class CachedSession:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "CachedSession":
+    def from_dict(cls, data: dict) -> CachedSession:
         """Create from dictionary."""
         return cls(
             token=data["token"],
@@ -75,7 +74,7 @@ class CachedSession:
 class AuthManager:
     """Manages authentication credentials and session tokens."""
 
-    def __init__(self, cache_file: Optional[Path] = None):
+    def __init__(self, cache_file: Path | None = None):
         """Initialize auth manager.
 
         Args:
@@ -87,7 +86,7 @@ class AuthManager:
     # Credential Access
     # =========================================================================
 
-    def get_credentials(self) -> tuple[Optional[str], Optional[str]]:
+    def get_credentials(self) -> tuple[str | None, str | None]:
         """Get credentials from environment variables.
 
         Returns:
@@ -97,7 +96,7 @@ class AuthManager:
         password = os.getenv(ENV_PASS)
         return username, password
 
-    def get_token_from_env(self) -> Optional[str]:
+    def get_token_from_env(self) -> str | None:
         """Get session token from environment variable.
 
         Returns:
@@ -151,7 +150,7 @@ class AuthManager:
 
         return session
 
-    def load_session(self, url: Optional[str] = None) -> Optional[CachedSession]:
+    def load_session(self, url: str | None = None) -> CachedSession | None:
         """Load cached session token.
 
         Args:
@@ -199,7 +198,7 @@ class AuthManager:
                 pass
         return False
 
-    def has_valid_session(self, url: Optional[str] = None) -> bool:
+    def has_valid_session(self, url: str | None = None) -> bool:
         """Check if there's a valid cached session.
 
         Args:
@@ -215,7 +214,7 @@ class AuthManager:
     # Convenience Methods
     # =========================================================================
 
-    def get_session_token(self, url: Optional[str] = None) -> Optional[str]:
+    def get_session_token(self, url: str | None = None) -> str | None:
         """Get session token from cache or environment.
 
         Priority:
@@ -238,7 +237,7 @@ class AuthManager:
 
         return None
 
-    def get_session_info(self, url: Optional[str] = None) -> Optional[dict]:
+    def get_session_info(self, url: str | None = None) -> dict | None:
         """Get session information for display.
 
         Args:

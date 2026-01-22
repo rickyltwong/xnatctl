@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import click
 
-from xnatctl.cli.common import Context, global_options, require_auth, handle_errors
-from xnatctl.core.output import print_output, print_error, print_success, OutputFormat
+from xnatctl.cli.common import Context, global_options, handle_errors, require_auth
+from xnatctl.core.output import print_error, print_output, print_success
 
 
 @click.group()
@@ -23,14 +22,14 @@ def resource() -> None:
 @global_options
 @require_auth
 @handle_errors
-def resource_list(ctx: Context, session_id: str, scan: Optional[str]) -> None:
+def resource_list(ctx: Context, session_id: str, scan: str | None) -> None:
     """List resources at session or scan level.
 
     Example:
         xnatctl resource list XNAT_E00001
         xnatctl resource list XNAT_E00001 --scan 1
     """
-    from xnatctl.core.validation import validate_session_id, validate_scan_id
+    from xnatctl.core.validation import validate_scan_id, validate_session_id
 
     session_id = validate_session_id(session_id)
     client = ctx.get_client()
@@ -46,13 +45,15 @@ def resource_list(ctx: Context, session_id: str, scan: Optional[str]) -> None:
 
     resources = []
     for r in results:
-        resources.append({
-            "label": r.get("label", ""),
-            "format": r.get("format", ""),
-            "file_count": r.get("file_count", ""),
-            "file_size": r.get("file_size", ""),
-            "content": r.get("content", ""),
-        })
+        resources.append(
+            {
+                "label": r.get("label", ""),
+                "format": r.get("format", ""),
+                "file_count": r.get("file_count", ""),
+                "file_size": r.get("file_size", ""),
+                "content": r.get("content", ""),
+            }
+        )
 
     print_output(
         resources,
@@ -77,7 +78,7 @@ def resource_list(ctx: Context, session_id: str, scan: Optional[str]) -> None:
 @global_options
 @require_auth
 @handle_errors
-def resource_show(ctx: Context, session_id: str, resource_label: str, scan: Optional[str]) -> None:
+def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str | None) -> None:
     """Show resource details and files.
 
     Example:
@@ -85,7 +86,12 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: Opti
         xnatctl resource show XNAT_E00001 DICOM --scan 1
     """
     from urllib.parse import quote
-    from xnatctl.core.validation import validate_session_id, validate_scan_id, validate_resource_label
+
+    from xnatctl.core.validation import (
+        validate_resource_label,
+        validate_scan_id,
+        validate_session_id,
+    )
 
     session_id = validate_session_id(session_id)
     resource_label = validate_resource_label(resource_label)
@@ -150,9 +156,9 @@ def resource_upload(
     session_id: str,
     resource_label: str,
     path: str,
-    scan: Optional[str],
-    content: Optional[str],
-    file_format: Optional[str],
+    scan: str | None,
+    content: str | None,
+    file_format: str | None,
 ) -> None:
     """Upload file or directory to a resource.
 
@@ -166,8 +172,13 @@ def resource_upload(
     import tempfile
     import zipfile
     from urllib.parse import quote
-    from xnatctl.core.validation import validate_session_id, validate_scan_id, validate_resource_label
+
     from xnatctl.core.output import create_progress
+    from xnatctl.core.validation import (
+        validate_resource_label,
+        validate_scan_id,
+        validate_session_id,
+    )
 
     session_id = validate_session_id(session_id)
     resource_label = validate_resource_label(resource_label)
@@ -254,7 +265,7 @@ def resource_download(
     session_id: str,
     resource_label: str,
     out: str,
-    scan: Optional[str],
+    scan: str | None,
 ) -> None:
     """Download a resource as ZIP.
 
@@ -263,8 +274,13 @@ def resource_download(
         xnatctl resource download XNAT_E00001 DICOM --out ./dicom.zip --scan 1
     """
     from urllib.parse import quote
-    from xnatctl.core.validation import validate_session_id, validate_scan_id, validate_resource_label
+
     from xnatctl.core.output import create_progress
+    from xnatctl.core.validation import (
+        validate_resource_label,
+        validate_scan_id,
+        validate_session_id,
+    )
 
     session_id = validate_session_id(session_id)
     resource_label = validate_resource_label(resource_label)
@@ -282,7 +298,9 @@ def resource_download(
     with create_progress() as progress:
         task = progress.add_task(f"Downloading {resource_label}...", total=100)
 
-        with client._get_client().stream("GET", url, params={"format": "zip"}, cookies=client._get_cookies()) as resp:
+        with client._get_client().stream(
+            "GET", url, params={"format": "zip"}, cookies=client._get_cookies()
+        ) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0

@@ -6,16 +6,16 @@ import shutil
 import tempfile
 import time
 import zipfile
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any
 
 from xnatctl.models.progress import (
     OperationPhase,
     UploadProgress,
     UploadSummary,
 )
-from xnatctl.core.exceptions import UploadError
 
 from .base import BaseService
 
@@ -34,7 +34,7 @@ class UploadService(BaseService):
         batch_size: int = 500,
         parallel: bool = True,
         workers: int = 4,
-        progress_callback: Optional[Callable[[UploadProgress], None]] = None,
+        progress_callback: Callable[[UploadProgress], None] | None = None,
     ) -> UploadSummary:
         """Upload DICOM files to create/update a session.
 
@@ -63,10 +63,12 @@ class UploadService(BaseService):
 
         # Report preparation phase
         if progress_callback:
-            progress_callback(UploadProgress(
-                phase=OperationPhase.PREPARING,
-                message="Preparing upload",
-            ))
+            progress_callback(
+                UploadProgress(
+                    phase=OperationPhase.PREPARING,
+                    message="Preparing upload",
+                )
+            )
 
         # Collect DICOM files
         dicom_files: list[Path] = []
@@ -82,13 +84,13 @@ class UploadService(BaseService):
                 dicom_files = [source_path]
         else:
             dicom_files = [
-                f for f in source_path.rglob("*")
-                if f.is_file() and not f.name.startswith(".")
+                f for f in source_path.rglob("*") if f.is_file() and not f.name.startswith(".")
             ]
 
         # Filter to likely DICOM files
         dicom_files = [
-            f for f in dicom_files
+            f
+            for f in dicom_files
             if f.is_file() and f.suffix.lower() in ("", ".dcm", ".dicom", ".ima")
         ]
 
@@ -107,17 +109,19 @@ class UploadService(BaseService):
         total_size = sum(f.stat().st_size for f in dicom_files)
 
         if progress_callback:
-            progress_callback(UploadProgress(
-                phase=OperationPhase.ARCHIVING,
-                total=total_files,
-                message=f"Found {total_files} files",
-            ))
+            progress_callback(
+                UploadProgress(
+                    phase=OperationPhase.ARCHIVING,
+                    total=total_files,
+                    message=f"Found {total_files} files",
+                )
+            )
 
         # Split into batches
         batches = list(self._split_into_batches(dicom_files, batch_size))
         total_batches = len(batches)
 
-        results = {
+        results: dict[str, Any] = {
             "succeeded": 0,
             "failed": 0,
             "errors": [],
@@ -134,8 +138,8 @@ class UploadService(BaseService):
                     zip_path = Path(tmp.name)
 
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for f in files:
-                        zf.write(f, f.name)
+                    for file_path in files:
+                        zf.write(file_path, file_path.name)
 
                 # Upload to import service
                 params: dict[str, Any] = {
@@ -150,13 +154,13 @@ class UploadService(BaseService):
                 if quarantine:
                     params["dest"] = f"/prearchive/projects/{project}"
 
-                with open(zip_path, "rb") as f:
-                    content = f.read()
+                with open(zip_path, "rb") as zip_file:
+                    content = zip_file.read()
 
                 self.client.post(
                     "/data/services/import",
                     params=params,
-                    content=content,
+                    data=content,
                     headers={
                         "Content-Type": "application/zip",
                     },
@@ -172,8 +176,7 @@ class UploadService(BaseService):
         if parallel and total_batches > 1:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
-                    executor.submit(upload_batch, i, batch): i
-                    for i, batch in enumerate(batches)
+                    executor.submit(upload_batch, i, batch): i for i, batch in enumerate(batches)
                 }
 
                 for future in as_completed(futures):
@@ -187,14 +190,16 @@ class UploadService(BaseService):
                         results["errors"].append(f"Batch {batch_id}: {error}")
 
                     if progress_callback:
-                        progress_callback(UploadProgress(
-                            phase=OperationPhase.UPLOADING,
-                            current=results["succeeded"] + results["failed"],
-                            total=total_batches,
-                            batch_id=batch_id,
-                            message=f"Uploading batch {batch_id + 1}/{total_batches}",
-                            success=success,
-                        ))
+                        progress_callback(
+                            UploadProgress(
+                                phase=OperationPhase.UPLOADING,
+                                current=results["succeeded"] + results["failed"],
+                                total=total_batches,
+                                batch_id=batch_id,
+                                message=f"Uploading batch {batch_id + 1}/{total_batches}",
+                                success=success,
+                            )
+                        )
         else:
             for batch_id, batch in enumerate(batches):
                 success, error = upload_batch(batch_id, batch)
@@ -206,27 +211,33 @@ class UploadService(BaseService):
                     results["errors"].append(f"Batch {batch_id}: {error}")
 
                 if progress_callback:
-                    progress_callback(UploadProgress(
-                        phase=OperationPhase.UPLOADING,
-                        current=batch_id + 1,
-                        total=total_batches,
-                        batch_id=batch_id,
-                        message=f"Uploading batch {batch_id + 1}/{total_batches}",
-                        success=success,
-                    ))
+                    progress_callback(
+                        UploadProgress(
+                            phase=OperationPhase.UPLOADING,
+                            current=batch_id + 1,
+                            total=total_batches,
+                            batch_id=batch_id,
+                            message=f"Uploading batch {batch_id + 1}/{total_batches}",
+                            success=success,
+                        )
+                    )
 
         duration = time.time() - start_time
         overall_success = results["failed"] == 0
 
         if progress_callback:
-            progress_callback(UploadProgress(
-                phase=OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
-                current=total_batches,
-                total=total_batches,
-                message="Upload complete" if overall_success else "Upload completed with errors",
-                success=overall_success,
-                errors=results["errors"],
-            ))
+            progress_callback(
+                UploadProgress(
+                    phase=OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
+                    current=total_batches,
+                    total=total_batches,
+                    message="Upload complete"
+                    if overall_success
+                    else "Upload completed with errors",
+                    success=overall_success,
+                    errors=results["errors"],
+                )
+            )
 
         return UploadSummary(
             success=overall_success,
@@ -248,11 +259,11 @@ class UploadService(BaseService):
         session_id: str,
         resource_label: str,
         source_path: Path,
-        scan_id: Optional[str] = None,
-        project: Optional[str] = None,
+        scan_id: str | None = None,
+        project: str | None = None,
         extract: bool = False,
         overwrite: bool = False,
-        progress_callback: Optional[Callable[[UploadProgress], None]] = None,
+        progress_callback: Callable[[UploadProgress], None] | None = None,
     ) -> UploadSummary:
         """Upload files to a resource.
 
@@ -276,10 +287,12 @@ class UploadService(BaseService):
             raise FileNotFoundError(f"Source not found: {source_path}")
 
         if progress_callback:
-            progress_callback(UploadProgress(
-                phase=OperationPhase.PREPARING,
-                message="Preparing upload",
-            ))
+            progress_callback(
+                UploadProgress(
+                    phase=OperationPhase.PREPARING,
+                    message="Preparing upload",
+                )
+            )
 
         # Build path
         if scan_id:
@@ -310,11 +323,13 @@ class UploadService(BaseService):
         file_size = source_path.stat().st_size
 
         if progress_callback:
-            progress_callback(UploadProgress(
-                phase=OperationPhase.UPLOADING,
-                total_bytes=file_size,
-                message=f"Uploading {source_path.name}",
-            ))
+            progress_callback(
+                UploadProgress(
+                    phase=OperationPhase.UPLOADING,
+                    total_bytes=file_size,
+                    message=f"Uploading {source_path.name}",
+                )
+            )
 
         # Upload
         params: dict[str, Any] = {}
@@ -332,20 +347,22 @@ class UploadService(BaseService):
             self.client.put(
                 path,
                 params=params,
-                content=content,
+                data=content,
                 headers={"Content-Type": "application/octet-stream"},
             )
 
             duration = time.time() - start_time
 
             if progress_callback:
-                progress_callback(UploadProgress(
-                    phase=OperationPhase.COMPLETE,
-                    bytes_sent=file_size,
-                    total_bytes=file_size,
-                    message="Upload complete",
-                    success=True,
-                ))
+                progress_callback(
+                    UploadProgress(
+                        phase=OperationPhase.COMPLETE,
+                        bytes_sent=file_size,
+                        total_bytes=file_size,
+                        message="Upload complete",
+                        success=True,
+                    )
+                )
 
             return UploadSummary(
                 success=True,
@@ -362,12 +379,14 @@ class UploadService(BaseService):
             duration = time.time() - start_time
 
             if progress_callback:
-                progress_callback(UploadProgress(
-                    phase=OperationPhase.ERROR,
-                    message=str(e),
-                    success=False,
-                    errors=[str(e)],
-                ))
+                progress_callback(
+                    UploadProgress(
+                        phase=OperationPhase.ERROR,
+                        message=str(e),
+                        success=False,
+                        errors=[str(e)],
+                    )
+                )
 
             return UploadSummary(
                 success=False,
@@ -394,4 +413,4 @@ class UploadService(BaseService):
             Lists of files for each batch
         """
         for i in range(0, len(files), batch_size):
-            yield files[i:i + batch_size]
+            yield files[i : i + batch_size]

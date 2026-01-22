@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import builtins
+from typing import Any
 
-from xnatctl.models.session import Session
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.models.session import Session
 
 from .base import BaseService
 
@@ -15,12 +16,12 @@ class SessionService(BaseService):
 
     def list(
         self,
-        project: Optional[str] = None,
-        subject: Optional[str] = None,
-        modality: Optional[str] = None,
-        limit: Optional[int] = None,
-        columns: Optional[list[str]] = None,
-    ) -> list[Session]:
+        project: str | None = None,
+        subject: str | None = None,
+        modality: str | None = None,
+        limit: int | None = None,
+        columns: builtins.list[str] | None = None,
+    ) -> builtins.list[Session]:
         """List sessions/experiments.
 
         Args:
@@ -57,7 +58,7 @@ class SessionService(BaseService):
     def get(
         self,
         session_id: str,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> Session:
         """Get session details.
 
@@ -86,7 +87,7 @@ class SessionService(BaseService):
             raise ResourceNotFoundError("session", session_id)
         except Exception as e:
             if "404" in str(e):
-                raise ResourceNotFoundError("session", session_id)
+                raise ResourceNotFoundError("session", session_id) from e
             raise
 
     def create(
@@ -95,10 +96,10 @@ class SessionService(BaseService):
         subject: str,
         label: str,
         xsi_type: str = "xnat:mrSessionData",
-        date: Optional[str] = None,
-        time: Optional[str] = None,
-        visit_id: Optional[str] = None,
-        modality: Optional[str] = None,
+        date: str | None = None,
+        time: str | None = None,
+        visit_id: str | None = None,
+        modality: str | None = None,
     ) -> Session:
         """Create a new session/experiment.
 
@@ -141,7 +142,7 @@ class SessionService(BaseService):
     def delete(
         self,
         session_id: str,
-        project: Optional[str] = None,
+        project: str | None = None,
         remove_files: bool = False,
     ) -> bool:
         """Delete a session.
@@ -168,8 +169,8 @@ class SessionService(BaseService):
     def get_scans(
         self,
         session_id: str,
-        project: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+        project: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
         """Get scans for a session.
 
         Args:
@@ -191,8 +192,8 @@ class SessionService(BaseService):
     def get_resources(
         self,
         session_id: str,
-        project: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+        project: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
         """Get resources for a session.
 
         Args:
@@ -216,7 +217,7 @@ class SessionService(BaseService):
         session_id: str,
         field: str,
         value: str,
-        project: Optional[str] = None,
+        project: str | None = None,
     ) -> bool:
         """Set a field value on a session.
 
@@ -242,7 +243,7 @@ class SessionService(BaseService):
         self,
         session_id: str,
         target_project: str,
-        label: Optional[str] = None,
+        label: str | None = None,
         primary: bool = False,
     ) -> bool:
         """Share a session with another project.
