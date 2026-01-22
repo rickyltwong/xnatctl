@@ -83,23 +83,35 @@ def auth_login(
 
     try:
         token = client.authenticate()
+        actual_user = user
+        try:
+            user_info = client.whoami()
+            if user_info.get("username"):
+                actual_user = user_info["username"]
+        except Exception:
+            user_info = None
 
-        # Cache session
+        # Cache session with the resolved username
         session = auth_mgr.save_session(
             token=token,
             url=profile.url,
-            username=user,
+            username=actual_user,
         )
 
         if output == "json":
             print_json({
                 "status": "authenticated",
-                "username": user,
+                "username": actual_user,
                 "url": profile.url,
                 "expires_at": session.expires_at.isoformat() if session.expires_at else None,
             })
         else:
-            print_success(f"Logged in as {user}")
+            print_success(f"Logged in as {actual_user}")
+            if actual_user != user:
+                print_warning(
+                    f"Credentials authenticated as {actual_user} "
+                    f"(requested username was {user})"
+                )
             click.echo(f"Session cached until {session.expires_at}")
 
     except AuthenticationError as e:
