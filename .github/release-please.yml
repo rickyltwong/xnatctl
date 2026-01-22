@@ -1,0 +1,4 @@
+release-type: python
+package-name: xnatctl
+include-component-in-tag: false
+include-v-in-tag: true
