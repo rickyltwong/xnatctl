@@ -23,11 +23,10 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
 
-from xnatctl.uploaders.common import collect_dicom_files, split_into_batches
+from xnatctl.uploaders.common import collect_dicom_files, split_into_n_batches
 from xnatctl.uploaders.constants import (
     DEFAULT_ARCHIVE_FORMAT,
     DEFAULT_ARCHIVE_WORKERS,
-    DEFAULT_BATCH_SIZE,
     DEFAULT_IMPORT_HANDLER,
     DEFAULT_OVERWRITE,
     DEFAULT_TIMEOUT,
@@ -327,7 +326,6 @@ def upload_dicom_parallel_rest(
     project: str,
     subject: str,
     session: str,
-    batch_size: int = DEFAULT_BATCH_SIZE,
     upload_workers: int = DEFAULT_UPLOAD_WORKERS,
     archive_workers: int = DEFAULT_ARCHIVE_WORKERS,
     archive_format: str = DEFAULT_ARCHIVE_FORMAT,
@@ -342,7 +340,7 @@ def upload_dicom_parallel_rest(
 
     This function:
     1. Collects DICOM files from the source directory
-    2. Splits files into batches
+    2. Splits files into N batches (N = upload_workers)
     3. Creates archives in parallel
     4. Uploads archives in parallel
 
@@ -355,7 +353,6 @@ def upload_dicom_parallel_rest(
         project: Target project ID.
         subject: Target subject label.
         session: Target session label.
-        batch_size: Files per batch (default: 500).
         upload_workers: Parallel upload workers (default: 4).
         archive_workers: Parallel archive workers (default: 4).
         archive_format: Archive format, "tar" or "zip" (default: tar).
@@ -404,8 +401,9 @@ def upload_dicom_parallel_rest(
             errors=["No DICOM files found"],
         )
 
-    # Phase 2: Split into batches
-    batches = split_into_batches(files, batch_size)
+    # Phase 2: Split into batches (one batch per upload worker)
+    batch_count = max(1, min(upload_workers, len(files)))
+    batches = split_into_n_batches(files, batch_count)
     report(
         UploadProgress(
             phase="preparing",

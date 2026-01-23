@@ -382,12 +382,6 @@ def session_download(
     help="Archive format for REST upload (default: tar)",
 )
 @click.option(
-    "--batch-size",
-    type=int,
-    default=500,
-    help="Files per batch (default: 500)",
-)
-@click.option(
     "--upload-workers",
     type=int,
     default=4,
@@ -458,7 +452,6 @@ def session_upload(
     session: str,
     transport: str,
     archive_format: str,
-    batch_size: int,
     upload_workers: int,
     archive_workers: int,
     overwrite: str,
@@ -474,7 +467,7 @@ def session_upload(
     """Upload DICOM session via REST import or DICOM C-STORE.
 
     Supports both single archive files and directories of DICOM files.
-    For directories, files are batched and uploaded in parallel.
+    For directories, files are split into N batches where N = upload-workers.
 
     REST Upload Examples:
 
@@ -486,7 +479,7 @@ def session_upload(
 
         # High-throughput settings for fast storage/network
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 \\
-            --upload-workers 16 --archive-workers 8 --batch-size 200
+            --upload-workers 16 --archive-workers 8
 
     DICOM C-STORE Examples:
 
@@ -517,7 +510,6 @@ def session_upload(
         click.echo(f"  Transport: {transport}")
         if transport == "rest":
             click.echo(f"  Archive format: {archive_format}")
-            click.echo(f"  Batch size: {batch_size}")
             click.echo(f"  Upload workers: {upload_workers}")
             click.echo(f"  Archive workers: {archive_workers}")
             click.echo(f"  Overwrite: {overwrite}")
@@ -564,7 +556,6 @@ def session_upload(
             project=project,
             subject=subject,
             session=session,
-            batch_size=batch_size,
             upload_workers=upload_workers,
             archive_workers=archive_workers,
             archive_format=archive_format,
@@ -675,7 +666,6 @@ def _upload_directory_parallel(
     project: str,
     subject: str,
     session: str,
-    batch_size: int,
     upload_workers: int,
     archive_workers: int,
     archive_format: str,
@@ -731,7 +721,6 @@ def _upload_directory_parallel(
                 project=project,
                 subject=subject,
                 session=session,
-                batch_size=batch_size,
                 upload_workers=upload_workers,
                 archive_workers=archive_workers,
                 archive_format=archive_format,
@@ -750,7 +739,6 @@ def _upload_directory_parallel(
             project=project,
             subject=subject,
             session=session,
-            batch_size=batch_size,
             upload_workers=upload_workers,
             archive_workers=archive_workers,
             archive_format=archive_format,
