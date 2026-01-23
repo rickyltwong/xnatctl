@@ -689,15 +689,18 @@ def _upload_directory_parallel(
     )
 
     client = ctx.get_client()
-    env_username, env_password = get_credentials()
-    username = username or env_username
-    password = password or env_password
+    session_token = client.session_token
 
-    # Ensure we have credentials for parallel uploads (each thread authenticates)
-    if not username:
-        username = click.prompt("Username")
-    if not password:
-        password = click.prompt("Password", hide_input=True)
+    if not session_token:
+        env_username, env_password = get_credentials()
+        username = username or env_username
+        password = password or env_password
+
+        # Ensure we have credentials for parallel uploads (each thread authenticates)
+        if not username:
+            username = click.prompt("Username")
+        if not password:
+            password = click.prompt("Password", hide_input=True)
 
     # Progress callback - only for table output and not quiet
     show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
@@ -724,6 +727,7 @@ def _upload_directory_parallel(
                 base_url=client.base_url,
                 username=username,
                 password=password,
+                session_token=session_token,
                 verify_ssl=client.verify_ssl,
                 source_dir=source_dir,
                 project=project,
@@ -742,6 +746,7 @@ def _upload_directory_parallel(
             base_url=client.base_url,
             username=username,
             password=password,
+            session_token=session_token,
             verify_ssl=client.verify_ssl,
             source_dir=source_dir,
             project=project,
