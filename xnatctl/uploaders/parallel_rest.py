@@ -155,8 +155,9 @@ def create_archive(
 def _upload_single_archive(
     *,
     base_url: str,
-    username: str,
-    password: str,
+    username: str | None,
+    password: str | None,
+    session_token: str | None,
     verify_ssl: bool,
     timeout: int,
     archive_path: Path,
@@ -204,19 +205,29 @@ def _upload_single_archive(
         verify=verify_ssl,
     ) as client:
         try:
-            # Authenticate to get session token
-            auth_resp = client.post(
-                "/data/JSESSION",
-                auth=(username, password),
-            )
-            if auth_resp.status_code != 200:
-                return False, f"Authentication failed: HTTP {auth_resp.status_code}"
+            cookies: dict[str, str] = {}
+            created_session = False
 
-            if "<html" in auth_resp.text.lower():
-                return False, "Authentication failed: invalid credentials"
+            if session_token:
+                cookies = {"JSESSIONID": session_token}
+            else:
+                if not username or not password:
+                    return False, "Authentication failed: missing credentials"
 
-            session_token = auth_resp.text.strip()
-            cookies = {"JSESSIONID": session_token}
+                # Authenticate to get session token
+                auth_resp = client.post(
+                    "/data/JSESSION",
+                    auth=(username, password),
+                )
+                if auth_resp.status_code != 200:
+                    return False, f"Authentication failed: HTTP {auth_resp.status_code}"
+
+                if "<html" in auth_resp.text.lower():
+                    return False, "Authentication failed: invalid credentials"
+
+                session_token = auth_resp.text.strip()
+                cookies = {"JSESSIONID": session_token}
+                created_session = True
 
             # Upload the archive
             with archive_path.open("rb") as data:
@@ -228,14 +239,17 @@ def _upload_single_archive(
                     cookies=cookies,
                 )
 
-            # Logout
-            try:
-                client.delete("/data/JSESSION", cookies=cookies)
-            except Exception:
-                pass
+            # Logout if we created the session
+            if created_session:
+                try:
+                    client.delete("/data/JSESSION", cookies=cookies)
+                except Exception:
+                    pass
 
             if resp.status_code == 200:
                 return True, ""
+            if resp.status_code in (401, 403):
+                return False, "Authentication failed: invalid or expired session"
             return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
 
         except httpx.TimeoutException:
@@ -249,8 +263,9 @@ def _upload_single_archive(
 def _upload_batch(
     *,
     base_url: str,
-    username: str,
-    password: str,
+    username: str | None,
+    password: str | None,
+    session_token: str | None,
     verify_ssl: bool,
     timeout: int,
     batch_id: int,
@@ -280,6 +295,7 @@ def _upload_batch(
             base_url=base_url,
             username=username,
             password=password,
+            session_token=session_token,
             verify_ssl=verify_ssl,
             timeout=timeout,
             archive_path=archive_path,
@@ -319,8 +335,9 @@ def _upload_batch(
 def upload_dicom_parallel_rest(
     *,
     base_url: str,
-    username: str,
-    password: str,
+    username: str | None,
+    password: str | None,
+    session_token: str | None = None,
     verify_ssl: bool,
     source_dir: Path,
     project: str,
@@ -348,6 +365,7 @@ def upload_dicom_parallel_rest(
         base_url: XNAT server URL.
         username: XNAT username.
         password: XNAT password.
+        session_token: Optional cached session token to reuse.
         verify_ssl: Whether to verify SSL certificates.
         source_dir: Directory containing DICOM files.
         project: Target project ID.
@@ -497,6 +515,7 @@ def upload_dicom_parallel_rest(
                     base_url=base_url,
                     username=username,
                     password=password,
+                    session_token=session_token,
                     verify_ssl=verify_ssl,
                     timeout=timeout,
                     batch_id=i + 1,
