@@ -368,6 +368,8 @@ def session_download(
 @click.option("--project", "-P", required=True, help="Project ID")
 @click.option("--subject", "-S", required=True, help="Subject ID")
 @click.option("--session", "-E", required=True, help="Session label")
+@click.option("--username", "-u", help="XNAT username (REST upload)")
+@click.option("--password", help="XNAT password (REST upload)")
 @click.option(
     "--transport",
     type=click.Choice(["rest", "dicom-store"]),
@@ -450,6 +452,8 @@ def session_upload(
     project: str,
     subject: str,
     session: str,
+    username: str | None,
+    password: str | None,
     transport: str,
     archive_format: str,
     upload_workers: int,
@@ -556,6 +560,8 @@ def session_upload(
             project=project,
             subject=subject,
             session=session,
+            username=username,
+            password=password,
             upload_workers=upload_workers,
             archive_workers=archive_workers,
             archive_format=archive_format,
@@ -666,6 +672,8 @@ def _upload_directory_parallel(
     project: str,
     subject: str,
     session: str,
+    username: str | None,
+    password: str | None,
     upload_workers: int,
     archive_workers: int,
     archive_format: str,
@@ -681,15 +689,15 @@ def _upload_directory_parallel(
     )
 
     client = ctx.get_client()
-    username, password = get_credentials()
+    env_username, env_password = get_credentials()
+    username = username or env_username
+    password = password or env_password
 
     # Ensure we have credentials for parallel uploads (each thread authenticates)
-    if not username or not password:
-        print_error(
-            "Directory upload requires XNAT_USER and XNAT_PASS environment variables "
-            "(parallel workers need credentials for individual sessions)"
-        )
-        raise SystemExit(1)
+    if not username:
+        username = click.prompt("Username")
+    if not password:
+        password = click.prompt("Password", hide_input=True)
 
     # Progress callback - only for table output and not quiet
     show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
