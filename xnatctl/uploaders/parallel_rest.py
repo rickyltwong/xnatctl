@@ -214,20 +214,20 @@ def _upload_single_archive(
                 if not username or not password:
                     return False, "Authentication failed: missing credentials"
 
-                # Authenticate to get session token
-                auth_resp = client.post(
-                    "/data/JSESSION",
-                    auth=(username, password),
-                )
-                if auth_resp.status_code != 200:
-                    return False, f"Authentication failed: HTTP {auth_resp.status_code}"
+            # Authenticate to get session token
+            auth_resp = client.post(
+                "/data/JSESSION",
+                auth=(username, password),
+            )
+            if auth_resp.status_code != 200:
+                return False, f"Authentication failed: HTTP {auth_resp.status_code}"
 
-                if "<html" in auth_resp.text.lower():
-                    return False, "Authentication failed: invalid credentials"
+            if "<html" in auth_resp.text.lower():
+                return False, "Authentication failed: invalid credentials"
 
-                session_token = auth_resp.text.strip()
-                cookies = {"JSESSIONID": session_token}
-                created_session = True
+            session_token = auth_resp.text.strip()
+            cookies = {"JSESSIONID": session_token}
+            created_session = True
 
             # Upload the archive
             with archive_path.open("rb") as data:
@@ -424,8 +424,8 @@ def upload_dicom_parallel_rest(
     batches = split_into_n_batches(files, batch_count)
     report(
         UploadProgress(
-            phase="preparing",
-            message=f"Split {len(files)} files into {len(batches)} batches",
+        phase="preparing",
+        message=f"Split {len(files)} files into {len(batches)} batches",
         )
     )
 
@@ -442,9 +442,9 @@ def upload_dicom_parallel_rest(
 
         report(
             UploadProgress(
-                phase="archiving",
-                total=len(batches),
-                message="Creating archives...",
+            phase="archiving",
+            total=len(batches),
+            message="Creating archives...",
             )
         )
 
@@ -476,10 +476,10 @@ def upload_dicom_parallel_rest(
 
                 report(
                     UploadProgress(
-                        phase="archiving",
-                        current=completed,
-                        total=len(batches),
-                        message=f"Created archive {completed}/{len(batches)}",
+                    phase="archiving",
+                    current=completed,
+                    total=len(batches),
+                    message=f"Created archive {completed}/{len(batches)}",
                     )
                 )
 
@@ -498,9 +498,9 @@ def upload_dicom_parallel_rest(
         # Phase 4: Upload archives
         report(
             UploadProgress(
-                phase="uploading",
-                total=len(batches),
-                message="Starting uploads...",
+            phase="uploading",
+            total=len(batches),
+            message="Starting uploads...",
             )
         )
 
@@ -541,12 +541,12 @@ def upload_dicom_parallel_rest(
                 succeeded = sum(1 for r in results if r.success)
                 report(
                     UploadProgress(
-                        phase="uploading",
-                        current=len(results),
-                        total=len(batches),
-                        batch_id=result.batch_id,
-                        success=result.success,
-                        message=f"Uploaded {len(results)}/{len(batches)} ({succeeded} succeeded)",
+                    phase="uploading",
+                    current=len(results),
+                    total=len(batches),
+                    batch_id=result.batch_id,
+                    success=result.success,
+                    message=f"Uploaded {len(results)}/{len(batches)} ({succeeded} succeeded)",
                     )
                 )
 
@@ -558,16 +558,16 @@ def upload_dicom_parallel_rest(
 
         report(
             UploadProgress(
-                phase="complete" if success else "error",
-                current=len(results),
-                total=len(batches),
-                message=(
-                    "Upload complete!"
-                    if success
-                    else f"Upload completed with {batches_failed} failures"
-                ),
-                success=success,
-                errors=errors,
+            phase="complete" if success else "error",
+            current=len(results),
+            total=len(batches),
+            message=(
+                "Upload complete!"
+                if success
+                else f"Upload completed with {batches_failed} failures"
+            ),
+            success=success,
+            errors=errors,
             )
         )
 
