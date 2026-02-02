@@ -233,16 +233,23 @@ class Config:
 
 
 def get_credentials(profile: Profile | None = None) -> tuple[str | None, str | None]:
-    """Get credentials from environment variables.
+    """Get credentials with priority: env vars > profile config.
 
     Args:
-        profile: Optional profile (not used for credentials, kept for API consistency).
+        profile: Optional profile to read credentials from.
 
     Returns:
-        Tuple of (username, password) from environment.
+        Tuple of (username, password).
     """
     username = os.getenv(ENV_USER)
     password = os.getenv(ENV_PASS)
+
+    if profile:
+        if not username and profile.username:
+            username = profile.username
+        if not password and profile.password:
+            password = profile.password
+
     return username, password
 
 

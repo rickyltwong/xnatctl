@@ -66,8 +66,8 @@ class Context:
                 "Run 'xnatctl config init' to create one."
             ) from e
 
-        # Get credentials
-        username, password = get_credentials()
+        # Get credentials (env vars > profile config)
+        username, password = get_credentials(profile)
         token = self.auth_manager.get_session_token(profile.url)
 
         self.client = XNATClient(
@@ -160,13 +160,12 @@ def require_auth(f: F) -> F:
         """Ensure the context client is authenticated before running."""
         client = ctx.get_client()
 
-        # Try to authenticate if no session token
         if not client.is_authenticated:
-            username, password = get_credentials()
+            profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+            username, password = get_credentials(profile)
             if username and password:
                 try:
                     token = client.authenticate()
-                    # Cache the session
                     ctx.auth_manager.save_session(
                         token=token,
                         url=client.base_url,
