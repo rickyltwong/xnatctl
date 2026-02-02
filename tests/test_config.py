@@ -24,6 +24,8 @@ class TestProfile:
         assert profile.verify_ssl is True
         assert profile.timeout == 30
         assert profile.default_project is None
+        assert profile.username is None
+        assert profile.password is None
 
     def test_custom_values(self):
         profile = Profile(
@@ -35,6 +37,58 @@ class TestProfile:
         assert profile.verify_ssl is False
         assert profile.timeout == 60
         assert profile.default_project == "MYPROJ"
+
+    def test_credentials_in_profile(self):
+        """Test that username/password can be stored in profile."""
+        profile = Profile(
+            url="https://xnat.example.org",
+            username="testuser",
+            password="testpass",
+        )
+        assert profile.username == "testuser"
+        assert profile.password == "testpass"
+
+    def test_to_dict_excludes_none_credentials(self):
+        """Test that to_dict excludes None username/password."""
+        profile = Profile(url="https://xnat.example.org")
+        data = profile.to_dict()
+        assert "username" not in data
+        assert "password" not in data
+
+    def test_to_dict_includes_credentials_when_set(self):
+        """Test that to_dict includes username/password when set."""
+        profile = Profile(
+            url="https://xnat.example.org",
+            username="testuser",
+            password="testpass",
+        )
+        data = profile.to_dict()
+        assert data["username"] == "testuser"
+        assert data["password"] == "testpass"
+
+    def test_from_dict_with_credentials(self):
+        """Test that from_dict loads username/password."""
+        data = {
+            "url": "https://xnat.example.org",
+            "username": "testuser",
+            "password": "testpass",
+            "verify_ssl": True,
+            "timeout": 30,
+        }
+        profile = Profile.from_dict(data)
+        assert profile.username == "testuser"
+        assert profile.password == "testpass"
+
+    def test_from_dict_without_credentials(self):
+        """Test that from_dict handles missing credentials."""
+        data = {
+            "url": "https://xnat.example.org",
+            "verify_ssl": True,
+            "timeout": 30,
+        }
+        profile = Profile.from_dict(data)
+        assert profile.username is None
+        assert profile.password is None
 
 
 # =============================================================================
@@ -72,6 +126,23 @@ class TestConfig:
         config = Config.load(temp_dir / "nonexistent.yaml")
         assert config.default_profile == "default"
         assert config.profiles == {}
+
+    def test_load_with_credentials(
+        self, temp_dir: Path, sample_config_with_credentials_yaml: str
+    ):
+        """Test that credentials are loaded from config file."""
+        config_path = temp_dir / "config.yaml"
+        config_path.write_text(sample_config_with_credentials_yaml)
+
+        config = Config.load(config_path)
+
+        test_profile = config.profiles["test"]
+        assert test_profile.username == "testuser"
+        assert test_profile.password == "testpass"
+
+        prod_profile = config.profiles["production"]
+        assert prod_profile.username == "produser"
+        assert prod_profile.password == "prodpass"
 
     def test_load_empty_file_returns_default(self, temp_dir: Path):
         config_path = temp_dir / "config.yaml"
@@ -196,3 +267,36 @@ class TestConfigIntegration:
             assert loaded_profile.verify_ssl == orig_profile.verify_ssl
             assert loaded_profile.timeout == orig_profile.timeout
             assert loaded_profile.default_project == orig_profile.default_project
+
+    def test_roundtrip_save_load_with_credentials(self, temp_dir: Path):
+        """Test that saving and loading preserves credentials."""
+        original = Config(
+            default_profile="production",
+            output_format="json",
+            profiles={
+                "development": Profile(
+                    url="https://dev.example.org",
+                    username="devuser",
+                    password="devpass",
+                    verify_ssl=False,
+                    timeout=60,
+                ),
+                "production": Profile(
+                    url="https://prod.example.org",
+                    username="produser",
+                    password="prodpass",
+                    verify_ssl=True,
+                    timeout=30,
+                ),
+            },
+        )
+
+        config_path = temp_dir / "config.yaml"
+        original.save(config_path)
+        loaded = Config.load(config_path)
+
+        for name in original.profiles:
+            orig_profile = original.profiles[name]
+            loaded_profile = loaded.profiles[name]
+            assert loaded_profile.username == orig_profile.username
+            assert loaded_profile.password == orig_profile.password
