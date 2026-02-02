@@ -214,8 +214,10 @@ def scan_delete(
 
 
 @scan.command("download")
-@click.argument("session_id")
-@click.option("--project", "-P", help="Project ID (improves performance)")
+@click.option(
+    "--experiment", "-E", "session_id", required=True, help="Session/Experiment ID or label"
+)
+@click.option("--project", "-P", help="Project ID (required when using session label)")
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
 @click.option("--out", required=True, type=click.Path(), help="Output directory")
 @click.option(
@@ -258,11 +260,10 @@ def scan_download(
     at a time.
 
     Examples:
-        xnatctl scan download XNAT_E00001 --scans 1 --out ./data
-        xnatctl scan download XNAT_E00001 --scans 1,2,3 --out ./data
-        xnatctl scan download XNAT_E00001 --scans '*' --out ./data
-        xnatctl scan download SESSION_LABEL -P PROJECT --scans 1 --out ./data
-        xnatctl scan download SESSION --scans 1,2,3 --out ./data --sequential
+        xnatctl scan download -E XNAT_E00001 -s 1 --out ./data
+        xnatctl scan download -P PROJECT -E SESSION_LABEL -s 1,2,3 --out ./data
+        xnatctl scan download -P PROJECT -E SESSION -s '*' --out ./data
+        xnatctl scan download -P PROJECT -E SESSION -s 1 --out ./data --sequential
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
