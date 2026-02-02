@@ -82,7 +82,8 @@ class DownloadService(BaseService):
             # Stream download
             total_bytes = 0
             client = self.client._get_client()
-            with client.stream("GET", path, params=params) as response:
+            cookies = self.client._get_cookies()
+            with client.stream("GET", path, params=params, cookies=cookies) as response:
                 response.raise_for_status()
                 total_size = int(response.headers.get("content-length", 0))
 
@@ -199,17 +200,28 @@ class DownloadService(BaseService):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Build path
+        # Resolve session label to internal ID if using project path
+        # The /data/projects/.../experiments/{label}/... path doesn't work for ZIP downloads
+        # but /data/experiments/{id}/... does
+        resolved_session_id = session_id
+        if project and not session_id.startswith("XNAT_E"):
+            try:
+                exp_data = self._get(
+                    f"/data/projects/{project}/experiments/{session_id}",
+                    params={"format": "json"},
+                )
+                if "items" in exp_data and exp_data["items"]:
+                    resolved_session_id = (
+                        exp_data["items"][0].get("data_fields", {}).get("ID", session_id)
+                    )
+            except Exception:
+                pass
+
+        # Build path - always use /data/experiments/{id}/... for reliable ZIP downloads
         if scan_id:
-            if project:
-                path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}/files"
-            else:
-                path = f"/data/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}/files"
+            path = f"/data/experiments/{resolved_session_id}/scans/{scan_id}/resources/{resource_label}/files"
         else:
-            if project:
-                path = f"/data/projects/{project}/experiments/{session_id}/resources/{resource_label}/files"
-            else:
-                path = f"/data/experiments/{session_id}/resources/{resource_label}/files"
+            path = f"/data/experiments/{resolved_session_id}/resources/{resource_label}/files"
 
         params = {"format": "zip"}
 
@@ -218,7 +230,8 @@ class DownloadService(BaseService):
         try:
             total_bytes = 0
             client = self.client._get_client()
-            with client.stream("GET", path, params=params) as response:
+            cookies = self.client._get_cookies()
+            with client.stream("GET", path, params=params, cookies=cookies) as response:
                 response.raise_for_status()
                 total_size = int(response.headers.get("content-length", 0))
 

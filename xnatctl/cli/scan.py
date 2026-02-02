@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
 from xnatctl.cli.common import (
@@ -12,7 +14,7 @@ from xnatctl.cli.common import (
     parallel_options,
     require_auth,
 )
-from xnatctl.core.output import print_error, print_output, print_success
+from xnatctl.core.output import print_error, print_json, print_output, print_success
 
 
 @click.group()
@@ -209,3 +211,163 @@ def scan_delete(
         for scan_id, error in failed:
             click.echo(f"  - {scan_id}: {error}")
         raise SystemExit(1)
+
+
+@scan.command("download")
+@click.argument("session_id")
+@click.option("--project", "-P", help="Project ID (improves performance)")
+@click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
+@click.option("--out", required=True, type=click.Path(), help="Output directory")
+@click.option(
+    "--resource",
+    "-r",
+    default="DICOM",
+    help="Resource type to download (default: DICOM)",
+)
+@click.option("--unzip/--no-unzip", default=True, help="Extract downloaded ZIPs")
+@click.option(
+    "--cleanup/--no-cleanup",
+    default=True,
+    help="Remove ZIPs after successful extraction",
+)
+@click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
+@parallel_options
+@global_options
+@require_auth
+@handle_errors
+def scan_download(
+    ctx: Context,
+    session_id: str,
+    project: str | None,
+    scans: str,
+    out: str,
+    resource: str,
+    unzip: bool,
+    cleanup: bool,
+    dry_run: bool,
+    parallel: bool,
+    workers: int,
+) -> None:
+    """Download scans from an image session.
+
+    Example:
+        xnatctl scan download XNAT_E00001 --scans 1 --out ./data
+        xnatctl scan download XNAT_E00001 --scans 1,2,3 --out ./data
+        xnatctl scan download XNAT_E00001 --scans '*' --out ./data
+        xnatctl scan download SESSION_LABEL -P PROJECT_ID --scans 1 --out ./data
+        xnatctl scan download XNAT_E00001 --scans 1 --out ./data --resource NIFTI
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from xnatctl.core.validation import validate_scan_ids_input, validate_session_id
+    from xnatctl.models.progress import DownloadProgress, OperationPhase
+    from xnatctl.services.downloads import DownloadService
+
+    session_id = validate_session_id(session_id)
+    scan_ids = validate_scan_ids_input(scans)
+    output_dir = Path(out)
+    client = ctx.get_client()
+
+    # If wildcard, get all scan IDs
+    if scan_ids is None:
+        if project:
+            resp = client.get_json(f"/data/projects/{project}/experiments/{session_id}/scans")
+        else:
+            resp = client.get_json(f"/data/experiments/{session_id}/scans")
+        results = resp.get("ResultSet", {}).get("Result", [])
+        scan_ids = [r.get("ID", "") for r in results if r.get("ID")]
+
+    if not scan_ids:
+        print_error("No scans to download")
+        raise SystemExit(1)
+
+    if dry_run:
+        click.echo(f"[DRY-RUN] Would download {len(scan_ids)} scans to {output_dir}:")
+        for sid in scan_ids:
+            click.echo(f"  - Scan {sid} ({resource})")
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    service = DownloadService(client)
+
+    succeeded = []
+    failed = []
+
+    def download_one_scan(scan_id: str) -> tuple[str, bool, str, float]:
+        """Download a single scan."""
+        scan_output = output_dir / f"scan_{scan_id}"
+
+        def progress_cb(progress: DownloadProgress) -> None:
+            if progress.phase == OperationPhase.DOWNLOADING and not ctx.quiet:
+                if progress.total_bytes:
+                    pct = progress.bytes_received * 100 // progress.total_bytes
+                    click.echo(
+                        f"\r  Scan {scan_id}: {pct}% ({progress.bytes_received // 1024} KB)",
+                        nl=False,
+                    )
+
+        try:
+            summary = service.download_scan(
+                session_id=session_id,
+                scan_id=scan_id,
+                output_dir=scan_output,
+                project=project,
+                resource=resource,
+                progress_callback=progress_cb if not ctx.quiet else None,
+            )
+
+            if summary.success:
+                return scan_id, True, "", summary.total_size_mb
+            else:
+                return scan_id, False, summary.errors[0] if summary.errors else "Unknown error", 0.0
+
+        except Exception as e:
+            return scan_id, False, str(e), 0.0
+
+    total_size_mb = 0.0
+
+    if parallel and len(scan_ids) > 1:
+        with ThreadPoolExecutor(max_workers=min(workers, len(scan_ids))) as executor:
+            futures = {executor.submit(download_one_scan, sid): sid for sid in scan_ids}
+            for future in as_completed(futures):
+                scan_id, success, error, size_mb = future.result()
+                if success:
+                    succeeded.append(scan_id)
+                    total_size_mb += size_mb
+                    if not ctx.quiet:
+                        click.echo(f"\r  Scan {scan_id}: Done ({size_mb:.1f} MB)")
+                else:
+                    failed.append((scan_id, error))
+    else:
+        for scan_id in scan_ids:
+            scan_id, success, error, size_mb = download_one_scan(scan_id)
+            if success:
+                succeeded.append(scan_id)
+                total_size_mb += size_mb
+                if not ctx.quiet:
+                    click.echo(f"\r  Scan {scan_id}: Done ({size_mb:.1f} MB)")
+            else:
+                failed.append((scan_id, error))
+
+    # Summary
+    if ctx.output_format == "json":
+        print_json(
+            {
+                "session_id": session_id,
+                "output_dir": str(output_dir),
+                "succeeded": succeeded,
+                "failed": [{"scan_id": s, "error": e} for s, e in failed],
+                "total_size_mb": round(total_size_mb, 2),
+            }
+        )
+    else:
+        if succeeded:
+            print_success(
+                f"Downloaded {len(succeeded)} scans ({total_size_mb:.1f} MB) to {output_dir}"
+            )
+
+        if failed:
+            print_error(f"Failed to download {len(failed)} scans:")
+            for scan_id, error in failed:
+                click.echo(f"  - {scan_id}: {error}")
+            raise SystemExit(1)
