@@ -231,7 +231,11 @@ def scan_delete(
     help="Remove ZIPs after successful extraction",
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
-@parallel_options
+@click.option(
+    "--parallel/--sequential",
+    default=True,
+    help="Download scans in parallel (1 thread per scan) or sequentially",
+)
 @global_options
 @require_auth
 @handle_errors
@@ -246,16 +250,19 @@ def scan_download(
     cleanup: bool,
     dry_run: bool,
     parallel: bool,
-    workers: int,
 ) -> None:
     """Download scans from an image session.
 
-    Example:
+    Each scan is downloaded by a single thread. With --parallel (default),
+    all scans download concurrently. With --sequential, scans download one
+    at a time.
+
+    Examples:
         xnatctl scan download XNAT_E00001 --scans 1 --out ./data
         xnatctl scan download XNAT_E00001 --scans 1,2,3 --out ./data
         xnatctl scan download XNAT_E00001 --scans '*' --out ./data
-        xnatctl scan download SESSION_LABEL -P PROJECT_ID --scans 1 --out ./data
-        xnatctl scan download XNAT_E00001 --scans 1 --out ./data --resource NIFTI
+        xnatctl scan download SESSION_LABEL -P PROJECT --scans 1 --out ./data
+        xnatctl scan download SESSION --scans 1,2,3 --out ./data --sequential
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -327,7 +334,7 @@ def scan_download(
     total_size_mb = 0.0
 
     if parallel and len(scan_ids) > 1:
-        with ThreadPoolExecutor(max_workers=min(workers, len(scan_ids))) as executor:
+        with ThreadPoolExecutor(max_workers=len(scan_ids)) as executor:
             futures = {executor.submit(download_one_scan, sid): sid for sid in scan_ids}
             for future in as_completed(futures):
                 scan_id, success, error, size_mb = future.result()
