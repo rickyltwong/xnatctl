@@ -179,7 +179,8 @@ class DownloadService(BaseService):
         output_dir: Path,
         scan_id: str | None = None,
         project: str | None = None,
-        extract: bool = True,
+        extract: bool = False,
+        zip_filename: str | None = None,
         progress_callback: Callable[[DownloadProgress], None] | None = None,
     ) -> DownloadSummary:
         """Download a specific resource.
@@ -190,7 +191,8 @@ class DownloadService(BaseService):
             output_dir: Output directory
             scan_id: Scan ID (for scan-level resources)
             project: Project ID
-            extract: Extract ZIP files
+            extract: Extract ZIP files (default: False)
+            zip_filename: Custom ZIP filename (default: {resource_label}.zip)
             progress_callback: Progress callback
 
         Returns:
@@ -229,7 +231,7 @@ class DownloadService(BaseService):
 
         params = {"format": "zip"}
 
-        zip_path = output_dir / f"{resource_label}.zip"
+        zip_path = output_dir / (zip_filename or f"{resource_label}.zip")
 
         try:
             total_bytes = 0
@@ -317,6 +319,125 @@ class DownloadService(BaseService):
             project=project,
             progress_callback=progress_callback,
         )
+
+    def download_scans(
+        self,
+        session_id: str,
+        scan_ids: list[str],
+        output_dir: Path,
+        project: str | None = None,
+        resource: str | None = None,
+        zip_filename: str | None = None,
+        extract: bool = False,
+        progress_callback: Callable[[DownloadProgress], None] | None = None,
+    ) -> DownloadSummary:
+        """Download multiple scans in a single request.
+
+        Uses XNAT's comma-separated scan ID feature for efficient batch downloads.
+        When resource is None, downloads ALL files (DICOM + SNAPSHOTS).
+
+        Args:
+            session_id: Session ID or label
+            scan_ids: List of scan IDs (or ["ALL"] for all scans)
+            output_dir: Output directory
+            project: Project ID (required when using session label)
+            resource: Resource type (None = all resources, "DICOM" = DICOM only)
+            zip_filename: Output ZIP filename (default: scans.zip)
+            extract: Extract ZIP after download
+            progress_callback: Progress callback
+
+        Returns:
+            DownloadSummary with results
+        """
+        start_time = time.time()
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        resolved_session_id = session_id
+        if project and not session_id.startswith("XNAT_E"):
+            try:
+                exp_data = self._get(
+                    f"/data/projects/{project}/experiments/{session_id}",
+                    params={"format": "json"},
+                )
+                if "items" in exp_data and exp_data["items"]:
+                    resolved_session_id = (
+                        exp_data["items"][0].get("data_fields", {}).get("ID", session_id)
+                    )
+                else:
+                    raise ValueError(f"Session '{session_id}' not found in project '{project}'")
+            except Exception as e:
+                if "not found" in str(e).lower() or isinstance(e, ValueError):
+                    raise
+                resolved_session_id = session_id
+
+        scan_spec = ",".join(scan_ids) if len(scan_ids) > 1 else scan_ids[0]
+
+        if resource:
+            path = f"/data/experiments/{resolved_session_id}/scans/{scan_spec}/resources/{resource}/files"
+        else:
+            path = f"/data/experiments/{resolved_session_id}/scans/{scan_spec}/files"
+
+        params = {"format": "zip"}
+        zip_path = output_dir / (zip_filename or "scans.zip")
+
+        try:
+            total_bytes = 0
+            client = self.client._get_client()
+            cookies = self.client._get_cookies()
+            with client.stream("GET", path, params=params, cookies=cookies) as response:
+                response.raise_for_status()
+                total_size = int(response.headers.get("content-length", 0))
+
+                with open(zip_path, "wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+
+                        if progress_callback:
+                            progress_callback(
+                                DownloadProgress(
+                                    phase=OperationPhase.DOWNLOADING,
+                                    bytes_received=total_bytes,
+                                    total_bytes=total_size,
+                                    file_path=str(zip_path),
+                                )
+                            )
+
+            file_count = 1
+            output_path = str(zip_path)
+            if extract:
+                extract_dir = output_dir / "scans"
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(extract_dir)
+                file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
+                zip_path.unlink()
+                output_path = str(extract_dir)
+
+            duration = time.time() - start_time
+            return DownloadSummary(
+                success=True,
+                total=len(scan_ids),
+                succeeded=len(scan_ids),
+                failed=0,
+                duration=duration,
+                total_files=file_count,
+                total_size_mb=total_bytes / (1024 * 1024),
+                output_path=output_path,
+                session_id=session_id,
+            )
+
+        except Exception as e:
+            duration = time.time() - start_time
+            return DownloadSummary(
+                success=False,
+                total=len(scan_ids),
+                succeeded=0,
+                failed=len(scan_ids),
+                duration=duration,
+                errors=[str(e)],
+                session_id=session_id,
+            )
 
     def _verify_download(
         self,
