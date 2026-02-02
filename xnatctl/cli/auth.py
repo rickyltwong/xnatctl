@@ -56,10 +56,10 @@ def auth_login(
         print_error(str(e))
         raise SystemExit(1) from e
 
-    # Get credentials from environment or prompt
+    # Get credentials: CLI args > env vars > profile config > prompt
     env_user, env_pass = auth_mgr.get_credentials()
-    user = username or env_user
-    pwd = password or env_pass
+    user = username or env_user or profile.username
+    pwd = password or env_pass or profile.password
 
     if not user:
         user = click.prompt("Username")
@@ -223,9 +223,11 @@ def auth_test(profile_name: str | None, output: str) -> None:
         print_error(str(e))
         raise SystemExit(1) from e
 
-    # Try session token first, then credentials
+    # Try session token first, then credentials (env vars > profile config)
     session_token = auth_mgr.get_session_token(profile.url)
     env_user, env_pass = auth_mgr.get_credentials()
+    user = env_user or profile.username
+    pwd = env_pass or profile.password
 
     if session_token:
         click.echo("Testing with cached session...")
@@ -235,12 +237,12 @@ def auth_test(profile_name: str | None, output: str) -> None:
             verify_ssl=profile.verify_ssl,
             timeout=profile.timeout,
         )
-    elif env_user and env_pass:
+    elif user and pwd:
         click.echo("Testing with credentials...")
         client = XNATClient(
             base_url=profile.url,
-            username=env_user,
-            password=env_pass,
+            username=user,
+            password=pwd,
             verify_ssl=profile.verify_ssl,
             timeout=profile.timeout,
         )
@@ -250,7 +252,9 @@ def auth_test(profile_name: str | None, output: str) -> None:
             print_error(f"Authentication failed: {e}")
             raise SystemExit(1) from e
     else:
-        print_error("No credentials found. Set XNAT_USER/XNAT_PASS or use 'xnatctl auth login'")
+        print_error(
+            "No credentials found. Set XNAT_USER/XNAT_PASS, configure in profile, or use 'xnatctl auth login'"
+        )
         raise SystemExit(1)
 
     try:

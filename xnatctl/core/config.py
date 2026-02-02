@@ -45,15 +45,22 @@ class Profile:
     verify_ssl: bool = True
     timeout: int = 30
     default_project: str | None = None
+    username: str | None = None
+    password: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return {
+        result: dict[str, Any] = {
             "url": self.url,
             "verify_ssl": self.verify_ssl,
             "timeout": self.timeout,
             "default_project": self.default_project,
         }
+        if self.username:
+            result["username"] = self.username
+        if self.password:
+            result["password"] = self.password
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Profile:
@@ -63,6 +70,8 @@ class Profile:
             verify_ssl=data.get("verify_ssl", True),
             timeout=data.get("timeout", 30),
             default_project=data.get("default_project"),
+            username=data.get("username"),
+            password=data.get("password"),
         )
 
 

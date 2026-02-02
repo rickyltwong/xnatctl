@@ -68,6 +68,8 @@ output_format: table
 profiles:
   production:
     url: https://xnat.example.org
+    username: myuser          # optional, can also use env vars
+    password: mypassword      # optional, can also use env vars
     verify_ssl: true
     timeout: 30
     default_project: MYPROJECT
@@ -102,6 +104,12 @@ xnatctl auth login
 # Check current user/session context
 xnatctl whoami
 ```
+
+Credential priority (highest to lowest):
+1. CLI arguments (`--username`, `--password`)
+2. Environment variables (`XNAT_USER`, `XNAT_PASS`)
+3. Profile config (`username`, `password` in config.yaml)
+4. Interactive prompt
 
 Session tokens are cached under `~/.config/xnatctl/.session` and used automatically.
 
