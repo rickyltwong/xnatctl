@@ -214,8 +214,12 @@ class DownloadService(BaseService):
                     resolved_session_id = (
                         exp_data["items"][0].get("data_fields", {}).get("ID", session_id)
                     )
-            except Exception:
-                pass
+                else:
+                    raise ValueError(f"Session '{session_id}' not found in project '{project}'")
+            except Exception as e:
+                if "not found" in str(e).lower() or isinstance(e, ValueError):
+                    raise
+                resolved_session_id = session_id
 
         # Build path - always use /data/experiments/{id}/... for reliable ZIP downloads
         if scan_id:
