@@ -21,12 +21,12 @@ def subject() -> None:
 
 
 @subject.command("list")
-@click.option("--project", "-P", required=True, help="Project ID")
+@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--filter", "filter_expr", help="Filter expression (e.g., 'label:SUB*')")
 @global_options
 @require_auth
 @handle_errors
-def subject_list(ctx: Context, project: str, filter_expr: str | None) -> None:
+def subject_list(ctx: Context, project: str | None, filter_expr: str | None) -> None:
     """List subjects in a project.
 
     Example:
@@ -34,6 +34,17 @@ def subject_list(ctx: Context, project: str, filter_expr: str | None) -> None:
         xnatctl subject list -P MYPROJ -q  # IDs only
     """
     from xnatctl.core.validation import validate_project_id
+
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+        if not project:
+            profile_name = ctx.profile_name or (
+                ctx.config.default_profile if ctx.config else "default"
+            )
+            raise click.ClickException(
+                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
+            )
 
     project = validate_project_id(project)
     client = ctx.get_client()
@@ -89,17 +100,28 @@ def subject_list(ctx: Context, project: str, filter_expr: str | None) -> None:
 
 @subject.command("show")
 @click.argument("subject_id")
-@click.option("--project", "-P", required=True, help="Project ID")
+@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @global_options
 @require_auth
 @handle_errors
-def subject_show(ctx: Context, subject_id: str, project: str) -> None:
+def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
     """Show subject details.
 
     Example:
         xnatctl subject show SUB001 --project MYPROJ
     """
     from xnatctl.core.validation import validate_project_id, validate_subject_id
+
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+        if not project:
+            profile_name = ctx.profile_name or (
+                ctx.config.default_profile if ctx.config else "default"
+            )
+            raise click.ClickException(
+                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
+            )
 
     project = validate_project_id(project)
     subject_id = validate_subject_id(subject_id)
@@ -144,12 +166,12 @@ def subject_show(ctx: Context, subject_id: str, project: str) -> None:
 
 @subject.command("delete")
 @click.argument("subject_id")
-@click.option("--project", "-P", required=True, help="Project ID")
+@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @confirm_destructive("Delete this subject and all its sessions?")
 @global_options
 @require_auth
 @handle_errors
-def subject_delete(ctx: Context, subject_id: str, project: str, dry_run: bool) -> None:
+def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: bool) -> None:
     """Delete a subject.
 
     Example:
@@ -157,6 +179,17 @@ def subject_delete(ctx: Context, subject_id: str, project: str, dry_run: bool) -
         xnatctl subject delete SUB001 -P MYPROJ --dry-run
     """
     from xnatctl.core.validation import validate_project_id, validate_subject_id
+
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+        if not project:
+            profile_name = ctx.profile_name or (
+                ctx.config.default_profile if ctx.config else "default"
+            )
+            raise click.ClickException(
+                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
+            )
 
     project = validate_project_id(project)
     subject_id = validate_subject_id(subject_id)
@@ -177,7 +210,7 @@ def subject_delete(ctx: Context, subject_id: str, project: str, dry_run: bool) -
 
 
 @subject.command("rename")
-@click.option("--project", "-P", required=True, help="Project ID")
+@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option(
     "--mapping", type=click.Path(exists=True), help="JSON file with old->new label mapping"
 )
@@ -189,7 +222,7 @@ def subject_delete(ctx: Context, subject_id: str, project: str, dry_run: bool) -
 @handle_errors
 def subject_rename(
     ctx: Context,
-    project: str,
+    project: str | None,
     mapping: str | None,
     pattern: str | None,
     to_template: str | None,
@@ -210,6 +243,17 @@ def subject_rename(
 
     from xnatctl.core.validation import validate_project_id, validate_regex_pattern
     from xnatctl.services.subjects import SubjectService
+
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+        if not project:
+            profile_name = ctx.profile_name or (
+                ctx.config.default_profile if ctx.config else "default"
+            )
+            raise click.ClickException(
+                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
+            )
 
     project = validate_project_id(project)
     client = ctx.get_client()

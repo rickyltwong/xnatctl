@@ -14,7 +14,7 @@ from xnatctl.cli.common import (
     parallel_options,
     require_auth,
 )
-from xnatctl.core.output import print_error, print_json, print_output, print_success
+from xnatctl.core.output import OutputFormat, print_error, print_json, print_output, print_success
 
 
 @click.group()
@@ -217,7 +217,11 @@ def scan_delete(
 @click.option(
     "--experiment", "-E", "session_id", required=True, help="Session/Experiment ID or label"
 )
-@click.option("--project", "-P", help="Project ID (required when using session label)")
+@click.option(
+    "--project",
+    "-P",
+    help="Project ID (required when using session label unless profile has default_project)",
+)
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
 @click.option("--name", help="Output directory name (defaults to experiment value)")
@@ -275,6 +279,10 @@ def scan_download(
     output_dir = Path(out)
     client = ctx.get_client()
 
+    if not project and not session_id.startswith("XNAT_E"):
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+
     if name and ("/" in name or "\\" in name):
         raise click.ClickException("--name cannot contain path separators")
 
@@ -325,7 +333,7 @@ def scan_download(
     if not ctx.quiet:
         click.echo()
 
-    if ctx.output_format == "json":
+    if ctx.output_format == OutputFormat.JSON:
         print_json(
             {
                 "session_id": session_id,

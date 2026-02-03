@@ -23,7 +23,7 @@ def session() -> None:
 
 
 @session.command("list")
-@click.option("--project", "-P", required=True, help="Project ID")
+@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--subject", "-S", help="Filter by subject")
 @click.option(
     "--modality", type=click.Choice(["MR", "PET", "CT", "EEG"]), help="Filter by modality"
@@ -33,7 +33,7 @@ def session() -> None:
 @handle_errors
 def session_list(
     ctx: Context,
-    project: str,
+    project: str | None,
     subject: str | None,
     modality: str | None,
 ) -> None:
@@ -45,6 +45,17 @@ def session_list(
         xnatctl session list -P MYPROJ --modality MR
     """
     from xnatctl.core.validation import validate_project_id
+
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+        if not project:
+            profile_name = ctx.profile_name or (
+                ctx.config.default_profile if ctx.config else "default"
+            )
+            raise click.ClickException(
+                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
+            )
 
     project = validate_project_id(project)
     client = ctx.get_client()
@@ -372,7 +383,7 @@ def session_download(
 
 @session.command("upload")
 @click.argument("input_path", type=click.Path(exists=True))
-@click.option("--project", "-P", required=True, help="Project ID")
+@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--subject", "-S", required=True, help="Subject ID")
 @click.option("--session", "-E", required=True, help="Session label")
 @click.option("--username", "-u", help="XNAT username (REST upload)")
@@ -456,7 +467,7 @@ def session_download(
 def session_upload(
     ctx: Context,
     input_path: str,
-    project: str,
+    project: str | None,
     subject: str,
     session: str,
     username: str | None,
@@ -504,6 +515,17 @@ def session_upload(
         validate_session_id,
         validate_subject_id,
     )
+
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+        if not project:
+            profile_name = ctx.profile_name or (
+                ctx.config.default_profile if ctx.config else "default"
+            )
+            raise click.ClickException(
+                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
+            )
 
     project = validate_project_id(project)
     subject = validate_subject_id(subject)
