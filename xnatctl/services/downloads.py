@@ -329,6 +329,7 @@ class DownloadService(BaseService):
         resource: str | None = None,
         zip_filename: str | None = None,
         extract: bool = False,
+        cleanup: bool = True,
         progress_callback: Callable[[DownloadProgress], None] | None = None,
     ) -> DownloadSummary:
         """Download multiple scans in a single request.
@@ -344,6 +345,7 @@ class DownloadService(BaseService):
             resource: Resource type (None = all resources, "DICOM" = DICOM only)
             zip_filename: Output ZIP filename (default: scans.zip)
             extract: Extract ZIP after download
+            cleanup: Remove ZIP after successful extraction (with extract=True)
             progress_callback: Progress callback
 
         Returns:
@@ -411,7 +413,8 @@ class DownloadService(BaseService):
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     zf.extractall(extract_dir)
                 file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
-                zip_path.unlink()
+                if cleanup:
+                    zip_path.unlink()
                 output_path = str(extract_dir)
 
             duration = time.time() - start_time
