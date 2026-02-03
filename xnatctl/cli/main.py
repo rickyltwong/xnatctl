@@ -82,6 +82,8 @@ def whoami(ctx: click.Context) -> None:
     cli_ctx.config = (
         cli_ctx.config or __import__("xnatctl.core.config", fromlist=["Config"]).Config.load()
     )
+    cfg = cli_ctx.config
+    assert cfg is not None
 
     try:
         client = cli_ctx.get_client()
@@ -92,12 +94,12 @@ def whoami(ctx: click.Context) -> None:
                 client.authenticate()
 
             user_info = client.whoami()
-            profile = cli_ctx.config.get_profile(cli_ctx.profile_name)
+            profile = cfg.get_profile(cli_ctx.profile_name)
 
             output = {
                 "username": user_info.get("username", "unknown"),
                 "server": client.base_url,
-                "profile": cli_ctx.profile_name or cli_ctx.config.default_profile,
+                "profile": cli_ctx.profile_name or cfg.default_profile,
                 "default_project": profile.default_project or "-",
                 "auth_mode": "session" if client.session_token else "basic",
             }
@@ -114,7 +116,10 @@ def whoami(ctx: click.Context) -> None:
                 },
             )
         else:
-            print_error("Not authenticated. Run 'xnatctl auth login' first.")
+            print_error(
+                "Not authenticated. Run 'xnatctl auth login', set XNAT_USER/XNAT_PASS, "
+                "or set username/password in the profile config."
+            )
             ctx.exit(2)
 
     except Exception as e:

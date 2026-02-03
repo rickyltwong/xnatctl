@@ -63,7 +63,7 @@ class Context:
         except ProfileNotFoundError as e:
             raise ConfigurationError(
                 f"Profile '{self.profile_name or 'default'}' not found. "
-                "Run 'xnatctl config init' to create one."
+                "Run 'xnatctl config show' to list profiles or 'xnatctl config init' to create one."
             ) from e
 
         # Get credentials (env vars > profile config)
@@ -174,8 +174,14 @@ def require_auth(f: F) -> F:
                 except AuthenticationError as e:
                     raise click.ClickException(str(e)) from e
             else:
+                profile_name = ctx.profile_name or (
+                    ctx.config.default_profile if ctx.config else "default"
+                )
                 raise click.ClickException(
-                    "Not authenticated. Run 'xnatctl auth login' or set XNAT_USER/XNAT_PASS."
+                    "Not authenticated. "
+                    f"Profile: '{profile_name}'. "
+                    "Run 'xnatctl auth login', set XNAT_USER/XNAT_PASS, "
+                    "or set username/password in the profile config."
                 )
 
         return f(ctx, *args, **kwargs)

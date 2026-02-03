@@ -40,7 +40,8 @@ def auth_login(
     """Login and create a session.
 
     Authenticates with the XNAT server and caches the session token.
-    Credentials come from environment variables (XNAT_USER, XNAT_PASS).
+    Credentials come from CLI args, environment variables (XNAT_USER, XNAT_PASS),
+    or the selected profile config.
 
     Example:
         xnatctl auth login
