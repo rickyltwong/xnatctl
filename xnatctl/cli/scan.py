@@ -219,7 +219,8 @@ def scan_delete(
 )
 @click.option("--project", "-P", help="Project ID (required when using session label)")
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
-@click.option("--out", required=True, type=click.Path(), help="Output directory")
+@click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
+@click.option("--name", help="Output directory name (defaults to experiment value)")
 @click.option(
     "--resource",
     "-r",
@@ -227,6 +228,11 @@ def scan_delete(
     help="Resource type to download (DICOM, NIFTI, etc). Omit for all resources.",
 )
 @click.option("--unzip/--no-unzip", default=False, help="Extract downloaded ZIPs")
+@click.option(
+    "--cleanup/--no-cleanup",
+    default=True,
+    help="Remove ZIP after successful extraction (with --unzip)",
+)
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
 @require_auth
@@ -237,19 +243,25 @@ def scan_download(
     project: str | None,
     scans: str,
     out: str,
-    resource: str,
+    name: str | None,
+    resource: str | None,
     unzip: bool,
+    cleanup: bool,
     dry_run: bool,
 ) -> None:
     """Download scans from an image session.
 
     Downloads all specified scans in a single request using XNAT's batch download
-    feature. Output is saved to {out}/{session_label}/scans.zip.
+    feature. Output is saved to {out}/{experiment}/scans.zip.
+
+    The output directory defaults to the value passed to -E/--experiment.
+    Override it with --name.
 
     Use --resource to download specific resource type (DICOM, NIFTI, etc).
     Omit --resource to download all resources for the scans.
 
     Examples:
+        xnatctl scan download -E XNAT_E00001 -s 1
         xnatctl scan download -E XNAT_E00001 -s 1 --out ./data
         xnatctl scan download -P PROJECT -E SESSION_LABEL -s 1,2,3 --out ./data
         xnatctl scan download -P PROJECT -E SESSION -s '*' --out ./data
@@ -263,6 +275,9 @@ def scan_download(
     output_dir = Path(out)
     client = ctx.get_client()
 
+    if name and ("/" in name or "\\" in name):
+        raise click.ClickException("--name cannot contain path separators")
+
     use_all_keyword = scan_ids_input is None
     if scan_ids_input is None:
         scan_ids = ["ALL"]
@@ -273,14 +288,14 @@ def scan_download(
         scan_desc = "all scans" if use_all_keyword else f"{len(scan_ids)} scans"
         resource_desc = resource if resource else "all resources"
         click.echo(
-            f"[DRY-RUN] Would download {scan_desc} ({resource_desc}) to {output_dir}/{session_id}/"
+            f"[DRY-RUN] Would download {scan_desc} ({resource_desc}) to {output_dir}/{name or session_id}/"
         )
         if not use_all_keyword:
             for sid in scan_ids:
                 click.echo(f"  - Scan {sid}")
         return
 
-    session_output = output_dir / session_id
+    session_output = output_dir / (name or session_id)
     session_output.mkdir(parents=True, exist_ok=True)
     service = DownloadService(client)
 
@@ -300,6 +315,7 @@ def scan_download(
             resource=resource,
             zip_filename="scans.zip",
             extract=unzip,
+            cleanup=cleanup,
             progress_callback=progress_cb if not ctx.quiet else None,
         )
     except ValueError as e:
@@ -321,8 +337,11 @@ def scan_download(
         )
     else:
         if summary.success:
+            kept_zip_suffix = (
+                f" (kept {session_output / 'scans.zip'})" if unzip and not cleanup else ""
+            )
             print_success(
-                f"Downloaded scans ({summary.total_size_mb:.1f} MB) to {summary.output_path}"
+                f"Downloaded scans ({summary.total_size_mb:.1f} MB) to {summary.output_path}{kept_zip_suffix}"
             )
         else:
             print_error(

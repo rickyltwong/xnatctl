@@ -226,7 +226,8 @@ def session_show(ctx: Context, session_id: str) -> None:
 
 @session.command("download")
 @click.argument("session_id")
-@click.option("--out", required=True, type=click.Path(), help="Output directory")
+@click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
+@click.option("--name", help="Output directory name (defaults to session ID)")
 @click.option("--include-resources", is_flag=True, help="Include session-level resources")
 @click.option("--include-assessors", is_flag=True, help="Include assessor data")
 @click.option("--pattern", help="File pattern filter (e.g., '*.dcm')")
@@ -247,6 +248,7 @@ def session_download(
     ctx: Context,
     session_id: str,
     out: str,
+    name: str | None,
     include_resources: bool,
     include_assessors: bool,
     pattern: str | None,
@@ -261,7 +263,9 @@ def session_download(
     """Download session data.
 
     Example:
+        xnatctl session download XNAT_E00001
         xnatctl session download XNAT_E00001 --out ./data
+        xnatctl session download XNAT_E00001 --name CLM01_CAMH_0041 --out ./data
         xnatctl session download XNAT_E00001 --out ./data --include-resources
         xnatctl session download XNAT_E00001 --out ./data --unzip --cleanup
         xnatctl session download XNAT_E00001 --out ./data --dry-run
@@ -270,6 +274,9 @@ def session_download(
 
     session_id = validate_session_id(session_id)
     out_path = Path(out)
+
+    if name and ("/" in name or "\\" in name):
+        raise click.ClickException("--name cannot contain path separators")
 
     # Validate output path
     if not out_path.exists():
@@ -294,13 +301,13 @@ def session_download(
         click.echo(f"[DRY-RUN] Would download session {session_id}")
         click.echo(f"  Project: {project}")
         click.echo(f"  Subject: {subject}")
-        click.echo(f"  Output: {out_path}")
+        click.echo(f"  Output: {out_path / (name or session_id)}")
         click.echo(f"  Include resources: {include_resources}")
         click.echo(f"  Include assessors: {include_assessors}")
         return
 
     # Create session directory
-    session_dir = out_path / session_id
+    session_dir = out_path / (name or session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
 
     from xnatctl.core.output import create_progress
