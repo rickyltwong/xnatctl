@@ -255,7 +255,7 @@ def resource_upload(
 @resource.command("download")
 @click.argument("session_id")
 @click.argument("resource_label")
-@click.option("--out", "-o", required=True, type=click.Path(), help="Output path")
+@click.option("--out", required=True, type=click.Path(), help="Output path")
 @click.option("--scan", help="Download from scan resource")
 @global_options
 @require_auth
