@@ -403,6 +403,11 @@ def session_download(
     help="Archive format for REST upload (default: tar)",
 )
 @click.option(
+    "--zip-to-tar/--no-zip-to-tar",
+    default=False,
+    help="Convert ZIP archive to TAR before REST upload",
+)
+@click.option(
     "--upload-workers",
     type=int,
     default=4,
@@ -475,6 +480,7 @@ def session_upload(
     password: str | None,
     transport: str,
     archive_format: str,
+    zip_to_tar: bool,
     upload_workers: int,
     archive_workers: int,
     overwrite: str,
@@ -581,6 +587,7 @@ def session_upload(
             overwrite=overwrite,
             direct_archive=direct_archive,
             ignore_unparsable=ignore_unparsable,
+            zip_to_tar=zip_to_tar,
         )
     elif source_path.is_dir():
         # Directory upload with parallel batching
@@ -610,6 +617,7 @@ def _upload_single_archive(
     overwrite: str,
     direct_archive: bool,
     ignore_unparsable: bool,
+    zip_to_tar: bool,
 ) -> None:
     """Upload a single archive file."""
     from xnatctl.core.output import create_progress
@@ -634,6 +642,7 @@ def _upload_single_archive(
                 overwrite,
                 direct_archive,
                 ignore_unparsable,
+                zip_to_tar,
             )
 
             progress.update(task, completed=100)
@@ -647,6 +656,7 @@ def _upload_single_archive(
             overwrite,
             direct_archive,
             ignore_unparsable,
+            zip_to_tar,
         )
 
     if ctx.output_format == OutputFormat.JSON:
@@ -667,37 +677,84 @@ def _do_single_upload(
     overwrite: str,
     direct_archive: bool,
     ignore_unparsable: bool,
+    zip_to_tar: bool,
 ) -> None:
     """Execute the actual upload."""
-    content_type = (
-        "application/zip" if archive_path.suffix.lower() == ".zip" else "application/x-tar"
-    )
-
-    with open(archive_path, "rb") as f:
-        resp = client.post(
-            "/data/services/import",
-            params={
-                "import-handler": "DICOM-zip",
-                "project": project,
-                "subject": subject,
-                "session": session,
-                "overwrite": overwrite,
-                "overwrite_files": "true",
-                "quarantine": "false",
-                "triggerPipelines": "true",
-                "rename": "false",
-                "Direct-Archive": "true" if direct_archive else "false",
-                "Ignore-Unparsable": "true" if ignore_unparsable else "false",
-                "inbody": "true",
-            },
-            data=f,
-            headers={"Content-Type": content_type},
-            timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
-        )
+    with _maybe_zip_to_tar(archive_path, zip_to_tar) as (upload_path, content_type):
+        with open(upload_path, "rb") as f:
+            resp = client.post(
+                "/data/services/import",
+                params={
+                    "import-handler": "DICOM-zip",
+                    "project": project,
+                    "subject": subject,
+                    "session": session,
+                    "overwrite": overwrite,
+                    "overwrite_files": "true",
+                    "quarantine": "false",
+                    "triggerPipelines": "true",
+                    "rename": "false",
+                    "Direct-Archive": "true" if direct_archive else "false",
+                    "Ignore-Unparsable": "true" if ignore_unparsable else "false",
+                    "inbody": "true",
+                },
+                data=f,
+                headers={"Content-Type": content_type},
+                timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
+            )
 
     if resp.status_code != 200:
         print_error(f"Upload failed: {resp.text[:200]}")
         raise SystemExit(1)
+
+
+def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
+    import tarfile
+    import time
+    import zipfile
+
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        with tarfile.open(tar_path, "w") as tf:
+            for info in zf.infolist():
+                name = info.filename
+                if info.is_dir():
+                    tarinfo = tarfile.TarInfo(name.rstrip("/") + "/")
+                    tarinfo.type = tarfile.DIRTYPE
+                    tarinfo.mtime = time.mktime(info.date_time + (0, 0, -1))
+                    tarinfo.size = 0
+                    tf.addfile(tarinfo)
+                    continue
+
+                tarinfo = tarfile.TarInfo(name)
+                tarinfo.size = info.file_size
+                tarinfo.mtime = time.mktime(info.date_time + (0, 0, -1))
+                with zf.open(info, "r") as src:
+                    tf.addfile(tarinfo, fileobj=src)
+
+
+def _default_content_type(archive_path: Path) -> str:
+    return "application/zip" if archive_path.suffix.lower() == ".zip" else "application/x-tar"
+
+
+def _should_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> bool:
+    return zip_to_tar and archive_path.suffix.lower() == ".zip"
+
+
+def _maybe_zip_to_tar(archive_path: Path, zip_to_tar: bool):
+    import tempfile
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _converter():
+        if _should_zip_to_tar(archive_path, zip_to_tar):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                tar_path = Path(temp_dir) / f"{archive_path.stem}.tar"
+                _zip_to_tar(archive_path, tar_path)
+                yield tar_path, "application/x-tar"
+        else:
+            yield archive_path, _default_content_type(archive_path)
+
+    return _converter()
 
 
 def _upload_directory_parallel(
