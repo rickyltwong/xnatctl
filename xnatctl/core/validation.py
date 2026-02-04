@@ -18,6 +18,7 @@ from xnatctl.core.exceptions import (
     InvalidURLError,
     PathValidationError,
 )
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
 # =============================================================================
 # Constants
@@ -389,7 +390,7 @@ def validate_timeout(
     *,
     min_value: int = 1,
     max_value: int = 86400 * 30,  # 30 days
-    default: int = 30,
+    default: int = DEFAULT_HTTP_TIMEOUT_SECONDS,
 ) -> int:
     """Validate timeout value in seconds.
 

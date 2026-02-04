@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from xnatctl.core.exceptions import ConfigurationError, ProfileNotFoundError
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
 # =============================================================================
 # Constants
@@ -43,7 +44,7 @@ class Profile:
 
     url: str
     verify_ssl: bool = True
-    timeout: int = 30
+    timeout: int = DEFAULT_HTTP_TIMEOUT_SECONDS
     default_project: str | None = None
     username: str | None = None
     password: str | None = None
@@ -68,7 +69,7 @@ class Profile:
         return cls(
             url=data.get("url", ""),
             verify_ssl=data.get("verify_ssl", True),
-            timeout=data.get("timeout", 30),
+            timeout=data.get("timeout", DEFAULT_HTTP_TIMEOUT_SECONDS),
             default_project=data.get("default_project"),
             username=data.get("username"),
             password=data.get("password"),
@@ -123,7 +124,7 @@ class Config:
         # Environment variable overrides
         if url := os.getenv(ENV_URL):
             verify_ssl = os.getenv(ENV_VERIFY_SSL, "true").lower() in ("true", "1", "yes")
-            timeout = int(os.getenv(ENV_TIMEOUT, "30"))
+            timeout = int(os.getenv(ENV_TIMEOUT, str(DEFAULT_HTTP_TIMEOUT_SECONDS)))
 
             config.profiles["default"] = Profile(
                 url=url,
@@ -180,7 +181,7 @@ class Config:
         name: str,
         url: str,
         verify_ssl: bool = True,
-        timeout: int = 30,
+        timeout: int = DEFAULT_HTTP_TIMEOUT_SECONDS,
         default_project: str | None = None,
     ) -> Profile:
         """Add or update a profile.

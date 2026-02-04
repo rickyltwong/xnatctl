@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
 from xnatctl.core.config import Config, Profile
-
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
 # =============================================================================
 # Profile Tests
@@ -22,7 +21,7 @@ class TestProfile:
         profile = Profile(url="https://xnat.example.org")
         assert profile.url == "https://xnat.example.org"
         assert profile.verify_ssl is True
-        assert profile.timeout == 30
+        assert profile.timeout == DEFAULT_HTTP_TIMEOUT_SECONDS
         assert profile.default_project is None
         assert profile.username is None
         assert profile.password is None
@@ -127,9 +126,7 @@ class TestConfig:
         assert config.default_profile == "default"
         assert config.profiles == {}
 
-    def test_load_with_credentials(
-        self, temp_dir: Path, sample_config_with_credentials_yaml: str
-    ):
+    def test_load_with_credentials(self, temp_dir: Path, sample_config_with_credentials_yaml: str):
         """Test that credentials are loaded from config file."""
         config_path = temp_dir / "config.yaml"
         config_path.write_text(sample_config_with_credentials_yaml)

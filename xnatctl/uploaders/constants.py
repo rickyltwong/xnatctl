@@ -5,6 +5,8 @@ environments with fast storage and network, consider increasing workers via
 CLI flags (e.g., --upload-workers 16 --archive-workers 8).
 """
 
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
+
 # =============================================================================
 # REST Upload Defaults (conservative)
 # =============================================================================
@@ -21,8 +23,8 @@ DEFAULT_ARCHIVE_WORKERS = 4
 # Archive format: "tar" or "zip"
 DEFAULT_ARCHIVE_FORMAT = "tar"
 
-# HTTP timeout for upload requests (3 hours for large datasets)
-DEFAULT_TIMEOUT = 10800
+# HTTP timeout for upload requests (6 hours for large datasets)
+DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
 
 # XNAT import handler
 DEFAULT_IMPORT_HANDLER = "DICOM-zip"

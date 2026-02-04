@@ -7,33 +7,33 @@ from pathlib import Path
 
 import pytest
 
+from xnatctl.core.exceptions import (
+    ConfigurationError,
+    InvalidIdentifierError,
+    InvalidPortError,
+    InvalidURLError,
+    PathValidationError,
+)
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.core.validation import (
-    validate_server_url,
-    validate_url_or_none,
-    validate_port,
-    validate_xnat_identifier,
-    validate_project_id,
-    validate_subject_id,
-    validate_session_id,
-    validate_scan_id,
-    validate_resource_label,
     validate_ae_title,
     validate_path_exists,
     validate_path_writable,
-    validate_timeout,
-    validate_workers,
-    validate_regex_pattern,
-    validate_scan_ids_input,
+    validate_port,
+    validate_project_id,
     validate_project_list,
+    validate_regex_pattern,
+    validate_resource_label,
+    validate_scan_id,
+    validate_scan_ids_input,
+    validate_server_url,
+    validate_session_id,
+    validate_subject_id,
+    validate_timeout,
+    validate_url_or_none,
+    validate_workers,
+    validate_xnat_identifier,
 )
-from xnatctl.core.exceptions import (
-    InvalidURLError,
-    InvalidPortError,
-    InvalidIdentifierError,
-    PathValidationError,
-    ConfigurationError,
-)
-
 
 # =============================================================================
 # URL Validation Tests
@@ -311,7 +311,7 @@ class TestValidateTimeout:
         assert validate_timeout("60") == 60
 
     def test_none_returns_default(self):
-        assert validate_timeout(None) == 30
+        assert validate_timeout(None) == DEFAULT_HTTP_TIMEOUT_SECONDS
         assert validate_timeout(None, default=120) == 120
 
     def test_too_small_raises(self):

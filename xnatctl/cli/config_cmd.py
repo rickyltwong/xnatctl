@@ -14,6 +14,7 @@ from xnatctl.core.output import (
     print_output,
     print_success,
 )
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.core.validation import validate_server_url
 
 
@@ -163,7 +164,12 @@ def config_current_context() -> None:
 @click.argument("name")
 @click.option("--url", required=True, help="XNAT server URL")
 @click.option("--project", default=None, help="Default project ID")
-@click.option("--timeout", type=int, default=30, help="Request timeout in seconds")
+@click.option(
+    "--timeout",
+    type=int,
+    default=DEFAULT_HTTP_TIMEOUT_SECONDS,
+    help="Request timeout in seconds",
+)
 @click.option("--no-verify-ssl", is_flag=True, help="Disable SSL verification")
 def config_add_profile(
     name: str,

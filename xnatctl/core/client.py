@@ -19,13 +19,14 @@ from xnatctl.core.exceptions import (
     RetryExhaustedError,
     ServerUnreachableError,
 )
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.core.validation import validate_server_url
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-DEFAULT_TIMEOUT = 30
+DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
 DEFAULT_MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2
 RETRYABLE_STATUS_CODES = {502, 503, 504}
