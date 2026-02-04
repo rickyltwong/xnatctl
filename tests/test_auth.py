@@ -10,7 +10,6 @@ import pytest
 
 from xnatctl.core.auth import AuthManager, CachedSession
 
-
 # =============================================================================
 # CachedSession Tests
 # =============================================================================

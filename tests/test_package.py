@@ -11,13 +11,7 @@ class TestPackageImports:
         assert hasattr(xnatctl, "__version__")
 
     def test_import_core_modules(self):
-        from xnatctl.core import client
-        from xnatctl.core import config
-        from xnatctl.core import auth
-        from xnatctl.core import exceptions
-        from xnatctl.core import validation
-        from xnatctl.core import output
-        from xnatctl.core import logging
+        from xnatctl.core import auth, client, config, exceptions, logging, output, validation
 
         assert client is not None
         assert config is not None
@@ -28,13 +22,7 @@ class TestPackageImports:
         assert logging is not None
 
     def test_import_models(self):
-        from xnatctl.models import base
-        from xnatctl.models import project
-        from xnatctl.models import subject
-        from xnatctl.models import session
-        from xnatctl.models import scan
-        from xnatctl.models import resource
-        from xnatctl.models import progress
+        from xnatctl.models import base, progress, project, resource, scan, session, subject
 
         assert base is not None
         assert project is not None
@@ -45,17 +33,19 @@ class TestPackageImports:
         assert progress is not None
 
     def test_import_services(self):
-        from xnatctl.services import base
-        from xnatctl.services import projects
-        from xnatctl.services import subjects
-        from xnatctl.services import sessions
-        from xnatctl.services import scans
-        from xnatctl.services import resources
-        from xnatctl.services import downloads
-        from xnatctl.services import uploads
-        from xnatctl.services import prearchive
-        from xnatctl.services import pipelines
-        from xnatctl.services import admin
+        from xnatctl.services import (
+            admin,
+            base,
+            downloads,
+            pipelines,
+            prearchive,
+            projects,
+            resources,
+            scans,
+            sessions,
+            subjects,
+            uploads,
+        )
 
         assert base is not None
         assert projects is not None
@@ -70,20 +60,22 @@ class TestPackageImports:
         assert admin is not None
 
     def test_import_cli(self):
-        from xnatctl.cli import main
-        from xnatctl.cli import common
-        from xnatctl.cli import auth
-        from xnatctl.cli import config_cmd
-        from xnatctl.cli import project
-        from xnatctl.cli import subject
-        from xnatctl.cli import session
-        from xnatctl.cli import scan
-        from xnatctl.cli import resource
-        from xnatctl.cli import prearchive
-        from xnatctl.cli import pipeline
-        from xnatctl.cli import admin
-        from xnatctl.cli import api
-        from xnatctl.cli import dicom_cmd
+        from xnatctl.cli import (
+            admin,
+            api,
+            auth,
+            common,
+            config_cmd,
+            dicom_cmd,
+            main,
+            pipeline,
+            prearchive,
+            project,
+            resource,
+            scan,
+            session,
+            subject,
+        )
 
         assert main is not None
         assert common is not None
@@ -125,9 +117,9 @@ class TestExceptionHierarchy:
 
     def test_validation_errors(self):
         from xnatctl.core.exceptions import (
-            InvalidURLError,
-            InvalidPortError,
             InvalidIdentifierError,
+            InvalidPortError,
+            InvalidURLError,
             PathValidationError,
         )
 

@@ -7,12 +7,10 @@ from pathlib import Path
 import pytest
 
 from xnatctl.uploaders.common import (
-    DICOM_EXTENSIONS,
     collect_dicom_files,
     split_into_batches,
     split_into_n_batches,
 )
-
 
 # =============================================================================
 # collect_dicom_files Tests
