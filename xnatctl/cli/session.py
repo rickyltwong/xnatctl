@@ -14,6 +14,7 @@ from xnatctl.cli.common import (
     require_auth,
 )
 from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
 
 @click.group()
@@ -681,13 +682,17 @@ def _do_single_upload(
                 "subject": subject,
                 "session": session,
                 "overwrite": overwrite,
+                "overwrite_files": "true",
+                "quarantine": "false",
+                "triggerPipelines": "true",
+                "rename": "false",
                 "Direct-Archive": "true" if direct_archive else "false",
                 "Ignore-Unparsable": "true" if ignore_unparsable else "false",
                 "inbody": "true",
             },
             data=f,
             headers={"Content-Type": content_type},
-            timeout=10800,  # 3 hour timeout
+            timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
         )
 
     if resp.status_code != 200:
