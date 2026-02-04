@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from xnatctl.core.exceptions import AuthenticationError
 from xnatctl.models.progress import (
     DownloadProgress,
     DownloadSummary,
@@ -20,6 +21,28 @@ from .base import BaseService
 
 class DownloadService(BaseService):
     """Service for XNAT download operations."""
+
+    def _extract_experiment_id(self, exp_data: dict[str, Any]) -> str | None:
+        """Extract internal experiment ID from response data."""
+        if "items" in exp_data:
+            items = exp_data.get("items") or []
+            if items:
+                data_fields = items[0].get("data_fields") or {}
+                exp_id = data_fields.get("ID")
+                if isinstance(exp_id, str) and exp_id:
+                    return exp_id
+                if isinstance(exp_id, int):
+                    return str(exp_id)
+
+        results = exp_data.get("ResultSet", {}).get("Result", [])
+        if results:
+            exp_id = results[0].get("ID")
+            if isinstance(exp_id, str) and exp_id:
+                return exp_id
+            if isinstance(exp_id, int):
+                return str(exp_id)
+
+        return None
 
     def download_session(
         self,
@@ -212,12 +235,11 @@ class DownloadService(BaseService):
                     f"/data/projects/{project}/experiments/{session_id}",
                     params={"format": "json"},
                 )
-                if "items" in exp_data and exp_data["items"]:
-                    resolved_session_id = (
-                        exp_data["items"][0].get("data_fields", {}).get("ID", session_id)
-                    )
-                else:
+                resolved_session_id = self._extract_experiment_id(exp_data) or ""
+                if not resolved_session_id:
                     raise ValueError(f"Session '{session_id}' not found in project '{project}'")
+            except AuthenticationError:
+                raise
             except Exception as e:
                 if "not found" in str(e).lower() or isinstance(e, ValueError):
                     raise
@@ -362,12 +384,11 @@ class DownloadService(BaseService):
                     f"/data/projects/{project}/experiments/{session_id}",
                     params={"format": "json"},
                 )
-                if "items" in exp_data and exp_data["items"]:
-                    resolved_session_id = (
-                        exp_data["items"][0].get("data_fields", {}).get("ID", session_id)
-                    )
-                else:
+                resolved_session_id = self._extract_experiment_id(exp_data) or ""
+                if not resolved_session_id:
                     raise ValueError(f"Session '{session_id}' not found in project '{project}'")
+            except AuthenticationError:
+                raise
             except Exception as e:
                 if "not found" in str(e).lower() or isinstance(e, ValueError):
                     raise

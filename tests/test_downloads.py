@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import zipfile
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -116,6 +115,37 @@ class TestDownloadResourceSessionResolution:
         # Then: _get was NOT called for resolution
         download_service._get.assert_not_called()
 
+    def test_resolves_session_label_from_resultset(self, download_service, tmp_path):
+        """Test that ResultSet responses resolve to internal experiment ID."""
+        session_label = "SESSION_LABEL"
+        internal_id = "XNAT_E99999"
+        project = "PROJECT"
+
+        download_service._get = MagicMock(
+            return_value={"ResultSet": {"Result": [{"ID": internal_id}]}}
+        )
+
+        mock_http_client = MagicMock()
+        mock_stream_ctx = MagicMock()
+        mock_stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
+        mock_stream_ctx.__exit__ = MagicMock(return_value=False)
+        mock_http_client.stream.return_value = mock_stream_ctx
+        download_service.client._get_client.return_value = mock_http_client
+
+        result = download_service.download_resource(
+            session_id=session_label,
+            resource_label="DICOM",
+            output_dir=tmp_path,
+            scan_id="1",
+            project=project,
+        )
+
+        download_service._get.assert_called_once_with(
+            f"/data/projects/{project}/experiments/{session_label}",
+            params={"format": "json"},
+        )
+        assert not result.success
+
 
 class TestDownloadScan:
     """Tests for download_scan method."""
@@ -167,6 +197,62 @@ class TestDownloadScan:
 
         # And: The result is returned
         assert result == mock_summary
+
+
+class TestDownloadScansSessionResolution:
+    """Tests for session ID resolution in download_scans."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock XNAT client."""
+        client = MagicMock()
+        client._get_client.return_value = MagicMock()
+        client._get_cookies.return_value = {"JSESSIONID": "test-token"}
+        return client
+
+    @pytest.fixture
+    def download_service(self, mock_client):
+        """Create a DownloadService with mock client."""
+        return DownloadService(mock_client)
+
+    def test_resolves_session_label_to_internal_id_resultset(self, download_service, tmp_path):
+        """Test that download_scans uses internal ID from ResultSet responses."""
+        session_label = "SESSION_LABEL"
+        internal_id = "XNAT_E12345"
+        project = "PROJECT"
+
+        download_service._get = MagicMock(
+            return_value={"ResultSet": {"Result": [{"ID": internal_id}]}}
+        )
+
+        mock_http_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.headers = {"content-length": "0"}
+        mock_response.iter_bytes.return_value = []
+        mock_response.raise_for_status = MagicMock()
+
+        mock_stream_ctx = MagicMock()
+        mock_stream_ctx.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_ctx.__exit__ = MagicMock(return_value=False)
+        mock_http_client.stream.return_value = mock_stream_ctx
+        download_service.client._get_client.return_value = mock_http_client
+        download_service.client._get_cookies.return_value = {}
+
+        download_service.download_scans(
+            session_id=session_label,
+            scan_ids=["6"],
+            output_dir=tmp_path,
+            project=project,
+        )
+
+        download_service._get.assert_called_once_with(
+            f"/data/projects/{project}/experiments/{session_label}",
+            params={"format": "json"},
+        )
+
+        stream_call_args = mock_http_client.stream.call_args
+        path_arg = stream_call_args[0][1]
+        assert path_arg == f"/data/experiments/{internal_id}/scans/6/files"
 
 
 class TestDownloadResourcePathConstruction:
