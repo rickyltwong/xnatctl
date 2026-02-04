@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import click
@@ -22,14 +23,28 @@ def test_require_auth_reauthenticates_on_stale_session():
     ctx.config.profiles["default"].username = "user"
     ctx.config.profiles["default"].password = "pass"
 
-    mock_client = MagicMock()
-    mock_client.is_authenticated = True
-    mock_client.whoami.side_effect = AuthenticationError("https://example.org", "expired")
-    mock_client.authenticate.return_value = "new-token"
-    mock_client.base_url = "https://example.org"
-    mock_client.session_token = "old-token"
+    class FakeClient:
+        base_url = "https://example.org"
 
-    ctx.client = mock_client
+        def __init__(self) -> None:
+            self.session_token = "old-token"
+            self.authenticate_calls = 0
+
+        @property
+        def is_authenticated(self) -> bool:
+            return self.session_token is not None
+
+        def whoami(self) -> dict[str, str]:
+            raise AuthenticationError("https://example.org", "expired")
+
+        def authenticate(self) -> str:
+            self.authenticate_calls += 1
+            self.session_token = "new-token"
+            return "new-token"
+
+    mock_client = FakeClient()
+
+    ctx.client = cast(Any, mock_client)
     ctx.auth_manager = MagicMock()
 
     decorated = require_auth(_protected_command)
@@ -37,13 +52,13 @@ def test_require_auth_reauthenticates_on_stale_session():
 
     assert result == "ok"
     ctx.auth_manager.clear_session.assert_called_once_with()
-    mock_client.authenticate.assert_called_once_with()
+    assert mock_client.authenticate_calls == 1
     ctx.auth_manager.save_session.assert_called_once_with(
         token="new-token",
         url="https://example.org",
         username="user",
     )
-    assert mock_client.session_token is None
+    assert mock_client.session_token == "new-token"
 
 
 def test_require_auth_raises_when_session_expired_and_no_creds(monkeypatch):
@@ -53,13 +68,22 @@ def test_require_auth_raises_when_session_expired_and_no_creds(monkeypatch):
     ctx = Context()
     ctx.config = Config(profiles={"default": Profile(url="https://example.org")})
 
-    mock_client = MagicMock()
-    mock_client.is_authenticated = True
-    mock_client.whoami.side_effect = AuthenticationError("https://example.org", "expired")
-    mock_client.base_url = "https://example.org"
-    mock_client.session_token = "old-token"
+    class FakeClient:
+        base_url = "https://example.org"
 
-    ctx.client = mock_client
+        def __init__(self) -> None:
+            self.session_token = "old-token"
+
+        @property
+        def is_authenticated(self) -> bool:
+            return self.session_token is not None
+
+        def whoami(self) -> dict[str, str]:
+            raise AuthenticationError("https://example.org", "expired")
+
+    mock_client = FakeClient()
+
+    ctx.client = cast(Any, mock_client)
     ctx.auth_manager = MagicMock()
 
     decorated = require_auth(_protected_command)
