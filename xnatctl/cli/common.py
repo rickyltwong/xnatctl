@@ -159,10 +159,37 @@ def require_auth(f: F) -> F:
     def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> Any:
         """Ensure the context client is authenticated before running."""
         client = ctx.get_client()
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        username, password = get_credentials(profile)
+
+        if client.is_authenticated:
+            try:
+                client.whoami()
+            except AuthenticationError:
+                ctx.auth_manager.clear_session()
+                client.session_token = None
+                if username and password:
+                    try:
+                        token = client.authenticate()
+                        ctx.auth_manager.save_session(
+                            token=token,
+                            url=client.base_url,
+                            username=username,
+                        )
+                    except AuthenticationError as e:
+                        raise click.ClickException(str(e)) from e
+                else:
+                    profile_name = ctx.profile_name or (
+                        ctx.config.default_profile if ctx.config else "default"
+                    )
+                    raise click.ClickException(
+                        "Session expired. "
+                        f"Profile: '{profile_name}'. "
+                        "Run 'xnatctl auth login', set XNAT_USER/XNAT_PASS, "
+                        "or set username/password in the profile config."
+                    ) from None
 
         if not client.is_authenticated:
-            profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-            username, password = get_credentials(profile)
             if username and password:
                 try:
                     token = client.authenticate()
