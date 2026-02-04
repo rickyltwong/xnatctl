@@ -249,8 +249,7 @@ class ResourceService(BaseService):
         if overwrite:
             params["overwrite"] = "true"
 
-        with open(file_path, "rb") as f:
-            content = f.read()
+        file_size = file_path.stat().st_size
 
         # Determine content type
         content_type = "application/octet-stream"
@@ -266,17 +265,18 @@ class ResourceService(BaseService):
         elif suffix in (".txt", ".csv"):
             content_type = "text/plain"
 
-        self.client.put(
-            path,
-            params=params,
-            data=content,
-            headers={"Content-Type": content_type},
-        )
+        with open(file_path, "rb") as f:
+            self.client.put(
+                path,
+                params=params,
+                data=f,
+                headers={"Content-Type": content_type},
+            )
 
         return {
             "success": True,
             "file": file_path.name,
-            "size": len(content),
+            "size": file_size,
             "extracted": extract,
         }
 

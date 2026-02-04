@@ -169,87 +169,62 @@ def resource_upload(
         xnatctl resource upload XNAT_E00001 NIFTI ./file.nii.gz
         xnatctl resource upload XNAT_E00001 DICOM ./dicoms --scan 1
     """
-    import tempfile
-    import zipfile
-    from urllib.parse import quote
-
     from xnatctl.core.output import create_progress
     from xnatctl.core.validation import (
         validate_resource_label,
         validate_scan_id,
         validate_session_id,
     )
+    from xnatctl.services.resources import ResourceService
 
     session_id = validate_session_id(session_id)
     resource_label = validate_resource_label(resource_label)
     input_path = Path(path)
     client = ctx.get_client()
-
+    service = ResourceService(client)
     if scan:
         scan = validate_scan_id(scan)
-        base_url = f"/data/experiments/{session_id}/scans/{scan}/resources/{quote(resource_label)}"
-    else:
-        base_url = f"/data/experiments/{session_id}/resources/{quote(resource_label)}"
 
     # Create resource if it doesn't exist
-    params = {}
-    if content:
-        params["content"] = content
-    if file_format:
-        params["format"] = file_format
-
     try:
-        client.put(base_url, params=params)
+        service.create(
+            session_id=session_id,
+            resource_label=resource_label,
+            scan_id=scan,
+            format=file_format,
+            content=content,
+        )
     except Exception:
         pass  # Resource may already exist
 
-    with create_progress() as progress:
-        if input_path.is_dir():
-            # Zip directory and upload
-            task = progress.add_task("Creating archive...", total=None)
-
-            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-                tmp_path = Path(tmp.name)
-
-            with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for file in input_path.rglob("*"):
-                    if file.is_file():
-                        arcname = file.relative_to(input_path)
-                        zf.write(file, arcname)
-
-            progress.update(task, description="Uploading...")
-
-            with open(tmp_path, "rb") as f:
-                resp = client.post(
-                    f"{base_url}/files",
-                    params={"extract": "true"},
-                    data=f,
-                    headers={"Content-Type": "application/zip"},
-                    timeout=600,
+    try:
+        with create_progress() as progress:
+            if input_path.is_dir():
+                task = progress.add_task("Creating archive...", total=None)
+                progress.update(task, description="Uploading...")
+                service.upload_directory(
+                    session_id=session_id,
+                    resource_label=resource_label,
+                    directory_path=input_path,
+                    scan_id=scan,
+                    overwrite=False,
                 )
-
-            tmp_path.unlink()  # Cleanup
-
-            progress.update(task, description="Done")
-
-        else:
-            # Upload single file
-            task = progress.add_task(f"Uploading {input_path.name}...", total=100)
-
-            with open(input_path, "rb") as f:
-                resp = client.post(
-                    f"{base_url}/files/{quote(input_path.name)}",
-                    data=f,
-                    timeout=600,
+                progress.update(task, description="Done")
+            else:
+                task = progress.add_task(f"Uploading {input_path.name}...", total=100)
+                service.upload_file(
+                    session_id=session_id,
+                    resource_label=resource_label,
+                    file_path=input_path,
+                    scan_id=scan,
+                    extract=False,
+                    overwrite=False,
                 )
+                progress.update(task, completed=100)
+    except Exception as exc:
+        raise click.ClickException(f"Upload failed: {exc}") from exc
 
-            progress.update(task, completed=100)
-
-    if resp.status_code in (200, 201):
-        print_success(f"Uploaded to {resource_label}")
-    else:
-        print_error(f"Upload failed: {resp.text}")
-        raise SystemExit(1)
+    print_success(f"Uploaded to {resource_label}")
 
 
 @resource.command("download")
