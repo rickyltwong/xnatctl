@@ -6,10 +6,16 @@ from pathlib import Path
 
 import pytest
 
+from unittest.mock import MagicMock
+
+import httpx
+
 from xnatctl.uploaders.common import (
     collect_dicom_files,
+    is_retryable_status,
     split_into_batches,
     split_into_n_batches,
+    upload_with_retry,
 )
 
 # =============================================================================
@@ -98,6 +104,36 @@ class TestCollectDicomFiles:
     def test_empty_directory(self, temp_dir: Path):
         files = collect_dicom_files(temp_dir)
         assert files == []
+
+    def test_skips_broken_symlinks(self, temp_dir: Path):
+        """Broken symlinks should be skipped."""
+        # Create a valid file
+        valid_file = temp_dir / "valid.dcm"
+        valid_file.write_text("valid")
+
+        # Create a broken symlink
+        broken_link = temp_dir / "broken.dcm"
+        broken_link.symlink_to(temp_dir / "nonexistent.dcm")
+
+        files = collect_dicom_files(temp_dir)
+
+        assert len(files) == 1
+        assert files[0].name == "valid.dcm"
+
+    def test_follows_valid_symlinks(self, temp_dir: Path):
+        """Valid symlinks pointing to real files should be included."""
+        # Create a real file
+        real_file = temp_dir / "real.dcm"
+        real_file.write_text("content")
+
+        # Create a symlink to it
+        link_file = temp_dir / "link.dcm"
+        link_file.symlink_to(real_file)
+
+        files = collect_dicom_files(temp_dir)
+
+        # Both the real file and symlink should be found
+        assert len(files) == 2
 
 
 # =============================================================================
@@ -203,3 +239,145 @@ class TestSplitIntoNBatches:
 
         assert len(batches) == 1
         assert len(batches[0]) == 10
+
+
+# =============================================================================
+# is_retryable_status Tests
+# =============================================================================
+
+
+class TestIsRetryableStatus:
+    def test_server_errors_are_retryable(self):
+        for code in (500, 502, 503, 504):
+            assert is_retryable_status(code) is True
+
+    def test_rate_limit_is_retryable(self):
+        assert is_retryable_status(429) is True
+
+    def test_success_not_retryable(self):
+        assert is_retryable_status(200) is False
+        assert is_retryable_status(201) is False
+
+    def test_400_is_retryable(self):
+        assert is_retryable_status(400) is True
+
+    def test_client_errors_not_retryable(self):
+        assert is_retryable_status(401) is False
+        assert is_retryable_status(403) is False
+        assert is_retryable_status(404) is False
+
+
+# =============================================================================
+# upload_with_retry Tests
+# =============================================================================
+
+
+class TestUploadWithRetry:
+    def _make_response(self, status_code: int) -> MagicMock:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = status_code
+        resp.text = f"HTTP {status_code}"
+        return resp
+
+    def test_returns_immediately_on_success(self):
+        resp_200 = self._make_response(200)
+        fn = MagicMock(return_value=resp_200)
+
+        result = upload_with_retry(fn, max_retries=3, backoff_base=0)
+
+        assert result.status_code == 200
+        assert fn.call_count == 1
+
+    def test_returns_immediately_on_non_retryable_client_error(self):
+        """Non-retryable 4xx errors (e.g. 404) should NOT be retried."""
+        resp_404 = self._make_response(404)
+        fn = MagicMock(return_value=resp_404)
+
+        result = upload_with_retry(fn, max_retries=3, backoff_base=0)
+
+        assert result.status_code == 404
+        assert fn.call_count == 1
+
+    def test_retries_on_400(self):
+        """400 should be retried."""
+        resp_400 = self._make_response(400)
+        resp_200 = self._make_response(200)
+        fn = MagicMock(side_effect=[resp_400, resp_200])
+
+        result = upload_with_retry(fn, max_retries=2, backoff_base=0)
+
+        assert result.status_code == 200
+        assert fn.call_count == 2
+
+    def test_retries_on_server_error(self):
+        """5xx should be retried, then return last response if exhausted."""
+        resp_502 = self._make_response(502)
+        fn = MagicMock(return_value=resp_502)
+
+        result = upload_with_retry(fn, max_retries=2, backoff_base=0)
+
+        assert result.status_code == 502
+        assert fn.call_count == 3  # initial + 2 retries
+
+    def test_retries_on_429(self):
+        resp_429 = self._make_response(429)
+        fn = MagicMock(return_value=resp_429)
+
+        result = upload_with_retry(fn, max_retries=1, backoff_base=0)
+
+        assert result.status_code == 429
+        assert fn.call_count == 2
+
+    def test_succeeds_after_transient_failure(self):
+        """Retryable error followed by success should return success."""
+        resp_503 = self._make_response(503)
+        resp_200 = self._make_response(200)
+        fn = MagicMock(side_effect=[resp_503, resp_200])
+
+        result = upload_with_retry(fn, max_retries=2, backoff_base=0)
+
+        assert result.status_code == 200
+        assert fn.call_count == 2
+
+    def test_retries_on_timeout_then_succeeds(self):
+        resp_200 = self._make_response(200)
+        fn = MagicMock(side_effect=[httpx.TimeoutException("timed out"), resp_200])
+
+        result = upload_with_retry(fn, max_retries=2, backoff_base=0)
+
+        assert result.status_code == 200
+        assert fn.call_count == 2
+
+    def test_retries_on_connect_error_then_succeeds(self):
+        resp_200 = self._make_response(200)
+        fn = MagicMock(side_effect=[httpx.ConnectError("refused"), resp_200])
+
+        result = upload_with_retry(fn, max_retries=2, backoff_base=0)
+
+        assert result.status_code == 200
+        assert fn.call_count == 2
+
+    def test_raises_timeout_after_all_retries_exhausted(self):
+        fn = MagicMock(side_effect=httpx.TimeoutException("timed out"))
+
+        with pytest.raises(httpx.TimeoutException):
+            upload_with_retry(fn, max_retries=1, backoff_base=0)
+
+        assert fn.call_count == 2
+
+    def test_raises_connect_error_after_all_retries_exhausted(self):
+        fn = MagicMock(side_effect=httpx.ConnectError("refused"))
+
+        with pytest.raises(httpx.ConnectError):
+            upload_with_retry(fn, max_retries=1, backoff_base=0)
+
+        assert fn.call_count == 2
+
+    def test_does_not_retry_non_transient_exceptions(self):
+        """Exceptions other than Timeout/ConnectError should propagate immediately."""
+        fn = MagicMock(side_effect=ValueError("bad data"))
+
+        with pytest.raises(ValueError, match="bad data"):
+            upload_with_retry(fn, max_retries=3, backoff_base=0)
+
+        assert fn.call_count == 1

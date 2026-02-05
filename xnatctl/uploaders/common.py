@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # File extensions recognized as DICOM
 DICOM_EXTENSIONS = {".dcm", ".ima", ".img", ".dicom"}
+
+# Retry defaults for upload operations
+UPLOAD_MAX_RETRIES = 5
+UPLOAD_RETRY_BACKOFF_BASE = 2  # seconds: 2, 4, 8, 16, 32
+RETRYABLE_STATUS_CODES = {400, 429, 500, 502, 503, 504}
 
 
 def collect_dicom_files(
@@ -38,6 +48,15 @@ def collect_dicom_files(
         # Skip hidden files
         if path.name.startswith("."):
             continue
+
+        # Skip broken symlinks or symlinks pointing outside root
+        if path.is_symlink():
+            try:
+                resolved = path.resolve()
+                if not resolved.exists():
+                    continue
+            except (OSError, ValueError):
+                continue
 
         suffix = path.suffix.lower()
         if suffix in DICOM_EXTENSIONS:
@@ -112,3 +131,82 @@ def split_into_n_batches(
         batches[idx % actual_batches].append(file_path)
 
     return batches
+
+
+def is_retryable_status(status_code: int) -> bool:
+    """Check if an HTTP status code warrants a retry.
+
+    Retryable: 429 (rate limit), 5xx (server errors).
+    Non-retryable: 2xx (success), 401/403 (auth), other 4xx (client error).
+    """
+    return status_code in RETRYABLE_STATUS_CODES
+
+
+def upload_with_retry(
+    upload_fn: Callable[[], Any],
+    *,
+    max_retries: int = UPLOAD_MAX_RETRIES,
+    backoff_base: int = UPLOAD_RETRY_BACKOFF_BASE,
+    label: str = "upload",
+) -> Any:
+    """Execute an upload function with retry on transient HTTP errors.
+
+    Args:
+        upload_fn: Callable that performs the upload and returns an httpx.Response.
+                   Will be called multiple times on retry - must be idempotent.
+        max_retries: Maximum number of retries (default: 3).
+        backoff_base: Base for exponential backoff in seconds (default: 2).
+        label: Label for log messages.
+
+    Returns:
+        The httpx.Response from a successful attempt.
+
+    Raises:
+        The last exception if all retries are exhausted and no response was obtained.
+    """
+    import httpx
+
+    last_resp = None
+    last_exc: Exception | None = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            resp = upload_fn()
+            # Success or non-retryable error - return immediately
+            if not is_retryable_status(resp.status_code):
+                return resp
+            # Retryable status - log and retry
+            last_resp = resp
+            last_exc = None
+            if attempt < max_retries:
+                delay = backoff_base ** (attempt + 1)
+                logger.warning(
+                    "%s: HTTP %d on attempt %d/%d, retrying in %ds",
+                    label,
+                    resp.status_code,
+                    attempt + 1,
+                    max_retries + 1,
+                    delay,
+                )
+                time.sleep(delay)
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            last_exc = e
+            last_resp = None
+            if attempt < max_retries:
+                delay = backoff_base ** (attempt + 1)
+                logger.warning(
+                    "%s: %s on attempt %d/%d, retrying in %ds",
+                    label,
+                    type(e).__name__,
+                    attempt + 1,
+                    max_retries + 1,
+                    delay,
+                )
+                time.sleep(delay)
+
+    # All retries exhausted
+    if last_resp is not None:
+        return last_resp
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"{label}: all retries exhausted with no response")
