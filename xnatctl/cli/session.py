@@ -783,118 +783,56 @@ def _upload_gradual_dicom(
     workers: int = 4,
 ) -> None:
     """Upload DICOM files using gradual-DICOM handler (parallel per-file)."""
-    import tempfile
-    import zipfile
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    import httpx
+    from xnatctl.models.progress import UploadProgress
+    from xnatctl.services.uploads import UploadService
 
     client = ctx.get_client()
-    base_url = client.base_url
-    session_token = client.session_token
-    verify_ssl = client.verify_ssl
+    service = UploadService(client)
 
-    dcm_files: list[Path] = []
-    temp_dir = None
+    progress_counter = 0
 
-    if source_path.is_file() and source_path.suffix.lower() == ".zip":
-        temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
-        temp_path = Path(temp_dir)
-        if not ctx.quiet:
-            click.echo(f"Extracting {source_path.name}...")
-        with zipfile.ZipFile(source_path, "r") as zf:
-            zf.extractall(temp_path)
-        dcm_files = [f for f in temp_path.rglob("*") if f.is_file() and not f.name.startswith(".")]
-    elif source_path.is_dir():
-        dcm_files = [
-            f for f in source_path.rglob("*") if f.is_file() and not f.name.startswith(".")
-        ]
-    else:
-        print_error("gradual-dicom requires a directory or ZIP file")
-        raise SystemExit(1)
+    def progress_callback(p: UploadProgress) -> None:
+        nonlocal progress_counter
+        progress_counter += 1
+        if p.phase.value == "uploading" and progress_counter % 100 != 0:
+            return
+        click.echo(f"  [{p.phase.value}] {p.message}")
 
-    if not dcm_files:
-        print_error("No files found to upload")
-        if temp_dir:
-            import shutil
-
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        raise SystemExit(1)
-
-    if not ctx.quiet:
-        click.echo(f"Uploading {len(dcm_files)} files using gradual-DICOM ({workers} workers)...")
-
-    def upload_file(file_path: Path) -> tuple[str, bool, str]:
-        from xnatctl.services.uploads import upload_with_retry
-
-        try:
-            with httpx.Client(base_url=base_url, timeout=120.0, verify=verify_ssl) as http:
-                cookies = {"JSESSIONID": session_token} if session_token else {}
-
-                def _attempt():
-                    with open(file_path, "rb") as f:
-                        return http.post(
-                            "/data/services/import",
-                            params={
-                                "inbody": "true",
-                                "import-handler": "gradual-DICOM",
-                                "PROJECT_ID": project,
-                                "SUBJECT_ID": subject,
-                                "EXPT_LABEL": session,
-                            },
-                            content=f.read(),
-                            headers={"Content-Type": "application/dicom"},
-                            cookies=cookies,
-                        )
-
-                resp = upload_with_retry(_attempt, label=f"gradual-DICOM {file_path.name}")
-                if resp.status_code in (200, 201):
-                    return file_path.name, True, ""
-                return file_path.name, False, f"HTTP {resp.status_code}"
-        except Exception as e:
-            return file_path.name, False, str(e)
-
-    succeeded = 0
-    failed = 0
-    errors: list[str] = []
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(upload_file, f): f for f in dcm_files}
-        for i, future in enumerate(as_completed(futures), 1):
-            name, success, error = future.result()
-            if success:
-                succeeded += 1
-            else:
-                failed += 1
-                errors.append(f"{name}: {error}")
-            if not ctx.quiet and i % 100 == 0:
-                click.echo(f"  Progress: {i}/{len(dcm_files)} ({succeeded} ok, {failed} failed)")
-
-    if temp_dir:
-        import shutil
-
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    try:
+        summary = service.upload_dicom_gradual(
+            source_path=source_path,
+            project=project,
+            subject=subject,
+            session=session,
+            workers=workers,
+            progress_callback=progress_callback if not ctx.quiet else None,
+        )
+    except (ValueError, FileNotFoundError) as e:
+        print_error(str(e))
+        raise SystemExit(1) from e
 
     if ctx.output_format == OutputFormat.JSON:
         print_output(
             {
-                "success": failed == 0,
-                "total": len(dcm_files),
-                "succeeded": succeeded,
-                "failed": failed,
-                "errors": errors[:10],
+                "success": summary.success,
+                "total": summary.total,
+                "succeeded": summary.succeeded,
+                "failed": summary.failed,
+                "errors": summary.errors[:10],
             },
             format=OutputFormat.JSON,
         )
     else:
-        if failed == 0:
-            print_success(f"Uploaded {succeeded} files via gradual-DICOM")
+        if summary.success:
+            print_success(f"Uploaded {summary.succeeded} files via gradual-DICOM")
         else:
-            print_error(f"Uploaded {succeeded}/{len(dcm_files)} files ({failed} failed)")
-            for err in errors[:5]:
+            print_error(
+                f"Uploaded {summary.succeeded}/{summary.total} files ({summary.failed} failed)"
+            )
+            for err in summary.errors[:5]:
                 click.echo(f"  - {err}", err=True)
-            if len(errors) > 5:
-                click.echo(f"  ... and {len(errors) - 5} more errors", err=True)
+            if len(summary.errors) > 5:
+                click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
             raise SystemExit(1)
 
 

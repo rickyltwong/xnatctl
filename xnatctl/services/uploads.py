@@ -667,6 +667,65 @@ def _send_dicom_batch(
 
 
 # =============================================================================
+# Gradual-DICOM Helpers (private, thread-safe standalone functions)
+# =============================================================================
+
+
+def _upload_single_file_gradual(
+    *,
+    base_url: str,
+    session_token: str | None,
+    verify_ssl: bool,
+    file_path: Path,
+    project: str,
+    subject: str,
+    session: str,
+) -> tuple[str, bool, str]:
+    """Upload a single file via the gradual-DICOM import handler.
+
+    Creates a fresh httpx client for thread-safety in parallel execution.
+
+    Args:
+        base_url: XNAT server base URL.
+        session_token: JSESSIONID token.
+        verify_ssl: Whether to verify SSL certificates.
+        file_path: Path to the DICOM file.
+        project: Target project ID.
+        subject: Target subject label.
+        session: Target session label.
+
+    Returns:
+        Tuple of (filename, success, error_message).
+    """
+    try:
+        with httpx.Client(base_url=base_url, timeout=120.0, verify=verify_ssl) as client:
+            cookies = {"JSESSIONID": session_token} if session_token else {}
+
+            def _attempt() -> httpx.Response:
+                with open(file_path, "rb") as f:
+                    return client.post(
+                        "/data/services/import",
+                        params={
+                            "inbody": "true",
+                            "import-handler": "gradual-DICOM",
+                            "PROJECT_ID": project,
+                            "SUBJECT_ID": subject,
+                            "EXPT_LABEL": session,
+                        },
+                        content=f.read(),
+                        headers={"Content-Type": "application/dicom"},
+                        cookies=cookies,
+                    )
+
+            resp = upload_with_retry(_attempt, label=f"gradual-DICOM {file_path.name}")
+            if resp.status_code in (200, 201):
+                return file_path.name, True, ""
+            return file_path.name, False, f"HTTP {resp.status_code}"
+    except Exception as e:
+        return file_path.name, False, str(e)
+
+
+# =============================================================================
 # Upload Service
 # =============================================================================
 
@@ -1253,6 +1312,157 @@ class UploadService(BaseService):
         finally:
             if cleanup and failed_total == 0:
                 shutil.rmtree(workspace, ignore_errors=True)
+
+    def upload_dicom_gradual(
+        self,
+        source_path: Path,
+        project: str,
+        subject: str,
+        session: str,
+        *,
+        workers: int = DEFAULT_UPLOAD_WORKERS,
+        progress_callback: Callable[[UploadProgress], None] | None = None,
+    ) -> UploadSummary:
+        """Upload DICOM files using the gradual-DICOM handler (parallel per-file).
+
+        Each file is uploaded individually to the XNAT import service using
+        the gradual-DICOM handler, which lets XNAT parse each file on ingest.
+        Files are uploaded in parallel using per-thread HTTP clients.
+
+        Accepts directories or ZIP archives. ZIP archives are extracted to a
+        temporary directory before upload. All non-hidden files are sent
+        (the gradual-DICOM handler decides what is parsable).
+
+        Args:
+            source_path: Directory or ZIP file containing DICOM files.
+            project: Target project ID.
+            subject: Target subject label.
+            session: Target session label.
+            workers: Number of parallel upload workers (default: 4).
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            UploadSummary with results.
+
+        Raises:
+            ValueError: If source_path is not a directory or ZIP file.
+            FileNotFoundError: If source_path does not exist.
+        """
+        start_time = time.time()
+        source_path = Path(source_path)
+
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source not found: {source_path}")
+
+        base_url = self.client.base_url
+        session_token = self.client.session_token
+        verify_ssl = self.client.verify_ssl
+
+        temp_dir: str | None = None
+        files: list[Path] = []
+
+        try:
+            if source_path.is_file() and source_path.suffix.lower() == ".zip":
+                temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
+                temp_path = Path(temp_dir)
+                with zipfile.ZipFile(source_path, "r") as zf:
+                    zf.extractall(temp_path)
+                files = sorted(
+                    f for f in temp_path.rglob("*")
+                    if f.is_file() and not f.name.startswith(".")
+                )
+            elif source_path.is_dir():
+                files = sorted(
+                    f for f in source_path.rglob("*")
+                    if f.is_file() and not f.name.startswith(".")
+                )
+            else:
+                raise ValueError("gradual-DICOM requires a directory or ZIP file")
+
+            if not files:
+                return UploadSummary(
+                    success=False,
+                    total=0,
+                    succeeded=0,
+                    failed=0,
+                    duration=time.time() - start_time,
+                    errors=["No files found to upload"],
+                )
+
+            def report(phase: OperationPhase, **kwargs: Any) -> None:
+                if progress_callback:
+                    progress_callback(UploadProgress(phase=phase, **kwargs))
+
+            report(
+                OperationPhase.PREPARING,
+                total=len(files),
+                message=f"Found {len(files)} files for gradual-DICOM upload",
+            )
+
+            succeeded = 0
+            failed = 0
+            errors: list[str] = []
+
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(
+                        _upload_single_file_gradual,
+                        base_url=base_url,
+                        session_token=session_token,
+                        verify_ssl=verify_ssl,
+                        file_path=f,
+                        project=project,
+                        subject=subject,
+                        session=session,
+                    ): f
+                    for f in files
+                }
+                for i, future in enumerate(as_completed(futures), 1):
+                    name, success, error = future.result()
+                    if success:
+                        succeeded += 1
+                    else:
+                        failed += 1
+                        errors.append(f"{name}: {error}")
+
+                    report(
+                        OperationPhase.UPLOADING,
+                        current=i,
+                        total=len(files),
+                        success=success,
+                        message=f"Uploaded {i}/{len(files)} ({succeeded} ok, {failed} failed)",
+                    )
+
+            duration = time.time() - start_time
+            overall_success = failed == 0
+
+            report(
+                OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
+                current=len(files),
+                total=len(files),
+                message=(
+                    f"Uploaded {succeeded} files via gradual-DICOM"
+                    if overall_success
+                    else f"Uploaded {succeeded}/{len(files)} files ({failed} failed)"
+                ),
+                success=overall_success,
+                errors=errors,
+            )
+
+            return UploadSummary(
+                success=overall_success,
+                total=len(files),
+                succeeded=succeeded,
+                failed=failed,
+                duration=duration,
+                errors=errors,
+                total_files=len(files),
+                session_id=session,
+            )
+
+        finally:
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def upload_resource(
         self,
