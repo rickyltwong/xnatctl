@@ -236,10 +236,82 @@ def session_show(ctx: Context, session_id: str) -> None:
             )
 
 
+def _download_session_fast(
+    client,
+    session_project: str,
+    subject: str,
+    resolved_session_id: str,
+    session_dir: Path,
+    quiet: bool = False,
+) -> None:
+    """Download session scans in parallel (one thread per scan)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import httpx
+
+    scans_resp = client.get_json(f"/data/experiments/{resolved_session_id}/scans")
+    results = scans_resp.get("ResultSet", {}).get("Result", [])
+    scan_ids = [r.get("ID") for r in results if r.get("ID")]
+
+    if not scan_ids:
+        if not quiet:
+            click.echo("No scans found in session")
+        return
+
+    if not quiet:
+        click.echo(f"Downloading {len(scan_ids)} scans in parallel...")
+
+    scans_dir = session_dir / "scans"
+    scans_dir.mkdir(parents=True, exist_ok=True)
+
+    def download_scan(scan_id: str) -> tuple[str, bool, str]:
+        scan_url = f"/data/projects/{session_project}/subjects/{subject}/experiments/{resolved_session_id}/scans/{scan_id}/resources/DICOM/files"
+        scan_zip = scans_dir / f"scan_{scan_id}.zip"
+        try:
+            with client._get_client().stream(
+                "GET", scan_url, params={"format": "zip"}, cookies=client._get_cookies()
+            ) as resp:
+                resp.raise_for_status()
+                with open(scan_zip, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
+            return scan_id, True, ""
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return scan_id, True, "no DICOM"
+            return scan_id, False, str(e)
+        except Exception as e:
+            return scan_id, False, str(e)
+
+    succeeded = []
+    failed = []
+
+    with ThreadPoolExecutor(max_workers=len(scan_ids)) as executor:
+        futures = {executor.submit(download_scan, sid): sid for sid in scan_ids}
+        for future in as_completed(futures):
+            scan_id, success, error = future.result()
+            if success:
+                succeeded.append(scan_id)
+                if not quiet:
+                    status = f" ({error})" if error else ""
+                    click.echo(f"  ✓ Scan {scan_id}{status}")
+            else:
+                failed.append((scan_id, error))
+                if not quiet:
+                    click.echo(f"  ✗ Scan {scan_id}: {error}")
+
+    if failed and not quiet:
+        click.echo(f"Warning: {len(failed)}/{len(scan_ids)} scans failed")
+
+
 @session.command("download")
 @click.argument("session_id")
+@click.option(
+    "--project", "-P", help="Project ID (required when using session label instead of XNAT ID)"
+)
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
 @click.option("--name", help="Output directory name (defaults to session ID)")
+@click.option("--fast", is_flag=True, help="Parallel per-scan download (one worker per scan)")
 @click.option("--include-resources", is_flag=True, help="Include session-level resources")
 @click.option("--include-assessors", is_flag=True, help="Include assessor data")
 @click.option("--pattern", help="File pattern filter (e.g., '*.dcm')")
@@ -259,8 +331,10 @@ def session_show(ctx: Context, session_id: str) -> None:
 def session_download(
     ctx: Context,
     session_id: str,
+    project: str | None,
     out: str,
     name: str | None,
+    fast: bool,
     include_resources: bool,
     include_assessors: bool,
     pattern: str | None,
@@ -274,17 +348,21 @@ def session_download(
 ) -> None:
     """Download session data.
 
+    SESSION_ID can be either an XNAT internal ID (e.g., XNAT_E00001) or a
+    session label. When using a label, provide --project/-P to resolve it.
+
     Example:
         xnatctl session download XNAT_E00001
         xnatctl session download XNAT_E00001 --out ./data
+        xnatctl session download CLM01_UCA_00134_01_SE01_MR -P CLM01_UCA_4 --out ./data
+        xnatctl session download CLM01_UCA_00134_01_SE01_MR -P CLM01_UCA_4 --fast --out ./data
         xnatctl session download XNAT_E00001 --name CLM01_CAMH_0041 --out ./data
         xnatctl session download XNAT_E00001 --out ./data --include-resources
         xnatctl session download XNAT_E00001 --out ./data --unzip --cleanup
         xnatctl session download XNAT_E00001 --out ./data --dry-run
     """
-    from xnatctl.core.validation import validate_path_writable, validate_session_id
+    from xnatctl.core.validation import validate_path_writable
 
-    session_id = validate_session_id(session_id)
     out_path = Path(out)
 
     if name and ("/" in name or "\\" in name):
@@ -297,21 +375,58 @@ def session_download(
 
     client = ctx.get_client()
 
-    # Get session info to find project/subject
-    resp = client.get_json(f"/data/experiments/{session_id}")
-    results = resp.get("ResultSet", {}).get("Result", [])
+    # Resolve session and get session info
+    resolved_session_id = session_id
+    session_project = project
+    subject = None
 
-    if not results:
-        print_error(f"Session not found: {session_id}")
+    if project:
+        # Use project-scoped endpoint (works with labels)
+        resp = client.get_json(f"/data/projects/{project}/experiments/{session_id}")
+        results = resp.get("ResultSet", {}).get("Result", [])
+        if results:
+            resolved_session_id = results[0].get("ID", session_id)
+            session_project = results[0].get("project", project)
+            subject = results[0].get("subject_ID", "") or results[0].get("subject_label", "")
+        else:
+            # Try items format (XNAT returns this for single experiment lookups)
+            items = resp.get("items", [])
+            if items:
+                data_fields = items[0].get("data_fields", {})
+                resolved_session_id = data_fields.get("ID", session_id)
+                session_project = data_fields.get("project", project)
+                subject = data_fields.get("subject_ID", "")
+            else:
+                print_error(f"Session '{session_id}' not found in project '{project}'")
+                raise SystemExit(1)
+    else:
+        # Direct experiment lookup (requires XNAT ID)
+        resp = client.get_json(f"/data/experiments/{session_id}")
+        results = resp.get("ResultSet", {}).get("Result", [])
+        if results:
+            resolved_session_id = results[0].get("ID", session_id)
+            session_project = results[0].get("project", "")
+            subject = results[0].get("subject_ID", "") or results[0].get("subject_label", "")
+        else:
+            items = resp.get("items", [])
+            if items:
+                data_fields = items[0].get("data_fields", {})
+                resolved_session_id = data_fields.get("ID", session_id)
+                session_project = data_fields.get("project", "")
+                subject = data_fields.get("subject_ID", "")
+            else:
+                print_error(f"Session not found: {session_id}")
+                raise SystemExit(1)
+
+    if not subject:
+        print_error(f"Could not determine subject for session: {session_id}")
         raise SystemExit(1)
-
-    session_data = results[0]
-    project = session_data.get("project", "")
-    subject = session_data.get("subject_ID", "") or session_data.get("subject_label", "")
 
     if dry_run:
         click.echo(f"[DRY-RUN] Would download session {session_id}")
-        click.echo(f"  Project: {project}")
+        if resolved_session_id != session_id:
+            click.echo(f"  Resolved ID: {resolved_session_id}")
+        click.echo(f"  Project: {session_project}")
         click.echo(f"  Subject: {subject}")
         click.echo(f"  Output: {out_path / (name or session_id)}")
         click.echo(f"  Include resources: {include_resources}")
@@ -324,56 +439,64 @@ def session_download(
 
     from xnatctl.core.output import create_progress
 
-    with create_progress() as progress:
-        # Download scans
-        task = progress.add_task("Downloading scans...", total=100)
-
-        scans_url = (
-            f"/data/projects/{project}/subjects/{subject}/experiments/{session_id}/scans/ALL/files"
+    if fast:
+        _download_session_fast(
+            client=client,
+            session_project=session_project,
+            subject=subject,
+            resolved_session_id=resolved_session_id,
+            session_dir=session_dir,
+            quiet=ctx.quiet,
         )
-        scans_zip = session_dir / "scans.zip"
+    else:
+        with create_progress() as progress:
+            task = progress.add_task("Downloading scans...", total=100)
 
-        # Stream download
-        with client._get_client().stream(
-            "GET", scans_url, params={"format": "zip"}, cookies=client._get_cookies()
-        ) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-            downloaded = 0
+            scans_url = f"/data/projects/{session_project}/subjects/{subject}/experiments/{resolved_session_id}/scans/ALL/files"
+            scans_zip = session_dir / "scans.zip"
 
-            with open(scans_zip, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        progress.update(task, completed=int(downloaded / total * 100))
+            with client._get_client().stream(
+                "GET", scans_url, params={"format": "zip"}, cookies=client._get_cookies()
+            ) as resp:
+                resp.raise_for_status()
+                total = int(resp.headers.get("content-length", 0))
+                downloaded = 0
 
-        progress.update(task, completed=100, description="Scans downloaded")
+                with open(scans_zip, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            progress.update(task, completed=int(downloaded / total * 100))
 
-        # Download resources if requested
-        if include_resources:
-            task2 = progress.add_task("Downloading resources...", total=None)
-            try:
-                res_url = f"/data/projects/{project}/subjects/{subject}/experiments/{session_id}/resources"
-                res_resp = client.get_json(res_url)
-                resources = res_resp.get("ResultSet", {}).get("Result", [])
+            progress.update(task, completed=100, description="Scans downloaded")
 
-                for res in resources:
-                    label = res.get("label", "resource")
-                    res_zip = session_dir / f"resources_{label}.zip"
-                    files_url = f"{res_url}/{label}/files"
+            if include_resources:
+                task2 = progress.add_task("Downloading resources...", total=None)
+                try:
+                    res_url = f"/data/projects/{session_project}/subjects/{subject}/experiments/{resolved_session_id}/resources"
+                    res_resp = client.get_json(res_url)
+                    resources = res_resp.get("ResultSet", {}).get("Result", [])
 
-                    with client._get_client().stream(
-                        "GET", files_url, params={"format": "zip"}, cookies=client._get_cookies()
-                    ) as resp:
-                        resp.raise_for_status()
-                        with open(res_zip, "wb") as f:
-                            for chunk in resp.iter_bytes():
-                                f.write(chunk)
+                    for res in resources:
+                        label = res.get("label", "resource")
+                        res_zip = session_dir / f"resources_{label}.zip"
+                        files_url = f"{res_url}/{label}/files"
 
-                progress.update(task2, description=f"Resources downloaded ({len(resources)})")
-            except Exception as e:
-                progress.update(task2, description=f"Resources: {e}")
+                        with client._get_client().stream(
+                            "GET",
+                            files_url,
+                            params={"format": "zip"},
+                            cookies=client._get_cookies(),
+                        ) as resp:
+                            resp.raise_for_status()
+                            with open(res_zip, "wb") as f:
+                                for chunk in resp.iter_bytes():
+                                    f.write(chunk)
+
+                    progress.update(task2, description=f"Resources downloaded ({len(resources)})")
+                except Exception as e:
+                    progress.update(task2, description=f"Resources: {e}")
 
     # Extract ZIPs if requested
     if unzip:
@@ -391,9 +514,9 @@ def session_download(
 @click.option("--password", help="XNAT password (REST upload)")
 @click.option(
     "--transport",
-    type=click.Choice(["rest", "dicom-store"]),
+    type=click.Choice(["rest", "gradual-dicom", "dicom-store"]),
     default="rest",
-    help="Upload transport (default: rest)",
+    help="Upload transport: rest (batch ZIP), gradual-dicom (parallel per-file), dicom-store (network)",
 )
 # REST upload options
 @click.option(
@@ -575,6 +698,18 @@ def session_upload(
         )
         return
 
+    # Gradual-DICOM transport (parallel per-file upload)
+    if transport == "gradual-dicom":
+        _upload_gradual_dicom(
+            ctx=ctx,
+            source_path=source_path,
+            project=project,
+            subject=subject,
+            session=session,
+            workers=upload_workers,
+        )
+        return
+
     # REST transport
     if source_path.is_file():
         # Single archive upload
@@ -606,6 +741,130 @@ def session_upload(
             direct_archive=direct_archive,
             ignore_unparsable=ignore_unparsable,
         )
+
+
+def _upload_gradual_dicom(
+    ctx: Context,
+    source_path: Path,
+    project: str,
+    subject: str,
+    session: str,
+    workers: int = 4,
+) -> None:
+    """Upload DICOM files using gradual-DICOM handler (parallel per-file)."""
+    import tempfile
+    import zipfile
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import httpx
+
+    client = ctx.get_client()
+    base_url = client.base_url
+    session_token = client.session_token
+    verify_ssl = client.verify_ssl
+
+    dcm_files: list[Path] = []
+    temp_dir = None
+
+    if source_path.is_file() and source_path.suffix.lower() == ".zip":
+        temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
+        temp_path = Path(temp_dir)
+        if not ctx.quiet:
+            click.echo(f"Extracting {source_path.name}...")
+        with zipfile.ZipFile(source_path, "r") as zf:
+            zf.extractall(temp_path)
+        dcm_files = [f for f in temp_path.rglob("*") if f.is_file() and not f.name.startswith(".")]
+    elif source_path.is_dir():
+        dcm_files = [
+            f for f in source_path.rglob("*") if f.is_file() and not f.name.startswith(".")
+        ]
+    else:
+        print_error("gradual-dicom requires a directory or ZIP file")
+        raise SystemExit(1)
+
+    if not dcm_files:
+        print_error("No files found to upload")
+        if temp_dir:
+            import shutil
+
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise SystemExit(1)
+
+    if not ctx.quiet:
+        click.echo(f"Uploading {len(dcm_files)} files using gradual-DICOM ({workers} workers)...")
+
+    def upload_file(file_path: Path) -> tuple[str, bool, str]:
+        from xnatctl.uploaders.common import upload_with_retry
+
+        try:
+            with httpx.Client(base_url=base_url, timeout=120.0, verify=verify_ssl) as http:
+                cookies = {"JSESSIONID": session_token} if session_token else {}
+
+                def _attempt():
+                    with open(file_path, "rb") as f:
+                        return http.post(
+                            "/data/services/import",
+                            params={
+                                "inbody": "true",
+                                "import-handler": "gradual-DICOM",
+                                "PROJECT_ID": project,
+                                "SUBJECT_ID": subject,
+                                "EXPT_LABEL": session,
+                            },
+                            content=f.read(),
+                            headers={"Content-Type": "application/dicom"},
+                            cookies=cookies,
+                        )
+
+                resp = upload_with_retry(_attempt, label=f"gradual-DICOM {file_path.name}")
+                if resp.status_code in (200, 201):
+                    return file_path.name, True, ""
+                return file_path.name, False, f"HTTP {resp.status_code}"
+        except Exception as e:
+            return file_path.name, False, str(e)
+
+    succeeded = 0
+    failed = 0
+    errors: list[str] = []
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(upload_file, f): f for f in dcm_files}
+        for i, future in enumerate(as_completed(futures), 1):
+            name, success, error = future.result()
+            if success:
+                succeeded += 1
+            else:
+                failed += 1
+                errors.append(f"{name}: {error}")
+            if not ctx.quiet and i % 100 == 0:
+                click.echo(f"  Progress: {i}/{len(dcm_files)} ({succeeded} ok, {failed} failed)")
+
+    if temp_dir:
+        import shutil
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    if ctx.output_format == OutputFormat.JSON:
+        print_output(
+            {
+                "success": failed == 0,
+                "total": len(dcm_files),
+                "succeeded": succeeded,
+                "failed": failed,
+                "errors": errors[:10],
+            },
+            format=OutputFormat.JSON,
+        )
+    else:
+        if failed == 0:
+            print_success(f"Uploaded {succeeded} files via gradual-DICOM")
+        else:
+            print_error(f"Uploaded {succeeded}/{len(dcm_files)} files ({failed} failed)")
+            for err in errors[:5]:
+                click.echo(f"  - {err}", err=True)
+            if len(errors) > 5:
+                click.echo(f"  ... and {len(errors) - 5} more errors", err=True)
+            raise SystemExit(1)
 
 
 def _upload_single_archive(
@@ -679,57 +938,107 @@ def _do_single_upload(
     ignore_unparsable: bool,
     zip_to_tar: bool,
 ) -> None:
-    """Execute the actual upload."""
-    with _maybe_zip_to_tar(archive_path, zip_to_tar) as (upload_path, content_type):
-        with open(upload_path, "rb") as f:
-            resp = client.post(
-                "/data/services/import",
-                params={
-                    "import-handler": "DICOM-zip",
-                    "project": project,
-                    "subject": subject,
-                    "session": session,
-                    "overwrite": overwrite,
-                    "overwrite_files": "true",
-                    "quarantine": "false",
-                    "triggerPipelines": "true",
-                    "rename": "false",
-                    "Direct-Archive": "true" if direct_archive else "false",
-                    "Ignore-Unparsable": "true" if ignore_unparsable else "false",
-                    "inbody": "true",
-                },
-                data=f,
-                headers={"Content-Type": content_type},
-                timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
-            )
+    """Execute the actual upload with retry on transient errors."""
+    from xnatctl.uploaders.common import upload_with_retry
 
-    if resp.status_code != 200:
-        print_error(f"Upload failed: {resp.text[:200]}")
+    params = {
+        "import-handler": "DICOM-zip",
+        "project": project,
+        "subject": subject,
+        "session": session,
+        "overwrite": overwrite,
+        "overwrite_files": "true",
+        "quarantine": "false",
+        "triggerPipelines": "true",
+        "rename": "false",
+        "Direct-Archive": "true" if direct_archive else "false",
+        "Ignore-Unparsable": "true" if ignore_unparsable else "false",
+        "inbody": "true",
+    }
+
+    with _maybe_zip_to_tar(archive_path, zip_to_tar) as (upload_path, content_type):
+
+        def _attempt():
+            with open(upload_path, "rb") as f:
+                return client.post(
+                    "/data/services/import",
+                    params=params,
+                    data=f,
+                    headers={"Content-Type": content_type},
+                    timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
+                )
+
+        resp = upload_with_retry(_attempt, label=f"REST upload {archive_path.name}")
+
+    if not (200 <= resp.status_code < 300):
+        print_error(f"Upload failed (HTTP {resp.status_code}): {resp.text[:500]}")
         raise SystemExit(1)
 
 
-def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
-    import tarfile
+def _safe_mtime(date_time: tuple) -> float:
+    """Convert ZIP date_time tuple to timestamp safely.
+
+    Args:
+        date_time: 6-tuple (year, month, day, hour, minute, second)
+
+    Returns:
+        Unix timestamp, defaulting to 0 if conversion fails or date is invalid.
+    """
     import time
+
+    try:
+        year = date_time[0]
+        # Validate year is in reasonable range (ZIP format supports 1980-2107)
+        if year < 1980 or year > 2107:
+            return 0.0
+        # Use 0 for DST (let system figure it out) instead of -1
+        return time.mktime(date_time + (0, 0, 0))
+    except (ValueError, OverflowError, OSError):
+        # Invalid date - use epoch
+        return 0.0
+
+
+def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
+    """Convert ZIP archive to TAR format.
+
+    Args:
+        archive_path: Source ZIP file
+        tar_path: Destination TAR file
+
+    Raises:
+        zipfile.BadZipFile: If ZIP is corrupted
+        OSError: If file operations fail
+    """
+    import tarfile
     import zipfile
 
-    with zipfile.ZipFile(archive_path, "r") as zf:
-        with tarfile.open(tar_path, "w") as tf:
-            for info in zf.infolist():
-                name = info.filename
-                if info.is_dir():
-                    tarinfo = tarfile.TarInfo(name.rstrip("/") + "/")
-                    tarinfo.type = tarfile.DIRTYPE
-                    tarinfo.mtime = time.mktime(info.date_time + (0, 0, -1))
-                    tarinfo.size = 0
-                    tf.addfile(tarinfo)
-                    continue
+    try:
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            # Validate ZIP integrity first
+            bad_file = zf.testzip()
+            if bad_file:
+                raise zipfile.BadZipFile(f"Corrupted file in archive: {bad_file}")
 
-                tarinfo = tarfile.TarInfo(name)
-                tarinfo.size = info.file_size
-                tarinfo.mtime = time.mktime(info.date_time + (0, 0, -1))
-                with zf.open(info, "r") as src:
-                    tf.addfile(tarinfo, fileobj=src)
+            with tarfile.open(tar_path, "w") as tf:
+                for info in zf.infolist():
+                    name = info.filename
+                    if info.is_dir():
+                        tarinfo = tarfile.TarInfo(name.rstrip("/") + "/")
+                        tarinfo.type = tarfile.DIRTYPE
+                        tarinfo.mtime = _safe_mtime(info.date_time)
+                        tarinfo.size = 0
+                        tf.addfile(tarinfo)
+                        continue
+
+                    tarinfo = tarfile.TarInfo(name)
+                    tarinfo.size = info.file_size
+                    tarinfo.mtime = _safe_mtime(info.date_time)
+                    with zf.open(info, "r") as src:
+                        tf.addfile(tarinfo, fileobj=src)
+    except zipfile.BadZipFile:
+        raise
+    except Exception as e:
+        raise OSError(f"Failed to convert ZIP to TAR: {e}") from e
 
 
 def _default_content_type(archive_path: Path) -> str:

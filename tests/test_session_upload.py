@@ -4,7 +4,7 @@ import tarfile
 import zipfile
 from io import BytesIO
 
-from xnatctl.cli.session import _do_single_upload
+from xnatctl.cli.session import _do_single_upload, _safe_mtime, _zip_to_tar
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
 
@@ -102,3 +102,83 @@ def test_do_single_upload_converts_zip_to_tar(tmp_path) -> None:
     assert client.body is not None
     with tarfile.open(fileobj=BytesIO(client.body), mode="r") as tf:
         assert set(tf.getnames()) == {"alpha/first.dcm", "beta/second.dcm"}
+
+
+# =============================================================================
+# _safe_mtime Tests
+# =============================================================================
+
+
+def test_safe_mtime_valid_date() -> None:
+    """Valid date tuple converts to timestamp."""
+    date_time = (2024, 6, 15, 10, 30, 45)
+    result = _safe_mtime(date_time)
+    assert result > 0
+
+
+def test_safe_mtime_invalid_date_returns_zero() -> None:
+    """Invalid date (year=0) returns epoch timestamp."""
+    date_time = (0, 0, 0, 0, 0, 0)
+    result = _safe_mtime(date_time)
+    assert result == 0.0
+
+
+def test_safe_mtime_overflow_returns_zero() -> None:
+    """Overflow date returns epoch timestamp."""
+    date_time = (99999, 12, 31, 23, 59, 59)
+    result = _safe_mtime(date_time)
+    assert result == 0.0
+
+
+# =============================================================================
+# _zip_to_tar Tests
+# =============================================================================
+
+
+def test_zip_to_tar_converts_files(tmp_path) -> None:
+    """ZIP file is converted to TAR with all files."""
+    zip_path = tmp_path / "test.zip"
+    tar_path = tmp_path / "test.tar"
+
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("dir/file1.txt", b"content1")
+        zf.writestr("file2.txt", b"content2")
+
+    _zip_to_tar(zip_path, tar_path)
+
+    assert tar_path.exists()
+    with tarfile.open(tar_path, "r") as tf:
+        names = tf.getnames()
+        assert "dir/file1.txt" in names
+        assert "file2.txt" in names
+
+
+def test_zip_to_tar_preserves_directories(tmp_path) -> None:
+    """Directories in ZIP are preserved in TAR."""
+    zip_path = tmp_path / "test.zip"
+    tar_path = tmp_path / "test.tar"
+
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        # Create a directory entry
+        zf.writestr("mydir/", "")
+        zf.writestr("mydir/file.txt", b"content")
+
+    _zip_to_tar(zip_path, tar_path)
+
+    with tarfile.open(tar_path, "r") as tf:
+        members = {m.name: m for m in tf.getmembers()}
+        assert "mydir" in members or "mydir/" in members
+
+
+def test_zip_to_tar_raises_on_corrupted_zip(tmp_path) -> None:
+    """Corrupted ZIP raises BadZipFile."""
+    import pytest
+
+    zip_path = tmp_path / "bad.zip"
+    tar_path = tmp_path / "test.tar"
+
+    # Write invalid ZIP data
+    zip_path.write_bytes(b"not a valid zip file")
+
+    with pytest.raises(zipfile.BadZipFile):
+        _zip_to_tar(zip_path, tar_path)
