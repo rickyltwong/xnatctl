@@ -13,6 +13,35 @@ A modern CLI for XNAT neuroimaging server administration.
 
 ## Installation
 
+### Standalone Binary (no Python required)
+
+Download a self-contained Linux binary -- no Python installation needed:
+
+```bash
+# One-line install (latest release)
+curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
+
+# Install a specific version
+XNATCTL_VERSION=v0.1.0 curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
+
+# Custom install directory (default: ~/.local/bin)
+XNATCTL_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
+```
+
+Or download manually from [GitHub Releases](https://github.com/rickyltwong/xnatctl/releases):
+
+```bash
+# Download and extract
+tar -xzf xnatctl-linux-amd64.tar.gz
+chmod +x xnatctl
+mv xnatctl ~/.local/bin/
+
+# Verify
+xnatctl --version
+```
+
+### Python Package
+
 ```bash
 # With uv (recommended)
 uv pip install xnatctl
@@ -22,6 +51,12 @@ pip install xnatctl
 
 # For DICOM utilities (optional)
 pip install xnatctl[dicom]
+```
+
+### Docker
+
+```bash
+docker run --rm ghcr.io/rickyltwong/xnatctl:main --help
 ```
 
 ## Quick Start

@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -52,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -140,26 +144,71 @@ jobs:
               fh.write(f"version={version}\n")
           PY
 
-      - name: Create tag if missing
+      - name: Create tag and release if missing
+        id: tag
         run: |
           tag="v${{ steps.version.outputs.version }}"
           if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "Tag ${tag} already exists; skipping."
+            echo "created=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${tag}"
+          git tag -a "${tag}" -m "Release ${tag}"
           git push origin "${tag}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
-  release:
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      - name: Create GitHub release
+        if: steps.tag.outputs.created == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ contains(steps.version.outputs.version, 'alpha') || contains(steps.version.outputs.version, 'beta') || contains(steps.version.outputs.version, 'rc') }}
+    outputs:
+      created: ${{ steps.tag.outputs.created }}
+      tag: ${{ steps.tag.outputs.tag }}
+
+  binary:
+    runs-on: ubuntu-22.04
+    needs: auto-tag
+    if: needs.auto-tag.outputs.created == 'true'
     permissions:
       contents: write
     steps:
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
-          generate_release_notes: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller
+          pip install .
+
+      - name: Build binary
+        run: pyinstaller xnatctl.spec --noconfirm --clean
+
+      - name: Smoke test
+        run: |
+          ./dist/xnatctl --version
+          ./dist/xnatctl --help
+
+      - name: Package
+        run: |
+          tar -czf xnatctl-linux-amd64.tar.gz -C dist xnatctl
+          sha256sum xnatctl-linux-amd64.tar.gz > xnatctl-linux-amd64.tar.gz.sha256
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.auto-tag.outputs.tag }}" \
+            xnatctl-linux-amd64.tar.gz \
+            xnatctl-linux-amd64.tar.gz.sha256 \
+            --clobber

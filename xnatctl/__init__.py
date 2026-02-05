@@ -9,7 +9,7 @@ neuroimaging data servers, supporting common workflows like:
 """
 
 __version__ = "0.1.0"
-__author__ = "CAMH KCNI"
+__author__ = "Ricky Wong"
 
 from xnatctl.core.client import XNATClient
 from xnatctl.core.config import Config, Profile
