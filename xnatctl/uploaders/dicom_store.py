@@ -199,9 +199,9 @@ def send_batch(
 
             try:
                 status = assoc.send_c_store(ds)
-            except (AttributeError, ValueError) as e:
+            except Exception as e:
                 failed += 1
-                log.write(f"Store error {file_path}: {e}\n")
+                log.write(f"Store error {file_path}: {type(e).__name__}: {e}\n")
                 continue
 
             if status and status.Status == 0x0000:
@@ -335,5 +335,6 @@ def send_dicom_store(
         )
 
     finally:
-        if cleanup:
+        # Only cleanup on success - preserve logs for debugging failures
+        if cleanup and failed_total == 0:
             shutil.rmtree(workspace, ignore_errors=True)
