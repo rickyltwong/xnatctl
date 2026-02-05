@@ -244,7 +244,13 @@ def _download_session_fast(
     session_dir: Path,
     quiet: bool = False,
 ) -> None:
-    """Download session scans in parallel (one thread per scan)."""
+    """Download session scans in parallel and extract to standard structure.
+
+    Produces the XNAT compressed-uploader layout:
+        {session_dir}/scans/{scan_id}/resources/DICOM/files/{files...}
+    """
+    import tempfile
+    import zipfile
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     import httpx
@@ -261,20 +267,44 @@ def _download_session_fast(
     if not quiet:
         click.echo(f"Downloading {len(scan_ids)} scans in parallel...")
 
-    scans_dir = session_dir / "scans"
-    scans_dir.mkdir(parents=True, exist_ok=True)
+    base_url = client.base_url
+    session_token = client.session_token
+    verify_ssl = client.verify_ssl
+    timeout = client.timeout
 
-    def download_scan(scan_id: str) -> tuple[str, bool, str]:
+    def download_and_extract_scan(scan_id: str) -> tuple[str, bool, str]:
+        """Download a single scan ZIP and extract into standard layout."""
         scan_url = f"/data/projects/{session_project}/subjects/{subject}/experiments/{resolved_session_id}/scans/{scan_id}/resources/DICOM/files"
-        scan_zip = scans_dir / f"scan_{scan_id}.zip"
         try:
-            with client._get_client().stream(
-                "GET", scan_url, params={"format": "zip"}, cookies=client._get_cookies()
-            ) as resp:
-                resp.raise_for_status()
-                with open(scan_zip, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                        f.write(chunk)
+            with httpx.Client(base_url=base_url, timeout=timeout, verify=verify_ssl) as http:
+                cookies = {"JSESSIONID": session_token} if session_token else {}
+                with http.stream(
+                    "GET", scan_url, params={"format": "zip"}, cookies=cookies
+                ) as resp:
+                    resp.raise_for_status()
+                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                        tmp_path = Path(tmp.name)
+                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                            tmp.write(chunk)
+
+            # Build target directory in standard layout
+            target_dir = session_dir / "scans" / scan_id / "resources" / "DICOM" / "files"
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            # Extract files from ZIP, flattening XNAT's internal path
+            with zipfile.ZipFile(tmp_path, "r") as zf:
+                for member in zf.infolist():
+                    if member.is_dir():
+                        continue
+                    # Extract just the filename, discarding XNAT's internal path
+                    filename = Path(member.filename).name
+                    if not filename or filename.startswith("."):
+                        continue
+                    dest = target_dir / filename
+                    with zf.open(member) as src, open(dest, "wb") as dst:
+                        dst.write(src.read())
+
+            tmp_path.unlink(missing_ok=True)
             return scan_id, True, ""
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -286,19 +316,20 @@ def _download_session_fast(
     succeeded = []
     failed = []
 
-    with ThreadPoolExecutor(max_workers=len(scan_ids)) as executor:
-        futures = {executor.submit(download_scan, sid): sid for sid in scan_ids}
+    workers = min(len(scan_ids), 8)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(download_and_extract_scan, sid): sid for sid in scan_ids}
         for future in as_completed(futures):
             scan_id, success, error = future.result()
             if success:
                 succeeded.append(scan_id)
                 if not quiet:
                     status = f" ({error})" if error else ""
-                    click.echo(f"  ✓ Scan {scan_id}{status}")
+                    click.echo(f"  Scan {scan_id} done{status}")
             else:
                 failed.append((scan_id, error))
                 if not quiet:
-                    click.echo(f"  ✗ Scan {scan_id}: {error}")
+                    click.echo(f"  Scan {scan_id} FAILED: {error}")
 
     if failed and not quiet:
         click.echo(f"Warning: {len(failed)}/{len(scan_ids)} scans failed")
@@ -794,7 +825,7 @@ def _upload_gradual_dicom(
         click.echo(f"Uploading {len(dcm_files)} files using gradual-DICOM ({workers} workers)...")
 
     def upload_file(file_path: Path) -> tuple[str, bool, str]:
-        from xnatctl.uploaders.common import upload_with_retry
+        from xnatctl.services.uploads import upload_with_retry
 
         try:
             with httpx.Client(base_url=base_url, timeout=120.0, verify=verify_ssl) as http:
@@ -939,7 +970,7 @@ def _do_single_upload(
     zip_to_tar: bool,
 ) -> None:
     """Execute the actual upload with retry on transient errors."""
-    from xnatctl.uploaders.common import upload_with_retry
+    from xnatctl.services.uploads import upload_with_retry
 
     params = {
         "import-handler": "DICOM-zip",
@@ -1083,26 +1114,22 @@ def _upload_directory_parallel(
 ) -> None:
     """Upload a directory of DICOM files using parallel batching."""
     from xnatctl.core.config import get_credentials
-    from xnatctl.uploaders.parallel_rest import (
-        UploadProgress,
-        upload_dicom_parallel_rest,
-    )
+    from xnatctl.models.progress import UploadProgress
+    from xnatctl.services.uploads import UploadService
 
     client = ctx.get_client()
-    session_token = client.session_token
 
-    if not session_token:
+    if not client.session_token:
         env_username, env_password = get_credentials()
         username = username or env_username
         password = password or env_password
 
-        # Ensure we have credentials for parallel uploads (each thread authenticates)
         if not username:
             username = click.prompt("Username")
         if not password:
             password = click.prompt("Password", hide_input=True)
 
-    # Progress callback - only for table output and not quiet
+    service = UploadService(client)
     show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
 
     if show_progress:
@@ -1121,18 +1148,15 @@ def _upload_directory_parallel(
                 """Update the Rich progress UI for parallel uploads."""
                 if p.total > 0:
                     progress.update(task_id, total=p.total, completed=p.current)
-                progress.update(task_id, description=f"[{p.phase}] {p.message}")
+                progress.update(task_id, description=f"[{p.phase.value}] {p.message}")
 
-            summary = upload_dicom_parallel_rest(
-                base_url=client.base_url,
-                username=username,
-                password=password,
-                session_token=session_token,
-                verify_ssl=client.verify_ssl,
+            summary = service.upload_dicom_parallel(
                 source_dir=source_dir,
                 project=project,
                 subject=subject,
                 session=session,
+                username=username,
+                password=password,
                 upload_workers=upload_workers,
                 archive_workers=archive_workers,
                 archive_format=archive_format,
@@ -1142,16 +1166,13 @@ def _upload_directory_parallel(
                 progress_callback=progress_callback,
             )
     else:
-        summary = upload_dicom_parallel_rest(
-            base_url=client.base_url,
-            username=username,
-            password=password,
-            session_token=session_token,
-            verify_ssl=client.verify_ssl,
+        summary = service.upload_dicom_parallel(
             source_dir=source_dir,
             project=project,
             subject=subject,
             session=session,
+            username=username,
+            password=password,
             upload_workers=upload_workers,
             archive_workers=archive_workers,
             archive_format=archive_format,
@@ -1185,7 +1206,7 @@ def _upload_directory_parallel(
                 f"Upload completed with errors: "
                 f"{summary.batches_failed}/{summary.batches_succeeded + summary.batches_failed} batches failed"
             )
-            for error in summary.errors[:5]:  # Show first 5 errors
+            for error in summary.errors[:5]:
                 click.echo(f"  - {error}", err=True)
             if len(summary.errors) > 5:
                 click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
@@ -1202,7 +1223,6 @@ def _upload_dicom_store(
     dicom_workers: int,
 ) -> None:
     """Upload via DICOM C-STORE protocol."""
-    # Validate required options
     if not dicom_host:
         print_error("DICOM C-STORE requires --dicom-host or XNAT_DICOM_HOST environment variable")
         raise SystemExit(1)
@@ -1217,9 +1237,8 @@ def _upload_dicom_store(
         print_error("DICOM C-STORE requires a directory of DICOM files, not an archive")
         raise SystemExit(1)
 
-    # Lazy import to avoid requiring pynetdicom for non-DICOM operations
     try:
-        from xnatctl.uploaders.dicom_store import send_dicom_store
+        from xnatctl.services.uploads import UploadService
     except ImportError as e:
         print_error(
             "DICOM C-STORE requires pydicom and pynetdicom. "
@@ -1227,21 +1246,22 @@ def _upload_dicom_store(
         )
         raise SystemExit(1) from e
 
-    # Execute upload
     if not ctx.quiet:
         click.echo(f"Sending DICOM files to {dicom_host}:{dicom_port} ({called_aet})...")
 
-    summary = send_dicom_store(
+    client = ctx.get_client()
+    service = UploadService(client)
+
+    summary = service.upload_dicom_store(
         dicom_root=source_path,
         host=dicom_host,
-        port=dicom_port,
         called_aet=called_aet,
+        port=dicom_port,
         calling_aet=calling_aet,
         workers=dicom_workers,
         cleanup=True,
     )
 
-    # Output results
     if ctx.output_format == OutputFormat.JSON:
         print_output(
             {
@@ -1279,15 +1299,30 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
         return
 
     for zip_path in zip_files:
-        extract_dir = session_dir / zip_path.stem
-        extract_dir.mkdir(parents=True, exist_ok=True)
-
         if not quiet:
             click.echo(f"Extracting {zip_path.name}...")
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract_dir)
+                for member in zf.namelist():
+                    if member.endswith("/"):
+                        continue
+
+                    member_path = Path(member)
+                    if any(part.startswith(".") for part in member_path.parts):
+                        continue
+
+                    parts = member_path.parts
+                    if len(parts) > 1:
+                        stripped_path = Path(*parts[1:])
+                    else:
+                        stripped_path = member_path
+
+                    target_path = session_dir / stripped_path
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    with zf.open(member) as source, open(target_path, "wb") as target:
+                        target.write(source.read())
 
             if cleanup:
                 zip_path.unlink()
@@ -1360,14 +1395,27 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
     failed = 0
 
     for zip_path in zip_files:
-        extract_dir = zip_path.parent / zip_path.stem
-        extract_dir.mkdir(parents=True, exist_ok=True)
-
         click.echo(f"Extracting {zip_path.name}...")
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract_dir)
+                for member in zf.infolist():
+                    if member.is_dir():
+                        continue
+                    if member.filename.startswith(".") or "/.." in member.filename:
+                        continue
+
+                    parts = Path(member.filename).parts
+                    if len(parts) < 2:
+                        continue
+
+                    stripped_path = Path(*parts[1:])
+                    output_path = zip_path.parent / stripped_path
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    with zf.open(member) as source, open(output_path, "wb") as target:
+                        target.write(source.read())
+
             extracted += 1
 
             if cleanup:

@@ -1,16 +1,14 @@
-"""Tests for xnatctl.uploaders.common module."""
+"""Tests for xnatctl.services.uploads utility functions."""
 
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
-
 from unittest.mock import MagicMock
 
 import httpx
+import pytest
 
-from xnatctl.uploaders.common import (
+from xnatctl.services.uploads import (
     collect_dicom_files,
     is_retryable_status,
     split_into_batches,

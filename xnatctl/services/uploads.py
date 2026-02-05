@@ -1,16 +1,34 @@
-"""Upload service for XNAT upload operations."""
+"""Upload service for XNAT upload operations.
+
+Provides UploadService with methods for all upload transports:
+- REST batch upload (simple ZIP batches via import service)
+- Parallel REST upload (batched archives with parallel workers)
+- DICOM C-STORE upload (pynetdicom-based network transfer)
+- Resource upload (file/directory upload to session resources)
+
+Public utility functions (collect_dicom_files, split_into_batches, etc.)
+are available for direct import and testing.
+"""
 
 from __future__ import annotations
 
+import logging
+import os
 import shutil
+import tarfile
 import tempfile
 import time
 import zipfile
-from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
 
+import httpx
+
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.progress import (
     OperationPhase,
     UploadProgress,
@@ -19,9 +37,646 @@ from xnatctl.models.progress import (
 
 from .base import BaseService
 
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+DEFAULT_BATCH_SIZE = 500
+DEFAULT_UPLOAD_WORKERS = 4
+DEFAULT_ARCHIVE_WORKERS = 4
+DEFAULT_ARCHIVE_FORMAT = "tar"
+DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
+DEFAULT_IMPORT_HANDLER = "DICOM-zip"
+DEFAULT_OVERWRITE = "delete"
+DEFAULT_DICOM_STORE_WORKERS = 4
+DEFAULT_DICOM_CALLING_AET = "XNATCTL"
+DEFAULT_DICOM_PORT = 104
+
+DICOM_EXTENSIONS = {".dcm", ".ima", ".img", ".dicom"}
+
+UPLOAD_MAX_RETRIES = 5
+UPLOAD_RETRY_BACKOFF_BASE = 2  # seconds: 2, 4, 8, 16, 32
+RETRYABLE_STATUS_CODES = {400, 429, 500, 502, 503, 504}
+
+
+# =============================================================================
+# DICOM C-STORE Result (separate from REST models)
+# =============================================================================
+
+
+@dataclass
+class DICOMStoreSummary:
+    """Summary of a DICOM C-STORE operation."""
+
+    total_files: int
+    sent: int
+    failed: int
+    log_dir: Path
+    workspace: Path
+    success: bool
+
+
+# =============================================================================
+# Internal Batch Result
+# =============================================================================
+
+
+@dataclass
+class _UploadResult:
+    """Result of a single batch upload (internal)."""
+
+    batch_id: int
+    success: bool
+    duration: float
+    file_count: int
+    archive_size: int
+    error: str = ""
+
+
+# =============================================================================
+# Public Utility Functions
+# =============================================================================
+
+
+def collect_dicom_files(
+    root: Path,
+    *,
+    include_extensionless: bool = True,
+) -> list[Path]:
+    """Recursively collect DICOM-like files under a root directory.
+
+    Args:
+        root: Root directory to search.
+        include_extensionless: If True, include files without extensions
+            (common for raw DICOM from scanners).
+
+    Returns:
+        Sorted list of file paths.
+
+    Raises:
+        ValueError: If root is not a directory.
+    """
+    if not root.exists() or not root.is_dir():
+        raise ValueError(f"Not a directory: {root}")
+
+    files: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+
+        if path.name.startswith("."):
+            continue
+
+        if path.is_symlink():
+            try:
+                resolved = path.resolve()
+                if not resolved.exists():
+                    continue
+            except (OSError, ValueError):
+                continue
+
+        suffix = path.suffix.lower()
+        if suffix in DICOM_EXTENSIONS:
+            files.append(path)
+        elif include_extensionless and suffix == "":
+            files.append(path)
+
+    return sorted(files)
+
+
+def split_into_batches(
+    files: Sequence[Path],
+    batch_size: int,
+) -> list[list[Path]]:
+    """Split files into batches of specified size.
+
+    Args:
+        files: Sequence of file paths to split.
+        batch_size: Maximum files per batch.
+
+    Returns:
+        List of batches, each batch being a list of paths.
+    """
+    if not files:
+        return []
+
+    if batch_size <= 0:
+        return [list(files)]
+
+    batches: list[list[Path]] = []
+    current_batch: list[Path] = []
+
+    for file_path in files:
+        current_batch.append(file_path)
+        if len(current_batch) >= batch_size:
+            batches.append(current_batch)
+            current_batch = []
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+
+def split_into_n_batches(
+    files: Sequence[Path],
+    num_batches: int,
+) -> list[list[Path]]:
+    """Split files into N roughly equal batches using round-robin.
+
+    Args:
+        files: Sequence of file paths to split.
+        num_batches: Number of batches to create.
+
+    Returns:
+        List of batches, each batch being a list of paths.
+    """
+    if not files:
+        return []
+
+    if num_batches <= 0:
+        return [list(files)]
+
+    actual_batches = min(num_batches, len(files))
+    batches: list[list[Path]] = [[] for _ in range(actual_batches)]
+
+    for idx, file_path in enumerate(files):
+        batches[idx % actual_batches].append(file_path)
+
+    return batches
+
+
+def is_retryable_status(status_code: int) -> bool:
+    """Check if an HTTP status code warrants a retry.
+
+    Retryable: 400 (XNAT transient), 429 (rate limit), 5xx (server errors).
+    Non-retryable: 2xx (success), 401/403 (auth), other 4xx (client error).
+    """
+    return status_code in RETRYABLE_STATUS_CODES
+
+
+def upload_with_retry(
+    upload_fn: Callable[[], Any],
+    *,
+    max_retries: int = UPLOAD_MAX_RETRIES,
+    backoff_base: int = UPLOAD_RETRY_BACKOFF_BASE,
+    label: str = "upload",
+) -> Any:
+    """Execute an upload function with retry on transient HTTP errors.
+
+    Args:
+        upload_fn: Callable that performs the upload and returns an httpx.Response.
+                   Will be called multiple times on retry -- must be idempotent.
+        max_retries: Maximum number of retries (default: 5).
+        backoff_base: Base for exponential backoff in seconds (default: 2).
+        label: Label for log messages.
+
+    Returns:
+        The httpx.Response from a successful attempt.
+
+    Raises:
+        The last exception if all retries are exhausted and no response was obtained.
+    """
+    last_resp = None
+    last_exc: Exception | None = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            resp = upload_fn()
+            if not is_retryable_status(resp.status_code):
+                return resp
+            last_resp = resp
+            last_exc = None
+            if attempt < max_retries:
+                delay = backoff_base ** (attempt + 1)
+                logger.warning(
+                    "%s: HTTP %d on attempt %d/%d, retrying in %ds",
+                    label,
+                    resp.status_code,
+                    attempt + 1,
+                    max_retries + 1,
+                    delay,
+                )
+                time.sleep(delay)
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            last_exc = e
+            last_resp = None
+            if attempt < max_retries:
+                delay = backoff_base ** (attempt + 1)
+                logger.warning(
+                    "%s: %s on attempt %d/%d, retrying in %ds",
+                    label,
+                    type(e).__name__,
+                    attempt + 1,
+                    max_retries + 1,
+                    delay,
+                )
+                time.sleep(delay)
+
+    if last_resp is not None:
+        return last_resp
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"{label}: all retries exhausted with no response")
+
+
+# =============================================================================
+# Archive Helpers (private)
+# =============================================================================
+
+
+def _create_tar_archive(files: list[Path], output_path: Path, base_dir: Path) -> int:
+    """Create a TAR archive from files, returning size in bytes."""
+    with tarfile.open(output_path, "w") as tf:
+        for file_path in files:
+            arcname = os.path.relpath(file_path, base_dir)
+            tf.add(file_path, arcname=arcname)
+    return output_path.stat().st_size
+
+
+def _create_zip_archive(files: list[Path], output_path: Path, base_dir: Path) -> int:
+    """Create a ZIP archive from files, returning size in bytes."""
+    with ZipFile(output_path, "w", compression=ZIP_DEFLATED, allowZip64=True) as zf:
+        for file_path in files:
+            arcname = os.path.relpath(file_path, base_dir)
+            zf.write(file_path, arcname)
+    return output_path.stat().st_size
+
+
+def _create_archive(
+    files: list[Path],
+    output_path: Path,
+    base_dir: Path,
+    archive_format: str,
+) -> int:
+    """Create an archive from files.
+
+    Args:
+        files: List of file paths to include.
+        output_path: Path for the output archive.
+        base_dir: Base directory for relative paths in archive.
+        archive_format: Format ("tar" or "zip").
+
+    Returns:
+        Size of created archive in bytes.
+
+    Raises:
+        ValueError: If archive format is unsupported.
+    """
+    if archive_format == "tar":
+        return _create_tar_archive(files, output_path, base_dir)
+    if archive_format == "zip":
+        return _create_zip_archive(files, output_path, base_dir)
+    raise ValueError(f"Unsupported archive format: {archive_format}")
+
+
+# =============================================================================
+# Parallel Upload Helpers (private, thread-safe standalone functions)
+# =============================================================================
+
+
+def _upload_single_archive(
+    *,
+    base_url: str,
+    username: str | None,
+    password: str | None,
+    session_token: str | None,
+    verify_ssl: bool,
+    timeout: int,
+    archive_path: Path,
+    project: str,
+    subject: str,
+    session: str,
+    import_handler: str,
+    ignore_unparsable: bool,
+    overwrite: str,
+    direct_archive: bool,
+) -> tuple[bool, str]:
+    """Upload a single archive file to XNAT.
+
+    Creates a fresh httpx client for thread-safety in parallel execution.
+
+    Returns:
+        Tuple of (success, error_message).
+    """
+    name = archive_path.name.lower()
+    content_type = (
+        "application/x-tar"
+        if name.endswith((".tar", ".tar.gz", ".tgz"))
+        else "application/zip"
+    )
+
+    params = {
+        "import-handler": import_handler,
+        "Ignore-Unparsable": "true" if ignore_unparsable else "false",
+        "project": project,
+        "subject": subject,
+        "session": session,
+        "overwrite": overwrite,
+        "overwrite_files": "true",
+        "quarantine": "false",
+        "triggerPipelines": "true",
+        "rename": "false",
+        "Direct-Archive": "true" if direct_archive else "false",
+        "inbody": "true",
+    }
+
+    with httpx.Client(
+        base_url=base_url,
+        timeout=timeout,
+        verify=verify_ssl,
+    ) as client:
+        try:
+            cookies: dict[str, str] = {}
+            created_session = False
+
+            if session_token:
+                cookies = {"JSESSIONID": session_token}
+            else:
+                if not username or not password:
+                    return False, "Authentication failed: missing credentials"
+
+                auth_resp = client.post(
+                    "/data/JSESSION",
+                    auth=(str(username), str(password)),
+                )
+                if auth_resp.status_code != 200:
+                    return False, f"Authentication failed: HTTP {auth_resp.status_code}"
+
+                if "<html" in auth_resp.text.lower():
+                    return False, "Authentication failed: invalid credentials"
+
+                session_token = auth_resp.text.strip()
+                cookies = {"JSESSIONID": session_token}
+                created_session = True
+
+            def _attempt() -> httpx.Response:
+                with archive_path.open("rb") as data:
+                    return client.post(
+                        "/data/services/import",
+                        params=params,
+                        headers={"Content-Type": content_type},
+                        content=data,
+                        cookies=cookies,
+                    )
+
+            try:
+                resp = upload_with_retry(_attempt, label=f"batch {archive_path.name}")
+            finally:
+                if created_session:
+                    try:
+                        client.delete("/data/JSESSION", cookies=cookies)
+                    except Exception:
+                        pass
+
+            if resp.status_code == 200:
+                return True, ""
+            if resp.status_code in (401, 403):
+                return False, "Authentication failed: invalid or expired session"
+            return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+
+        except httpx.TimeoutException:
+            return False, "Upload timed out (after retries)"
+        except httpx.ConnectError as e:
+            return False, f"Connection failed (after retries): {e}"
+        except Exception as e:
+            return False, str(e)
+
+
+def _upload_batch(
+    *,
+    base_url: str,
+    username: str | None,
+    password: str | None,
+    session_token: str | None,
+    verify_ssl: bool,
+    timeout: int,
+    batch_id: int,
+    archive_path: Path,
+    file_count: int,
+    project: str,
+    subject: str,
+    session: str,
+    import_handler: str,
+    ignore_unparsable: bool,
+    overwrite: str,
+    direct_archive: bool,
+) -> _UploadResult:
+    """Upload a single batch archive, returning an _UploadResult."""
+    archive_size = archive_path.stat().st_size
+    start_time = time.time()
+
+    try:
+        success, error = _upload_single_archive(
+            base_url=base_url,
+            username=username,
+            password=password,
+            session_token=session_token,
+            verify_ssl=verify_ssl,
+            timeout=timeout,
+            archive_path=archive_path,
+            project=project,
+            subject=subject,
+            session=session,
+            import_handler=import_handler,
+            ignore_unparsable=ignore_unparsable,
+            overwrite=overwrite,
+            direct_archive=direct_archive,
+        )
+        return _UploadResult(
+            batch_id=batch_id,
+            success=success,
+            duration=time.time() - start_time,
+            file_count=file_count,
+            archive_size=archive_size,
+            error=error,
+        )
+    except Exception as e:
+        return _UploadResult(
+            batch_id=batch_id,
+            success=False,
+            duration=time.time() - start_time,
+            file_count=file_count,
+            archive_size=archive_size,
+            error=str(e),
+        )
+
+
+# =============================================================================
+# DICOM C-STORE Helpers (private, lazy imports)
+# =============================================================================
+
+
+def _check_dicom_deps() -> None:
+    """Check if DICOM dependencies are available.
+
+    Raises:
+        ImportError: If pydicom or pynetdicom are not installed.
+    """
+    try:
+        import pydicom  # noqa: F401
+        import pynetdicom  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            "DICOM C-STORE requires pydicom and pynetdicom. "
+            "Install with: pip install xnatctl[dicom]"
+        ) from e
+
+
+def _get_verification_sop_class():
+    """Get VerificationSOPClass with compatibility for pynetdicom versions."""
+    from pynetdicom import sop_class as _sop_class
+
+    verification_uid = "1.2.840.10008.1.1"
+    return getattr(
+        _sop_class,
+        "VerificationSOPClass",
+        getattr(_sop_class, "Verification", verification_uid),
+    )
+
+
+def _get_storage_contexts():
+    """Get storage presentation contexts with version compatibility."""
+    try:
+        from pynetdicom import StoragePresentationContexts
+
+        return list(StoragePresentationContexts)
+    except ImportError:
+        from pynetdicom import sop_class as _sc
+        from pynetdicom.presentation import build_context
+
+        uids = [getattr(_sc, name) for name in dir(_sc) if name.endswith("Storage")]
+        return [build_context(uid) for uid in uids]
+
+
+def _ensure_sop_uids(ds) -> None:
+    """Populate missing SOP UID attributes from file-meta.
+
+    Args:
+        ds: pydicom Dataset object.
+    """
+    if not getattr(ds, "SOPClassUID", None):
+        uid = getattr(ds.file_meta, "MediaStorageSOPClassUID", None)
+        if uid:
+            ds.SOPClassUID = uid
+
+    if not getattr(ds, "SOPInstanceUID", None):
+        uid = getattr(ds.file_meta, "MediaStorageSOPInstanceUID", None)
+        if uid:
+            ds.SOPInstanceUID = uid
+
+
+def _c_echo(host: str, port: int, calling_aet: str, called_aet: str) -> bool:
+    """Send a C-ECHO to verify connectivity and AE titles.
+
+    Args:
+        host: DICOM SCP host.
+        port: DICOM SCP port.
+        calling_aet: Our AE title.
+        called_aet: Remote AE title.
+
+    Returns:
+        True if C-ECHO succeeded.
+    """
+    _check_dicom_deps()
+    from pynetdicom import AE
+
+    ae = AE(ae_title=calling_aet)
+    ae.add_requested_context(_get_verification_sop_class())
+
+    assoc = ae.associate(host, port, ae_title=called_aet)
+    if not assoc.is_established:
+        return False
+
+    status = assoc.send_c_echo()
+    assoc.release()
+
+    return bool(status and status.Status == 0x0000)
+
+
+def _send_dicom_batch(
+    batch_id: str,
+    files: list[Path],
+    host: str,
+    port: int,
+    calling_aet: str,
+    called_aet: str,
+    log_dir: Path,
+) -> tuple[int, int]:
+    """Send a batch of DICOM files over a single association.
+
+    Args:
+        batch_id: Identifier for this batch (for logging).
+        files: List of DICOM file paths.
+        host: DICOM SCP host.
+        port: DICOM SCP port.
+        calling_aet: Our AE title.
+        called_aet: Remote AE title.
+        log_dir: Directory for batch log files.
+
+    Returns:
+        Tuple of (sent_count, failed_count).
+    """
+    _check_dicom_deps()
+    import pydicom
+    from pydicom.errors import InvalidDicomError
+    from pynetdicom import AE
+
+    sent = failed = 0
+    log_path = log_dir / f"{batch_id}.log"
+
+    with log_path.open("w") as log:
+        ae = AE(ae_title=calling_aet)
+        ae.requested_contexts = _get_storage_contexts()
+        ae.add_requested_context("1.3.12.2.1107.5.9.1")
+
+        assoc = ae.associate(host, port, ae_title=called_aet)
+        if not assoc.is_established:
+            log.write("Association rejected/aborted\n")
+            return sent, len(files)
+
+        for file_path in files:
+            try:
+                ds = pydicom.dcmread(file_path, force=True)
+            except InvalidDicomError:
+                failed += 1
+                log.write(f"Skip non-DICOM {file_path}\n")
+                continue
+
+            _ensure_sop_uids(ds)
+
+            try:
+                status = assoc.send_c_store(ds)
+            except Exception as e:
+                failed += 1
+                log.write(f"Store error {file_path}: {type(e).__name__}: {e}\n")
+                continue
+
+            if status and status.Status == 0x0000:
+                sent += 1
+            else:
+                failed += 1
+                status_hex = hex(status.Status) if status else "0x0000"
+                log.write(f"Failed {file_path} status {status_hex}\n")
+
+        assoc.release()
+
+    return sent, failed
+
+
+# =============================================================================
+# Upload Service
+# =============================================================================
+
 
 class UploadService(BaseService):
-    """Service for XNAT upload operations."""
+    """Service for XNAT upload operations.
+
+    Provides methods for all upload transports: REST batch, parallel REST,
+    DICOM C-STORE, and resource uploads.
+    """
 
     def upload_dicom(
         self,
@@ -31,29 +686,27 @@ class UploadService(BaseService):
         source_path: Path,
         overwrite: bool = False,
         quarantine: bool = False,
-        batch_size: int = 500,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         parallel: bool = True,
-        workers: int = 4,
+        workers: int = DEFAULT_UPLOAD_WORKERS,
         progress_callback: Callable[[UploadProgress], None] | None = None,
     ) -> UploadSummary:
-        """Upload DICOM files to create/update a session.
-
-        Uses the XNAT REST import service with direct-archive.
+        """Upload DICOM files via simple REST batch (ZIP per batch).
 
         Args:
-            project: Project ID
-            subject: Subject label
-            session: Session label
-            source_path: Path to DICOM files (directory or ZIP)
-            overwrite: Overwrite existing scans
-            quarantine: Send to prearchive instead
-            batch_size: Files per upload batch
-            parallel: Use parallel uploads
-            workers: Number of parallel workers
-            progress_callback: Progress callback function
+            project: Project ID.
+            subject: Subject label.
+            session: Session label.
+            source_path: Path to DICOM files (directory or ZIP).
+            overwrite: Overwrite existing scans.
+            quarantine: Send to prearchive instead.
+            batch_size: Files per upload batch.
+            parallel: Use parallel uploads.
+            workers: Number of parallel workers.
+            progress_callback: Progress callback function.
 
         Returns:
-            UploadSummary with results
+            UploadSummary with results.
         """
         start_time = time.time()
         source_path = Path(source_path)
@@ -61,7 +714,6 @@ class UploadService(BaseService):
         if not source_path.exists():
             raise FileNotFoundError(f"Source not found: {source_path}")
 
-        # Report preparation phase
         if progress_callback:
             progress_callback(
                 UploadProgress(
@@ -74,7 +726,6 @@ class UploadService(BaseService):
         dicom_files: list[Path] = []
         if source_path.is_file():
             if source_path.suffix.lower() == ".zip":
-                # Extract ZIP to temp directory
                 temp_dir = tempfile.mkdtemp()
                 with zipfile.ZipFile(source_path, "r") as zf:
                     zf.extractall(temp_dir)
@@ -84,10 +735,11 @@ class UploadService(BaseService):
                 dicom_files = [source_path]
         else:
             dicom_files = [
-                f for f in source_path.rglob("*") if f.is_file() and not f.name.startswith(".")
+                f
+                for f in source_path.rglob("*")
+                if f.is_file() and not f.name.startswith(".")
             ]
 
-        # Filter to likely DICOM files
         dicom_files = [
             f
             for f in dicom_files
@@ -105,7 +757,6 @@ class UploadService(BaseService):
                 errors=["No DICOM files found"],
             )
 
-        # Calculate total size
         total_size = sum(f.stat().st_size for f in dicom_files)
 
         if progress_callback:
@@ -117,23 +768,19 @@ class UploadService(BaseService):
                 )
             )
 
-        # Split into batches
         batches = list(self._split_into_batches(dicom_files, batch_size))
         total_batches = len(batches)
+        results: dict[str, Any] = {"succeeded": 0, "failed": 0, "errors": []}
 
-        results: dict[str, Any] = {
-            "succeeded": 0,
-            "failed": 0,
-            "errors": [],
-        }
-
-        # Build destination parameter
         dest = f"/archive/projects/{project}/subjects/{subject}/experiments/{session}"
 
-        def upload_batch(batch_id: int, files: list[Path]) -> tuple[bool, str]:
-            """Upload a single batch."""
+        base_url = self.client.base_url
+        session_token = self.client.session_token
+        verify_ssl = self.client.verify_ssl
+        timeout = self.client.timeout
+
+        def _upload_batch_fn(batch_id: int, files: list[Path]) -> tuple[bool, str]:
             try:
-                # Create temporary ZIP
                 with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
                     zip_path = Path(tmp.name)
 
@@ -141,7 +788,6 @@ class UploadService(BaseService):
                     for file_path in files:
                         zf.write(file_path, file_path.name)
 
-                # Upload to import service
                 params: dict[str, Any] = {
                     "dest": dest,
                     "overwrite": "delete" if overwrite else "none",
@@ -150,45 +796,45 @@ class UploadService(BaseService):
                     "SUBJECT_ID": subject,
                     "EXPT_LABEL": session,
                 }
-
                 if quarantine:
                     params["dest"] = f"/prearchive/projects/{project}"
 
                 with open(zip_path, "rb") as zip_file:
                     content = zip_file.read()
 
-                self.client.post(
-                    "/data/services/import",
-                    params=params,
-                    data=content,
-                    headers={
-                        "Content-Type": "application/zip",
-                    },
-                )
+                cookies = {"JSESSIONID": session_token} if session_token else {}
+                with httpx.Client(
+                    base_url=base_url,
+                    timeout=timeout,
+                    verify=verify_ssl,
+                ) as http:
+                    http.post(
+                        "/data/services/import",
+                        params=params,
+                        content=content,
+                        headers={"Content-Type": "application/zip"},
+                        cookies=cookies,
+                    )
 
                 zip_path.unlink()
                 return (True, "")
-
             except Exception as e:
                 return (False, str(e))
 
-        # Upload batches
         if parallel and total_batches > 1:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
-                    executor.submit(upload_batch, i, batch): i for i, batch in enumerate(batches)
+                    executor.submit(_upload_batch_fn, i, batch): i
+                    for i, batch in enumerate(batches)
                 }
-
                 for future in as_completed(futures):
                     batch_id = futures[future]
                     success, error = future.result()
-
                     if success:
                         results["succeeded"] += 1
                     else:
                         results["failed"] += 1
                         results["errors"].append(f"Batch {batch_id}: {error}")
-
                     if progress_callback:
                         progress_callback(
                             UploadProgress(
@@ -202,14 +848,12 @@ class UploadService(BaseService):
                         )
         else:
             for batch_id, batch in enumerate(batches):
-                success, error = upload_batch(batch_id, batch)
-
+                success, error = _upload_batch_fn(batch_id, batch)
                 if success:
                     results["succeeded"] += 1
                 else:
                     results["failed"] += 1
                     results["errors"].append(f"Batch {batch_id}: {error}")
-
                 if progress_callback:
                     progress_callback(
                         UploadProgress(
@@ -231,9 +875,7 @@ class UploadService(BaseService):
                     phase=OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
                     current=total_batches,
                     total=total_batches,
-                    message="Upload complete"
-                    if overall_success
-                    else "Upload completed with errors",
+                    message="Upload complete" if overall_success else "Upload completed with errors",
                     success=overall_success,
                     errors=results["errors"],
                 )
@@ -254,6 +896,364 @@ class UploadService(BaseService):
             session_id=session,
         )
 
+    def upload_dicom_parallel(
+        self,
+        source_dir: Path,
+        project: str,
+        subject: str,
+        session: str,
+        *,
+        username: str | None = None,
+        password: str | None = None,
+        upload_workers: int = DEFAULT_UPLOAD_WORKERS,
+        archive_workers: int = DEFAULT_ARCHIVE_WORKERS,
+        archive_format: str = DEFAULT_ARCHIVE_FORMAT,
+        import_handler: str = DEFAULT_IMPORT_HANDLER,
+        ignore_unparsable: bool = True,
+        overwrite: str = DEFAULT_OVERWRITE,
+        direct_archive: bool = True,
+        timeout: int = DEFAULT_TIMEOUT,
+        progress_callback: Callable[[UploadProgress], None] | None = None,
+    ) -> UploadSummary:
+        """Upload DICOM files using parallel batched archives via REST import.
+
+        High-throughput upload that:
+        1. Collects DICOM files from the source directory
+        2. Splits files into N batches (N = upload_workers)
+        3. Creates archives in parallel
+        4. Uploads archives in parallel with per-thread HTTP clients
+
+        Args:
+            source_dir: Directory containing DICOM files.
+            project: Target project ID.
+            subject: Target subject label.
+            session: Target session label.
+            username: XNAT username (override for per-thread auth).
+            password: XNAT password (override for per-thread auth).
+            upload_workers: Parallel upload workers (default: 4).
+            archive_workers: Parallel archive workers (default: 4).
+            archive_format: Archive format, "tar" or "zip" (default: tar).
+            import_handler: XNAT import handler (default: DICOM-zip).
+            ignore_unparsable: Skip unparsable DICOM files (default: True).
+            overwrite: Overwrite mode: none, append, delete (default: delete).
+            direct_archive: Use direct archive vs prearchive (default: True).
+            timeout: HTTP timeout in seconds.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            UploadSummary with results.
+        """
+        total_start = time.time()
+        errors: list[str] = []
+
+        base_url = self.client.base_url
+        session_token = self.client.session_token
+        verify_ssl = self.client.verify_ssl
+        effective_username = username or self.client.username
+        effective_password = password or self.client.password
+
+        def report(phase: OperationPhase, **kwargs: Any) -> None:
+            if progress_callback:
+                progress_callback(UploadProgress(phase=phase, **kwargs))
+
+        # Phase 1: Collect files
+        report(OperationPhase.PREPARING, message="Scanning for DICOM files...")
+
+        try:
+            files = collect_dicom_files(source_dir)
+        except Exception as e:
+            return UploadSummary(
+                success=False,
+                total=0,
+                succeeded=0,
+                failed=0,
+                duration=time.time() - total_start,
+                errors=[f"Failed to scan directory: {e}"],
+            )
+
+        if not files:
+            return UploadSummary(
+                success=False,
+                total=0,
+                succeeded=0,
+                failed=0,
+                duration=time.time() - total_start,
+                errors=["No DICOM files found"],
+            )
+
+        # Phase 2: Split into batches
+        batch_count = max(1, min(upload_workers, len(files)))
+        batches = split_into_n_batches(files, batch_count)
+        report(
+            OperationPhase.PREPARING,
+            message=f"Split {len(files)} files into {len(batches)} batches",
+        )
+
+        # Phase 3: Create archives
+        ext = ".tar" if archive_format == "tar" else ".zip"
+        temp_dir = Path(tempfile.mkdtemp(prefix="xnatctl_upload_"))
+        archive_paths: list[Path] = []
+        total_archive_size = 0
+
+        try:
+            for i in range(len(batches)):
+                archive_paths.append(temp_dir / f"batch_{i + 1}{ext}")
+
+            report(
+                OperationPhase.ARCHIVING,
+                total=len(batches),
+                message="Creating archives...",
+            )
+
+            effective_archive_workers = max(1, min(archive_workers, len(batches)))
+            source_path = source_dir.expanduser().resolve()
+
+            with ThreadPoolExecutor(max_workers=effective_archive_workers) as archive_executor:
+                archive_futures: dict[Future[int], int] = {}
+                for i, batch in enumerate(batches):
+                    future = archive_executor.submit(
+                        _create_archive, batch, archive_paths[i], source_path, archive_format
+                    )
+                    archive_futures[future] = i
+
+                completed = 0
+                for future in as_completed(archive_futures):
+                    completed += 1
+                    try:
+                        size = future.result()
+                        total_archive_size += size
+                    except Exception as e:
+                        idx = archive_futures[future]
+                        errors.append(f"Archive batch {idx + 1} failed: {e}")
+
+                    report(
+                        OperationPhase.ARCHIVING,
+                        current=completed,
+                        total=len(batches),
+                        message=f"Created archive {completed}/{len(batches)}",
+                    )
+
+            if errors:
+                return UploadSummary(
+                    success=False,
+                    total=len(batches),
+                    succeeded=0,
+                    failed=len(batches),
+                    duration=time.time() - total_start,
+                    errors=errors,
+                    total_files=len(files),
+                    total_size_mb=total_archive_size / 1024 / 1024,
+                    batches_total=len(batches),
+                    batches_failed=len(batches),
+                )
+
+            # Phase 4: Upload archives
+            report(
+                OperationPhase.UPLOADING,
+                total=len(batches),
+                message="Starting uploads...",
+            )
+
+            results: list[_UploadResult] = []
+            effective_upload_workers = max(1, min(upload_workers, len(batches)))
+
+            with ThreadPoolExecutor(max_workers=effective_upload_workers) as upload_executor:
+                upload_futures: dict[Future[_UploadResult], int] = {}
+                for i, (batch, archive_path) in enumerate(
+                    zip(batches, archive_paths, strict=True)
+                ):
+                    future = upload_executor.submit(
+                        _upload_batch,
+                        base_url=base_url,
+                        username=effective_username,
+                        password=effective_password,
+                        session_token=session_token,
+                        verify_ssl=verify_ssl,
+                        timeout=timeout,
+                        batch_id=i + 1,
+                        archive_path=archive_path,
+                        file_count=len(batch),
+                        project=project,
+                        subject=subject,
+                        session=session,
+                        import_handler=import_handler,
+                        ignore_unparsable=ignore_unparsable,
+                        overwrite=overwrite,
+                        direct_archive=direct_archive,
+                    )
+                    upload_futures[future] = i + 1
+
+                for future in as_completed(upload_futures):
+                    result = future.result()
+                    results.append(result)
+
+                    if not result.success:
+                        errors.append(f"Batch {result.batch_id}: {result.error}")
+
+                    succeeded = sum(1 for r in results if r.success)
+                    report(
+                        OperationPhase.UPLOADING,
+                        current=len(results),
+                        total=len(batches),
+                        batch_id=result.batch_id,
+                        success=result.success,
+                        message=f"Uploaded {len(results)}/{len(batches)} ({succeeded} succeeded)",
+                    )
+
+            # Phase 5: Complete
+            total_duration = time.time() - total_start
+            batches_succeeded = sum(1 for r in results if r.success)
+            batches_failed = len(results) - batches_succeeded
+            success = batches_failed == 0
+
+            report(
+                OperationPhase.COMPLETE if success else OperationPhase.ERROR,
+                current=len(results),
+                total=len(batches),
+                message=(
+                    "Upload complete!"
+                    if success
+                    else f"Upload completed with {batches_failed} failures"
+                ),
+                success=success,
+                errors=errors,
+            )
+
+            if not success:
+                logger.warning("Upload completed with %s failures", batches_failed)
+
+            return UploadSummary(
+                success=success,
+                total=len(batches),
+                succeeded=batches_succeeded,
+                failed=batches_failed,
+                duration=total_duration,
+                errors=errors,
+                total_files=len(files),
+                total_size_mb=total_archive_size / 1024 / 1024,
+                batches_total=len(batches),
+                batches_succeeded=batches_succeeded,
+                batches_failed=batches_failed,
+                session_id=session,
+            )
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def upload_dicom_store(
+        self,
+        dicom_root: Path,
+        host: str,
+        called_aet: str,
+        *,
+        port: int = DEFAULT_DICOM_PORT,
+        calling_aet: str = DEFAULT_DICOM_CALLING_AET,
+        workers: int = DEFAULT_DICOM_STORE_WORKERS,
+        cleanup: bool = True,
+    ) -> DICOMStoreSummary:
+        """Send DICOM files to an SCP using C-STORE.
+
+        This method:
+        1. Verifies connectivity with C-ECHO
+        2. Collects DICOM files from the root directory
+        3. Splits files into batches for parallel associations
+        4. Sends files using multiple concurrent C-STORE associations
+
+        Args:
+            dicom_root: Directory containing DICOM files.
+            host: DICOM SCP host.
+            called_aet: Remote AE title.
+            port: DICOM SCP port (default: 104).
+            calling_aet: Our AE title (default: XNATCTL).
+            workers: Number of parallel associations (default: 4).
+            cleanup: Remove temporary workspace on completion (default: True).
+
+        Returns:
+            DICOMStoreSummary with results.
+
+        Raises:
+            ImportError: If pydicom/pynetdicom are not installed.
+            ValueError: If dicom_root is not a directory.
+            RuntimeError: If C-ECHO fails or no DICOM files found.
+        """
+        _check_dicom_deps()
+
+        if not dicom_root.exists() or not dicom_root.is_dir():
+            raise ValueError(f"dicom_root is not a directory: {dicom_root}")
+
+        workspace = Path(tempfile.mkdtemp(prefix="xnatctl_dicom_store_"))
+        log_dir = workspace / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        failed_total = 0
+
+        try:
+            logger.info(
+                "Pre-flight C-ECHO %s -> %s @ %s:%s",
+                calling_aet,
+                called_aet,
+                host,
+                port,
+            )
+            if not _c_echo(host, port, calling_aet, called_aet):
+                raise RuntimeError(
+                    f"C-ECHO failed - check host/port/AET settings "
+                    f"(host={host}, port={port}, called_aet={called_aet})"
+                )
+
+            files = collect_dicom_files(dicom_root)
+            if not files:
+                raise RuntimeError(f"No DICOM files found in {dicom_root}")
+
+            batches = split_into_n_batches(files, workers)
+            logger.info(
+                "Discovered %d files, using %d parallel associations",
+                len(files),
+                len(batches),
+            )
+
+            sent_total = 0
+
+            with ThreadPoolExecutor(max_workers=len(batches)) as pool:
+                futures = {
+                    pool.submit(
+                        _send_dicom_batch,
+                        f"{i:03d}",
+                        batch,
+                        host,
+                        port,
+                        calling_aet,
+                        called_aet,
+                        log_dir,
+                    ): i
+                    for i, batch in enumerate(batches)
+                }
+
+                for future in as_completed(futures):
+                    batch_idx = futures[future]
+                    sent, failed = future.result()
+                    sent_total += sent
+                    failed_total += failed
+                    logger.info(
+                        "Batch %03d complete: %d sent, %d failed",
+                        batch_idx,
+                        sent,
+                        failed,
+                    )
+
+            return DICOMStoreSummary(
+                total_files=len(files),
+                sent=sent_total,
+                failed=failed_total,
+                log_dir=log_dir,
+                workspace=workspace,
+                success=failed_total == 0,
+            )
+
+        finally:
+            if cleanup and failed_total == 0:
+                shutil.rmtree(workspace, ignore_errors=True)
+
     def upload_resource(
         self,
         session_id: str,
@@ -268,17 +1268,17 @@ class UploadService(BaseService):
         """Upload files to a resource.
 
         Args:
-            session_id: Session ID
-            resource_label: Resource label
-            source_path: File or directory to upload
-            scan_id: Scan ID (for scan-level resources)
-            project: Project ID
-            extract: Extract ZIP/TAR after upload
-            overwrite: Overwrite existing files
-            progress_callback: Progress callback
+            session_id: Session ID.
+            resource_label: Resource label.
+            source_path: File or directory to upload.
+            scan_id: Scan ID (for scan-level resources).
+            project: Project ID.
+            extract: Extract ZIP/TAR after upload.
+            overwrite: Overwrite existing files.
+            progress_callback: Progress callback.
 
         Returns:
-            UploadSummary with results
+            UploadSummary with results.
         """
         start_time = time.time()
         source_path = Path(source_path)
@@ -294,7 +1294,6 @@ class UploadService(BaseService):
                 )
             )
 
-        # Build path
         if scan_id:
             if project:
                 base_path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}/files"
@@ -306,20 +1305,14 @@ class UploadService(BaseService):
             else:
                 base_path = f"/data/experiments/{session_id}/resources/{resource_label}/files"
 
-        # Handle directory by creating ZIP
         if source_path.is_dir():
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
                 zip_path = Path(tmp.name)
 
-            shutil.make_archive(
-                str(zip_path.with_suffix("")),
-                "zip",
-                source_path,
-            )
+            shutil.make_archive(str(zip_path.with_suffix("")), "zip", source_path)
             source_path = zip_path
             extract = True
 
-        # Get file size
         file_size = source_path.stat().st_size
 
         if progress_callback:
@@ -331,7 +1324,6 @@ class UploadService(BaseService):
                 )
             )
 
-        # Upload
         params: dict[str, Any] = {}
         if extract:
             params["extract"] = "true"
@@ -406,11 +1398,11 @@ class UploadService(BaseService):
         """Split files into batches.
 
         Args:
-            files: List of file paths
-            batch_size: Maximum files per batch
+            files: List of file paths.
+            batch_size: Maximum files per batch.
 
         Yields:
-            Lists of files for each batch
+            Lists of files for each batch.
         """
         for i in range(0, len(files), batch_size):
             yield files[i : i + batch_size]
