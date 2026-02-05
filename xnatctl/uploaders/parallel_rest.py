@@ -231,22 +231,28 @@ def _upload_single_archive(
                 cookies = {"JSESSIONID": session_token}
                 created_session = True
 
-            # Upload the archive
-            with archive_path.open("rb") as data:
-                resp = client.post(
-                    "/data/services/import",
-                    params=params,
-                    headers={"Content-Type": content_type},
-                    content=data.read(),
-                    cookies=cookies,
-                )
+            # Upload the archive with retry on transient errors
+            from xnatctl.uploaders.common import upload_with_retry
 
-            # Logout if we created the session
-            if created_session:
-                try:
-                    client.delete("/data/JSESSION", cookies=cookies)
-                except Exception:
-                    pass
+            def _attempt():
+                with archive_path.open("rb") as data:
+                    return client.post(
+                        "/data/services/import",
+                        params=params,
+                        headers={"Content-Type": content_type},
+                        content=data,
+                        cookies=cookies,
+                    )
+
+            try:
+                resp = upload_with_retry(_attempt, label=f"batch {archive_path.name}")
+            finally:
+                # Logout if we created the session
+                if created_session:
+                    try:
+                        client.delete("/data/JSESSION", cookies=cookies)
+                    except Exception:
+                        pass
 
             if resp.status_code == 200:
                 return True, ""
@@ -255,9 +261,9 @@ def _upload_single_archive(
             return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
 
         except httpx.TimeoutException:
-            return False, "Upload timed out"
+            return False, "Upload timed out (after retries)"
         except httpx.ConnectError as e:
-            return False, f"Connection failed: {e}"
+            return False, f"Connection failed (after retries): {e}"
         except Exception as e:
             return False, str(e)
 
