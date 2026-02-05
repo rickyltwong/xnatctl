@@ -198,6 +198,7 @@ jobs:
         run: |
           ./dist/xnatctl --version
           ./dist/xnatctl --help
+          ./dist/xnatctl config show 2>&1 || true
 
       - name: Package
         run: |
