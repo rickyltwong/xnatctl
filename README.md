@@ -44,13 +44,13 @@ xnatctl --version
 
 ```bash
 # With uv (recommended)
-uv pip install xnatctl
+uv pip install git+https://github.com/rickyltwong/xnatctl.git
 
 # With pip
-pip install xnatctl
+pip install git+https://github.com/rickyltwong/xnatctl.git
 
 # For DICOM utilities (optional)
-pip install xnatctl[dicom]
+pip install "xnatctl[dicom] @ git+https://github.com/rickyltwong/xnatctl.git"
 ```
 
 ### Docker
