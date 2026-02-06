@@ -230,7 +230,7 @@ def resource_upload(
 @resource.command("download")
 @click.argument("session_id")
 @click.argument("resource_label")
-@click.option("--out", required=True, type=click.Path(), help="Output path")
+@click.option("--file", "-f", "out", required=True, type=click.Path(), help="Output file path")
 @click.option("--scan", help="Download from scan resource")
 @global_options
 @require_auth
@@ -245,8 +245,8 @@ def resource_download(
     """Download a resource as ZIP.
 
     Example:
-        xnatctl resource download XNAT_E00001 BIDS --out ./bids.zip
-        xnatctl resource download XNAT_E00001 DICOM --out ./dicom.zip --scan 1
+        xnatctl resource download XNAT_E00001 BIDS --file ./bids.zip
+        xnatctl resource download XNAT_E00001 DICOM -f ./dicom.zip --scan 1
     """
     from urllib.parse import quote
 

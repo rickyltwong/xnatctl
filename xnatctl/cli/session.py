@@ -10,7 +10,6 @@ from xnatctl.cli.common import (
     Context,
     global_options,
     handle_errors,
-    parallel_options,
     require_auth,
 )
 from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
@@ -242,9 +241,19 @@ def _download_session_fast(
     subject: str,
     resolved_session_id: str,
     session_dir: Path,
+    workers: int = 8,
     quiet: bool = False,
 ) -> None:
     """Download session scans in parallel and extract to standard structure.
+
+    Args:
+        client: Authenticated XNATClient.
+        session_project: Project ID.
+        subject: Subject ID.
+        resolved_session_id: Resolved XNAT experiment ID.
+        session_dir: Output directory for session data.
+        workers: Maximum parallel download workers.
+        quiet: Suppress progress output.
 
     Produces the XNAT compressed-uploader layout:
         {session_dir}/scans/{scan_id}/resources/DICOM/files/{files...}
@@ -318,8 +327,8 @@ def _download_session_fast(
     succeeded = []
     failed = []
 
-    workers = min(len(scan_ids), 8)
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    pool_size = min(len(scan_ids), workers)
+    with ThreadPoolExecutor(max_workers=pool_size) as executor:
         futures = {executor.submit(download_and_extract_scan, sid): sid for sid in scan_ids}
         for future in as_completed(futures):
             scan_id, success, error = future.result()
@@ -344,12 +353,15 @@ def _download_session_fast(
 )
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
 @click.option("--name", help="Output directory name (defaults to session ID)")
-@click.option("--fast", is_flag=True, help="Parallel per-scan download (one worker per scan)")
+@click.option(
+    "--workers",
+    "-w",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Parallel download workers (1 = sequential single-ZIP, >1 = parallel per-scan)",
+)
 @click.option("--include-resources", is_flag=True, help="Include session-level resources")
-@click.option("--include-assessors", is_flag=True, help="Include assessor data")
-@click.option("--pattern", help="File pattern filter (e.g., '*.dcm')")
-@click.option("--resume", is_flag=True, help="Resume interrupted download")
-@click.option("--verify", is_flag=True, help="Verify checksums after download")
 @click.option("--unzip/--no-unzip", default=False, help="Extract downloaded ZIPs")
 @click.option(
     "--cleanup/--no-cleanup",
@@ -357,7 +369,6 @@ def _download_session_fast(
     help="Remove ZIPs after successful extraction (with --unzip)",
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
-@parallel_options
 @global_options
 @require_auth
 @handle_errors
@@ -367,17 +378,11 @@ def session_download(
     project: str | None,
     out: str,
     name: str | None,
-    fast: bool,
+    workers: int,
     include_resources: bool,
-    include_assessors: bool,
-    pattern: str | None,
-    resume: bool,
-    verify: bool,
     unzip: bool,
     cleanup: bool,
     dry_run: bool,
-    parallel: bool,
-    workers: int,
 ) -> None:
     """Download session data.
 
@@ -387,8 +392,8 @@ def session_download(
     Example:
         xnatctl session download XNAT_E00001
         xnatctl session download XNAT_E00001 --out ./data
+        xnatctl session download XNAT_E00001 --out ./data --workers 8
         xnatctl session download CLM01_UCA_00134_01_SE01_MR -P CLM01_UCA_4 --out ./data
-        xnatctl session download CLM01_UCA_00134_01_SE01_MR -P CLM01_UCA_4 --fast --out ./data
         xnatctl session download XNAT_E00001 --name CLM01_CAMH_0041 --out ./data
         xnatctl session download XNAT_E00001 --out ./data --include-resources
         xnatctl session download XNAT_E00001 --out ./data --unzip --cleanup
@@ -462,8 +467,8 @@ def session_download(
         click.echo(f"  Project: {session_project}")
         click.echo(f"  Subject: {subject}")
         click.echo(f"  Output: {out_path / (name or session_id)}")
+        click.echo(f"  Workers: {workers}")
         click.echo(f"  Include resources: {include_resources}")
-        click.echo(f"  Include assessors: {include_assessors}")
         return
 
     # Create session directory
@@ -472,13 +477,14 @@ def session_download(
 
     from xnatctl.core.output import create_progress
 
-    if fast:
+    if workers > 1:
         _download_session_fast(
             client=client,
             session_project=session_project,
             subject=subject,
             resolved_session_id=resolved_session_id,
             session_dir=session_dir,
+            workers=workers,
             quiet=ctx.quiet,
         )
     else:
@@ -545,13 +551,7 @@ def session_download(
 @click.option("--session", "-E", required=True, help="Session label")
 @click.option("--username", "-u", help="XNAT username (REST upload)")
 @click.option("--password", help="XNAT password (REST upload)")
-@click.option(
-    "--transport",
-    type=click.Choice(["rest", "gradual-dicom", "dicom-store"]),
-    default="rest",
-    help="Upload transport: rest (batch ZIP), gradual-dicom (parallel per-file), dicom-store (network)",
-)
-# REST upload options
+@click.option("--gradual", is_flag=True, help="Use per-file upload instead of batch archive")
 @click.option(
     "--archive-format",
     type=click.Choice(["tar", "zip"]),
@@ -564,16 +564,12 @@ def session_download(
     help="Convert ZIP archive to TAR before REST upload",
 )
 @click.option(
-    "--upload-workers",
+    "--workers",
+    "-w",
     type=int,
     default=4,
-    help="Parallel upload workers (default: 4)",
-)
-@click.option(
-    "--archive-workers",
-    type=int,
-    default=4,
-    help="Parallel archive workers (default: 4)",
+    show_default=True,
+    help="Parallel workers",
 )
 @click.option(
     "--overwrite",
@@ -591,37 +587,6 @@ def session_download(
     default=True,
     help="Skip unparsable DICOM files (default: yes)",
 )
-# DICOM C-STORE options
-@click.option(
-    "--dicom-host",
-    envvar="XNAT_DICOM_HOST",
-    help="DICOM SCP host (env: XNAT_DICOM_HOST)",
-)
-@click.option(
-    "--dicom-port",
-    type=int,
-    default=104,
-    envvar="XNAT_DICOM_PORT",
-    help="DICOM SCP port (default: 104, env: XNAT_DICOM_PORT)",
-)
-@click.option(
-    "--called-aet",
-    envvar="XNAT_DICOM_CALLED_AET",
-    help="Called AE Title (env: XNAT_DICOM_CALLED_AET)",
-)
-@click.option(
-    "--calling-aet",
-    default="XNATCTL",
-    envvar="XNAT_DICOM_CALLING_AET",
-    help="Calling AE Title (default: XNATCTL, env: XNAT_DICOM_CALLING_AET)",
-)
-@click.option(
-    "--dicom-workers",
-    type=int,
-    default=4,
-    help="Parallel DICOM C-STORE associations (default: 4)",
-)
-# Common options
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
 @require_auth
@@ -634,44 +599,27 @@ def session_upload(
     session: str,
     username: str | None,
     password: str | None,
-    transport: str,
+    gradual: bool,
     archive_format: str,
     zip_to_tar: bool,
-    upload_workers: int,
-    archive_workers: int,
+    workers: int,
     overwrite: str,
     direct_archive: bool,
     ignore_unparsable: bool,
-    dicom_host: str | None,
-    dicom_port: int,
-    called_aet: str | None,
-    calling_aet: str,
-    dicom_workers: int,
     dry_run: bool,
 ) -> None:
-    """Upload DICOM session via REST import or DICOM C-STORE.
+    """Upload DICOM session via REST import.
 
     Supports both single archive files and directories of DICOM files.
-    For directories, files are split into N batches where N = upload-workers.
+    For directories, files are split into N batches where N = workers.
 
-    REST Upload Examples:
+    For DICOM C-STORE network transfer, use `session upload-dicom` instead.
 
-        # Upload a single archive
+    Example:
         xnatctl session upload ./archive.zip -P MYPROJ -S SUB001 -E SESS001
-
-        # Upload a directory with parallel batching
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001
-
-        # High-throughput settings for fast storage/network
-        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 \\
-            --upload-workers 16 --archive-workers 8
-
-    DICOM C-STORE Examples:
-
-        # Using DICOM network transfer
-        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 \\
-            --transport dicom-store --dicom-host xnat.example.org \\
-            --called-aet XNAT --dicom-port 8104
+        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --workers 16
+        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --gradual --workers 40
     """
     from xnatctl.core.validation import (
         validate_project_id,
@@ -703,43 +651,23 @@ def session_upload(
         click.echo(f"  Project: {project}")
         click.echo(f"  Subject: {subject}")
         click.echo(f"  Session: {session}")
-        click.echo(f"  Transport: {transport}")
-        if transport == "rest":
+        click.echo(f"  Mode: {'gradual' if gradual else 'rest'}")
+        click.echo(f"  Workers: {workers}")
+        if not gradual:
             click.echo(f"  Archive format: {archive_format}")
-            click.echo(f"  Upload workers: {upload_workers}")
-            click.echo(f"  Archive workers: {archive_workers}")
             click.echo(f"  Overwrite: {overwrite}")
             click.echo(f"  Direct archive: {direct_archive}")
-        else:
-            click.echo(f"  DICOM host: {dicom_host}")
-            click.echo(f"  DICOM port: {dicom_port}")
-            click.echo(f"  Called AET: {called_aet}")
-            click.echo(f"  Calling AET: {calling_aet}")
-            click.echo(f"  Workers: {dicom_workers}")
         return
 
-    # DICOM C-STORE transport
-    if transport == "dicom-store":
-        _upload_dicom_store(
-            ctx=ctx,
-            source_path=source_path,
-            dicom_host=dicom_host,
-            dicom_port=dicom_port,
-            called_aet=called_aet,
-            calling_aet=calling_aet,
-            dicom_workers=dicom_workers,
-        )
-        return
-
-    # Gradual-DICOM transport (parallel per-file upload)
-    if transport == "gradual-dicom":
+    # Gradual per-file upload
+    if gradual:
         _upload_gradual_dicom(
             ctx=ctx,
             source_path=source_path,
             project=project,
             subject=subject,
             session=session,
-            workers=upload_workers,
+            workers=workers,
         )
         return
 
@@ -767,8 +695,8 @@ def session_upload(
             session=session,
             username=username,
             password=password,
-            upload_workers=upload_workers,
-            archive_workers=archive_workers,
+            upload_workers=workers,
+            archive_workers=workers,
             archive_format=archive_format,
             overwrite=overwrite,
             direct_archive=direct_archive,
@@ -1222,6 +1150,88 @@ def _upload_dicom_store(
             )
             click.echo(f"Check logs in: {summary.log_dir}", err=True)
             raise SystemExit(1)
+
+
+@session.command("upload-dicom")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.option(
+    "--host",
+    envvar="XNAT_DICOM_HOST",
+    required=True,
+    help="DICOM SCP host (env: XNAT_DICOM_HOST)",
+)
+@click.option(
+    "--called-aet",
+    envvar="XNAT_DICOM_CALLED_AET",
+    required=True,
+    help="Called AE Title (env: XNAT_DICOM_CALLED_AET)",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=104,
+    show_default=True,
+    envvar="XNAT_DICOM_PORT",
+    help="DICOM SCP port (env: XNAT_DICOM_PORT)",
+)
+@click.option(
+    "--calling-aet",
+    default="XNATCTL",
+    show_default=True,
+    envvar="XNAT_DICOM_CALLING_AET",
+    help="Calling AE Title (env: XNAT_DICOM_CALLING_AET)",
+)
+@click.option(
+    "--workers",
+    "-w",
+    type=int,
+    default=4,
+    show_default=True,
+    help="Parallel DICOM C-STORE associations",
+)
+@click.option("--dry-run", is_flag=True, help="Preview without sending")
+@global_options
+@require_auth
+@handle_errors
+def session_upload_dicom(
+    ctx: Context,
+    input_path: str,
+    host: str,
+    called_aet: str,
+    port: int,
+    calling_aet: str,
+    workers: int,
+    dry_run: bool,
+) -> None:
+    """Upload DICOM files via C-STORE network protocol.
+
+    Requires pydicom and pynetdicom (install with: pip install xnatctl[dicom]).
+
+    Example:
+        xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT
+        xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT --port 8104
+        xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT -w 8
+    """
+    source_path = Path(input_path)
+
+    if dry_run:
+        click.echo("[DRY-RUN] Would send DICOM files via C-STORE:")
+        click.echo(f"  Source: {source_path}")
+        click.echo(f"  Host: {host}:{port}")
+        click.echo(f"  Called AET: {called_aet}")
+        click.echo(f"  Calling AET: {calling_aet}")
+        click.echo(f"  Workers: {workers}")
+        return
+
+    _upload_dicom_store(
+        ctx=ctx,
+        source_path=source_path,
+        dicom_host=host,
+        dicom_port=port,
+        called_aet=called_aet,
+        calling_aet=calling_aet,
+        dicom_workers=workers,
+    )
 
 
 def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool = False) -> None:
