@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import time
 import zipfile
 from collections.abc import Callable
@@ -17,6 +18,21 @@ from xnatctl.models.progress import (
 )
 
 from .base import BaseService
+
+
+def _safe_extract_zip(zip_path: Path, extract_dir: Path) -> None:
+    """Extract ZIP contents safely, guarding against path traversal."""
+    resolved_root = extract_dir.resolve()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for member in zf.infolist():
+            if member.is_dir():
+                continue
+            target = (extract_dir / member.filename).resolve()
+            if not target.is_relative_to(resolved_root):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(member) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 class DownloadService(BaseService):
@@ -136,8 +152,7 @@ class DownloadService(BaseService):
                 )
 
             extract_dir = output_dir / session_id
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract_dir)
+            _safe_extract_zip(zip_path, extract_dir)
 
             # Count files
             file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
@@ -281,8 +296,7 @@ class DownloadService(BaseService):
             file_count = 1
             if extract:
                 extract_dir = output_dir / resource_label
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    zf.extractall(extract_dir)
+                _safe_extract_zip(zip_path, extract_dir)
                 file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
                 zip_path.unlink()
 
@@ -431,8 +445,7 @@ class DownloadService(BaseService):
             output_path = str(zip_path)
             if extract:
                 extract_dir = output_dir / "scans"
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    zf.extractall(extract_dir)
+                _safe_extract_zip(zip_path, extract_dir)
                 file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
                 if cleanup:
                     zip_path.unlink()

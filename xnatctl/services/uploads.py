@@ -363,9 +363,7 @@ def _upload_single_archive(
     """
     name = archive_path.name.lower()
     content_type = (
-        "application/x-tar"
-        if name.endswith((".tar", ".tar.gz", ".tgz"))
-        else "application/zip"
+        "application/x-tar" if name.endswith((".tar", ".tar.gz", ".tgz")) else "application/zip"
     )
 
     params = {
@@ -805,9 +803,7 @@ class UploadService(BaseService):
                     dicom_files = [source_path]
             else:
                 dicom_files = [
-                    f
-                    for f in source_path.rglob("*")
-                    if f.is_file() and not f.name.startswith(".")
+                    f for f in source_path.rglob("*") if f.is_file() and not f.name.startswith(".")
                 ]
 
             dicom_files = [
@@ -945,7 +941,9 @@ class UploadService(BaseService):
                         phase=OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
                         current=total_batches,
                         total=total_batches,
-                        message="Upload complete" if overall_success else "Upload completed with errors",
+                        message="Upload complete"
+                        if overall_success
+                        else "Upload completed with errors",
                         success=overall_success,
                         errors=results["errors"],
                     )
@@ -1133,9 +1131,7 @@ class UploadService(BaseService):
 
             with ThreadPoolExecutor(max_workers=effective_upload_workers) as upload_executor:
                 upload_futures: dict[Future[_UploadResult], int] = {}
-                for i, (batch, archive_path) in enumerate(
-                    zip(batches, archive_paths, strict=True)
-                ):
+                for i, (batch, archive_path) in enumerate(zip(batches, archive_paths, strict=True)):
                     fut: Future[_UploadResult] = upload_executor.submit(  # type: ignore[arg-type]
                         _upload_batch,
                         base_url=base_url,
@@ -1391,13 +1387,11 @@ class UploadService(BaseService):
                         with zf.open(member) as src, open(target, "wb") as dst:
                             shutil.copyfileobj(src, dst)
                 files = sorted(
-                    f for f in temp_path.rglob("*")
-                    if f.is_file() and not f.name.startswith(".")
+                    f for f in temp_path.rglob("*") if f.is_file() and not f.name.startswith(".")
                 )
             elif source_path.is_dir():
                 files = sorted(
-                    f for f in source_path.rglob("*")
-                    if f.is_file() and not f.name.startswith(".")
+                    f for f in source_path.rglob("*") if f.is_file() and not f.name.startswith(".")
                 )
             else:
                 raise ValueError("gradual-DICOM requires a directory or ZIP file")
