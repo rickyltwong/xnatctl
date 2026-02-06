@@ -102,7 +102,9 @@ def auth_login(
                     "status": "authenticated",
                     "username": actual_user,
                     "url": profile.url,
-                    "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+                    "expires_at": session.expires_at.strftime("%Y-%m-%dT%H:%M:%S")
+                    if session.expires_at
+                    else None,
                 }
             )
         else:
@@ -111,7 +113,9 @@ def auth_login(
                 print_warning(
                     f"Credentials authenticated as {actual_user} (requested username was {user})"
                 )
-            click.echo(f"Session cached until {session.expires_at}")
+            if session.expires_at:
+                expiry_time = session.expires_at.strftime("%H:%M")
+                click.echo(f"Session expires at {expiry_time} (15m)")
 
     except AuthenticationError as e:
         print_error(f"Authentication failed: {e}")

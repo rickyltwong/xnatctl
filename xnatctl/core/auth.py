@@ -18,7 +18,7 @@ from xnatctl.core.config import CONFIG_DIR, ENV_PASS, ENV_TOKEN, ENV_USER
 # =============================================================================
 
 SESSION_CACHE_FILE = CONFIG_DIR / ".session"
-SESSION_EXPIRY_HOURS = 12  # Sessions typically expire after inactivity
+SESSION_EXPIRY_MINUTES = 15  # XNAT JSESSION expires after 15 minutes of inactivity by default
 
 
 # =============================================================================
@@ -113,7 +113,7 @@ class AuthManager:
         token: str,
         url: str,
         username: str,
-        expiry_hours: int = SESSION_EXPIRY_HOURS,
+        expiry_minutes: int = SESSION_EXPIRY_MINUTES,
     ) -> CachedSession:
         """Save session token to cache.
 
@@ -121,7 +121,7 @@ class AuthManager:
             token: Session token (JSESSIONID).
             url: XNAT server URL.
             username: Username used for authentication.
-            expiry_hours: Hours until session is considered expired.
+            expiry_minutes: Minutes until session is considered expired.
 
         Returns:
             Cached session object.
@@ -132,7 +132,7 @@ class AuthManager:
             url=url,
             username=username,
             created_at=now,
-            expires_at=now + timedelta(hours=expiry_hours),
+            expires_at=now + timedelta(minutes=expiry_minutes),
         )
 
         # Ensure directory exists
