@@ -1121,7 +1121,7 @@ class UploadService(BaseService):
                 for i, (batch, archive_path) in enumerate(
                     zip(batches, archive_paths, strict=True)
                 ):
-                    future = upload_executor.submit(
+                    fut: Future[_UploadResult] = upload_executor.submit(  # type: ignore[arg-type]
                         _upload_batch,
                         base_url=base_url,
                         username=effective_username,
@@ -1140,10 +1140,10 @@ class UploadService(BaseService):
                         overwrite=overwrite,
                         direct_archive=direct_archive,
                     )
-                    upload_futures[future] = i + 1
+                    upload_futures[fut] = i + 1
 
-                for future in as_completed(upload_futures):
-                    result = future.result()
+                for done in as_completed(upload_futures):  # type: ignore[arg-type]
+                    result: _UploadResult = done.result()  # type: ignore[assignment]
                     results.append(result)
 
                     if not result.success:
