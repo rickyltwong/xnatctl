@@ -782,113 +782,143 @@ class UploadService(BaseService):
             )
 
         # Collect DICOM files
-        dicom_files: list[Path] = []
-        if source_path.is_file():
-            if source_path.suffix.lower() == ".zip":
-                temp_dir = tempfile.mkdtemp()
-                with zipfile.ZipFile(source_path, "r") as zf:
-                    zf.extractall(temp_dir)
-                source_path = Path(temp_dir)
-                dicom_files = list(source_path.rglob("*"))
+        temp_dir: str | None = None
+        try:
+            dicom_files: list[Path] = []
+            if source_path.is_file():
+                if source_path.suffix.lower() == ".zip":
+                    temp_dir = tempfile.mkdtemp()
+                    temp_root = Path(temp_dir)
+                    with zipfile.ZipFile(source_path, "r") as zf:
+                        for member in zf.infolist():
+                            if member.is_dir():
+                                continue
+                            target = (temp_root / member.filename).resolve()
+                            if not target.is_relative_to(temp_root.resolve()):
+                                continue
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            with zf.open(member) as src, open(target, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                    source_path = Path(temp_dir)
+                    dicom_files = list(source_path.rglob("*"))
+                else:
+                    dicom_files = [source_path]
             else:
-                dicom_files = [source_path]
-        else:
+                dicom_files = [
+                    f
+                    for f in source_path.rglob("*")
+                    if f.is_file() and not f.name.startswith(".")
+                ]
+
             dicom_files = [
                 f
-                for f in source_path.rglob("*")
-                if f.is_file() and not f.name.startswith(".")
+                for f in dicom_files
+                if f.is_file() and f.suffix.lower() in ("", ".dcm", ".dicom", ".ima")
             ]
 
-        dicom_files = [
-            f
-            for f in dicom_files
-            if f.is_file() and f.suffix.lower() in ("", ".dcm", ".dicom", ".ima")
-        ]
-
-        total_files = len(dicom_files)
-        if total_files == 0:
-            return UploadSummary(
-                success=False,
-                total=0,
-                succeeded=0,
-                failed=0,
-                duration=0,
-                errors=["No DICOM files found"],
-            )
-
-        total_size = sum(f.stat().st_size for f in dicom_files)
-
-        if progress_callback:
-            progress_callback(
-                UploadProgress(
-                    phase=OperationPhase.ARCHIVING,
-                    total=total_files,
-                    message=f"Found {total_files} files",
+            total_files = len(dicom_files)
+            if total_files == 0:
+                return UploadSummary(
+                    success=False,
+                    total=0,
+                    succeeded=0,
+                    failed=0,
+                    duration=0,
+                    errors=["No DICOM files found"],
                 )
-            )
 
-        batches = list(self._split_into_batches(dicom_files, batch_size))
-        total_batches = len(batches)
-        results: dict[str, Any] = {"succeeded": 0, "failed": 0, "errors": []}
+            total_size = sum(f.stat().st_size for f in dicom_files)
 
-        dest = f"/archive/projects/{project}/subjects/{subject}/experiments/{session}"
-
-        base_url = self.client.base_url
-        session_token = self.client.session_token
-        verify_ssl = self.client.verify_ssl
-        timeout = self.client.timeout
-
-        def _upload_batch_fn(batch_id: int, files: list[Path]) -> tuple[bool, str]:
-            try:
-                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-                    zip_path = Path(tmp.name)
-
-                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for file_path in files:
-                        zf.write(file_path, file_path.name)
-
-                params: dict[str, Any] = {
-                    "dest": dest,
-                    "overwrite": "delete" if overwrite else "none",
-                    "import-handler": "SI",
-                    "PROJECT_ID": project,
-                    "SUBJECT_ID": subject,
-                    "EXPT_LABEL": session,
-                }
-                if quarantine:
-                    params["dest"] = f"/prearchive/projects/{project}"
-
-                with open(zip_path, "rb") as zip_file:
-                    content = zip_file.read()
-
-                cookies = {"JSESSIONID": session_token} if session_token else {}
-                with httpx.Client(
-                    base_url=base_url,
-                    timeout=timeout,
-                    verify=verify_ssl,
-                ) as http:
-                    http.post(
-                        "/data/services/import",
-                        params=params,
-                        content=content,
-                        headers={"Content-Type": "application/zip"},
-                        cookies=cookies,
+            if progress_callback:
+                progress_callback(
+                    UploadProgress(
+                        phase=OperationPhase.ARCHIVING,
+                        total=total_files,
+                        message=f"Found {total_files} files",
                     )
+                )
 
-                zip_path.unlink()
-                return (True, "")
-            except Exception as e:
-                return (False, str(e))
+            batches = list(self._split_into_batches(dicom_files, batch_size))
+            total_batches = len(batches)
+            results: dict[str, Any] = {"succeeded": 0, "failed": 0, "errors": []}
 
-        if parallel and total_batches > 1:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(_upload_batch_fn, i, batch): i
-                    for i, batch in enumerate(batches)
-                }
-                for future in as_completed(futures):
-                    batch_id = futures[future]
-                    success, error = future.result()
+            dest = f"/archive/projects/{project}/subjects/{subject}/experiments/{session}"
+
+            base_url = self.client.base_url
+            session_token = self.client.session_token
+            verify_ssl = self.client.verify_ssl
+            timeout = self.client.timeout
+
+            def _upload_batch_fn(batch_id: int, files: list[Path]) -> tuple[bool, str]:
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                        zip_path = Path(tmp.name)
+
+                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for file_path in files:
+                            zf.write(file_path, file_path.name)
+
+                    params: dict[str, Any] = {
+                        "dest": dest,
+                        "overwrite": "delete" if overwrite else "none",
+                        "import-handler": "SI",
+                        "PROJECT_ID": project,
+                        "SUBJECT_ID": subject,
+                        "EXPT_LABEL": session,
+                    }
+                    if quarantine:
+                        params["dest"] = f"/prearchive/projects/{project}"
+
+                    with open(zip_path, "rb") as zip_file:
+                        content = zip_file.read()
+
+                    cookies = {"JSESSIONID": session_token} if session_token else {}
+                    with httpx.Client(
+                        base_url=base_url,
+                        timeout=timeout,
+                        verify=verify_ssl,
+                    ) as http:
+                        http.post(
+                            "/data/services/import",
+                            params=params,
+                            content=content,
+                            headers={"Content-Type": "application/zip"},
+                            cookies=cookies,
+                        )
+
+                    zip_path.unlink()
+                    return (True, "")
+                except Exception as e:
+                    return (False, str(e))
+
+            if parallel and total_batches > 1:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {
+                        executor.submit(_upload_batch_fn, i, batch): i
+                        for i, batch in enumerate(batches)
+                    }
+                    for future in as_completed(futures):
+                        batch_id = futures[future]
+                        success, error = future.result()
+                        if success:
+                            results["succeeded"] += 1
+                        else:
+                            results["failed"] += 1
+                            results["errors"].append(f"Batch {batch_id}: {error}")
+                        if progress_callback:
+                            progress_callback(
+                                UploadProgress(
+                                    phase=OperationPhase.UPLOADING,
+                                    current=results["succeeded"] + results["failed"],
+                                    total=total_batches,
+                                    batch_id=batch_id,
+                                    message=f"Uploading batch {batch_id + 1}/{total_batches}",
+                                    success=success,
+                                )
+                            )
+            else:
+                for batch_id, batch in enumerate(batches):
+                    success, error = _upload_batch_fn(batch_id, batch)
                     if success:
                         results["succeeded"] += 1
                     else:
@@ -898,62 +928,47 @@ class UploadService(BaseService):
                         progress_callback(
                             UploadProgress(
                                 phase=OperationPhase.UPLOADING,
-                                current=results["succeeded"] + results["failed"],
+                                current=batch_id + 1,
                                 total=total_batches,
                                 batch_id=batch_id,
                                 message=f"Uploading batch {batch_id + 1}/{total_batches}",
                                 success=success,
                             )
                         )
-        else:
-            for batch_id, batch in enumerate(batches):
-                success, error = _upload_batch_fn(batch_id, batch)
-                if success:
-                    results["succeeded"] += 1
-                else:
-                    results["failed"] += 1
-                    results["errors"].append(f"Batch {batch_id}: {error}")
-                if progress_callback:
-                    progress_callback(
-                        UploadProgress(
-                            phase=OperationPhase.UPLOADING,
-                            current=batch_id + 1,
-                            total=total_batches,
-                            batch_id=batch_id,
-                            message=f"Uploading batch {batch_id + 1}/{total_batches}",
-                            success=success,
-                        )
+
+            duration = time.time() - start_time
+            overall_success = results["failed"] == 0
+
+            if progress_callback:
+                progress_callback(
+                    UploadProgress(
+                        phase=OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
+                        current=total_batches,
+                        total=total_batches,
+                        message="Upload complete" if overall_success else "Upload completed with errors",
+                        success=overall_success,
+                        errors=results["errors"],
                     )
-
-        duration = time.time() - start_time
-        overall_success = results["failed"] == 0
-
-        if progress_callback:
-            progress_callback(
-                UploadProgress(
-                    phase=OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
-                    current=total_batches,
-                    total=total_batches,
-                    message="Upload complete" if overall_success else "Upload completed with errors",
-                    success=overall_success,
-                    errors=results["errors"],
                 )
+
+            return UploadSummary(
+                success=overall_success,
+                total=total_batches,
+                succeeded=results["succeeded"],
+                failed=results["failed"],
+                duration=duration,
+                errors=results["errors"],
+                total_files=total_files,
+                total_size_mb=total_size / (1024 * 1024),
+                batches_total=total_batches,
+                batches_succeeded=results["succeeded"],
+                batches_failed=results["failed"],
+                session_id=session,
             )
 
-        return UploadSummary(
-            success=overall_success,
-            total=total_batches,
-            succeeded=results["succeeded"],
-            failed=results["failed"],
-            duration=duration,
-            errors=results["errors"],
-            total_files=total_files,
-            total_size_mb=total_size / (1024 * 1024),
-            batches_total=total_batches,
-            batches_succeeded=results["succeeded"],
-            batches_failed=results["failed"],
-            session_id=session,
-        )
+        finally:
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def upload_dicom_parallel(
         self,
@@ -1366,7 +1381,15 @@ class UploadService(BaseService):
                 temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
                 temp_path = Path(temp_dir)
                 with zipfile.ZipFile(source_path, "r") as zf:
-                    zf.extractall(temp_path)
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            continue
+                        target = (temp_path / member.filename).resolve()
+                        if not target.is_relative_to(temp_path.resolve()):
+                            continue
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(member) as src, open(target, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
                 files = sorted(
                     f for f in temp_path.rglob("*")
                     if f.is_file() and not f.name.startswith(".")

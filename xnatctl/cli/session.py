@@ -287,24 +287,26 @@ def _download_session_fast(
                         for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                             tmp.write(chunk)
 
-            # Build target directory in standard layout
-            target_dir = session_dir / "scans" / scan_id / "resources" / "DICOM" / "files"
-            target_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                # Build target directory in standard layout
+                target_dir = session_dir / "scans" / scan_id / "resources" / "DICOM" / "files"
+                target_dir.mkdir(parents=True, exist_ok=True)
 
-            # Extract files from ZIP, flattening XNAT's internal path
-            with zipfile.ZipFile(tmp_path, "r") as zf:
-                for member in zf.infolist():
-                    if member.is_dir():
-                        continue
-                    # Extract just the filename, discarding XNAT's internal path
-                    filename = Path(member.filename).name
-                    if not filename or filename.startswith("."):
-                        continue
-                    dest = target_dir / filename
-                    with zf.open(member) as src, open(dest, "wb") as dst:
-                        dst.write(src.read())
+                # Extract files from ZIP, flattening XNAT's internal path
+                with zipfile.ZipFile(tmp_path, "r") as zf:
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            continue
+                        # Extract just the filename, discarding XNAT's internal path
+                        filename = Path(member.filename).name
+                        if not filename or filename.startswith("."):
+                            continue
+                        dest = target_dir / filename
+                        with zf.open(member) as src, open(dest, "wb") as dst:
+                            dst.write(src.read())
+            finally:
+                tmp_path.unlink(missing_ok=True)
 
-            tmp_path.unlink(missing_ok=True)
             return scan_id, True, ""
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -1257,6 +1259,9 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
                         stripped_path = member_path
 
                     target_path = session_dir / stripped_path
+                    # Guard against ZipSlip path traversal
+                    if not target_path.resolve().is_relative_to(session_dir.resolve()):
+                        continue
                     target_path.parent.mkdir(parents=True, exist_ok=True)
 
                     with zf.open(member) as source, open(target_path, "wb") as target:
@@ -1340,15 +1345,20 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
                 for member in zf.infolist():
                     if member.is_dir():
                         continue
-                    if member.filename.startswith(".") or "/.." in member.filename:
+
+                    member_path = Path(member.filename)
+                    if any(part.startswith(".") for part in member_path.parts):
                         continue
 
-                    parts = Path(member.filename).parts
+                    parts = member_path.parts
                     if len(parts) < 2:
                         continue
 
                     stripped_path = Path(*parts[1:])
                     output_path = zip_path.parent / stripped_path
+                    # Guard against ZipSlip path traversal
+                    if not output_path.resolve().is_relative_to(zip_path.parent.resolve()):
+                        continue
                     output_path.parent.mkdir(parents=True, exist_ok=True)
 
                     with zf.open(member) as source, open(output_path, "wb") as target:
