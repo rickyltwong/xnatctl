@@ -182,10 +182,7 @@ def test_extract_handles_deep_nesting(tmp_path: Path) -> None:
     zip_path = session_dir / "data.zip"
 
     with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr(
-            "SESSION01/a/b/c/d/e/f/g/deep.txt",
-            b"deeply nested"
-        )
+        zf.writestr("SESSION01/a/b/c/d/e/f/g/deep.txt", b"deeply nested")
 
     _extract_session_zips(session_dir, cleanup=False, quiet=True)
 

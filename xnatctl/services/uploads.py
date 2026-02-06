@@ -1615,13 +1615,9 @@ class UploadService(BaseService):
                             cookies=cookies,
                         )
 
-                resp = upload_with_retry(
-                    _attempt, label=f"resource {source_path.name}"
-                )
+                resp = upload_with_retry(_attempt, label=f"resource {source_path.name}")
                 if resp.status_code not in (200, 201):
-                    raise RuntimeError(
-                        f"HTTP {resp.status_code}: {resp.text[:200]}"
-                    )
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
             duration = time.time() - start_time
 
