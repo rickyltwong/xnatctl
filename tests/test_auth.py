@@ -337,9 +337,7 @@ class TestAuthManager:
         assert manager.has_valid_session(url="https://xnat.example.org") is True
         assert manager.has_valid_session(url="https://other.example.org") is False
 
-    def test_get_session_token_from_env(
-        self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_get_session_token_from_env(self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch):
         """Test get_session_token prefers environment variable."""
         monkeypatch.setenv("XNAT_TOKEN", "env-token")
 
@@ -357,9 +355,7 @@ class TestAuthManager:
         token = manager.get_session_token()
         assert token == "env-token"
 
-    def test_get_session_token_from_cache(
-        self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_get_session_token_from_cache(self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch):
         """Test get_session_token falls back to cache."""
         monkeypatch.delenv("XNAT_TOKEN", raising=False)
 
@@ -375,9 +371,7 @@ class TestAuthManager:
         token = manager.get_session_token()
         assert token == "cached-token"
 
-    def test_get_session_token_none(
-        self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_get_session_token_none(self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch):
         """Test get_session_token returns None when nothing available."""
         monkeypatch.delenv("XNAT_TOKEN", raising=False)
 
