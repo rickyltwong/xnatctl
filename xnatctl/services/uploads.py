@@ -502,6 +502,81 @@ def _upload_batch(
         )
 
 
+def _create_and_upload_batch(
+    *,
+    batch: list[Path],
+    archive_path: Path,
+    source_path: Path,
+    archive_format: str,
+    base_url: str,
+    username: str | None,
+    password: str | None,
+    session_token: str | None,
+    verify_ssl: bool,
+    timeout: int,
+    batch_id: int,
+    project: str,
+    subject: str,
+    session: str,
+    import_handler: str,
+    ignore_unparsable: bool,
+    overwrite: str,
+    direct_archive: bool,
+) -> _UploadResult:
+    """Create archive, upload it, then delete the archive immediately.
+
+    Combines archive creation and upload into a single task to reduce peak
+    disk and memory usage. The archive is deleted as soon as the upload
+    completes (or fails), preventing all archives from existing on disk
+    simultaneously.
+    """
+    start_time = time.time()
+    archive_size = 0
+
+    try:
+        archive_size = _create_archive(batch, archive_path, source_path, archive_format)
+
+        success, error = _upload_single_archive(
+            base_url=base_url,
+            username=username,
+            password=password,
+            session_token=session_token,
+            verify_ssl=verify_ssl,
+            timeout=timeout,
+            archive_path=archive_path,
+            project=project,
+            subject=subject,
+            session=session,
+            import_handler=import_handler,
+            ignore_unparsable=ignore_unparsable,
+            overwrite=overwrite,
+            direct_archive=direct_archive,
+        )
+
+        return _UploadResult(
+            batch_id=batch_id,
+            success=success,
+            duration=time.time() - start_time,
+            file_count=len(batch),
+            archive_size=archive_size,
+            error=error,
+        )
+    except Exception as e:
+        return _UploadResult(
+            batch_id=batch_id,
+            success=False,
+            duration=time.time() - start_time,
+            file_count=len(batch),
+            archive_size=archive_size,
+            error=str(e),
+        )
+    finally:
+        try:
+            archive_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 # =============================================================================
 # DICOM C-STORE Helpers (private, lazy imports)
 # =============================================================================
@@ -710,7 +785,7 @@ def _upload_single_file_gradual(
                             "SUBJECT_ID": subject,
                             "EXPT_LABEL": session,
                         },
-                        content=f.read(),
+                        content=f,
                         headers={"Content-Type": "application/dicom"},
                         cookies=cookies,
                     )
@@ -865,22 +940,20 @@ class UploadService(BaseService):
                     if quarantine:
                         params["dest"] = f"/prearchive/projects/{project}"
 
-                    with open(zip_path, "rb") as zip_file:
-                        content = zip_file.read()
-
                     cookies = {"JSESSIONID": session_token} if session_token else {}
                     with httpx.Client(
                         base_url=base_url,
                         timeout=timeout,
                         verify=verify_ssl,
                     ) as http:
-                        http.post(
-                            "/data/services/import",
-                            params=params,
-                            content=content,
-                            headers={"Content-Type": "application/zip"},
-                            cookies=cookies,
-                        )
+                        with open(zip_path, "rb") as zip_file:
+                            http.post(
+                                "/data/services/import",
+                                params=params,
+                                content=zip_file,
+                                headers={"Content-Type": "application/zip"},
+                                cookies=cookies,
+                            )
 
                     zip_path.unlink()
                     return (True, "")
@@ -1061,7 +1134,11 @@ class UploadService(BaseService):
             message=f"Split {len(files)} files into {len(batches)} batches",
         )
 
-        # Phase 3: Create archives
+        # Phase 3+4: Create archives and upload (merged to reduce peak memory)
+        #
+        # Each worker creates its archive, uploads it, then deletes it
+        # immediately. This avoids having all archives on disk at once,
+        # which previously doubled the disk/page-cache footprint.
         ext = ".tar" if archive_format == "tar" else ".zip"
         temp_dir = Path(tempfile.mkdtemp(prefix="xnatctl_upload_"))
         archive_paths: list[Path] = []
@@ -1071,69 +1148,26 @@ class UploadService(BaseService):
             for i in range(len(batches)):
                 archive_paths.append(temp_dir / f"batch_{i + 1}{ext}")
 
-            report(
-                OperationPhase.ARCHIVING,
-                total=len(batches),
-                message="Creating archives...",
-            )
-
-            effective_archive_workers = max(1, min(archive_workers, len(batches)))
             source_path = source_dir.expanduser().resolve()
+            effective_workers = max(1, min(upload_workers, len(batches)))
 
-            with ThreadPoolExecutor(max_workers=effective_archive_workers) as archive_executor:
-                archive_futures: dict[Future[int], int] = {}
-                for i, batch in enumerate(batches):
-                    future = archive_executor.submit(
-                        _create_archive, batch, archive_paths[i], source_path, archive_format
-                    )
-                    archive_futures[future] = i
-
-                completed = 0
-                for future in as_completed(archive_futures):
-                    completed += 1
-                    try:
-                        size = future.result()
-                        total_archive_size += size
-                    except Exception as e:
-                        idx = archive_futures[future]
-                        errors.append(f"Archive batch {idx + 1} failed: {e}")
-
-                    report(
-                        OperationPhase.ARCHIVING,
-                        current=completed,
-                        total=len(batches),
-                        message=f"Created archive {completed}/{len(batches)}",
-                    )
-
-            if errors:
-                return UploadSummary(
-                    success=False,
-                    total=len(batches),
-                    succeeded=0,
-                    failed=len(batches),
-                    duration=time.time() - total_start,
-                    errors=errors,
-                    total_files=len(files),
-                    total_size_mb=total_archive_size / 1024 / 1024,
-                    batches_total=len(batches),
-                    batches_failed=len(batches),
-                )
-
-            # Phase 4: Upload archives
             report(
                 OperationPhase.UPLOADING,
                 total=len(batches),
-                message="Starting uploads...",
+                message="Starting batch processing...",
             )
 
             results: list[_UploadResult] = []
-            effective_upload_workers = max(1, min(upload_workers, len(batches)))
 
-            with ThreadPoolExecutor(max_workers=effective_upload_workers) as upload_executor:
-                upload_futures: dict[Future[_UploadResult], int] = {}
-                for i, (batch, archive_path) in enumerate(zip(batches, archive_paths, strict=True)):
-                    fut: Future[_UploadResult] = upload_executor.submit(  # type: ignore[arg-type]
-                        _upload_batch,
+            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                futures: dict[Future[_UploadResult], int] = {}
+                for i, batch in enumerate(batches):
+                    fut: Future[_UploadResult] = executor.submit(  # type: ignore[arg-type]
+                        _create_and_upload_batch,
+                        batch=batch,
+                        archive_path=archive_paths[i],
+                        source_path=source_path,
+                        archive_format=archive_format,
                         base_url=base_url,
                         username=effective_username,
                         password=effective_password,
@@ -1141,8 +1175,6 @@ class UploadService(BaseService):
                         verify_ssl=verify_ssl,
                         timeout=timeout,
                         batch_id=i + 1,
-                        archive_path=archive_path,
-                        file_count=len(batch),
                         project=project,
                         subject=subject,
                         session=session,
@@ -1151,11 +1183,12 @@ class UploadService(BaseService):
                         overwrite=overwrite,
                         direct_archive=direct_archive,
                     )
-                    upload_futures[fut] = i + 1
+                    futures[fut] = i + 1
 
-                for done in as_completed(upload_futures):  # type: ignore[arg-type]
+                for done in as_completed(futures):  # type: ignore[arg-type]
                     result: _UploadResult = done.result()  # type: ignore[assignment]
                     results.append(result)
+                    total_archive_size += result.archive_size
 
                     if not result.success:
                         errors.append(f"Batch {result.batch_id}: {result.error}")
@@ -1167,7 +1200,7 @@ class UploadService(BaseService):
                         total=len(batches),
                         batch_id=result.batch_id,
                         success=result.success,
-                        message=f"Uploaded {len(results)}/{len(batches)} ({succeeded} succeeded)",
+                        message=f"Completed {len(results)}/{len(batches)} ({succeeded} succeeded)",
                     )
 
             # Phase 5: Complete
@@ -1560,15 +1593,31 @@ class UploadService(BaseService):
         path = f"{base_path}/{source_path.name}"
 
         try:
-            with open(source_path, "rb") as f:
-                content = f.read()
+            base_url = self.client.base_url
+            session_token = self.client.session_token
+            verify_ssl = self.client.verify_ssl
+            res_timeout = self.client.timeout
+            cookies = {"JSESSIONID": session_token} if session_token else {}
 
-            self.client.put(
-                path,
-                params=params,
-                data=content,
-                headers={"Content-Type": "application/octet-stream"},
-            )
+            with httpx.Client(
+                base_url=base_url,
+                timeout=res_timeout,
+                verify=verify_ssl,
+            ) as http:
+
+                def _attempt() -> httpx.Response:
+                    with open(source_path, "rb") as f:
+                        return http.put(
+                            path,
+                            params=params,
+                            content=f,
+                            headers={"Content-Type": "application/octet-stream"},
+                            cookies=cookies,
+                        )
+
+                resp = upload_with_retry(_attempt, label=f"resource {source_path.name}")
+                if resp.status_code not in (200, 201):
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
             duration = time.time() - start_time
 

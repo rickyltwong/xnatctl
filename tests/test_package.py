@@ -8,6 +8,7 @@ class TestPackageImports:
 
     def test_import_xnatctl(self):
         import xnatctl
+
         assert hasattr(xnatctl, "__version__")
 
     def test_import_core_modules(self):
