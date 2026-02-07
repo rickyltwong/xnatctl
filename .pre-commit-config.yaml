@@ -1,0 +1,20 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check (uv)
+        entry: uv run --no-sync --frozen ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format (uv)
+        entry: uv run --no-sync --frozen ruff format
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: mypy (uv)
+        entry: uv run --no-sync --frozen mypy xnatctl --ignore-missing-imports
+        language: system
+        pass_filenames: false
