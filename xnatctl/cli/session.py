@@ -303,22 +303,64 @@ def _download_session_fast(
                 target_dir = session_dir / "scans" / scan_id / "resources" / "DICOM" / "files"
                 target_dir.mkdir(parents=True, exist_ok=True)
 
-                # Extract files from ZIP, flattening XNAT's internal path
+                # Extract files from ZIP, preserving (safe) relative paths.
+                #
+                # Avoid flattening to basename only: some XNAT ZIPs can contain repeated
+                # filenames under different directories, and flattening would overwrite
+                # earlier files silently (leading to missing DICOMs on re-upload).
                 with zipfile.ZipFile(tmp_path, "r") as zf:
+                    resolved_root = target_dir.resolve()
+                    renamed = 0
                     for member in zf.infolist():
                         if member.is_dir():
                             continue
-                        # Extract just the filename, discarding XNAT's internal path
-                        filename = Path(member.filename).name
-                        if not filename or filename.startswith("."):
+                        member_path = Path(member.filename)
+                        if any(part.startswith(".") for part in member_path.parts):
                             continue
-                        dest = target_dir / filename
-                        with zf.open(member) as src, open(dest, "wb") as dst:
+
+                        parts = member_path.parts
+                        # Prefer stripping up to "files/" if present; otherwise strip
+                        # the top-level folder to avoid deep XNAT zip prefixes.
+                        if "files" in parts:
+                            idx = parts.index("files")
+                            rel_parts = parts[idx + 1 :]
+                            if not rel_parts:
+                                continue
+                            rel = Path(*rel_parts)
+                        elif len(parts) > 1:
+                            rel = Path(*parts[1:])
+                        else:
+                            rel = member_path
+
+                        if not rel.name or rel.name.startswith("."):
+                            continue
+
+                        dest = (target_dir / rel).resolve()
+                        if not dest.is_relative_to(resolved_root):
+                            continue
+
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+
+                        final_dest = dest
+                        if final_dest.exists():
+                            renamed += 1
+                            stem = final_dest.stem
+                            suffix = final_dest.suffix
+                            i = 1
+                            while True:
+                                candidate = final_dest.with_name(f"{stem}__dup{i}{suffix}")
+                                if not candidate.exists():
+                                    final_dest = candidate
+                                    break
+                                i += 1
+
+                        with zf.open(member) as src, open(final_dest, "wb") as dst:
                             shutil.copyfileobj(src, dst)
             finally:
                 tmp_path.unlink(missing_ok=True)
 
-            return scan_id, True, ""
+            status = f"renamed {renamed} duplicate filenames" if renamed else ""
+            return scan_id, True, status
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return scan_id, True, "no DICOM"
