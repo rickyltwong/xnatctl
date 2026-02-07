@@ -20,7 +20,7 @@ import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1454,34 +1454,73 @@ class UploadService(BaseService):
             errors: list[str] = []
 
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(
+                # Submit in a bounded window instead of enqueuing every file at once.
+                #
+                # Enqueuing a Future per file can consume significant memory for
+                # large sessions (many small DICOM slices) and delays any progress
+                # updates until all tasks are submitted.
+                prefetch = max(1, workers * 2)
+                file_iter = iter(files)
+
+                in_flight: set[Future[tuple[str, bool, str]]] = set()
+                future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
+
+                def _submit_one(path: Path) -> None:
+                    fut: Future[tuple[str, bool, str]] = executor.submit(  # type: ignore[arg-type]
                         _upload_single_file_gradual,
                         base_url=base_url,
                         session_token=session_token,
                         verify_ssl=verify_ssl,
-                        file_path=f,
+                        file_path=path,
                         project=project,
                         subject=subject,
                         session=session,
-                    ): f
-                    for f in files
-                }
-                for i, future in enumerate(as_completed(futures), 1):
-                    name, success, error = future.result()
-                    if success:
-                        succeeded += 1
-                    else:
-                        failed += 1
-                        errors.append(f"{name}: {error}")
-
-                    report(
-                        OperationPhase.UPLOADING,
-                        current=i,
-                        total=len(files),
-                        success=success,
-                        message=f"Uploaded {i}/{len(files)} ({succeeded} ok, {failed} failed)",
                     )
+                    in_flight.add(fut)
+                    future_to_path[fut] = path
+
+                # Prime the work queue
+                for _ in range(min(prefetch, len(files))):
+                    try:
+                        _submit_one(next(file_iter))
+                    except StopIteration:
+                        break
+
+                completed = 0
+                while in_flight:
+                    done, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
+                    in_flight = _pending
+
+                    for future in done:
+                        completed += 1
+                        future_to_path.pop(future, None)
+
+                        try:
+                            name, success, error = future.result()
+                        except Exception as e:
+                            # Best-effort: unexpected exceptions shouldn't abort the whole run.
+                            name, success, error = "unknown", False, str(e)
+
+                        if success:
+                            succeeded += 1
+                        else:
+                            failed += 1
+                            errors.append(f"{name}: {error}")
+
+                        report(
+                            OperationPhase.UPLOADING,
+                            current=completed,
+                            total=len(files),
+                            success=success,
+                            message=f"Uploaded {completed}/{len(files)} ({succeeded} ok, {failed} failed)",
+                        )
+
+                        # Refill the window
+                        while len(in_flight) < prefetch:
+                            try:
+                                _submit_one(next(file_iter))
+                            except StopIteration:
+                                break
 
             duration = time.time() - start_time
             overall_success = failed == 0
