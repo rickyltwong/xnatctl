@@ -283,6 +283,8 @@ def _download_session_fast(
 
     def download_and_extract_scan(scan_id: str) -> tuple[str, bool, str]:
         """Download a single scan ZIP and extract into standard layout."""
+        import shutil
+
         scan_url = f"/data/projects/{session_project}/subjects/{subject}/experiments/{resolved_session_id}/scans/{scan_id}/resources/DICOM/files"
         try:
             with httpx.Client(base_url=base_url, timeout=timeout, verify=verify_ssl) as http:
@@ -312,7 +314,7 @@ def _download_session_fast(
                             continue
                         dest = target_dir / filename
                         with zf.open(member) as src, open(dest, "wb") as dst:
-                            dst.write(src.read())
+                            shutil.copyfileobj(src, dst)
             finally:
                 tmp_path.unlink(missing_ok=True)
 
@@ -1242,6 +1244,7 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
         cleanup: Remove ZIPs after successful extraction
         quiet: Suppress progress output
     """
+    import shutil
     import zipfile
 
     zip_files = list(session_dir.glob("*.zip"))
@@ -1275,7 +1278,7 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
                     target_path.parent.mkdir(parents=True, exist_ok=True)
 
                     with zf.open(member) as source, open(target_path, "wb") as target:
-                        target.write(source.read())
+                        shutil.copyfileobj(source, target)
 
             if cleanup:
                 zip_path.unlink()
@@ -1319,6 +1322,7 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
         # Preview extraction
         xnatctl local extract ./data --recursive --dry-run
     """
+    import shutil
     import zipfile
 
     input_path = Path(input_dir)
@@ -1372,7 +1376,7 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
                     output_path.parent.mkdir(parents=True, exist_ok=True)
 
                     with zf.open(member) as source, open(output_path, "wb") as target:
-                        target.write(source.read())
+                        shutil.copyfileobj(source, target)
 
             extracted += 1
 

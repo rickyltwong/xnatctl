@@ -20,6 +20,15 @@ from xnatctl.models.progress import (
 from .base import BaseService
 
 
+def _md5_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    """Compute MD5 checksum of a file without reading it entirely into memory."""
+    h = hashlib.md5()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _safe_extract_zip(zip_path: Path, extract_dir: Path) -> None:
     """Extract ZIP contents safely, guarding against path traversal."""
     resolved_root = extract_dir.resolve()
@@ -518,7 +527,7 @@ class DownloadService(BaseService):
 
             name = file_path.name
             if name in server_checksums:
-                local_hash = hashlib.md5(file_path.read_bytes()).hexdigest()
+                local_hash = _md5_file(file_path)
                 if local_hash != server_checksums[name]:
                     all_valid = False
 
