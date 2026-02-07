@@ -1557,7 +1557,7 @@ class UploadService(BaseService):
 
                     for future in done:
                         completed += 1
-                        p = future_to_path.pop(future, None)
+                        p = future_to_path.pop(future)
 
                         try:
                             _name, ok, err = future.result()
@@ -1565,7 +1565,7 @@ class UploadService(BaseService):
                             ok = False
                             err = str(e)
 
-                        if not ok and p is not None:
+                        if not ok:
                             failed_paths.add(p)
                             error_by_path[p] = err
 
@@ -1606,8 +1606,8 @@ class UploadService(BaseService):
                 with ThreadPoolExecutor(max_workers=retry_workers) as retry_executor:
                     prefetch = max(1, retry_workers * 2)
                     retry_iter = iter(to_retry)
-                    in_flight: set[Future[tuple[str, bool, str]]] = set()
-                    future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
+                    retry_in_flight: set[Future[tuple[str, bool, str]]] = set()
+                    retry_future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
 
                     def _submit_retry(path: Path) -> None:
                         fut: Future[tuple[str, bool, str]] = retry_executor.submit(  # type: ignore[arg-type]
@@ -1621,8 +1621,8 @@ class UploadService(BaseService):
                             subject=subject,
                             session=session,
                         )
-                        in_flight.add(fut)
-                        future_to_path[fut] = path
+                        retry_in_flight.add(fut)
+                        retry_future_to_path[fut] = path
 
                     for _ in range(min(prefetch, len(to_retry))):
                         try:
@@ -1630,26 +1630,25 @@ class UploadService(BaseService):
                         except StopIteration:
                             break
 
-                    while in_flight:
-                        done, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
-                        in_flight = _pending
+                    while retry_in_flight:
+                        done, _pending = wait(retry_in_flight, return_when=FIRST_COMPLETED)
+                        retry_in_flight = _pending
 
                         for future in done:
-                            p = future_to_path.pop(future, None)
+                            p = retry_future_to_path.pop(future)
                             try:
                                 _name, ok, err = future.result()
                             except Exception as e:
                                 ok = False
                                 err = str(e)
 
-                            if p is not None:
-                                if ok:
-                                    remaining_failed.discard(p)
-                                    error_by_path.pop(p, None)
-                                else:
-                                    error_by_path[p] = err
+                            if ok:
+                                remaining_failed.discard(p)
+                                error_by_path.pop(p, None)
+                            else:
+                                error_by_path[p] = err
 
-                            while len(in_flight) < prefetch:
+                            while len(retry_in_flight) < prefetch:
                                 try:
                                     _submit_retry(next(retry_iter))
                                 except StopIteration:
