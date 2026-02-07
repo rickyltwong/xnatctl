@@ -750,6 +750,7 @@ def _upload_single_file_gradual(
     session_token: str | None,
     verify_ssl: bool,
     file_path: Path,
+    display_path: str | None = None,
     project: str,
     subject: str,
     session: str,
@@ -770,6 +771,8 @@ def _upload_single_file_gradual(
     Returns:
         Tuple of (filename, success, error_message).
     """
+    name = display_path or file_path.name
+
     try:
         with httpx.Client(base_url=base_url, timeout=120.0, verify=verify_ssl) as client:
             cookies = {"JSESSIONID": session_token} if session_token else {}
@@ -790,12 +793,26 @@ def _upload_single_file_gradual(
                         cookies=cookies,
                     )
 
-            resp = upload_with_retry(_attempt, label=f"gradual-DICOM {file_path.name}")
-            if resp.status_code in (200, 201):
-                return file_path.name, True, ""
-            return file_path.name, False, f"HTTP {resp.status_code}"
+            resp = upload_with_retry(_attempt, label=f"gradual-DICOM {name}")
+            if 200 <= resp.status_code < 300:
+                return name, True, ""
+
+            # Include a small snippet of server response for debugging (XNAT often returns
+            # useful details for 4xx/5xx in plain text or HTML).
+            snippet = ""
+            try:
+                snippet = resp.text.strip().replace("\n", " ")
+            except Exception:
+                snippet = ""
+            if snippet:
+                snippet = snippet[:200]
+
+            detail = f"HTTP {resp.status_code}"
+            if snippet:
+                detail = f"{detail}: {snippet}"
+            return name, False, detail
     except Exception as e:
-        return file_path.name, False, str(e)
+        return name, False, str(e)
 
 
 # =============================================================================
@@ -1449,18 +1466,66 @@ class UploadService(BaseService):
                 message=f"Found {len(files)} files for gradual-DICOM upload",
             )
 
-            succeeded = 0
-            failed = 0
-            errors: list[str] = []
+            total_files = len(files)
 
+            # Prefer stable relative paths in logs/errors (especially for ZIP extractions
+            # into a temp directory).
+            display_root = source_path
+            if temp_dir:
+                display_root = Path(temp_dir)
+
+            def display(path: Path) -> str:
+                try:
+                    return str(path.relative_to(display_root))
+                except Exception:
+                    return path.name
+
+            failed_paths: set[Path] = set()
+            error_by_path: dict[Path, str] = {}
+            completed = 0
+
+            # Warm-up: upload the first few files sequentially. XNAT can return transient
+            # HTTP 400s when a prearchive/session is first being created, and parallel
+            # workers may hit that race at startup.
+            warmup_n = min(5, total_files)
+            if warmup_n:
+                report(
+                    OperationPhase.PREPARING,
+                    message=f"Warming up gradual-DICOM upload with {warmup_n} file(s)...",
+                )
+
+            warmup_files = files[:warmup_n]
+            remaining_files = files[warmup_n:]
+
+            for p in warmup_files:
+                name, ok, err = _upload_single_file_gradual(
+                    base_url=base_url,
+                    session_token=session_token,
+                    verify_ssl=verify_ssl,
+                    file_path=p,
+                    display_path=display(p),
+                    project=project,
+                    subject=subject,
+                    session=session,
+                )
+                completed += 1
+                if not ok:
+                    failed_paths.add(p)
+                    error_by_path[p] = err
+
+                succeeded_so_far = completed - len(failed_paths)
+                report(
+                    OperationPhase.UPLOADING,
+                    current=completed,
+                    total=total_files,
+                    success=ok,
+                    message=f"Uploaded {completed}/{total_files} ({succeeded_so_far} ok, {len(failed_paths)} failed)",
+                )
+
+            # Main pass: parallel per-file upload (bounded in-flight window)
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                # Submit in a bounded window instead of enqueuing every file at once.
-                #
-                # Enqueuing a Future per file can consume significant memory for
-                # large sessions (many small DICOM slices) and delays any progress
-                # updates until all tasks are submitted.
                 prefetch = max(1, workers * 2)
-                file_iter = iter(files)
+                file_iter = iter(remaining_files)
 
                 in_flight: set[Future[tuple[str, bool, str]]] = set()
                 future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
@@ -1472,6 +1537,7 @@ class UploadService(BaseService):
                         session_token=session_token,
                         verify_ssl=verify_ssl,
                         file_path=path,
+                        display_path=display(path),
                         project=project,
                         subject=subject,
                         session=session,
@@ -1479,60 +1545,136 @@ class UploadService(BaseService):
                     in_flight.add(fut)
                     future_to_path[fut] = path
 
-                # Prime the work queue
-                for _ in range(min(prefetch, len(files))):
+                for _ in range(min(prefetch, len(remaining_files))):
                     try:
                         _submit_one(next(file_iter))
                     except StopIteration:
                         break
 
-                completed = 0
                 while in_flight:
                     done, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
                     in_flight = _pending
 
                     for future in done:
                         completed += 1
-                        future_to_path.pop(future, None)
+                        p = future_to_path.pop(future, None)
 
                         try:
-                            name, success, error = future.result()
+                            _name, ok, err = future.result()
                         except Exception as e:
-                            # Best-effort: unexpected exceptions shouldn't abort the whole run.
-                            name, success, error = "unknown", False, str(e)
+                            ok = False
+                            err = str(e)
 
-                        if success:
-                            succeeded += 1
-                        else:
-                            failed += 1
-                            errors.append(f"{name}: {error}")
+                        if not ok and p is not None:
+                            failed_paths.add(p)
+                            error_by_path[p] = err
 
+                        succeeded_so_far = completed - len(failed_paths)
                         report(
                             OperationPhase.UPLOADING,
                             current=completed,
-                            total=len(files),
-                            success=success,
-                            message=f"Uploaded {completed}/{len(files)} ({succeeded} ok, {failed} failed)",
+                            total=total_files,
+                            success=ok,
+                            message=(
+                                f"Uploaded {completed}/{total_files} "
+                                f"({succeeded_so_far} ok, {len(failed_paths)} failed)"
+                            ),
                         )
 
-                        # Refill the window
                         while len(in_flight) < prefetch:
                             try:
                                 _submit_one(next(file_iter))
                             except StopIteration:
                                 break
 
+            # Salvage pass: retry a small number of failed files at lower concurrency.
+            # This helps when XNAT returns transient 400s under high parallel load.
+            max_salvage = min(5000, max(500, int(total_files * 0.01)))
+            if failed_paths and len(failed_paths) <= max_salvage:
+                retry_workers = max(1, min(4, workers))
+                report(
+                    OperationPhase.PREPARING,
+                    message=(
+                        f"Retrying {len(failed_paths)} failed file(s) "
+                        f"at lower concurrency ({retry_workers} workers)..."
+                    ),
+                )
+
+                to_retry = sorted(failed_paths, key=display)
+                remaining_failed: set[Path] = set(failed_paths)
+
+                with ThreadPoolExecutor(max_workers=retry_workers) as retry_executor:
+                    prefetch = max(1, retry_workers * 2)
+                    retry_iter = iter(to_retry)
+                    in_flight: set[Future[tuple[str, bool, str]]] = set()
+                    future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
+
+                    def _submit_retry(path: Path) -> None:
+                        fut: Future[tuple[str, bool, str]] = retry_executor.submit(  # type: ignore[arg-type]
+                            _upload_single_file_gradual,
+                            base_url=base_url,
+                            session_token=session_token,
+                            verify_ssl=verify_ssl,
+                            file_path=path,
+                            display_path=display(path),
+                            project=project,
+                            subject=subject,
+                            session=session,
+                        )
+                        in_flight.add(fut)
+                        future_to_path[fut] = path
+
+                    for _ in range(min(prefetch, len(to_retry))):
+                        try:
+                            _submit_retry(next(retry_iter))
+                        except StopIteration:
+                            break
+
+                    while in_flight:
+                        done, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
+                        in_flight = _pending
+
+                        for future in done:
+                            p = future_to_path.pop(future, None)
+                            try:
+                                _name, ok, err = future.result()
+                            except Exception as e:
+                                ok = False
+                                err = str(e)
+
+                            if p is not None:
+                                if ok:
+                                    remaining_failed.discard(p)
+                                    error_by_path.pop(p, None)
+                                else:
+                                    error_by_path[p] = err
+
+                            while len(in_flight) < prefetch:
+                                try:
+                                    _submit_retry(next(retry_iter))
+                                except StopIteration:
+                                    break
+
+                failed_paths = remaining_failed
+
             duration = time.time() - start_time
+            failed = len(failed_paths)
+            succeeded = total_files - failed
             overall_success = failed == 0
+
+            errors = [
+                f"{display(p)}: {error_by_path.get(p, '')}".rstrip(": ")
+                for p in sorted(failed_paths, key=display)
+            ]
 
             report(
                 OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
-                current=len(files),
-                total=len(files),
+                current=total_files,
+                total=total_files,
                 message=(
                     f"Uploaded {succeeded} files via gradual-DICOM"
                     if overall_success
-                    else f"Uploaded {succeeded}/{len(files)} files ({failed} failed)"
+                    else f"Uploaded {succeeded}/{total_files} files ({failed} failed)"
                 ),
                 success=overall_success,
                 errors=errors,
@@ -1540,12 +1682,12 @@ class UploadService(BaseService):
 
             return UploadSummary(
                 success=overall_success,
-                total=len(files),
+                total=total_files,
                 succeeded=succeeded,
                 failed=failed,
                 duration=duration,
                 errors=errors,
-                total_files=len(files),
+                total_files=total_files,
                 session_id=session,
             )
 
