@@ -3,18 +3,21 @@ repos:
     hooks:
       - id: ruff-check
         name: ruff check (uv)
-        entry: uv run --no-sync --frozen ruff check --fix --exit-non-zero-on-fix
+        entry: uv run --no-sync --frozen ruff check xnatctl
         language: system
-        types: [python]
+        pass_filenames: false
+        always_run: true
 
       - id: ruff-format
-        name: ruff format (uv)
-        entry: uv run --no-sync --frozen ruff format
+        name: ruff format --check (uv)
+        entry: uv run --no-sync --frozen ruff format --check xnatctl
         language: system
-        types: [python]
+        pass_filenames: false
+        always_run: true
 
       - id: mypy
         name: mypy (uv)
         entry: uv run --no-sync --frozen mypy xnatctl --ignore-missing-imports
         language: system
         pass_filenames: false
+        always_run: true
