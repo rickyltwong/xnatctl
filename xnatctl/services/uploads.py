@@ -17,6 +17,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import threading
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
@@ -59,6 +60,60 @@ DICOM_EXTENSIONS = {".dcm", ".ima", ".img", ".dicom"}
 UPLOAD_MAX_RETRIES = 5
 UPLOAD_RETRY_BACKOFF_BASE = 2  # seconds: 2, 4, 8, 16, 32
 RETRYABLE_STATUS_CODES = {400, 429, 500, 502, 503, 504}
+
+# When running with --verbose, we can log small snippets of retryable HTTP 400
+# response bodies to help diagnose transient XNAT import races. Keep this capped
+# to avoid flooding logs on very large uploads.
+_RETRY_DEBUG_MAX_SNIPPETS = 20
+_retry_debug_snippets_emitted = 0
+_retry_debug_lock = threading.Lock()
+
+# Gradual-DICOM uses one HTTP request per DICOM file; creating a new httpx.Client
+# per file is expensive and can trigger transient ConnectError bursts under high
+# concurrency. Reuse a persistent client per worker thread (keep-alive).
+_GRADUAL_HTTP_TIMEOUT_SECONDS = 120.0
+_gradual_client_local = threading.local()
+_gradual_client_registry_lock = threading.Lock()
+_gradual_client_registry: list[httpx.Client] = []
+
+
+def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client:
+    """Get a thread-local httpx.Client for gradual-DICOM uploads."""
+    key = (base_url, verify_ssl)
+    client: httpx.Client | None = getattr(_gradual_client_local, "client", None)
+    client_key: tuple[str, bool] | None = getattr(_gradual_client_local, "key", None)
+
+    if client is None or client_key != key:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+        client = httpx.Client(
+            base_url=base_url,
+            timeout=_GRADUAL_HTTP_TIMEOUT_SECONDS,
+            verify=verify_ssl,
+            limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
+        )
+        _gradual_client_local.client = client
+        _gradual_client_local.key = key
+        with _gradual_client_registry_lock:
+            _gradual_client_registry.append(client)
+
+    return client
+
+
+def _close_gradual_http_clients() -> None:
+    """Close any thread-local clients created for gradual uploads."""
+    with _gradual_client_registry_lock:
+        clients = list(_gradual_client_registry)
+        _gradual_client_registry.clear()
+    for c in clients:
+        try:
+            c.close()
+        except Exception:
+            pass
 
 
 # =============================================================================
@@ -251,6 +306,24 @@ def upload_with_retry(
             last_exc = None
             if attempt < max_retries:
                 delay = backoff_base ** (attempt + 1)
+                # Optional debug detail for transient XNAT 400s
+                if resp.status_code == 400 and logger.isEnabledFor(logging.DEBUG):
+                    global _retry_debug_snippets_emitted
+                    with _retry_debug_lock:
+                        should_log = _retry_debug_snippets_emitted < _RETRY_DEBUG_MAX_SNIPPETS
+                        if should_log:
+                            _retry_debug_snippets_emitted += 1
+                    if should_log:
+                        try:
+                            snippet = resp.text.strip().replace("\n", " ")
+                            if snippet:
+                                logger.debug(
+                                    "%s: retryable HTTP 400 body: %s",
+                                    label,
+                                    snippet[:200],
+                                )
+                        except Exception:
+                            pass
                 logger.warning(
                     "%s: HTTP %d on attempt %d/%d, retrying in %ds",
                     label,
@@ -265,10 +338,11 @@ def upload_with_retry(
             last_resp = None
             if attempt < max_retries:
                 delay = backoff_base ** (attempt + 1)
+                detail = f"{type(e).__name__}: {str(e).strip().replace(chr(10), ' ')}"
                 logger.warning(
                     "%s: %s on attempt %d/%d, retrying in %ds",
                     label,
-                    type(e).__name__,
+                    detail,
                     attempt + 1,
                     max_retries + 1,
                     delay,
@@ -757,7 +831,7 @@ def _upload_single_file_gradual(
 ) -> tuple[str, bool, str]:
     """Upload a single file via the gradual-DICOM import handler.
 
-    Creates a fresh httpx client for thread-safety in parallel execution.
+    Uses a thread-local httpx client to reuse keep-alive connections per worker thread.
 
     Args:
         base_url: XNAT server base URL.
@@ -774,43 +848,43 @@ def _upload_single_file_gradual(
     name = display_path or file_path.name
 
     try:
-        with httpx.Client(base_url=base_url, timeout=120.0, verify=verify_ssl) as client:
-            cookies = {"JSESSIONID": session_token} if session_token else {}
+        client = _get_gradual_http_client(base_url=base_url, verify_ssl=verify_ssl)
+        cookies = {"JSESSIONID": session_token} if session_token else {}
 
-            def _attempt() -> httpx.Response:
-                with open(file_path, "rb") as f:
-                    return client.post(
-                        "/data/services/import",
-                        params={
-                            "inbody": "true",
-                            "import-handler": "gradual-DICOM",
-                            "PROJECT_ID": project,
-                            "SUBJECT_ID": subject,
-                            "EXPT_LABEL": session,
-                        },
-                        content=f,
-                        headers={"Content-Type": "application/dicom"},
-                        cookies=cookies,
-                    )
+        def _attempt() -> httpx.Response:
+            with open(file_path, "rb") as f:
+                return client.post(
+                    "/data/services/import",
+                    params={
+                        "inbody": "true",
+                        "import-handler": "gradual-DICOM",
+                        "PROJECT_ID": project,
+                        "SUBJECT_ID": subject,
+                        "EXPT_LABEL": session,
+                    },
+                    content=f,
+                    headers={"Content-Type": "application/dicom"},
+                    cookies=cookies,
+                )
 
-            resp = upload_with_retry(_attempt, label=f"gradual-DICOM {name}")
-            if 200 <= resp.status_code < 300:
-                return name, True, ""
+        resp = upload_with_retry(_attempt, label=f"gradual-DICOM {name}")
+        if 200 <= resp.status_code < 300:
+            return name, True, ""
 
-            # Include a small snippet of server response for debugging (XNAT often returns
-            # useful details for 4xx/5xx in plain text or HTML).
+        # Include a small snippet of server response for debugging (XNAT often returns
+        # useful details for 4xx/5xx in plain text or HTML).
+        snippet = ""
+        try:
+            snippet = resp.text.strip().replace("\n", " ")
+        except Exception:
             snippet = ""
-            try:
-                snippet = resp.text.strip().replace("\n", " ")
-            except Exception:
-                snippet = ""
-            if snippet:
-                snippet = snippet[:200]
+        if snippet:
+            snippet = snippet[:200]
 
-            detail = f"HTTP {resp.status_code}"
-            if snippet:
-                detail = f"{detail}: {snippet}"
-            return name, False, detail
+        detail = f"HTTP {resp.status_code}"
+        if snippet:
+            detail = f"{detail}: {snippet}"
+        return name, False, detail
     except Exception as e:
         return name, False, str(e)
 
@@ -1484,18 +1558,91 @@ class UploadService(BaseService):
             error_by_path: dict[Path, str] = {}
             completed = 0
 
-            # Warm-up: upload the first few files sequentially. XNAT can return transient
-            # HTTP 400s when a prearchive/session is first being created, and parallel
-            # workers may hit that race at startup.
-            warmup_n = min(5, total_files)
-            if warmup_n:
+            # Warm-up: upload a small set of files sequentially before going wide-parallel.
+            #
+            # XNAT can return transient HTTP 400s when a session/scan is being created in
+            # prearchive. With high concurrency, multiple workers can hit that "cold start"
+            # race at the same time.
+            def scan_id_for(path: Path) -> str | None:
+                """Extract scan ID from standard session layout paths, if present."""
+                try:
+                    rel = path.relative_to(display_root)
+                except Exception:
+                    return None
+                parts = rel.parts
+                # Expected layout: scans/<scan_id>/resources/DICOM/files/<...>
+                if (
+                    len(parts) >= 6
+                    and parts[0] == "scans"
+                    and parts[2] == "resources"
+                    and parts[3] == "DICOM"
+                    and parts[4] == "files"
+                ):
+                    return parts[1]
+                return None
+
+            def _scan_sort_key(scan_id: str) -> tuple[int, int, str]:
+                try:
+                    return (0, int(scan_id), scan_id)
+                except ValueError:
+                    return (1, 0, scan_id)
+
+            scan_groups: dict[str, list[Path]] = {}
+            other_files: list[Path] = []
+            for p in files:
+                sid = scan_id_for(p)
+                if sid:
+                    scan_groups.setdefault(sid, []).append(p)
+                else:
+                    other_files.append(p)
+
+            warmup_files: list[Path] = []
+            remaining_files: list[Path] = []
+
+            if scan_groups:
+                # Warm up one file per scan (capped) and interleave remaining uploads
+                # across scans to reduce per-scan contention under high worker counts.
+                from collections import deque
+
+                queues: dict[str, deque[Path]] = {
+                    sid: deque(paths) for sid, paths in scan_groups.items()
+                }
+                if other_files:
+                    queues["_other"] = deque(other_files)
+
+                scan_ids = sorted(queues.keys(), key=_scan_sort_key)
+                max_warmup_scans = min(50, len(scan_ids))
+                warmup_scan_ids = [sid for sid in scan_ids if sid != "_other"][:max_warmup_scans]
+
+                for sid in warmup_scan_ids:
+                    q = queues.get(sid)
+                    if q:
+                        warmup_files.append(q.popleft())
+
+                # Round-robin remaining files across scan queues
+                scan_order = deque(scan_ids)
+                while scan_order:
+                    sid = scan_order.popleft()
+                    q = queues.get(sid)
+                    if not q:
+                        queues.pop(sid, None)
+                        continue
+                    remaining_files.append(q.popleft())
+                    if q:
+                        scan_order.append(sid)
+                    else:
+                        queues.pop(sid, None)
+            else:
+                # Fallback: warm up a few files in path order
+                warmup_n = min(5, total_files)
+                warmup_files = files[:warmup_n]
+                remaining_files = files[warmup_n:]
+
+            if warmup_files:
                 report(
                     OperationPhase.PREPARING,
-                    message=f"Warming up gradual-DICOM upload with {warmup_n} file(s)...",
+                    message=f"Warming up gradual-DICOM upload with {len(warmup_files)} file(s)...",
                 )
-
-            warmup_files = files[:warmup_n]
-            remaining_files = files[warmup_n:]
 
             for p in warmup_files:
                 name, ok, err = _upload_single_file_gradual(
@@ -1691,6 +1838,7 @@ class UploadService(BaseService):
             )
 
         finally:
+            _close_gradual_http_clients()
             if temp_dir:
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
