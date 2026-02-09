@@ -1803,6 +1803,35 @@ class UploadService(BaseService):
 
                 failed_paths = remaining_failed
 
+            # Final safety net: if only a handful of files are still failing, retry them
+            # sequentially. This is a pragmatic way to reach 100% completion on flaky
+            # networks without rerunning the whole upload.
+            if failed_paths and len(failed_paths) <= 50:
+                report(
+                    OperationPhase.PREPARING,
+                    message=f"Final sequential retry for {len(failed_paths)} file(s)...",
+                )
+
+                remaining_failed: set[Path] = set()
+                for p in sorted(failed_paths, key=display):
+                    _name, ok, err = _upload_single_file_gradual(
+                        base_url=base_url,
+                        session_token=session_token,
+                        verify_ssl=verify_ssl,
+                        file_path=p,
+                        display_path=display(p),
+                        project=project,
+                        subject=subject,
+                        session=session,
+                    )
+                    if ok:
+                        error_by_path.pop(p, None)
+                    else:
+                        remaining_failed.add(p)
+                        error_by_path[p] = err
+
+                failed_paths = remaining_failed
+
             duration = time.time() - start_time
             failed = len(failed_paths)
             succeeded = total_files - failed
