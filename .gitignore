@@ -89,3 +89,4 @@ docs/_build/
 CLAUDE.md
 AGENTS.md
 _test_data/
+.claude/
