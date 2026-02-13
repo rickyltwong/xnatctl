@@ -635,7 +635,8 @@ def main() -> None:
 
     from xnatctl.core.auth import AuthManager
     from xnatctl.core.client import XNATClient
-    from xnatctl.core.config import Config
+    from xnatctl.core.config import Config, get_credentials
+    from xnatctl.core.exceptions import AuthenticationError
 
     parser = argparse.ArgumentParser(
         description="Apply subject + experiment label fixes (patterns + standardized experiment labels)",
@@ -695,7 +696,35 @@ Example usage:
 
     profile = config.get_profile(args.profile)
     session_token = auth_mgr.get_session_token(profile.url)
-    env_user, env_pass = auth_mgr.get_credentials()
+    username, password = get_credentials(profile)
+
+    def login() -> XNATClient:
+        """Authenticate using credentials and refresh cached session."""
+        if not username or not password:
+            raise AuthenticationError(profile.url, "No credentials available for re-authentication")
+
+        c = XNATClient(
+            base_url=profile.url,
+            username=username,
+            password=password,
+            verify_ssl=profile.verify_ssl,
+            timeout=profile.timeout,
+        )
+        c.authenticate()
+
+        # Best-effort: cache refreshed session token for subsequent runs.
+        if c.session_token:
+            cached_user = username
+            try:
+                info = c.whoami()
+                u = info.get("username")
+                if isinstance(u, str) and u:
+                    cached_user = u
+            except Exception:
+                pass
+            auth_mgr.save_session(token=c.session_token, url=profile.url, username=cached_user)
+
+        return c
 
     if session_token:
         client = XNATClient(
@@ -704,29 +733,46 @@ Example usage:
             verify_ssl=profile.verify_ssl,
             timeout=profile.timeout,
         )
-    elif env_user and env_pass:
-        client = XNATClient(
-            base_url=profile.url,
-            username=env_user,
-            password=env_pass,
-            verify_ssl=profile.verify_ssl,
-            timeout=profile.timeout,
-        )
-        client.authenticate()
+        # Validate cached token early; if rejected, re-authenticate and refresh cache.
+        try:
+            client.whoami()
+        except AuthenticationError:
+            client.close()
+            client = login()
     else:
-        parser.error("No credentials found. Set XNAT_USER/XNAT_PASS or run 'xnatctl auth login'")
+        if not username or not password:
+            parser.error(
+                "No credentials found. Set XNAT_USER/XNAT_PASS or run 'xnatctl auth login'."
+            )
+        client = login()
 
     try:
-        result = apply_label_fixes(
-            client,
-            args.config,
-            projects=args.projects,
-            subjects=args.subjects,
-            subject_pattern=args.subject_pattern,
-            modalities=args.modalities,
-            execute=args.execute,
-            verbose=args.verbose,
-        )
+        retried = False
+        while True:
+            try:
+                result = apply_label_fixes(
+                    client,
+                    args.config,
+                    projects=args.projects,
+                    subjects=args.subjects,
+                    subject_pattern=args.subject_pattern,
+                    modalities=args.modalities,
+                    execute=args.execute,
+                    verbose=args.verbose,
+                )
+                break
+            except AuthenticationError as e:
+                if retried:
+                    raise
+                if not username or not password:
+                    raise AuthenticationError(
+                        profile.url,
+                        f"{e}. Re-authentication requires credentials; run 'xnatctl auth login' or set XNAT_USER/XNAT_PASS.",
+                    ) from e
+                log.warning("Authentication failed (%s). Re-authenticating and retrying...", e)
+                retried = True
+                client.close()
+                client = login()
         raise SystemExit(1 if result["failed"] else 0)
     finally:
         client.close()
