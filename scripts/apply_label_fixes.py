@@ -679,6 +679,13 @@ Example usage:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
+    # httpx emits "HTTP Request: ..." at INFO. Only show those when -v/--verbose is enabled.
+    if args.verbose:
+        logging.getLogger("httpx").setLevel(logging.INFO)
+        logging.getLogger("httpcore").setLevel(logging.INFO)
+    else:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     if not args.config.exists():
         parser.error(f"Config file not found: {args.config}")
