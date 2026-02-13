@@ -6,10 +6,20 @@ A modern CLI for XNAT neuroimaging server administration.
 **xnatctl** provides resource-centric commands with consistent output formats,
 parallel operations, and profile-based configuration for managing XNAT servers.
 
+Features
+--------
+
+- **Resource-centric commands**: ``xnatctl <resource> <action> [args]``
+- **Profile-based configuration**: YAML config with multiple server profiles
+- **Consistent output**: ``--output json|table`` and ``--quiet`` on all commands
+- **Parallel operations**: Batch uploads/downloads with progress tracking
+- **Session authentication**: Token caching with ``auth login``
+- **Pure HTTP**: Direct REST API calls with httpx (no pyxnat dependency)
+
 .. code-block:: console
 
    $ xnatctl project list --output table
-   $ xnatctl session download --project myproj --session SESS01
+   $ xnatctl session download XNAT_E00001 --out ./data
    $ xnatctl admin refresh-catalogs --project myproj
 
 .. toctree::
@@ -25,6 +35,9 @@ parallel operations, and profile-based configuration for managing XNAT servers.
    :caption: User Guide
 
    cli-reference
+   uploading
+   downloading
+   workflows
 
 .. toctree::
    :maxdepth: 2
