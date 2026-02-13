@@ -21,3 +21,11 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: pytest
+        name: pytest (uv)
+        entry: uv run --no-sync --frozen pytest tests/ -v --tb=short
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
