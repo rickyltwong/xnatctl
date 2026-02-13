@@ -85,7 +85,6 @@ docs/_build/
 *.log
 .sessions/
 
-scripts/
 .omc/
 CLAUDE.md
 AGENTS.md
