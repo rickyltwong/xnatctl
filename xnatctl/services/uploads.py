@@ -1812,7 +1812,7 @@ class UploadService(BaseService):
                     message=f"Final sequential retry for {len(failed_paths)} file(s)...",
                 )
 
-                remaining_failed: set[Path] = set()
+                remaining_failed = set[Path]()
                 for p in sorted(failed_paths, key=display):
                     _name, ok, err = _upload_single_file_gradual(
                         base_url=base_url,
