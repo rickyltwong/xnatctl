@@ -8,7 +8,7 @@ Development Setup
 
    $ git clone https://github.com/rickyltwong/xnatctl.git
    $ cd xnatctl
-   $ uv sync
+   $ uv sync --dev
 
 Running Tests
 -------------
@@ -63,7 +63,7 @@ Building Documentation
 
 .. code-block:: console
 
-   $ uv sync --extra docs
+   $ uv sync --dev --extra docs
    $ cd docs
    $ make html
 
