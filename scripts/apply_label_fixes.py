@@ -182,7 +182,14 @@ def apply_subject_patterns(
 ) -> dict[str, Any]:
     if not patterns:
         log.info("No subject rename patterns for project %s", project)
-        return {"renamed": 0, "merged": 0, "skipped": 0, "errors": 0}
+        return {
+            "renamed": 0,
+            "merged": 0,
+            "skipped": 0,
+            "errors": 0,
+            "renamed_map": {},
+            "merged_map": {},
+        }
 
     dry_run = not execute
     mode = "DRY-RUN" if dry_run else "EXECUTE"
@@ -197,6 +204,8 @@ def apply_subject_patterns(
     total_merged = 0
     total_skipped = 0
     total_errors = 0
+    renamed_map: dict[str, str] = {}
+    merged_map: dict[str, str] = {}
 
     subjects_data = _list_subjects(client, project)
     subject_labels = {s.get("label", s.get("ID", "")): s for s in subjects_data}
@@ -228,7 +237,7 @@ def apply_subject_patterns(
         merged: dict[str, str] = {}
         skipped: list[tuple[str, str]] = []
 
-        for label in subject_labels:
+        for label in list(subject_labels):
             m = regex.match(label)
             if not m:
                 continue
@@ -246,6 +255,8 @@ def apply_subject_patterns(
                     try:
                         _merge_subject(client, project, label, target)
                         merged[label] = target
+                        # Keep local view in sync for subsequent checks.
+                        subject_labels.pop(label, None)
                     except Exception as e:  # noqa: BLE001
                         log.error("Failed to merge %s -> %s: %s", label, target, e)
                         total_errors += 1
@@ -256,6 +267,8 @@ def apply_subject_patterns(
                     try:
                         _rename_subject(client, project, label, target)
                         renamed[label] = target
+                        # Keep local view in sync for subsequent checks.
+                        subject_labels[target] = subject_labels.pop(label, {})
                     except Exception as e:  # noqa: BLE001
                         log.error("Failed to rename %s -> %s: %s", label, target, e)
                         total_errors += 1
@@ -280,6 +293,8 @@ def apply_subject_patterns(
         total_renamed += len(renamed)
         total_merged += len(merged)
         total_skipped += len(skipped)
+        renamed_map.update(renamed)
+        merged_map.update(merged)
 
     log.info("=" * 60)
     log.info(
@@ -297,6 +312,8 @@ def apply_subject_patterns(
         "merged": total_merged,
         "skipped": total_skipped,
         "errors": total_errors,
+        "renamed_map": renamed_map,
+        "merged_map": merged_map,
     }
 
 
@@ -309,6 +326,7 @@ def apply_experiment_label_fixes(
     client: XNATClient,
     project: str,
     *,
+    subject_label_overrides: dict[str, str] | None = None,
     subjects: Sequence[str] | None = None,
     subject_pattern: str | None = None,
     modalities: Sequence[str] | None = None,
@@ -333,39 +351,52 @@ def apply_experiment_label_fixes(
     log.info("=" * 60)
 
     subject_re = re.compile(subject_pattern) if subject_pattern else None
+    overrides = subject_label_overrides or {}
     subjects_data = _list_subjects(client, project)
-    subject_labels = [s.get("label", s.get("ID", "")) for s in subjects_data]
+    wanted = set(subjects) if subjects else None
 
-    if subjects:
-        wanted = set(subjects)
-        subject_labels = [s for s in subject_labels if s in wanted]
-
-    if subject_re:
-        subject_labels = [s for s in subject_labels if subject_re.search(s)]
+    # Group actual XNAT subjects by their *effective* (post-fix) label.
+    # This lets experiment labels be computed using the normalized subject label,
+    # even during dry-run when the subject rename hasn't been applied yet.
+    prefix = f"{project}_"
+    subject_groups: dict[str, list[str]] = {}
 
     total_renamed = 0
     total_skipped = 0
     skipped_subjects = 0
     total_failed = 0
 
-    prefix = f"{project}_"
-
-    for subj_label in subject_labels:
-        if not isinstance(subj_label, str) or not subj_label:
+    for subj in subjects_data:
+        actual = subj.get("label", subj.get("ID", ""))
+        if not isinstance(actual, str) or not actual:
             continue
 
-        if not subj_label.startswith(prefix):
+        effective = overrides.get(actual, actual)
+
+        # Apply filters to either the actual or effective label.
+        if wanted and actual not in wanted and effective not in wanted:
+            continue
+        if subject_re and not (subject_re.search(actual) or subject_re.search(effective)):
+            continue
+
+        if not isinstance(effective, str) or not effective.startswith(prefix):
             if verbose:
-                log.info("Skipping subject %s: not normalized to project prefix", subj_label)
+                log.info("Skipping subject %s: not normalized to project prefix", actual)
             skipped_subjects += 1
             continue
 
-        experiments = _list_subject_experiments(client, project, subj_label)
+        subject_groups.setdefault(effective, []).append(actual)
+
+    for effective_label, actual_labels in sorted(subject_groups.items()):
+        # Gather experiments across all subjects that will become this label (merge-safe planning).
+        experiments: list[dict[str, Any]] = []
+        for actual in actual_labels:
+            experiments.extend(_list_subject_experiments(client, project, actual))
+
         if not experiments:
             continue
 
         existing_labels = {e.get("label", "") for e in experiments if e.get("label")}
-        # Visit numbering is computed *per modality* (PET visits are independent from MR visits).
         by_modality_date: dict[str, dict[date, list[dict[str, Any]]]] = {}
         skipped: list[tuple[str, str, str]] = []
 
@@ -438,7 +469,7 @@ def apply_experiment_label_fixes(
 
                 for session_idx, g in enumerate(group_sorted, start=1):
                     target = _build_target_label(
-                        subj_label, visit_idx, session_idx, cast(str, g["modality"])
+                        effective_label, visit_idx, session_idx, cast(str, g["modality"])
                     )
                     if target == g["label"]:
                         continue
@@ -456,7 +487,10 @@ def apply_experiment_label_fixes(
                     rename_plan.append((g["ID"], g["label"], target))
 
         if rename_plan:
-            log.info("Subject: %s", subj_label)
+            src_suffix = (
+                f" (from {', '.join(sorted(actual_labels))})" if len(actual_labels) > 1 else ""
+            )
+            log.info("Subject: %s%s", effective_label, src_suffix)
             log.info("Renames (%s):", len(rename_plan))
             for exp_id, old_label, new_label in rename_plan:
                 log.info("  %s %s -> %s", exp_id, old_label, new_label)
@@ -548,9 +582,15 @@ def apply_label_fixes(
             overall_failed = True
             continue
 
+        label_overrides = {
+            **cast(dict[str, str], subj_result.get("renamed_map", {})),
+            **cast(dict[str, str], subj_result.get("merged_map", {})),
+        }
+
         exp_result = apply_experiment_label_fixes(
             client,
             project_id,
+            subject_label_overrides=label_overrides,
             subjects=subjects,
             subject_pattern=subject_pattern,
             modalities=modalities,
