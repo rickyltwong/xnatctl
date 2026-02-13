@@ -95,6 +95,18 @@ Manage subjects within a project.
    $ xnatctl subject delete SUBJECT_ID -P PROJECT_ID
    $ xnatctl subject rename --help
 
+Subject rename patterns file
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can rename subjects using a per-project patterns JSON file (first match wins).
+An anonymized example is included in the repo:
+
+.. code-block:: console
+
+   $ xnatctl subject rename -P TESTPROJ \
+       --patterns-file docs/examples/subject-rename-patterns.example.json \
+       --dry-run
+
 session
 -------
 

@@ -40,7 +40,7 @@ If you only have a session label, pass ``-P/--project`` so XNAT can resolve it:
 
 .. code-block:: console
 
-   $ xnatctl session download CLM01_UCA_00003_01_SE01_MR -P CLM01_UCA_4 --out ./data
+   $ xnatctl session download SESSION_LABEL -P MYPROJECT --out ./data
 
 Parallel session downloads
 ~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -437,7 +437,7 @@ def session_download(
         xnatctl session download XNAT_E00001
         xnatctl session download XNAT_E00001 --out ./data
         xnatctl session download XNAT_E00001 --out ./data --workers 8
-        xnatctl session download CLM01_UCA_00134_01_SE01_MR -P CLM01_UCA_4 --out ./data
+        xnatctl session download SESSION_LABEL -P MYPROJECT --out ./data
         xnatctl session download XNAT_E00001 --name CLM01_CAMH_0041 --out ./data
         xnatctl session download XNAT_E00001 --out ./data --include-resources
         xnatctl session download XNAT_E00001 --out ./data --unzip --cleanup
