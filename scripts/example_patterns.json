@@ -1,0 +1,17 @@
+{
+  "description": "Subject rename patterns (ANONYMIZED EXAMPLE FILE)",
+  "patterns": [
+    {
+      "project": "TESTPROJ",
+      "match": "^(ABC\\d{3})$",
+      "to": "{project}_00{1}",
+      "description": "ABCNNN -> TESTPROJ_00ABCNNN"
+    },
+    {
+      "project": "TESTPROJ",
+      "match": "^SITE-(\\d{4})$",
+      "to": "{project}_SITE{1}",
+      "description": "SITE-NNNN -> TESTPROJ_SITENNNN"
+    }
+  ]
+}
