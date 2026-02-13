@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
-from xnatctl.cli.subject import _apply_template, _load_patterns_file
+from xnatctl.cli.subject import _apply_template, _load_patterns_file, _projects_in_patterns_file
 
 
 def test_patterns_file_load_and_apply_template() -> None:
@@ -40,3 +40,19 @@ def test_patterns_file_load_and_apply_template() -> None:
         )
         assert target == "TESTPROJ_00ABC123"
 
+
+def test_projects_in_patterns_file_extracts_unique_projects() -> None:
+    patterns = {
+        "patterns": [
+            {"project": "TESTPROJ", "match": r"^A$", "to": "{project}_{1}"},
+            {"project": "TESTPROJ", "match": r"^B$", "to": "{project}_{1}"},
+            {"project": "OTHERPROJ", "match": r"^C$", "to": "{project}_{1}"},
+        ]
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        patterns_path = Path(tmp) / "patterns.json"
+        patterns_path.write_text(json.dumps(patterns), encoding="utf-8")
+
+        projects = _projects_in_patterns_file(str(patterns_path))
+        assert projects == {"TESTPROJ", "OTHERPROJ"}

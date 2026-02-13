@@ -36,6 +36,30 @@ def _apply_template(*, template: str, project: str, groups: tuple[str | None, ..
     return target
 
 
+def _projects_in_patterns_file(path: str) -> set[str]:
+    """Extract the unique project IDs referenced by a patterns JSON file."""
+    import json
+
+    with open(path) as f:
+        data = json.load(f)
+
+    patterns = data.get("patterns")
+    if not isinstance(patterns, list):
+        return set()
+
+    projects: set[str] = set()
+    for raw in patterns:
+        if not isinstance(raw, dict):
+            continue
+        proj = raw.get("project")
+        if isinstance(proj, str):
+            proj = proj.strip()
+            if proj:
+                projects.add(proj)
+
+    return projects
+
+
 def _load_patterns_file(
     *, path: str, project: str
 ) -> list[tuple[re.Pattern[str], str, str | None]]:
@@ -320,6 +344,22 @@ def subject_rename(
     if not project:
         profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
         project = profile.default_project if profile else None
+        if not project and patterns_file:
+            try:
+                projects = _projects_in_patterns_file(patterns_file)
+            except Exception as e:
+                raise click.ClickException(f"Failed to read patterns file: {e}") from e
+
+            if len(projects) == 1:
+                project = next(iter(projects))
+            elif len(projects) > 1:
+                profile_name = ctx.profile_name or (
+                    ctx.config.default_profile if ctx.config else "default"
+                )
+                raise click.ClickException(
+                    "Project required. Pass --project/-P or set default_project in profile "
+                    f"'{profile_name}'. Patterns file contains multiple projects: {', '.join(sorted(projects))}"
+                )
         if not project:
             profile_name = ctx.profile_name or (
                 ctx.config.default_profile if ctx.config else "default"
