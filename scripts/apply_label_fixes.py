@@ -365,7 +365,8 @@ def apply_experiment_label_fixes(
             continue
 
         existing_labels = {e.get("label", "") for e in experiments if e.get("label")}
-        by_date: dict[date, list[dict[str, Any]]] = {}
+        # Visit numbering is computed *per modality* (PET visits are independent from MR visits).
+        by_modality_date: dict[str, dict[date, list[dict[str, Any]]]] = {}
         skipped: list[tuple[str, str, str]] = []
 
         for exp in experiments:
@@ -395,7 +396,7 @@ def apply_experiment_label_fixes(
                     insert_dt = datetime.combine(insert_date, insert_time)
 
             order_time = session_time or (insert_dt.time() if insert_dt else None)
-            by_date.setdefault(session_date, []).append(
+            by_modality_date.setdefault(modality, {}).setdefault(session_date, []).append(
                 {
                     "ID": str(exp_id),
                     "label": str(exp_label),
@@ -408,48 +409,51 @@ def apply_experiment_label_fixes(
         rename_plan: list[tuple[str, str, str]] = []
         seen_targets: dict[str, str] = {}
 
-        for visit_idx, session_date in enumerate(sorted(by_date.keys()), start=1):
-            group = by_date[session_date]
+        for modality in sorted(by_modality_date.keys()):
+            by_date = by_modality_date[modality]
 
-            if len(group) > 1 and any(g["order_time"] is None for g in group):
-                for g in group:
-                    skipped.append(
-                        (
-                            cast(str, g["ID"]),
-                            cast(str, g["label"]),
-                            "missing time for same-day experiments; cannot assign SE order",
+            for visit_idx, session_date in enumerate(sorted(by_date.keys()), start=1):
+                group = by_date[session_date]
+
+                if len(group) > 1 and any(g["order_time"] is None for g in group):
+                    for g in group:
+                        skipped.append(
+                            (
+                                cast(str, g["ID"]),
+                                cast(str, g["label"]),
+                                "missing time for same-day experiments; cannot assign SE order",
+                            )
                         )
-                    )
-                continue
+                    continue
 
-            group_sorted = sorted(
-                group,
-                key=lambda g: (
-                    g["order_time"] or time.min,
-                    g["insert_dt"] or datetime.min,
-                    g["label"],
-                    g["ID"],
-                ),
-            )
-
-            for session_idx, g in enumerate(group_sorted, start=1):
-                target = _build_target_label(
-                    subj_label, visit_idx, session_idx, cast(str, g["modality"])
+                group_sorted = sorted(
+                    group,
+                    key=lambda g: (
+                        g["order_time"] or time.min,
+                        g["insert_dt"] or datetime.min,
+                        g["label"],
+                        g["ID"],
+                    ),
                 )
-                if target == g["label"]:
-                    continue
 
-                if target in existing_labels and target != g["label"]:
-                    skipped.append((g["ID"], g["label"], f"target label exists: {target}"))
-                    continue
+                for session_idx, g in enumerate(group_sorted, start=1):
+                    target = _build_target_label(
+                        subj_label, visit_idx, session_idx, cast(str, g["modality"])
+                    )
+                    if target == g["label"]:
+                        continue
 
-                prior = seen_targets.get(target)
-                if prior and prior != g["ID"]:
-                    skipped.append((g["ID"], g["label"], f"target label conflict: {target}"))
-                    continue
+                    if target in existing_labels and target != g["label"]:
+                        skipped.append((g["ID"], g["label"], f"target label exists: {target}"))
+                        continue
 
-                seen_targets[target] = g["ID"]
-                rename_plan.append((g["ID"], g["label"], target))
+                    prior = seen_targets.get(target)
+                    if prior and prior != g["ID"]:
+                        skipped.append((g["ID"], g["label"], f"target label conflict: {target}"))
+                        continue
+
+                    seen_targets[target] = g["ID"]
+                    rename_plan.append((g["ID"], g["label"], target))
 
         if rename_plan:
             log.info("Subject: %s", subj_label)
