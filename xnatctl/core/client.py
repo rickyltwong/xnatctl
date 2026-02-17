@@ -15,9 +15,11 @@ import httpx
 from xnatctl.core.exceptions import (
     AuthenticationError,
     NetworkError,
+    PermissionDeniedError,
     ResourceNotFoundError,
     RetryExhaustedError,
     ServerUnreachableError,
+    SessionExpiredError,
 )
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.core.validation import validate_server_url
@@ -48,6 +50,7 @@ class XNATClient:
     timeout: int = DEFAULT_TIMEOUT
     max_retries: int = DEFAULT_MAX_RETRIES
     verify_ssl: bool = True
+    auto_reauth: bool = False
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -189,13 +192,15 @@ class XNATClient:
             RetryExhaustedError: If all retries fail.
         """
         client = self._get_client()
-        cookies = self._get_cookies()
-        auth = self._get_auth()
 
         request_timeout = timeout or self.timeout
         last_error: Exception | None = None
+        did_reauth = False
 
-        for attempt in range(self.max_retries + 1):
+        attempt = 0
+        while attempt <= self.max_retries:
+            cookies = self._get_cookies()
+            auth = self._get_auth()
             try:
                 resp = client.request(
                     method,
@@ -211,11 +216,28 @@ class XNATClient:
                 )
 
                 # Handle auth errors
-                if resp.status_code in (401, 403):
-                    raise AuthenticationError(
-                        self.base_url,
-                        "Session expired or permission denied",
+                if resp.status_code == 401:
+                    if self.auto_reauth and not did_reauth and self.username and self.password:
+                        self.authenticate()
+                        did_reauth = True
+                        continue
+
+                    expired_err = SessionExpiredError(self.base_url)
+                    expired_err.details.update(
+                        {"status_code": resp.status_code, "method": method, "path": path}
                     )
+                    raise expired_err
+
+                if resp.status_code == 403:
+                    denied_err = PermissionDeniedError(
+                        resource=path,
+                        operation=method.lower(),
+                        url=self.base_url,
+                    )
+                    denied_err.details.update(
+                        {"status_code": resp.status_code, "method": method, "path": path}
+                    )
+                    raise denied_err
 
                 # Handle 404
                 if resp.status_code == 404:
@@ -229,6 +251,7 @@ class XNATClient:
                     )
                     if attempt < self.max_retries:
                         time.sleep(RETRY_BACKOFF_BASE ** (attempt + 1))
+                        attempt += 1
                         continue
 
                 # Success or non-retryable error
@@ -245,6 +268,8 @@ class XNATClient:
             # Retry with backoff
             if attempt < self.max_retries:
                 time.sleep(RETRY_BACKOFF_BASE ** (attempt + 1))
+
+            attempt += 1
 
         raise RetryExhaustedError("request", self.max_retries + 1, last_error)
 

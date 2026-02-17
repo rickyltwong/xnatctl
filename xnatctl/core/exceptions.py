@@ -207,8 +207,8 @@ class SessionExpiredError(AuthenticationError):
 class PermissionDeniedError(AuthenticationError):
     """User lacks permission for the requested operation."""
 
-    def __init__(self, resource: str, operation: str = "access"):
-        super().__init__(reason=f"Permission denied to {operation} {resource}")
+    def __init__(self, resource: str, operation: str = "access", url: str | None = None):
+        super().__init__(url, reason=f"Permission denied to {operation} {resource}")
         self.resource = resource
         self.operation = operation
 
