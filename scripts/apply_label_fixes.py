@@ -33,6 +33,8 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from xnatctl.core.exceptions import SessionExpiredError
+
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
 
@@ -257,6 +259,8 @@ def apply_subject_patterns(
                         merged[label] = target
                         # Keep local view in sync for subsequent checks.
                         subject_labels.pop(label, None)
+                    except SessionExpiredError:
+                        raise
                     except Exception as e:  # noqa: BLE001
                         log.error("Failed to merge %s -> %s: %s", label, target, e)
                         total_errors += 1
@@ -269,6 +273,8 @@ def apply_subject_patterns(
                         renamed[label] = target
                         # Keep local view in sync for subsequent checks.
                         subject_labels[target] = subject_labels.pop(label, {})
+                    except SessionExpiredError:
+                        raise
                     except Exception as e:  # noqa: BLE001
                         log.error("Failed to rename %s -> %s: %s", label, target, e)
                         total_errors += 1
@@ -505,6 +511,8 @@ def apply_experiment_label_fixes(
                 try:
                     _rename_experiment(client, exp_id, new_label)
                     total_renamed += 1
+                except SessionExpiredError:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     total_failed += 1
                     log.error(
@@ -636,7 +644,7 @@ def main() -> None:
     from xnatctl.core.auth import AuthManager
     from xnatctl.core.client import XNATClient
     from xnatctl.core.config import Config, get_credentials
-    from xnatctl.core.exceptions import AuthenticationError
+    from xnatctl.core.exceptions import AuthenticationError, SessionExpiredError
 
     parser = argparse.ArgumentParser(
         description="Apply subject + experiment label fixes (patterns + standardized experiment labels)",
@@ -709,6 +717,7 @@ Example usage:
             password=password,
             verify_ssl=profile.verify_ssl,
             timeout=profile.timeout,
+            auto_reauth=True,
         )
         c.authenticate()
 
@@ -729,9 +738,12 @@ Example usage:
     if session_token:
         client = XNATClient(
             base_url=profile.url,
+            username=username,
+            password=password,
             session_token=session_token,
             verify_ssl=profile.verify_ssl,
             timeout=profile.timeout,
+            auto_reauth=True,
         )
         # Validate cached token early; if rejected, re-authenticate and refresh cache.
         try:
@@ -761,7 +773,7 @@ Example usage:
                     verbose=args.verbose,
                 )
                 break
-            except AuthenticationError as e:
+            except SessionExpiredError as e:
                 if retried:
                     raise
                 if not username or not password:
