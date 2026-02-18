@@ -257,11 +257,12 @@ jobs:
       - name: Install Python and deps (Windows)
         if: matrix.platform == 'windows'
         run: |
-          python -m venv C:\venv
-          C:\venv\Scripts\activate.bat
+          set VENV=C:\venv
+          py -3.12 -m venv %VENV%
+          call %VENV%\Scripts\activate.bat
           python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install .
+          python -m pip install pyinstaller
+          python -m pip install .
         shell: cmd
 
       - name: Build binary (Linux)
@@ -279,7 +280,8 @@ jobs:
       - name: Build binary (Windows)
         if: matrix.platform == 'windows'
         run: |
-          C:\venv\Scripts\activate.bat
+          set VENV=C:\venv
+          call %VENV%\Scripts\activate.bat
           pyinstaller xnatctl.spec --noconfirm --clean
         shell: cmd
 
