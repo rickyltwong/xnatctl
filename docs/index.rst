@@ -38,6 +38,7 @@ Features
    uploading
    downloading
    workflows
+   xnat-compatibility
 
 .. toctree::
    :maxdepth: 2
