@@ -52,6 +52,7 @@ coverage.xml
 # Environments
 .env
 .env.*
+!.env.example
 .venv
 env/
 venv/
@@ -85,8 +86,10 @@ docs/_build/
 *.log
 .sessions/
 
-.omc/
 CLAUDE.md
 AGENTS.md
-_test_data/
 .claude/
+.agents/
+.agents
+*.local.*
+.omc/
