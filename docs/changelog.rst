@@ -1,6 +1,19 @@
 Changelog
 =========
 
+0.1.0 (2026)
+-------------
+
+- Uniform ``-E``/``-P`` options across all session and scan commands
+- ``-E/--experiment`` accepts ID or label (label requires ``-P`` or profile ``default_project``)
+- ``default_project`` profile setting now used as automatic ``-P`` fallback
+- Consistent ``metavar=ID_OR_LABEL`` and help text on all ``-E`` options
+- PyPI trusted publishing via OIDC (stable releases to PyPI, prereleases to TestPyPI)
+- Multi-platform standalone binaries: Linux, macOS, Windows via PyInstaller
+- ``install.sh`` auto-detects OS and architecture
+- CLI integration test suite: 150 tests covering all commands
+- Service layer unit test suite: 138 tests covering all services
+
 0.0.2 (2025)
 -------------
 
