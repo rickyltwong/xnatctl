@@ -22,8 +22,39 @@ need_cmd() {
 }
 
 need_cmd curl
-need_cmd tar
-need_cmd sha256sum
+
+# Detect OS
+detect_os() {
+    local os
+    os="$(uname -s)"
+    case "${os}" in
+        Linux*)  echo "linux" ;;
+        Darwin*) echo "darwin" ;;
+        MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+        *) fail "Unsupported operating system: ${os}" ;;
+    esac
+}
+
+# Detect architecture
+detect_arch() {
+    local arch
+    arch="$(uname -m)"
+    case "${arch}" in
+        x86_64|amd64) echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        *) fail "Unsupported architecture: ${arch}" ;;
+    esac
+}
+
+OS="$(detect_os)"
+ARCH="$(detect_arch)"
+info "Detected platform: ${OS}-${ARCH}"
+
+if [ "${OS}" = "windows" ]; then
+    need_cmd unzip
+else
+    need_cmd tar
+fi
 
 # Detect version
 if [ -n "${XNATCTL_VERSION:-}" ]; then
@@ -39,7 +70,11 @@ else
 fi
 info "Installing xnatctl ${VERSION}"
 
-ASSET="xnatctl-linux-amd64.tar.gz"
+if [ "${OS}" = "windows" ]; then
+    ASSET="xnatctl-${OS}-${ARCH}.zip"
+else
+    ASSET="xnatctl-${OS}-${ARCH}.tar.gz"
+fi
 BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 
 TMPDIR=$(mktemp -d)
@@ -52,19 +87,37 @@ curl -fsSL -o "${TMPDIR}/${ASSET}" "${BASE_URL}/${ASSET}"
 CHECKSUM_URL="${BASE_URL}/${ASSET}.sha256"
 if curl -fsSL -o "${TMPDIR}/${ASSET}.sha256" "${CHECKSUM_URL}" 2>/dev/null; then
     info "Verifying checksum..."
-    (cd "${TMPDIR}" && sha256sum -c "${ASSET}.sha256") || fail "Checksum verification failed"
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "${TMPDIR}" && sha256sum -c "${ASSET}.sha256") || fail "Checksum verification failed"
+    elif command -v shasum >/dev/null 2>&1; then
+        expected=$(awk '{print $1}' "${TMPDIR}/${ASSET}.sha256")
+        actual=$(shasum -a 256 "${TMPDIR}/${ASSET}" | awk '{print $1}')
+        [ "${expected}" = "${actual}" ] || fail "Checksum verification failed"
+    else
+        warn "No sha256sum or shasum found; skipping verification"
+    fi
 else
     warn "Checksum file not available; skipping verification"
 fi
 
 info "Extracting to ${INSTALL_DIR}..."
 mkdir -p "${INSTALL_DIR}"
-tar -xzf "${TMPDIR}/${ASSET}" -C "${INSTALL_DIR}"
-chmod +x "${INSTALL_DIR}/xnatctl"
+
+if [ "${OS}" = "windows" ]; then
+    unzip -o "${TMPDIR}/${ASSET}" -d "${INSTALL_DIR}"
+else
+    tar -xzf "${TMPDIR}/${ASSET}" -C "${INSTALL_DIR}"
+    chmod +x "${INSTALL_DIR}/xnatctl"
+fi
 
 # Verify installation
-if "${INSTALL_DIR}/xnatctl" --version >/dev/null 2>&1; then
-    info "Installed $("${INSTALL_DIR}/xnatctl" --version 2>&1 || echo "xnatctl")"
+BINARY="${INSTALL_DIR}/xnatctl"
+if [ "${OS}" = "windows" ]; then
+    BINARY="${INSTALL_DIR}/xnatctl.exe"
+fi
+
+if "${BINARY}" --version >/dev/null 2>&1; then
+    info "Installed $("${BINARY}" --version 2>&1 || echo "xnatctl")"
 else
     warn "Binary extracted but could not run --version"
 fi

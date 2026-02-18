@@ -170,19 +170,73 @@ jobs:
     outputs:
       created: ${{ steps.tag.outputs.created }}
       tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [auto-tag, build]
+    if: needs.auto-tag.outputs.created == 'true' && !(contains(needs.auto-tag.outputs.version, 'alpha') || contains(needs.auto-tag.outputs.version, 'beta') || contains(needs.auto-tag.outputs.version, 'rc'))
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/xnatctl
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-testpypi:
+    runs-on: ubuntu-latest
+    needs: [auto-tag, build]
+    if: needs.auto-tag.outputs.created == 'true' && (contains(needs.auto-tag.outputs.version, 'alpha') || contains(needs.auto-tag.outputs.version, 'beta') || contains(needs.auto-tag.outputs.version, 'rc'))
+    permissions:
+      id-token: write
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/xnatctl
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
 
   binary:
-    runs-on: ubuntu-latest
     needs: auto-tag
     if: needs.auto-tag.outputs.created == 'true'
     permissions:
       contents: write
-    container:
-      image: quay.io/pypa/manylinux_2_28_x86_64
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: amd64
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - os: macos-latest
+            platform: darwin
+            arch: amd64
+          - os: windows-latest
+            platform: windows
+            arch: amd64
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || '' }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Python 3.12 and build deps
+      - name: Install Python and deps (Linux)
+        if: matrix.platform == 'linux'
         run: |
           /opt/python/cp312-cp312/bin/python -m venv /tmp/venv
           . /tmp/venv/bin/activate
@@ -190,31 +244,80 @@ jobs:
           pip install pyinstaller
           pip install .
 
-      - name: Build binary
+      - name: Install Python and deps (macOS)
+        if: matrix.platform == 'darwin'
+        run: |
+          brew install python@3.12 || true
+          python3 -m venv /tmp/venv
+          . /tmp/venv/bin/activate
+          pip install --upgrade pip
+          pip install pyinstaller
+          pip install .
+
+      - name: Install Python and deps (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          python -m venv C:\venv
+          C:\venv\Scripts\activate.bat
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install .
+        shell: cmd
+
+      - name: Build binary (Linux)
+        if: matrix.platform == 'linux'
         run: |
           . /tmp/venv/bin/activate
           pyinstaller xnatctl.spec --noconfirm --clean
 
-      - name: Smoke test
+      - name: Build binary (macOS)
+        if: matrix.platform == 'darwin'
+        run: |
+          . /tmp/venv/bin/activate
+          pyinstaller xnatctl.spec --noconfirm --clean
+
+      - name: Build binary (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          C:\venv\Scripts\activate.bat
+          pyinstaller xnatctl.spec --noconfirm --clean
+        shell: cmd
+
+      - name: Smoke test (Linux/macOS)
+        if: matrix.platform != 'windows'
         run: |
           ./dist/xnatctl --version
           ./dist/xnatctl --help
-          ./dist/xnatctl config show 2>&1 || true
 
-      - name: Package
+      - name: Smoke test (Windows)
+        if: matrix.platform == 'windows'
         run: |
-          tar -czf xnatctl-linux-amd64.tar.gz -C dist xnatctl
-          sha256sum xnatctl-linux-amd64.tar.gz > xnatctl-linux-amd64.tar.gz.sha256
+          dist\xnatctl.exe --version
+          dist\xnatctl.exe --help
+        shell: cmd
+
+      - name: Package (Linux/macOS)
+        if: matrix.platform != 'windows'
+        run: |
+          tar -czf xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz -C dist xnatctl
+          sha256sum xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz > xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz.sha256
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          Compress-Archive -Path dist\xnatctl.exe -DestinationPath xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip
+          $hash = (Get-FileHash -Algorithm SHA256 xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip).Hash.ToLower()
+          "$hash  xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip" | Out-File -Encoding ascii xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip.sha256
+        shell: pwsh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binary-linux-amd64
+          name: binary-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            xnatctl-linux-amd64.tar.gz
-            xnatctl-linux-amd64.tar.gz.sha256
+            xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.*
 
-  upload-binary:
+  upload-binaries:
     runs-on: ubuntu-latest
     needs: [auto-tag, binary]
     permissions:
@@ -222,10 +325,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download build artifacts
+      - name: Download all binary artifacts
         uses: actions/download-artifact@v4
         with:
-          name: binary-linux-amd64
+          pattern: binary-*
+          merge-multiple: true
 
       - name: Upload to release
         env:
@@ -234,4 +338,8 @@ jobs:
           gh release upload "${{ needs.auto-tag.outputs.tag }}" \
             xnatctl-linux-amd64.tar.gz \
             xnatctl-linux-amd64.tar.gz.sha256 \
+            xnatctl-darwin-amd64.tar.gz \
+            xnatctl-darwin-amd64.tar.gz.sha256 \
+            xnatctl-windows-amd64.zip \
+            xnatctl-windows-amd64.zip.sha256 \
             --clobber
