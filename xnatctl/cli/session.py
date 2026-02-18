@@ -123,15 +123,28 @@ def session_list(
 
 
 @session.command("show")
-@click.argument("session_id")
+@click.option(
+    "--experiment",
+    "-E",
+    "session_id",
+    required=True,
+    metavar="ID_OR_LABEL",
+    help="Experiment ID (accession #), or label when -P is provided",
+)
+@click.option(
+    "--project",
+    "-P",
+    help="Project ID (enables lookup by label; defaults to profile default_project)",
+)
 @global_options
 @require_auth
 @handle_errors
-def session_show(ctx: Context, session_id: str) -> None:
+def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     """Show session details including scans and resources.
 
     Example:
-        xnatctl session show XNAT_E00001
+        xnatctl session show -E XNAT_E00001
+        xnatctl session show -E SESSION_LABEL -P MYPROJ
     """
     from xnatctl.core.output import print_table
     from xnatctl.core.validation import validate_session_id
@@ -139,8 +152,18 @@ def session_show(ctx: Context, session_id: str) -> None:
     session_id = validate_session_id(session_id)
     client = ctx.get_client()
 
+    # Resolve project from profile default if not provided
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+
     # Get session details
-    resp = client.get_json(f"/data/experiments/{session_id}")
+    base = (
+        f"/data/projects/{project}/experiments/{session_id}"
+        if project
+        else f"/data/experiments/{session_id}"
+    )
+    resp = client.get_json(base)
     results = resp.get("ResultSet", {}).get("Result", [])
 
     if not results:
@@ -151,14 +174,14 @@ def session_show(ctx: Context, session_id: str) -> None:
 
     # Get scans
     try:
-        scans_resp = client.get_json(f"/data/experiments/{session_id}/scans")
+        scans_resp = client.get_json(f"{base}/scans")
         scans = scans_resp.get("ResultSet", {}).get("Result", [])
     except Exception:
         scans = []
 
     # Get resources
     try:
-        res_resp = client.get_json(f"/data/experiments/{session_id}/resources")
+        res_resp = client.get_json(f"{base}/resources")
         resources = res_resp.get("ResultSet", {}).get("Result", [])
     except Exception:
         resources = []
@@ -391,9 +414,18 @@ def _download_session_fast(
 
 
 @session.command("download")
-@click.argument("session_id")
 @click.option(
-    "--project", "-P", help="Project ID (required when using session label instead of XNAT ID)"
+    "--experiment",
+    "-E",
+    "session_id",
+    required=True,
+    metavar="ID_OR_LABEL",
+    help="Experiment ID (accession #), or label when -P is provided",
+)
+@click.option(
+    "--project",
+    "-P",
+    help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
 @click.option("--name", help="Output directory name (defaults to session ID)")
@@ -430,18 +462,18 @@ def session_download(
 ) -> None:
     """Download session data.
 
-    SESSION_ID can be either an XNAT internal ID (e.g., XNAT_E00001) or a
-    session label. When using a label, provide --project/-P to resolve it.
+    -E accepts an XNAT experiment ID (accession #) or a session label.
+    When using a label, -P is required (or set default_project in your profile).
 
     Example:
-        xnatctl session download XNAT_E00001
-        xnatctl session download XNAT_E00001 --out ./data
-        xnatctl session download XNAT_E00001 --out ./data --workers 8
-        xnatctl session download SESSION_LABEL -P MYPROJECT --out ./data
-        xnatctl session download XNAT_E00001 --name CLM01_CAMH_0041 --out ./data
-        xnatctl session download XNAT_E00001 --out ./data --include-resources
-        xnatctl session download XNAT_E00001 --out ./data --unzip --cleanup
-        xnatctl session download XNAT_E00001 --out ./data --dry-run
+        xnatctl session download -E XNAT_E00001
+        xnatctl session download -E XNAT_E00001 --out ./data
+        xnatctl session download -E XNAT_E00001 --out ./data --workers 8
+        xnatctl session download -E SESSION_LABEL -P MYPROJECT --out ./data
+        xnatctl session download -E XNAT_E00001 --name CLM01_CAMH_0041 --out ./data
+        xnatctl session download -E XNAT_E00001 --out ./data --include-resources
+        xnatctl session download -E XNAT_E00001 --out ./data --unzip --cleanup
+        xnatctl session download -E XNAT_E00001 --out ./data --dry-run
     """
     from xnatctl.core.validation import validate_path_writable
 
@@ -449,6 +481,11 @@ def session_download(
 
     if name and ("/" in name or "\\" in name):
         raise click.ClickException("--name cannot contain path separators")
+
+    # Resolve project from profile default if not provided
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
 
     # Validate output path
     if not out_path.exists():

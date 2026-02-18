@@ -19,7 +19,7 @@ Features
 .. code-block:: console
 
    $ xnatctl project list --output table
-   $ xnatctl session download XNAT_E00001 --out ./data
+   $ xnatctl session download -E XNAT_E00001 --out ./data
    $ xnatctl admin refresh-catalogs --project myproj
 
 .. toctree::

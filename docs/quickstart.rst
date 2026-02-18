@@ -63,7 +63,7 @@ Download a Session
 
 .. code-block:: console
 
-   $ xnatctl session download XNAT_E00001 --out ./data
+   $ xnatctl session download -E XNAT_E00001 --out ./data
 
 Upload DICOM Files
 ------------------
