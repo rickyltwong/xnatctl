@@ -15,10 +15,11 @@ A modern CLI for XNAT neuroimaging server administration.
 
 ### Standalone Binary (no Python required)
 
-Download a self-contained Linux binary -- no Python installation needed:
+Pre-built binaries are available for Linux, macOS, and Windows. The install script
+auto-detects your OS and architecture:
 
 ```bash
-# One-line install (latest release)
+# One-line install (latest release, auto-detects platform)
 curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
 
 # Install a specific version
@@ -30,27 +31,37 @@ XNATCTL_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/rickyltwong/xna
 
 Or download manually from [GitHub Releases](https://github.com/rickyltwong/xnatctl/releases):
 
+| Platform | Asset |
+|----------|-------|
+| Linux (x86_64) | `xnatctl-linux-amd64.tar.gz` |
+| macOS (x86_64) | `xnatctl-darwin-amd64.tar.gz` |
+| Windows (x86_64) | `xnatctl-windows-amd64.zip` |
+
 ```bash
-# Download and extract
-tar -xzf xnatctl-linux-amd64.tar.gz
+# Linux / macOS
+tar -xzf xnatctl-<platform>-amd64.tar.gz
 chmod +x xnatctl
 mv xnatctl ~/.local/bin/
 
-# Verify
-xnatctl --version
+# Windows (PowerShell)
+Expand-Archive xnatctl-windows-amd64.zip -DestinationPath .
+Move-Item xnatctl.exe C:\Users\<you>\AppData\Local\bin\
 ```
 
 ### Python Package
 
 ```bash
-# With uv (recommended)
-uv pip install git+https://github.com/rickyltwong/xnatctl.git
+# From PyPI (recommended)
+pip install xnatctl
 
-# With pip
-pip install git+https://github.com/rickyltwong/xnatctl.git
+# With uv
+uv pip install xnatctl
 
 # For DICOM utilities (optional)
-pip install "xnatctl[dicom] @ git+https://github.com/rickyltwong/xnatctl.git"
+pip install "xnatctl[dicom]"
+
+# From source
+pip install git+https://github.com/rickyltwong/xnatctl.git
 ```
 
 ### Docker
