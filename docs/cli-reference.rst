@@ -112,11 +112,15 @@ session
 
 List, inspect, download, and upload imaging sessions.
 
+``-E`` accepts an experiment ID (accession #) or a label when ``-P`` is provided.
+If ``-P`` is omitted, ``default_project`` from the active profile is used when available.
+
 .. code-block:: console
 
    $ xnatctl session list -P PROJECT_ID
-   $ xnatctl session show SESSION_ID
-   $ xnatctl session download XNAT_E00001 --out ./data
+   $ xnatctl session show -E XNAT_E00001
+   $ xnatctl session show -E SESSION_LABEL -P PROJECT_ID
+   $ xnatctl session download -E XNAT_E00001 --out ./data
    $ xnatctl session upload ./dicoms -P PROJECT_ID -S SUBJECT_ID -E SESSION_LABEL
    $ xnatctl session upload ./dicoms -P PROJECT_ID -S SUBJECT_ID -E SESSION_LABEL --gradual
 
@@ -127,11 +131,13 @@ scan
 
 Manage individual scans within a session.
 
+``-E`` and ``-P`` follow the same convention as session commands.
+
 .. code-block:: console
 
-   $ xnatctl scan list XNAT_E00001
-   $ xnatctl scan show XNAT_E00001 1
-   $ xnatctl scan delete XNAT_E00001 --scans 1,2,3
+   $ xnatctl scan list -E XNAT_E00001
+   $ xnatctl scan show -E XNAT_E00001 1
+   $ xnatctl scan delete -E XNAT_E00001 --scans 1,2,3
    $ xnatctl scan download -E XNAT_E00001 -s 1 --out ./data --unzip
 
 resource

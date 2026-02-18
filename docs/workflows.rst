@@ -72,7 +72,7 @@ This workflow lists sessions (by internal XNAT IDs) and downloads them.
 
    for session_id in $sessions; do
      echo "Downloading $session_id..."
-     xnatctl session download "$session_id" --out "$OUTPUT" --workers "$WORKERS" --quiet
+     xnatctl session download -E "$session_id" --out "$OUTPUT" --workers "$WORKERS" --quiet
    done
 
 Download only NIFTI resources if present

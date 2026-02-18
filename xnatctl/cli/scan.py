@@ -24,25 +24,48 @@ def scan() -> None:
 
 
 @scan.command("list")
-@click.argument("session_id")
+@click.option(
+    "--experiment",
+    "-E",
+    "session_id",
+    required=True,
+    metavar="ID_OR_LABEL",
+    help="Experiment ID (accession #), or label when -P is provided",
+)
+@click.option(
+    "--project",
+    "-P",
+    help="Project ID (enables lookup by label; defaults to profile default_project)",
+)
 @global_options
 @require_auth
 @handle_errors
-def scan_list(ctx: Context, session_id: str) -> None:
+def scan_list(ctx: Context, session_id: str, project: str | None) -> None:
     """List scans in a session.
 
     Example:
-        xnatctl scan list XNAT_E00001
-        xnatctl scan list XNAT_E00001 -o json
-        xnatctl scan list XNAT_E00001 -q  # IDs only
+        xnatctl scan list -E XNAT_E00001
+        xnatctl scan list -E XNAT_E00001 -o json
+        xnatctl scan list -E XNAT_E00001 -q  # IDs only
+        xnatctl scan list -E SESSION_LABEL -P MYPROJ
     """
     from xnatctl.core.validation import validate_session_id
 
     session_id = validate_session_id(session_id)
     client = ctx.get_client()
 
+    # Resolve project from profile default if not provided
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+
     # Get scans
-    resp = client.get_json(f"/data/experiments/{session_id}/scans")
+    base = (
+        f"/data/projects/{project}/experiments/{session_id}"
+        if project
+        else f"/data/experiments/{session_id}"
+    )
+    resp = client.get_json(f"{base}/scans")
     results = resp.get("ResultSet", {}).get("Result", [])
 
     # Transform for output
@@ -76,16 +99,29 @@ def scan_list(ctx: Context, session_id: str) -> None:
 
 
 @scan.command("show")
-@click.argument("session_id")
+@click.option(
+    "--experiment",
+    "-E",
+    "session_id",
+    required=True,
+    metavar="ID_OR_LABEL",
+    help="Experiment ID (accession #), or label when -P is provided",
+)
+@click.option(
+    "--project",
+    "-P",
+    help="Project ID (enables lookup by label; defaults to profile default_project)",
+)
 @click.argument("scan_id")
 @global_options
 @require_auth
 @handle_errors
-def scan_show(ctx: Context, session_id: str, scan_id: str) -> None:
+def scan_show(ctx: Context, session_id: str, project: str | None, scan_id: str) -> None:
     """Show scan details.
 
     Example:
-        xnatctl scan show XNAT_E00001 1
+        xnatctl scan show -E XNAT_E00001 1
+        xnatctl scan show -E SESSION_LABEL 1 -P MYPROJ
     """
     from xnatctl.core.validation import validate_scan_id, validate_session_id
 
@@ -93,8 +129,18 @@ def scan_show(ctx: Context, session_id: str, scan_id: str) -> None:
     scan_id = validate_scan_id(scan_id)
     client = ctx.get_client()
 
+    # Resolve project from profile default if not provided
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+
     # Get scan details
-    resp = client.get_json(f"/data/experiments/{session_id}/scans/{scan_id}")
+    base = (
+        f"/data/projects/{project}/experiments/{session_id}"
+        if project
+        else f"/data/experiments/{session_id}"
+    )
+    resp = client.get_json(f"{base}/scans/{scan_id}")
     results = resp.get("ResultSet", {}).get("Result", [])
 
     if not results:
@@ -105,7 +151,7 @@ def scan_show(ctx: Context, session_id: str, scan_id: str) -> None:
 
     # Get resources
     try:
-        res_resp = client.get_json(f"/data/experiments/{session_id}/scans/{scan_id}/resources")
+        res_resp = client.get_json(f"{base}/scans/{scan_id}/resources")
         resources = res_resp.get("ResultSet", {}).get("Result", [])
     except Exception:
         resources = []
@@ -129,7 +175,19 @@ def scan_show(ctx: Context, session_id: str, scan_id: str) -> None:
 
 
 @scan.command("delete")
-@click.argument("session_id")
+@click.option(
+    "--experiment",
+    "-E",
+    "session_id",
+    required=True,
+    metavar="ID_OR_LABEL",
+    help="Experiment ID (accession #), or label when -P is provided",
+)
+@click.option(
+    "--project",
+    "-P",
+    help="Project ID (enables lookup by label; defaults to profile default_project)",
+)
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
 @confirm_destructive("Delete these scans?")
 @parallel_options
@@ -139,6 +197,7 @@ def scan_show(ctx: Context, session_id: str, scan_id: str) -> None:
 def scan_delete(
     ctx: Context,
     session_id: str,
+    project: str | None,
     scans: str,
     dry_run: bool,
     parallel: bool,
@@ -147,9 +206,10 @@ def scan_delete(
     """Delete scans from a session.
 
     Example:
-        xnatctl scan delete XNAT_E00001 --scans 1,2,3
-        xnatctl scan delete XNAT_E00001 --scans '*'  # Delete all
-        xnatctl scan delete XNAT_E00001 --scans 1,2 --dry-run
+        xnatctl scan delete -E XNAT_E00001 --scans 1,2,3
+        xnatctl scan delete -E XNAT_E00001 --scans '*'  # Delete all
+        xnatctl scan delete -E XNAT_E00001 --scans 1,2 --dry-run
+        xnatctl scan delete -E SESSION_LABEL --scans 1,2,3 -P MYPROJ
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -159,9 +219,20 @@ def scan_delete(
     scan_ids = validate_scan_ids_input(scans)
     client = ctx.get_client()
 
+    # Resolve project from profile default if not provided
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+
+    base = (
+        f"/data/projects/{project}/experiments/{session_id}"
+        if project
+        else f"/data/experiments/{session_id}"
+    )
+
     # If wildcard, get all scan IDs
     if scan_ids is None:
-        resp = client.get_json(f"/data/experiments/{session_id}/scans")
+        resp = client.get_json(f"{base}/scans")
         results = resp.get("ResultSet", {}).get("Result", [])
         scan_ids = [r.get("ID", "") for r in results if r.get("ID")]
 
@@ -181,7 +252,7 @@ def scan_delete(
     def delete_scan(scan_id: str) -> tuple[str, bool, str]:
         """Delete a scan and return status and error message."""
         try:
-            resp = client.delete(f"/data/experiments/{session_id}/scans/{scan_id}")
+            resp = client.delete(f"{base}/scans/{scan_id}")
             return scan_id, resp.status_code in (200, 204), ""
         except Exception as e:
             return scan_id, False, str(e)
@@ -215,12 +286,17 @@ def scan_delete(
 
 @scan.command("download")
 @click.option(
-    "--experiment", "-E", "session_id", required=True, help="Session/Experiment ID or label"
+    "--experiment",
+    "-E",
+    "session_id",
+    required=True,
+    metavar="ID_OR_LABEL",
+    help="Experiment ID (accession #), or label when -P is provided",
 )
 @click.option(
     "--project",
     "-P",
-    help="Project ID (required when using session label unless profile has default_project)",
+    help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")

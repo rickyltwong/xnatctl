@@ -21,26 +21,27 @@ Download an entire session
 Download by XNAT internal ID (recommended)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use the XNAT internal experiment ID (e.g. ``XNAT_E00001``):
+Use the XNAT internal experiment ID (accession #, e.g. ``XNAT_E00001``):
 
 .. code-block:: console
 
-   $ xnatctl session download XNAT_E00001 --out ./data
+   $ xnatctl session download -E XNAT_E00001 --out ./data
 
 If you want a custom output directory name:
 
 .. code-block:: console
 
-   $ xnatctl session download XNAT_E00001 --out ./data --name SESSION01
+   $ xnatctl session download -E XNAT_E00001 --out ./data --name SESSION01
 
 Download by session label (needs project)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If you only have a session label, pass ``-P/--project`` so XNAT can resolve it:
+If you only have a session label, pass ``-P/--project`` so XNAT can resolve it.
+If your profile has ``default_project`` set, ``-P`` is optional:
 
 .. code-block:: console
 
-   $ xnatctl session download SESSION_LABEL -P MYPROJECT --out ./data
+   $ xnatctl session download -E SESSION_LABEL -P MYPROJECT --out ./data
 
 Parallel session downloads
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -52,7 +53,7 @@ Parallel session downloads
 
 .. code-block:: console
 
-   $ xnatctl session download XNAT_E00001 --out ./data --workers 8
+   $ xnatctl session download -E XNAT_E00001 --out ./data --workers 8
 
 Including session-level resources
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -61,7 +62,7 @@ Session-level resources are optional:
 
 .. code-block:: console
 
-   $ xnatctl session download XNAT_E00001 --out ./data --include-resources
+   $ xnatctl session download -E XNAT_E00001 --out ./data --include-resources
 
 Extracting ZIPs
 ~~~~~~~~~~~~~~~
@@ -71,7 +72,7 @@ Use ``--unzip`` to extract them, and ``--cleanup`` to remove ZIPs after extracti
 
 .. code-block:: console
 
-   $ xnatctl session download XNAT_E00001 --out ./data --unzip --cleanup
+   $ xnatctl session download -E XNAT_E00001 --out ./data --unzip --cleanup
 
 Download specific scans
 -----------------------
@@ -159,6 +160,7 @@ Re-authenticate:
 Session label cannot be resolved
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If you pass a session label to ``session download`` or ``scan download``, you
-must provide ``-P/--project`` (or set ``default_project`` in your active profile).
+If you pass a session label to ``-E``, you must provide ``-P/--project`` or set
+``default_project`` in your active profile. Without a project, ``-E`` only
+accepts experiment IDs (accession numbers like ``XNAT_E00001``).
 
