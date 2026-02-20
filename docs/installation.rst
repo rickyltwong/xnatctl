@@ -1,65 +1,138 @@
 Installation
 ============
 
-Requirements
-------------
+You can install xnatctl in three ways: as a **standalone binary** (no Python
+required), as a **Python package** from PyPI, or via **Docker**. If you just
+want to use the CLI and do not need Python library access, the standalone binary
+is the fastest path.
 
-- Python 3.11 or later
-- `uv <https://docs.astral.sh/uv/>`_ (recommended) or pip
+Prerequisites
+-------------
 
-Standalone Binary (no Python required)
----------------------------------------
+All you need is a terminal application (Terminal on macOS, PowerShell or
+Windows Terminal on Windows, any shell on Linux). If you choose the Python
+package method, you also need **Python 3.11 or later** installed on your
+system.
 
-Download a self-contained Linux binary with no Python installation needed:
+Standalone Binary (recommended for most users)
+-----------------------------------------------
+
+The standalone binary is the simplest way to get started. It is a single
+self-contained executable with no runtime dependencies -- you do not need
+Python, pip, or any other tooling installed.
+
+Pre-built binaries are published for the following platforms:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 30 40
+
+   * - Operating System
+     - Architecture
+     - Asset Name
+   * - Linux
+     - x86_64
+     - ``xnatctl-linux-amd64.tar.gz``
+   * - macOS
+     - x86_64
+     - ``xnatctl-darwin-amd64.tar.gz``
+   * - Windows
+     - x86_64
+     - ``xnatctl-windows-amd64.zip``
+
+One-line install script
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The install script auto-detects your operating system and architecture,
+downloads the latest release from GitHub, verifies its checksum, and places the
+binary in ``~/.local/bin``:
 
 .. code-block:: console
 
    $ curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
 
-Install a specific version or to a custom directory:
+To pin a specific version, set the ``XNATCTL_VERSION`` environment variable
+before running the script:
 
 .. code-block:: console
 
    $ XNATCTL_VERSION=v0.1.0 curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
+
+To install into a custom directory instead of the default ``~/.local/bin``, set
+``XNATCTL_INSTALL_DIR``:
+
+.. code-block:: console
+
    $ XNATCTL_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
 
-Or download manually from `GitHub Releases <https://github.com/rickyltwong/xnatctl/releases>`_:
+.. tip::
+
+   The install script automatically verifies the SHA-256 checksum of the
+   downloaded binary when a ``.sha256`` file is available in the release. You
+   do not need to verify the checksum manually.
+
+Manual download
+^^^^^^^^^^^^^^^
+
+If you prefer not to pipe a script into your shell, you can download the
+appropriate archive from `GitHub Releases
+<https://github.com/rickyltwong/xnatctl/releases>`_ and extract it yourself.
+
+**Linux / macOS:**
 
 .. code-block:: console
 
    $ tar -xzf xnatctl-linux-amd64.tar.gz
    $ chmod +x xnatctl
    $ mv xnatctl ~/.local/bin/
-   $ xnatctl --version
+
+**Windows (PowerShell):**
+
+.. code-block:: powershell
+
+   Expand-Archive xnatctl-windows-amd64.zip -DestinationPath .
+   Move-Item xnatctl.exe "$env:LOCALAPPDATA\bin\"
+
+.. note::
+
+   If ``~/.local/bin`` (Linux/macOS) or ``%LOCALAPPDATA%\bin`` (Windows) is
+   not already on your ``PATH``, you will need to add it. See the
+   :ref:`troubleshooting <installation-troubleshooting>` section below for
+   instructions.
 
 Python Package
 --------------
 
-.. code-block:: console
+Choose the Python package if you already have a Python 3.11+ environment, want
+to import xnatctl as a library in your own scripts, or need the optional DICOM
+utilities.
 
-   $ uv pip install git+https://github.com/rickyltwong/xnatctl.git
-
-Or with pip:
-
-.. code-block:: console
-
-   $ pip install git+https://github.com/rickyltwong/xnatctl.git
-
-With DICOM utilities (optional):
+**Install from PyPI (recommended):**
 
 .. code-block:: console
 
-   $ pip install "xnatctl[dicom] @ git+https://github.com/rickyltwong/xnatctl.git"
+   $ pip install xnatctl
 
-Docker
-------
+**Install with uv** (faster alternative to pip):
 
 .. code-block:: console
 
-   $ docker run --rm ghcr.io/rickyltwong/xnatctl:main --help
+   $ uv pip install xnatctl
 
-Install from Source
--------------------
+**With DICOM extras:**
+
+The ``dicom`` extra installs `pydicom <https://pydicom.github.io/>`_, which
+enables the ``xnatctl dicom validate`` and ``xnatctl dicom inspect`` commands
+for local DICOM file inspection before upload:
+
+.. code-block:: console
+
+   $ pip install "xnatctl[dicom]"
+
+**Install from source:**
+
+If you want to track the development branch or contribute to xnatctl, you can
+install directly from the Git repository:
 
 .. code-block:: console
 
@@ -67,8 +140,102 @@ Install from Source
    $ cd xnatctl
    $ uv sync
 
-Verify the installation:
+.. tip::
+
+   It is good practice to install Python CLI tools inside a virtual environment
+   to avoid conflicts with system packages. You can create one with
+   ``python -m venv .venv`` and activate it before running ``pip install``, or
+   use ``uv`` which manages environments automatically.
+
+Docker
+------
+
+If you are running xnatctl in a CI pipeline or prefer a fully isolated
+environment, you can use the Docker image. No local installation is required
+beyond Docker itself:
+
+.. code-block:: console
+
+   $ docker run --rm ghcr.io/rickyltwong/xnatctl:main --help
+
+Verifying Your Installation
+----------------------------
+
+After installing xnatctl by any method, confirm that the binary is available
+and prints its version:
 
 .. code-block:: console
 
    $ xnatctl --version
+
+You should see output similar to ``xnatctl, version 0.1.0``.
+
+You can also run the built-in help to see the full list of available commands:
+
+.. code-block:: console
+
+   $ xnatctl --help
+
+This prints the top-level command groups (``project``, ``session``, ``auth``,
+etc.) along with global options like ``--output``, ``--profile``, and
+``--quiet``.
+
+.. _installation-troubleshooting:
+
+Troubleshooting
+---------------
+
+Below are solutions to common installation issues.
+
+**"command not found" after installing**
+
+Your shell cannot find the ``xnatctl`` binary because its install directory is
+not on your ``PATH``. Add it by appending the appropriate line to your shell
+configuration file:
+
+.. code-block:: console
+
+   $ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+   $ source ~/.bashrc
+
+On macOS with the default zsh shell, use ``~/.zshrc`` instead of
+``~/.bashrc``.
+
+**"permission denied" when running the binary**
+
+The binary needs the executable permission bit set. This is handled
+automatically by the install script, but if you downloaded manually you may
+need to set it yourself:
+
+.. code-block:: console
+
+   $ chmod +x ~/.local/bin/xnatctl
+
+**SSL certificate errors**
+
+On some older systems the default CA certificate bundle may be outdated,
+causing SSL verification failures when connecting to your XNAT server. You can
+work around this by updating your system certificates or, as a temporary
+measure, disabling SSL verification in your xnatctl profile:
+
+.. code-block:: console
+
+   $ xnatctl config init --url https://xnat.example.org --no-verify-ssl
+
+.. warning::
+
+   Disabling SSL verification removes protection against man-in-the-middle
+   attacks. Only use ``--no-verify-ssl`` on trusted networks and update your
+   system certificates as soon as possible.
+
+**Python version too old**
+
+xnatctl requires Python 3.11 or later. If ``pip install xnatctl`` fails with a
+resolver or syntax error, check your Python version:
+
+.. code-block:: console
+
+   $ python3 --version
+
+If the version shown is older than 3.11, upgrade Python through your system
+package manager or download it from `python.org <https://www.python.org/downloads/>`_.
