@@ -1,32 +1,94 @@
 xnatctl
 =======
 
-A modern CLI for XNAT neuroimaging server administration.
+**xnatctl** is a modern command-line interface for administering
+`XNAT <https://xnat.org>`_ neuroimaging servers. If you manage imaging
+studies, move DICOM data between systems, or automate research workflows
+against XNAT's REST API, xnatctl gives you a single, consistent tool to do
+it all from your terminal.
 
-**xnatctl** provides resource-centric commands with consistent output formats,
-parallel operations, and profile-based configuration for managing XNAT servers.
+The CLI is organized around the resources you already work with -- projects,
+subjects, sessions, scans, and files -- so commands read like plain English:
+``xnatctl session download -E XNAT_E00001``. Every command supports JSON,
+table, and quiet output modes, making xnatctl equally useful for interactive
+exploration and scripted pipelines. Profile-based configuration lets you
+switch between XNAT instances (development, staging, production) with a
+single ``--profile`` flag.
 
-Features
---------
+Whether you are a neuroimaging researcher downloading a handful of scans or a
+platform engineer bulk-loading thousands of DICOM series, xnatctl is designed
+to stay out of your way while keeping you informed about what is happening.
 
-- **Resource-centric commands**: ``xnatctl <resource> <action> [args]``
-- **Profile-based configuration**: YAML config with multiple server profiles
-- **Consistent output**: ``--output json|table`` and ``--quiet`` on all commands
-- **Parallel operations**: Batch uploads/downloads with progress tracking
-- **Session authentication**: Token caching with ``auth login``
-- **Pure HTTP**: Direct REST API calls with httpx (no pyxnat dependency)
+
+Feature Highlights
+------------------
+
+- **Resource-centric commands** -- Every command follows the pattern
+  ``xnatctl <resource> <action>``, so you can guess the syntax for new
+  resources once you know one.
+
+- **Profile-based configuration** -- Store credentials and defaults for
+  multiple XNAT servers in a single YAML file; switch contexts without
+  editing environment variables.
+
+- **Consistent output formats** -- Pass ``--output json`` for machine-readable
+  output, ``--output table`` for human-friendly tables, or ``--quiet`` to emit
+  only resource IDs (ideal for shell pipelines).
+
+- **Parallel batch operations** -- Uploads and downloads run in parallel by
+  default with configurable worker counts and real-time progress bars, so
+  large transfers finish faster without extra scripting.
+
+- **Session authentication with token caching** -- Log in once with
+  ``xnatctl auth login``; the session token is cached locally and refreshed
+  automatically, including transparent re-authentication on expiry.
+
+- **Pure HTTP with httpx** -- No heavyweight dependencies like pyxnat.
+  xnatctl talks directly to XNAT's REST API with automatic retries and
+  exponential backoff on transient errors.
+
+
+Quick Example
+-------------
+
+Here are a few commands that illustrate the breadth of what you can do.
+
+List every project on the server as a formatted table:
 
 .. code-block:: console
 
    $ xnatctl project list --output table
-   $ xnatctl session download -E XNAT_E00001 --out ./data
-   $ xnatctl admin refresh-catalogs --project myproj
+
+Download all scans for an experiment to a local directory:
+
+.. code-block:: console
+
+   $ xnatctl session download -P myproject -E SESSION_LABEL --out ./data
+
+Upload a batch of DICOM files into a subject, with parallel workers:
+
+.. code-block:: console
+
+   $ xnatctl session upload-dicom -P myproject -S SUBJ01 ./dicoms/ --workers 4
+
+Trigger a catalog refresh for a specific project (admin operation):
+
+.. code-block:: console
+
+   $ xnatctl admin refresh-catalogs --project myproject
+
+.. tip::
+
+   Run ``xnatctl --help`` or ``xnatctl <resource> --help`` at any time to see
+   available commands, options, and usage examples.
+
 
 .. toctree::
    :maxdepth: 2
    :caption: Getting Started
 
    installation
+   concepts
    quickstart
    configuration
 
@@ -35,8 +97,8 @@ Features
    :caption: User Guide
 
    cli-reference
-   uploading
    downloading
+   uploading
    workflows
    xnat-compatibility
 
