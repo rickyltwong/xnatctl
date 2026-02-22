@@ -68,7 +68,9 @@ To add a second profile for your development server, use ``config add-profile``:
        --project TESTPROJECT
 
 You can then switch the active profile so that all subsequent commands target the
-development server:
+development server. The ``use-context`` and ``current-context`` command names follow
+a convention from tools like ``kubectl`` -- they simply mean "switch to this profile"
+and "show the active profile":
 
 .. code-block:: console
 

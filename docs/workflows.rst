@@ -173,7 +173,7 @@ the file system and update its metadata to match reality.
 
 .. code-block:: console
 
-   $ xnatctl admin refresh-catalogs --project NEUROIMAGING
+   $ xnatctl admin refresh-catalogs NEUROIMAGING
 
 .. tip::
 
