@@ -81,6 +81,7 @@ Thumbs.db
 
 # Docs build
 docs/_build/
+docs/plans/*.md
 
 # Project specific
 *.log
