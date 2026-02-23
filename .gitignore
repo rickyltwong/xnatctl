@@ -93,3 +93,7 @@ AGENTS.md
 .agents
 *.local.*
 .omc/
+
+# Git worktrees
+.worktrees/
+worktrees/
