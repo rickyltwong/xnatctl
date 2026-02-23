@@ -400,6 +400,9 @@ Top-level non-DICOM directories become session resources named after the
 directory (``Resources/<dirname>``). Top-level non-DICOM files are grouped into
 ``Resources/MISC``.
 
+For example, top-level ``Physio`` and ``Protocol`` directories become
+``Resources/Physio`` and ``Resources/Protocol``.
+
 .. code-block:: console
 
     $ xnatctl session upload-exam /path/to/EXAM_ROOT \
