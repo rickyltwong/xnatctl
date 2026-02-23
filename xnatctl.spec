@@ -1,7 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for building a standalone xnatctl binary."""
 
+import sys
+
 from PyInstaller.utils.hooks import collect_submodules
+
+is_windows = sys.platform == "win32"
 
 hiddenimports = (
     collect_submodules("xnatctl")
@@ -40,8 +44,8 @@ exe = EXE(
     name="xnatctl",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,
-    upx=True,
+    strip=not is_windows,
+    upx=not is_windows,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
