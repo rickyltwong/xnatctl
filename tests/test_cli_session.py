@@ -678,3 +678,15 @@ class TestSessionHelp:
         assert "--subject" in result.output
         assert "--session" in result.output
         assert "--dry-run" in result.output
+
+    def test_session_upload_exam_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["session", "upload-exam", "--help"])
+        assert result.exit_code == 0
+        assert "--project" in result.output
+        assert "--subject" in result.output
+        assert "--session" in result.output
+        assert "--misc-label" in result.output
+        assert "--attach-only" in result.output
+        assert "--skip-resources" in result.output
+        assert "--dry-run" in result.output
+
