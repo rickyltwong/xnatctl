@@ -12,6 +12,7 @@ are available for direct import and testing.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -75,6 +76,8 @@ _GRADUAL_HTTP_TIMEOUT_SECONDS = 120.0
 _gradual_client_local = threading.local()
 _gradual_client_registry_lock = threading.Lock()
 _gradual_client_registry: list[httpx.Client] = []
+_gradual_scope_lock = threading.Lock()
+_gradual_scope_refcount = 0
 
 
 def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client:
@@ -83,7 +86,7 @@ def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client
     client: httpx.Client | None = getattr(_gradual_client_local, "client", None)
     client_key: tuple[str, bool] | None = getattr(_gradual_client_local, "key", None)
 
-    if client is None or client_key != key:
+    if client is None or client_key != key or client.is_closed:
         if client is not None:
             try:
                 client.close()
@@ -106,6 +109,14 @@ def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client
 
 def _close_gradual_http_clients() -> None:
     """Close any thread-local clients created for gradual uploads."""
+    # Best-effort clear for the current thread so sequential operations don't
+    # accidentally reuse a closed client.
+    try:
+        _gradual_client_local.client = None
+        _gradual_client_local.key = None
+    except Exception:
+        pass
+
     with _gradual_client_registry_lock:
         clients = list(_gradual_client_registry)
         _gradual_client_registry.clear()
@@ -114,6 +125,30 @@ def _close_gradual_http_clients() -> None:
             c.close()
         except Exception:
             pass
+
+
+@contextlib.contextmanager
+def _gradual_http_clients_scope() -> Iterator[None]:
+    """Scope gradual httpx client lifecycle to an upload operation.
+
+    Gradual uploads use a per-thread httpx.Client. Since the registry is global,
+    concurrent gradual upload operations must not close each other's clients.
+
+    This context manager refcounts active gradual operations and only performs a
+    global close when the last active operation completes.
+    """
+    global _gradual_scope_refcount
+    with _gradual_scope_lock:
+        _gradual_scope_refcount += 1
+
+    try:
+        yield
+    finally:
+        with _gradual_scope_lock:
+            _gradual_scope_refcount -= 1
+            if _gradual_scope_refcount <= 0:
+                _gradual_scope_refcount = 0
+                _close_gradual_http_clients()
 
 
 # =============================================================================
@@ -1483,68 +1518,72 @@ class UploadService(BaseService):
             ValueError: If source_path is not a directory or ZIP file.
             FileNotFoundError: If source_path does not exist.
         """
-        start_time = time.time()
-        source_path = Path(source_path)
+        with _gradual_http_clients_scope():
+            start_time = time.time()
+            source_path = Path(source_path)
 
-        if not source_path.exists():
-            raise FileNotFoundError(f"Source not found: {source_path}")
+            if not source_path.exists():
+                raise FileNotFoundError(f"Source not found: {source_path}")
 
-        temp_dir: str | None = None
-        files: list[Path] = []
+            temp_dir: str | None = None
+            files: list[Path] = []
 
-        try:
-            if source_path.is_file() and source_path.suffix.lower() == ".zip":
-                temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
-                temp_path = Path(temp_dir)
-                with zipfile.ZipFile(source_path, "r") as zf:
-                    for member in zf.infolist():
-                        if member.is_dir():
-                            continue
-                        target = (temp_path / member.filename).resolve()
-                        if not target.is_relative_to(temp_path.resolve()):
-                            continue
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(member) as src, open(target, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
-                files = sorted(
-                    f for f in temp_path.rglob("*") if f.is_file() and not f.name.startswith(".")
+            try:
+                if source_path.is_file() and source_path.suffix.lower() == ".zip":
+                    temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
+                    temp_path = Path(temp_dir)
+                    with zipfile.ZipFile(source_path, "r") as zf:
+                        for member in zf.infolist():
+                            if member.is_dir():
+                                continue
+                            target = (temp_path / member.filename).resolve()
+                            if not target.is_relative_to(temp_path.resolve()):
+                                continue
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            with zf.open(member) as src, open(target, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                    files = sorted(
+                        f
+                        for f in temp_path.rglob("*")
+                        if f.is_file() and not f.name.startswith(".")
+                    )
+                elif source_path.is_dir():
+                    files = sorted(
+                        f
+                        for f in source_path.rglob("*")
+                        if f.is_file() and not f.name.startswith(".")
+                    )
+                else:
+                    raise ValueError("gradual-DICOM requires a directory or ZIP file")
+
+                if not files:
+                    return UploadSummary(
+                        success=False,
+                        total=0,
+                        succeeded=0,
+                        failed=0,
+                        duration=time.time() - start_time,
+                        errors=["No files found to upload"],
+                    )
+
+                # Prefer stable relative paths in logs/errors (especially for ZIP
+                # extractions into a temp directory).
+                display_root = Path(temp_dir) if temp_dir else source_path
+
+                return self._upload_dicom_gradual_from_files(
+                    files=files,
+                    display_root=display_root,
+                    project=project,
+                    subject=subject,
+                    session=session,
+                    workers=workers,
+                    progress_callback=progress_callback,
+                    start_time=start_time,
                 )
-            elif source_path.is_dir():
-                files = sorted(
-                    f for f in source_path.rglob("*") if f.is_file() and not f.name.startswith(".")
-                )
-            else:
-                raise ValueError("gradual-DICOM requires a directory or ZIP file")
 
-            if not files:
-                return UploadSummary(
-                    success=False,
-                    total=0,
-                    succeeded=0,
-                    failed=0,
-                    duration=time.time() - start_time,
-                    errors=["No files found to upload"],
-                )
-
-            # Prefer stable relative paths in logs/errors (especially for ZIP extractions
-            # into a temp directory).
-            display_root = Path(temp_dir) if temp_dir else source_path
-
-            return self._upload_dicom_gradual_from_files(
-                files=files,
-                display_root=display_root,
-                project=project,
-                subject=subject,
-                session=session,
-                workers=workers,
-                progress_callback=progress_callback,
-                start_time=start_time,
-            )
-
-        finally:
-            _close_gradual_http_clients()
-            if temp_dir:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            finally:
+                if temp_dir:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
 
     def upload_dicom_gradual_files(
         self,
@@ -1576,32 +1615,45 @@ class UploadService(BaseService):
             FileNotFoundError: If any provided path does not exist.
             ValueError: If any provided path is not a file.
         """
-        start_time = time.time()
-        file_list = [Path(p) for p in files]
-        if not file_list:
-            return UploadSummary(
-                success=False,
-                total=0,
-                succeeded=0,
-                failed=0,
-                duration=0.0,
-                errors=["No files provided"],
-            )
+        with _gradual_http_clients_scope():
+            start_time = time.time()
+            file_list = [Path(p) for p in files]
+            if not file_list:
+                return UploadSummary(
+                    success=False,
+                    total=0,
+                    succeeded=0,
+                    failed=0,
+                    duration=0.0,
+                    errors=["No files provided"],
+                )
 
-        for p in file_list:
-            if not p.exists():
-                raise FileNotFoundError(f"File not found: {p}")
-            if not p.is_file():
-                raise ValueError(f"Not a file: {p}")
+            resolved_to_original: dict[Path, Path] = {}
+            duplicate_resolved: set[Path] = set()
+            for p in file_list:
+                resolved = p.expanduser().resolve(strict=False)
+                if resolved in resolved_to_original:
+                    duplicate_resolved.add(resolved)
+                else:
+                    resolved_to_original[resolved] = p
 
-        # Use a stable common root for relative display paths.
-        try:
-            common = Path(os.path.commonpath([str(p.resolve()) for p in file_list]))
-            display_root = common if common.is_dir() else common.parent
-        except Exception:
-            display_root = file_list[0].parent
+            if duplicate_resolved:
+                dup_str = ", ".join(sorted(str(p) for p in duplicate_resolved))
+                raise ValueError(f"Duplicate file paths provided: {dup_str}")
 
-        try:
+            for p in file_list:
+                if not p.exists():
+                    raise FileNotFoundError(f"File not found: {p}")
+                if not p.is_file():
+                    raise ValueError(f"Not a file: {p}")
+
+            # Use a stable common root for relative display paths.
+            try:
+                common = Path(os.path.commonpath([str(p.resolve()) for p in file_list]))
+                display_root = common if common.is_dir() else common.parent
+            except Exception:
+                display_root = file_list[0].parent
+
             return self._upload_dicom_gradual_from_files(
                 files=file_list,
                 display_root=display_root,
@@ -1612,8 +1664,6 @@ class UploadService(BaseService):
                 progress_callback=progress_callback,
                 start_time=start_time,
             )
-        finally:
-            _close_gradual_http_clients()
 
     def _upload_dicom_gradual_from_files(
         self,
