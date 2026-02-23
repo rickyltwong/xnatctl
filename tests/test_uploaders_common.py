@@ -9,7 +9,6 @@ import httpx
 import pytest
 
 import xnatctl.services.uploads as uploads
-
 from xnatctl.services.uploads import (
     collect_dicom_files,
     is_retryable_status,
