@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
+import xnatctl.services.uploads as uploads
+
 from xnatctl.services.uploads import (
     collect_dicom_files,
     is_retryable_status,
@@ -379,3 +381,20 @@ class TestUploadWithRetry:
             upload_with_retry(fn, max_retries=3, backoff_base=0)
 
         assert fn.call_count == 1
+
+
+def test_get_gradual_http_client_recreates_if_closed() -> None:
+    with uploads._gradual_http_clients_scope():
+        c1 = uploads._get_gradual_http_client(
+            base_url="https://example.org",
+            verify_ssl=True,
+        )
+        c1.close()
+        assert c1.is_closed
+
+        c2 = uploads._get_gradual_http_client(
+            base_url="https://example.org",
+            verify_ssl=True,
+        )
+        assert c2 is not c1
+        assert c2.is_closed is False
