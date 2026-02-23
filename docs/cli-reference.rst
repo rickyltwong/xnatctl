@@ -275,6 +275,24 @@ Upload a scanner exam-root directory (DICOM + top-level resources):
 
    $ xnatctl session upload-exam ./exam_root -P MYPROJ -S SUB001 -E SESS001
 
+``session upload-exam`` attaches top-level resources after the DICOM import. By
+default, it waits for the session to appear in the **permanent archive** before
+attaching resources.
+
+.. list-table:: Archive wait options (``session upload-exam``)
+   :header-rows: 1
+   :widths: 35 65
+
+   * - Option
+     - Description
+   * - ``--no-wait-for-archive``
+     - Do not poll the archive before attaching resources.
+   * - ``--wait-timeout INTEGER``
+     - Maximum seconds to wait for the session to appear in the archive (default:
+       ``900``).
+   * - ``--wait-interval INTEGER``
+     - Seconds between archive checks while waiting (default: ``5``).
+
 Upload via DICOM C-STORE (requires the ``[dicom]`` extra):
 
 .. code-block:: console
