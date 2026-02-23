@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -14,8 +15,10 @@ def test_upload_dicom_gradual_files_uses_explicit_list(
 ) -> None:
     f1 = tmp_path / "a.dcm"
     f2 = tmp_path / "b.dcm"
+    f3 = tmp_path / "c.dcm"
     f1.write_text("x")
     f2.write_text("y")
+    f3.write_text("z")
 
     calls: list[Path] = []
 
@@ -40,4 +43,5 @@ def test_upload_dicom_gradual_files_uses_explicit_list(
     )
 
     assert summary.success is True
-    assert set(calls) == {f1, f2}
+    assert Counter(calls) == Counter({f1: 1, f2: 1})
+    assert f3 not in calls
