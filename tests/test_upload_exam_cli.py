@@ -38,8 +38,10 @@ def auth_client(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
 def test_session_upload_exam_dry_run_prints_physio_and_misc(
     runner: CliRunner,
     auth_client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with runner.isolated_filesystem():
+        monkeypatch.setenv("HOME", str(Path.cwd()))
         exam_root = Path("exam")
         dicom_dir = exam_root / "DICOM" / "scan"
         dicom_dir.mkdir(parents=True)
