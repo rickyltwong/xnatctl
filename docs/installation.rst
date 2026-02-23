@@ -40,8 +40,8 @@ Pre-built binaries are published for the following platforms:
      - x86_64
      - ``xnatctl-windows-amd64.zip``
 
-One-line install script
-^^^^^^^^^^^^^^^^^^^^^^^
+One-line install script (Linux and macOS)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The install script auto-detects your operating system and architecture,
 downloads the latest release from GitHub, verifies its checksum, and places the
@@ -56,7 +56,7 @@ before running the script:
 
 .. code-block:: console
 
-   $ XNATCTL_VERSION=v0.1.0 curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
+   $ XNATCTL_VERSION=v0.1.1 curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
 
 To install into a custom directory instead of the default ``~/.local/bin``, set
 ``XNATCTL_INSTALL_DIR``:
@@ -70,6 +70,12 @@ To install into a custom directory instead of the default ``~/.local/bin``, set
    The install script automatically verifies the SHA-256 checksum of the
    downloaded binary when a ``.sha256`` file is available in the release. You
    do not need to verify the checksum manually.
+
+.. note::
+
+   The install script requires a Unix-like shell (bash) and is not available
+   natively on Windows. Windows users should follow the manual download steps
+   below or install via the Python package.
 
 Manual download
 ^^^^^^^^^^^^^^^
@@ -88,17 +94,33 @@ appropriate archive from `GitHub Releases
 
 **Windows (PowerShell):**
 
+Download ``xnatctl-windows-amd64.zip`` from the
+`releases page <https://github.com/rickyltwong/xnatctl/releases>`_, then
+extract and move the binary to a directory on your PATH:
+
 .. code-block:: powershell
 
    Expand-Archive xnatctl-windows-amd64.zip -DestinationPath .
+   # Create a directory for CLI tools if it does not exist
+   New-Item -ItemType Directory -Force -Path "$env:LOCALAPPDATA\bin"
    Move-Item xnatctl.exe "$env:LOCALAPPDATA\bin\"
+
+After extracting, verify that xnatctl runs:
+
+.. code-block:: powershell
+
+   xnatctl.exe --version
+
+If you see ``xnatctl is not recognized`` or ``command not found``, you need to
+add the install directory to your PATH. See the
+:ref:`troubleshooting <installation-troubleshooting>` section below.
 
 .. note::
 
-   If ``~/.local/bin`` (Linux/macOS) or ``%LOCALAPPDATA%\bin`` (Windows) is
-   not already on your ``PATH``, you will need to add it. See the
-   :ref:`troubleshooting <installation-troubleshooting>` section below for
-   instructions.
+   On Linux and macOS the default install location is ``~/.local/bin``. On
+   Windows the examples above use ``%LOCALAPPDATA%\bin``
+   (``C:\Users\<you>\AppData\Local\bin``). You can choose any directory that is
+   on your PATH.
 
 Python Package
 --------------
@@ -168,7 +190,7 @@ and prints its version:
 
    $ xnatctl --version
 
-You should see output similar to ``xnatctl, version 0.1.0``.
+You should see output similar to ``xnatctl, version 0.1.1``.
 
 You can also run the built-in help to see the full list of available commands:
 
@@ -190,16 +212,38 @@ Below are solutions to common installation issues.
 **"command not found" after installing**
 
 Your shell cannot find the ``xnatctl`` binary because its install directory is
-not on your ``PATH``. Add it by appending the appropriate line to your shell
-configuration file:
+not on your ``PATH``.
+
+*Linux (bash):*
 
 .. code-block:: console
 
    $ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
    $ source ~/.bashrc
 
-On macOS with the default zsh shell, use ``~/.zshrc`` instead of
-``~/.bashrc``.
+*macOS (zsh):*
+
+.. code-block:: console
+
+   $ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+   $ source ~/.zshrc
+
+*Windows (PowerShell):*
+
+Add ``%LOCALAPPDATA%\bin`` to your user PATH permanently. Run this in an
+**elevated** (Administrator) PowerShell, or use Settings > System >
+About > Advanced system settings > Environment Variables:
+
+.. code-block:: powershell
+
+   $binDir = "$env:LOCALAPPDATA\bin"
+   $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+   if ($currentPath -notlike "*$binDir*") {
+       [Environment]::SetEnvironmentVariable("Path", "$currentPath;$binDir", "User")
+   }
+
+After updating the PATH, close and reopen your terminal for the change to take
+effect.
 
 **"permission denied" when running the binary**
 
