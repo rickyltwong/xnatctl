@@ -785,6 +785,253 @@ def session_upload(
         )
 
 
+@session.command("upload-exam")
+@click.argument("exam_root", type=click.Path(exists=True, file_okay=False))
+@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
+@click.option("--subject", "-S", required=True, help="Subject ID")
+@click.option("--session", "-E", required=True, help="Session label")
+@click.option(
+    "--workers",
+    "-w",
+    type=int,
+    default=4,
+    show_default=True,
+    help="Parallel workers",
+)
+@click.option(
+    "--misc-label",
+    default="MISC",
+    show_default=True,
+    help="Resource label to use for top-level misc files",
+)
+@click.option(
+    "--skip-resources",
+    is_flag=True,
+    help="Skip attaching top-level resource dirs and misc files",
+)
+@click.option(
+    "--attach-only",
+    is_flag=True,
+    help="Attach resources only (skip DICOM upload)",
+)
+@click.option("--dry-run", is_flag=True, help="Preview without uploading")
+@global_options
+@require_auth
+@handle_errors
+def session_upload_exam(
+    ctx: Context,
+    exam_root: str,
+    project: str | None,
+    subject: str,
+    session: str,
+    workers: int,
+    misc_label: str,
+    skip_resources: bool,
+    attach_only: bool,
+    dry_run: bool,
+) -> None:
+    """Upload an exam root (DICOM + session resources).
+
+    Exam roots follow a common folder convention:
+    - DICOM files may appear anywhere under the root (recursive)
+    - Top-level directories without DICOM-like files are treated as session-level
+      resources (label = directory name)
+    - Top-level non-DICOM files are treated as misc attachments under --misc-label
+    """
+
+    from xnatctl.core.exam import classify_exam_root
+    from xnatctl.core.validation import (
+        validate_project_id,
+        validate_resource_label,
+        validate_session_id,
+        validate_subject_id,
+    )
+    from xnatctl.services.resources import ResourceService
+    from xnatctl.services.uploads import UploadService
+
+    if not project:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        project = profile.default_project if profile else None
+        if not project:
+            profile_name = ctx.profile_name or (
+                ctx.config.default_profile if ctx.config else "default"
+            )
+            raise click.ClickException(
+                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
+            )
+
+    project = validate_project_id(project)
+    subject = validate_subject_id(subject)
+    session = validate_session_id(session)
+
+    misc_label = validate_resource_label(misc_label)
+
+    exam_root_path = Path(exam_root)
+    classification = classify_exam_root(exam_root_path)
+
+    resource_labels: list[str] = []
+    for resource_dir in classification.resource_dirs:
+        resource_labels.append(validate_resource_label(resource_dir.name))
+
+    if dry_run:
+        click.echo("[DRY-RUN] Would upload exam with the following settings:")
+        click.echo(f"  Exam root: {exam_root_path}")
+        click.echo(f"  Project: {project}")
+        click.echo(f"  Subject: {subject}")
+        click.echo(f"  Session: {session}")
+        click.echo(f"  Workers: {workers}")
+        click.echo(f"  Resource dirs ({len(resource_labels)}):")
+        for label in resource_labels:
+            click.echo(f"    - {label}")
+        click.echo(f"  Misc label: {misc_label}")
+        return
+
+    client = ctx.get_client()
+
+    dicom_total = len(classification.dicom_files)
+    dicom_uploaded = 0
+
+    if not attach_only:
+        if not classification.dicom_files:
+            raise click.ClickException(f"No DICOM files found under: {exam_root_path}")
+
+        upload_service = UploadService(client)
+        summary = upload_service.upload_dicom_gradual_files(
+            files=classification.dicom_files,
+            project=project,
+            subject=subject,
+            session=session,
+            workers=workers,
+        )
+        if not summary.success:
+            errors = "; ".join(summary.errors[:3])
+            raise click.ClickException(
+                f"DICOM upload failed ({summary.succeeded}/{summary.total} succeeded): {errors}"
+            )
+        dicom_uploaded = summary.succeeded
+
+    has_attachable_resources = bool(classification.resource_dirs) or bool(classification.misc_files)
+
+    if skip_resources or not has_attachable_resources:
+        if ctx.output_format == OutputFormat.JSON:
+            print_output(
+                {
+                    "project": project,
+                    "subject": subject,
+                    "session": session,
+                    "exam_root": str(exam_root_path),
+                    "dicom": {
+                        "skipped": attach_only,
+                        "total": dicom_total,
+                        "uploaded": dicom_uploaded,
+                    },
+                    "resources": {
+                        "skipped": True if skip_resources else False,
+                        "resource_dirs": 0,
+                        "misc_files": 0,
+                        "misc_label": misc_label,
+                    },
+                },
+                format=OutputFormat.JSON,
+            )
+        else:
+            dicom_msg = (
+                f"DICOM uploaded {dicom_uploaded}/{dicom_total}"
+                if not attach_only
+                else "DICOM skipped"
+            )
+            resources_msg = (
+                "resources skipped" if skip_resources else ("resources attached 0 dirs + 0 files")
+            )
+            print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
+        return
+
+    def _resolve_experiment_id() -> str | None:
+        resp = client.get_json(f"/data/projects/{project}/experiments/{session}")
+        results = resp.get("ResultSet", {}).get("Result", [])
+        if results:
+            return results[0].get("ID") or session
+
+        items = resp.get("items", [])
+        if items:
+            data_fields = items[0].get("data_fields", {})
+            return data_fields.get("ID") or session
+
+        return None
+
+    resolved_experiment_id = _resolve_experiment_id()
+    if not resolved_experiment_id:
+        raise click.ClickException(
+            "Could not resolve archived experiment ID for session "
+            f"'{session}' in project '{project}'. If the DICOM import is still in "
+            "prearchive (not yet archived): rerun with --skip-resources to upload DICOM now, "
+            "or archive it and re-run with --attach-only to attach resources."
+        )
+
+    resource_service = ResourceService(client)
+
+    for resource_dir in classification.resource_dirs:
+        label = validate_resource_label(resource_dir.name)
+        resource_service.create(
+            session_id=resolved_experiment_id,
+            resource_label=label,
+            project=project,
+        )
+        resource_service.upload_directory(
+            session_id=resolved_experiment_id,
+            resource_label=label,
+            directory_path=resource_dir,
+            project=project,
+        )
+
+    if classification.misc_files:
+        resource_service.create(
+            session_id=resolved_experiment_id,
+            resource_label=misc_label,
+            project=project,
+        )
+        for misc_file in classification.misc_files:
+            resource_service.upload_file(
+                session_id=resolved_experiment_id,
+                resource_label=misc_label,
+                file_path=misc_file,
+                project=project,
+            )
+
+    attached_resource_dirs = len(classification.resource_dirs)
+    attached_misc_files = len(classification.misc_files)
+
+    if ctx.output_format == OutputFormat.JSON:
+        print_output(
+            {
+                "project": project,
+                "subject": subject,
+                "session": session,
+                "exam_root": str(exam_root_path),
+                "dicom": {
+                    "skipped": attach_only,
+                    "total": dicom_total,
+                    "uploaded": dicom_uploaded,
+                },
+                "resources": {
+                    "skipped": False,
+                    "resource_dirs": attached_resource_dirs,
+                    "misc_files": attached_misc_files,
+                    "misc_label": misc_label,
+                },
+            },
+            format=OutputFormat.JSON,
+        )
+    else:
+        dicom_msg = (
+            f"DICOM uploaded {dicom_uploaded}/{dicom_total}" if not attach_only else "DICOM skipped"
+        )
+        resources_msg = (
+            f"resources attached {attached_resource_dirs} dirs + {attached_misc_files} files"
+        )
+        print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
+
+
 def _upload_gradual_dicom(
     ctx: Context,
     source_path: Path,
