@@ -49,9 +49,7 @@ SAMPLE_RESOURCE = {
 class TestResourceList:
     """Tests for ResourceService.list."""
 
-    def test_list_session_resources(
-        self, service: ResourceService, mock_client: MagicMock
-    ) -> None:
+    def test_list_session_resources(self, service: ResourceService, mock_client: MagicMock) -> None:
         """List session-level resources."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
@@ -64,9 +62,7 @@ class TestResourceList:
         call_path = mock_client.get.call_args[0][0]
         assert "/data/experiments/E001/resources" in call_path
 
-    def test_list_scan_resources(
-        self, service: ResourceService, mock_client: MagicMock
-    ) -> None:
+    def test_list_scan_resources(self, service: ResourceService, mock_client: MagicMock) -> None:
         """List scan-level resources."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
@@ -76,9 +72,7 @@ class TestResourceList:
         call_path = mock_client.get.call_args[0][0]
         assert "/scans/1/resources" in call_path
 
-    def test_list_with_project(
-        self, service: ResourceService, mock_client: MagicMock
-    ) -> None:
+    def test_list_with_project(self, service: ResourceService, mock_client: MagicMock) -> None:
         """List with project uses project-scoped path."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
@@ -87,6 +81,58 @@ class TestResourceList:
         assert result[0].project == "PROJ01"
         call_path = mock_client.get.call_args[0][0]
         assert "/data/projects/PROJ01/" in call_path
+
+    def test_list_tolerates_missing_id_and_unparseable_counts(
+        self, service: ResourceService, mock_client: MagicMock
+    ) -> None:
+        """list() tolerates real-ish rows that violate strict typing."""
+
+        rows = [
+            {
+                "label": "Physio",
+                "format": "TXT",
+                "file_count": "",
+                "file_size": "",
+                "URI": "/data/experiments/E001/resources/Physio",
+            },
+            {
+                "label": "Other",
+                "format": "TXT",
+                "file_count": "not-a-number",
+                "file_size": "123",
+                "xnat_abstractresource_id": "RES_ALT_1",
+                "URI": "/data/experiments/E001/resources/Other",
+            },
+        ]
+        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+
+        result = service.list("E001")
+
+        assert [r.label for r in result] == ["Physio", "Other"]
+        assert result[0].file_count is None
+        assert result[0].file_size is None
+        assert result[0].id
+        assert result[1].id == "RES_ALT_1"
+
+    def test_list_treats_bool_file_count_as_missing(
+        self, service: ResourceService, mock_client: MagicMock
+    ) -> None:
+        """Bool file_count should not coerce to 1/0."""
+
+        rows = [
+            {
+                "label": "Physio",
+                "format": "TXT",
+                "file_count": True,
+                "file_size": "",
+                "URI": "/data/experiments/E001/resources/Physio",
+            }
+        ]
+        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+
+        result = service.list("E001")
+
+        assert result[0].file_count is None
 
 
 class TestResourceGet:
@@ -124,9 +170,7 @@ class TestResourceListFiles:
         assert result[0].name == "scan001.dcm"
         assert result[0].size == 524288
 
-    def test_list_files_scan_level(
-        self, service: ResourceService, mock_client: MagicMock
-    ) -> None:
+    def test_list_files_scan_level(self, service: ResourceService, mock_client: MagicMock) -> None:
         """list_files at scan level uses correct path."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
 
@@ -152,9 +196,7 @@ class TestResourceCreate:
         assert put_params["format"] == "DICOM"
         assert put_params["content"] == "raw"
 
-    def test_create_scan_level(
-        self, service: ResourceService, mock_client: MagicMock
-    ) -> None:
+    def test_create_scan_level(self, service: ResourceService, mock_client: MagicMock) -> None:
         """Create at scan level uses correct path."""
         mock_client.put.return_value = _resp("", content_type="text/plain")
         mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
@@ -200,9 +242,7 @@ class TestResourceDelete:
 class TestResourceUploadFile:
     """Tests for ResourceService.upload_file."""
 
-    def test_upload_file_not_found(
-        self, service: ResourceService, mock_client: MagicMock
-    ) -> None:
+    def test_upload_file_not_found(self, service: ResourceService, mock_client: MagicMock) -> None:
         """Upload raises FileNotFoundError for missing file."""
         with pytest.raises(FileNotFoundError):
             service.upload_file("E001", "DICOM", Path("/nonexistent/file.dcm"))
