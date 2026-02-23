@@ -223,7 +223,6 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             arch: amd64
-            container: quay.io/pypa/manylinux_2_28_x86_64
           - os: macos-latest
             platform: darwin
             arch: amd64
@@ -231,59 +230,30 @@ jobs:
             platform: windows
             arch: amd64
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container || '' }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Python and deps (Linux)
-        if: matrix.platform == 'linux'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps (Linux/macOS)
+        if: matrix.platform != 'windows'
         run: |
-          /opt/python/cp312-cp312/bin/python -m venv /tmp/venv
-          . /tmp/venv/bin/activate
           pip install --upgrade pip
           pip install pyinstaller
           pip install .
 
-      - name: Install Python and deps (macOS)
-        if: matrix.platform == 'darwin'
-        run: |
-          brew install python@3.12 || true
-          python3 -m venv /tmp/venv
-          . /tmp/venv/bin/activate
-          pip install --upgrade pip
-          pip install pyinstaller
-          pip install .
-
-      - name: Install Python and deps (Windows)
+      - name: Install deps (Windows)
         if: matrix.platform == 'windows'
         run: |
-          set VENV=C:\venv
-          py -3.12 -m venv %VENV%
-          call %VENV%\Scripts\activate.bat
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller
-          python -m pip install .
-        shell: cmd
+          pip install pyinstaller
+          pip install .
 
-      - name: Build binary (Linux)
-        if: matrix.platform == 'linux'
-        run: |
-          . /tmp/venv/bin/activate
-          pyinstaller xnatctl.spec --noconfirm --clean
-
-      - name: Build binary (macOS)
-        if: matrix.platform == 'darwin'
-        run: |
-          . /tmp/venv/bin/activate
-          pyinstaller xnatctl.spec --noconfirm --clean
-
-      - name: Build binary (Windows)
-        if: matrix.platform == 'windows'
-        run: |
-          set VENV=C:\venv
-          call %VENV%\Scripts\activate.bat
-          pyinstaller xnatctl.spec --noconfirm --clean
-        shell: cmd
+      - name: Build binary
+        run: pyinstaller xnatctl.spec --noconfirm --clean
 
       - name: Smoke test (Linux/macOS)
         if: matrix.platform != 'windows'
