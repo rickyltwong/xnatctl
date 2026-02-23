@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import click
@@ -814,6 +815,26 @@ def session_upload(
     is_flag=True,
     help="Attach resources only (skip DICOM upload)",
 )
+@click.option(
+    "--wait-for-archive/--no-wait-for-archive",
+    default=True,
+    show_default=True,
+    help="Wait for the session to be archived before attaching resources",
+)
+@click.option(
+    "--wait-timeout",
+    type=click.IntRange(min=0),
+    default=900,
+    show_default=True,
+    help="Max seconds to wait for the session to be archived",
+)
+@click.option(
+    "--wait-interval",
+    type=click.IntRange(min=1),
+    default=5,
+    show_default=True,
+    help="Seconds between archive checks",
+)
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
 @require_auth
@@ -828,6 +849,9 @@ def session_upload_exam(
     misc_label: str,
     skip_resources: bool,
     attach_only: bool,
+    wait_for_archive: bool,
+    wait_timeout: int,
+    wait_interval: int,
     dry_run: bool,
 ) -> None:
     """Upload an exam root (DICOM + session resources).
@@ -840,6 +864,7 @@ def session_upload_exam(
     """
 
     from xnatctl.core.exam import classify_exam_root
+    from xnatctl.core.exceptions import ResourceNotFoundError
     from xnatctl.core.validation import (
         validate_project_id,
         validate_resource_label,
@@ -946,8 +971,18 @@ def session_upload_exam(
             print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
         return
 
+    not_archived_guidance = (
+        "Could not resolve archived experiment ID for session "
+        f"'{session}' in project '{project}'. If the DICOM import is still in "
+        "prearchive (not yet archived): rerun with --skip-resources to upload DICOM now, "
+        "or archive it and re-run with --attach-only to attach resources."
+    )
+
     def _resolve_experiment_id() -> str | None:
-        resp = client.get_json(f"/data/projects/{project}/experiments/{session}")
+        try:
+            resp = client.get_json(f"/data/projects/{project}/experiments/{session}")
+        except ResourceNotFoundError:
+            return None
         results = resp.get("ResultSet", {}).get("Result", [])
         if results:
             return results[0].get("ID") or session
@@ -961,12 +996,27 @@ def session_upload_exam(
 
     resolved_experiment_id = _resolve_experiment_id()
     if not resolved_experiment_id:
-        raise click.ClickException(
-            "Could not resolve archived experiment ID for session "
-            f"'{session}' in project '{project}'. If the DICOM import is still in "
-            "prearchive (not yet archived): rerun with --skip-resources to upload DICOM now, "
-            "or archive it and re-run with --attach-only to attach resources."
-        )
+        if not wait_for_archive:
+            raise click.ClickException(not_archived_guidance)
+
+        start = time.monotonic()
+        deadline = start + wait_timeout
+        while True:
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                break
+
+            time.sleep(min(wait_interval, remaining))
+
+            resolved_experiment_id = _resolve_experiment_id()
+            if resolved_experiment_id:
+                break
+
+        if not resolved_experiment_id:
+            raise click.ClickException(
+                f"Timed out waiting for archived experiment ID for session '{session}'"
+            )
 
     resource_service = ResourceService(client)
 
