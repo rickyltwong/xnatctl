@@ -1,6 +1,13 @@
 Changelog
 =========
 
+0.1.1 (2026)
+-------------
+
+- Fix Windows binary build (venv activation in CI workflow)
+- Improve Windows installation docs with PATH setup instructions
+- Clarify that install script is Linux/macOS only
+
 0.1.0 (2026)
 -------------
 

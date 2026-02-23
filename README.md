@@ -42,10 +42,11 @@ scriptable interface to your XNAT server.
 ### Standalone Binary (no Python required)
 
 If you do not have Python installed or prefer a single executable, download a
-pre-built binary. The install script auto-detects your OS and architecture:
+pre-built binary. On **Linux and macOS**, the install script auto-detects your
+OS and architecture:
 
 ```bash
-# One-line install (latest release, auto-detects platform)
+# One-line install (Linux/macOS only, auto-detects platform)
 curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
 
 # Install a specific version
@@ -63,16 +64,26 @@ Or download manually from [GitHub Releases](https://github.com/rickyltwong/xnatc
 | macOS (x86_64) | `xnatctl-darwin-amd64.tar.gz`     |
 | Windows (x86_64) | `xnatctl-windows-amd64.zip`     |
 
+**Linux / macOS:**
+
 ```bash
-# Linux / macOS
 tar -xzf xnatctl-<platform>-amd64.tar.gz
 chmod +x xnatctl
 mv xnatctl ~/.local/bin/
-
-# Windows (PowerShell)
-Expand-Archive xnatctl-windows-amd64.zip -DestinationPath .
-Move-Item xnatctl.exe C:\Users\<you>\AppData\Local\bin\
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+Expand-Archive xnatctl-windows-amd64.zip -DestinationPath .
+New-Item -ItemType Directory -Force -Path "$env:LOCALAPPDATA\bin"
+Move-Item xnatctl.exe "$env:LOCALAPPDATA\bin\"
+```
+
+> **Note:** On Windows, make sure `%LOCALAPPDATA%\bin` is on your PATH.
+> You can add it via Settings > System > About > Advanced system settings >
+> Environment Variables, or see the [Installation guide](docs/installation.rst)
+> for a PowerShell command.
 
 ### Python Package
 
