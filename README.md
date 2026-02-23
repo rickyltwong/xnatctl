@@ -135,7 +135,7 @@ Use an experiment accession number or, if you have a default project set, a
 session label:
 
 ```bash
-xnatctl session download XNAT_E00001 --out ./data
+xnatctl session download -E XNAT_E00001 --out ./data
 ```
 
 For a detailed walkthrough, see the [Quick Start guide](docs/quickstart.rst).
