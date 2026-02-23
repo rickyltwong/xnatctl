@@ -413,16 +413,42 @@ For example, top-level ``Physio`` and ``Protocol`` directories become
 
 .. code-block:: console
 
-    $ xnatctl session upload-exam /path/to/EXAM_ROOT \
-        -P MYPROJECT -S MYSUBJECT -E MYSESSION \
-        --dry-run
+   $ xnatctl session upload-exam /path/to/EXAM_ROOT \
+       -P MYPROJECT -S MYSUBJECT -E MYSESSION \
+       --dry-run
+
+By default, ``session upload-exam`` uploads the DICOM content first and then
+waits for the session to appear in the **permanent archive** before attaching
+the top-level non-DICOM items as resources. This makes the attach step more
+reliable on servers where the import request can return before the session is
+fully available in the archive.
+
+You can disable the wait (fail fast) or tune the polling behavior. The defaults
+are ``--wait-timeout 900`` (15 minutes) and ``--wait-interval 5``:
+
+.. code-block:: console
+
+   # Do not wait for the session to appear in the archive
+   $ xnatctl session upload-exam /path/to/EXAM_ROOT \
+       -P MYPROJECT -S MYSUBJECT -E MYSESSION \
+       --no-wait-for-archive
+
+.. code-block:: console
+
+   # Wait up to 30 minutes, polling every 10 seconds
+   $ xnatctl session upload-exam /path/to/EXAM_ROOT \
+       -P MYPROJECT -S MYSUBJECT -E MYSESSION \
+       --wait-timeout 1800 \
+       --wait-interval 10
 
 .. note::
 
-    ``session upload-exam`` can upload DICOM to the prearchive (``--prearchive``),
-    but attaching resources typically requires the session to be in the permanent
-    archive. If you are staging to the prearchive, use ``--skip-resources`` during
-    import, or run later with ``--attach-only`` after you archive the session.
+   ``session upload-exam`` can upload DICOM to the prearchive (``--prearchive``),
+   but attaching resources requires the session to be in the permanent archive.
+   If the session remains in the prearchive, the default archive wait will time
+   out. In that case, upload the DICOM now with ``--skip-resources`` (optionally
+   add ``--no-wait-for-archive`` if you want fail-fast behavior) and later attach
+   resources with ``--attach-only`` after you archive the session.
 
 
 Upload a Directory to a Session Resource
