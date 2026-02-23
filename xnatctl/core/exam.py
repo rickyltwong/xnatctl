@@ -14,6 +14,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from xnatctl.core.validation import validate_path_exists
+
 _DICOM_LIKE_SUFFIXES = {".dcm", ".dicom", ".ima", ".img"}
 
 
@@ -48,15 +50,19 @@ def classify_exam_root(root: Path) -> ExamRootClassification:
     Returns:
         Classification containing DICOM-like files, resource directories, and
         miscellaneous top-level files.
+
+    Raises:
+        PathValidationError: If `root` does not exist or is not a directory.
     """
-    root_path = Path(root)
+    root_path = validate_path_exists(root, must_be_dir=True, description="exam root")
 
     dicom_files: list[Path] = []
     misc_files: list[Path] = []
 
-    # Only consider top-level directories (non-hidden). Track whether any
-    # DICOM-like file appears within each.
-    top_level_dir_has_dicom: dict[Path, bool] = {}
+    # Only consider top-level directories (non-hidden). Start with all such
+    # directories as "resource dirs", then remove any that contain DICOM-like
+    # files.
+    dirs_without_dicom: set[Path] = set()
 
     root_str = os.fspath(root_path)
     for dirpath, dirs, files in os.walk(root_str, topdown=True):
@@ -66,9 +72,8 @@ def classify_exam_root(root: Path) -> ExamRootClassification:
         current_dir = Path(dirpath)
         is_root = current_dir == root_path
 
-        if is_root and not top_level_dir_has_dicom:
-            for d in dirs:
-                top_level_dir_has_dicom[root_path / d] = False
+        if is_root and not dirs_without_dicom:
+            dirs_without_dicom.update(root_path / d for d in dirs)
 
         rel_dir_parts = current_dir.relative_to(root_path).parts if not is_root else ()
         top_level_dir = (root_path / rel_dir_parts[0]) if rel_dir_parts else None
@@ -80,12 +85,14 @@ def classify_exam_root(root: Path) -> ExamRootClassification:
             file_path = current_dir / filename
             if _is_dicom_like_file(file_path):
                 dicom_files.append(file_path)
-                if top_level_dir is not None and top_level_dir in top_level_dir_has_dicom:
-                    top_level_dir_has_dicom[top_level_dir] = True
+                if top_level_dir is not None:
+                    dirs_without_dicom.discard(top_level_dir)
             elif is_root:
                 misc_files.append(file_path)
 
-    resource_dirs = [d for d, has_dicom in top_level_dir_has_dicom.items() if not has_dicom]
+    dicom_files.sort(key=os.fspath)
+    misc_files.sort(key=os.fspath)
+    resource_dirs = sorted(dirs_without_dicom, key=os.fspath)
 
     return ExamRootClassification(
         dicom_files=tuple(dicom_files),
