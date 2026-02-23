@@ -388,6 +388,32 @@ directory, xnatctl zips it locally and extracts it server-side; single files are
 uploaded directly.
 
 
+Upload a Scanner Exam-Root Directory
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some scanner exports include a single "exam-root" directory containing both
+DICOM files and non-DICOM items like PDFs, screenshots, or vendor metadata.
+Use ``xnatctl session upload-exam`` to upload the DICOM content and attach the
+top-level non-DICOM items as session resources in the same workflow.
+
+Top-level non-DICOM directories become session resources named after the
+directory (``Resources/<dirname>``). Top-level non-DICOM files are grouped into
+``Resources/MISC``.
+
+.. code-block:: console
+
+    $ xnatctl session upload-exam /path/to/EXAM_ROOT \
+        -P MYPROJECT -S MYSUBJECT -E MYSESSION \
+        --dry-run
+
+.. note::
+
+    ``session upload-exam`` can upload DICOM to the prearchive (``--prearchive``),
+    but attaching resources typically requires the session to be in the permanent
+    archive. If you are staging to the prearchive, use ``--skip-resources`` during
+    import, or run later with ``--attach-only`` after you archive the session.
+
+
 Upload a Directory to a Session Resource
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
