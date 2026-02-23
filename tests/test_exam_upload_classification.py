@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-
-from xnatctl.core.exam import classify_exam_root
+from typing import Protocol
 
 
 def _touch(path: Path, payload: str = "x") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(payload)
+
+
+class _ExamRootClassification(Protocol):
+    dicom_files: Sequence[Path]
+    resource_dirs: Sequence[Path]
+    misc_files: Sequence[Path]
+
+
+def _classify(exam_root: Path) -> _ExamRootClassification:
+    from xnatctl.core.exam import classify_exam_root
+
+    return classify_exam_root(exam_root)
 
 
 def test_classify_exam_root_splits_dicom_resources_and_misc(tmp_path: Path) -> None:
@@ -25,7 +37,7 @@ def test_classify_exam_root_splits_dicom_resources_and_misc(tmp_path: Path) -> N
     # Top-level non-DICOM file
     _touch(exam / "notes.txt", payload="hello")
 
-    result = classify_exam_root(exam)
+    result = _classify(exam)
 
     dicom_rel = {p.relative_to(exam).as_posix() for p in result.dicom_files}
     assert "1_series/a.dcm" in dicom_rel
@@ -46,7 +58,7 @@ def test_classify_exam_root_ignores_hidden_paths(tmp_path: Path) -> None:
     _touch(exam / ".DS_Store")
     _touch(exam / "series" / "ok.dcm")
 
-    result = classify_exam_root(exam)
+    result = _classify(exam)
 
     rel = {p.relative_to(exam).as_posix() for p in result.dicom_files}
     assert rel == {"series/ok.dcm"}
