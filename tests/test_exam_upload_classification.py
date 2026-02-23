@@ -4,6 +4,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
+import pytest
+
+from xnatctl.core.exceptions import PathValidationError
+
 
 def _touch(path: Path, payload: str = "x") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -11,9 +15,14 @@ def _touch(path: Path, payload: str = "x") -> None:
 
 
 class _ExamRootClassification(Protocol):
-    dicom_files: Sequence[Path]
-    resource_dirs: Sequence[Path]
-    misc_files: Sequence[Path]
+    @property
+    def dicom_files(self) -> Sequence[Path]: ...
+
+    @property
+    def resource_dirs(self) -> Sequence[Path]: ...
+
+    @property
+    def misc_files(self) -> Sequence[Path]: ...
 
 
 def _classify(exam_root: Path) -> _ExamRootClassification:
@@ -62,3 +71,10 @@ def test_classify_exam_root_ignores_hidden_paths(tmp_path: Path) -> None:
 
     rel = {p.relative_to(exam).as_posix() for p in result.dicom_files}
     assert rel == {"series/ok.dcm"}
+
+
+def test_classify_exam_root_requires_existing_directory(tmp_path: Path) -> None:
+    missing_root = tmp_path / "does_not_exist"
+
+    with pytest.raises(PathValidationError):
+        _classify(missing_root)
