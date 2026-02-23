@@ -220,6 +220,7 @@ resources. This is the command family you will use most for day-to-day data mana
 - ``session show`` -- Display session details including scans and resources
 - ``session download`` -- Download session data (scans and optional resources)
 - ``session upload`` -- Upload DICOM data via REST import
+- ``session upload-exam`` -- Upload a scanner exam-root directory (DICOM + top-level resources)
 - ``session upload-dicom`` -- Upload DICOM files via C-STORE network protocol
 
 **Parent-resource options.** The ``-E`` and ``-P`` flags identify experiments:
@@ -267,6 +268,12 @@ Upload DICOM files via REST (batch or gradual per-file):
 
    $ xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001
    $ xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --gradual --workers 40
+
+Upload a scanner exam-root directory (DICOM + top-level resources):
+
+.. code-block:: console
+
+   $ xnatctl session upload-exam ./exam_root -P MYPROJ -S SUB001 -E SESS001
 
 Upload via DICOM C-STORE (requires the ``[dicom]`` extra):
 

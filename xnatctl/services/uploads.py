@@ -12,6 +12,7 @@ are available for direct import and testing.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -75,6 +76,8 @@ _GRADUAL_HTTP_TIMEOUT_SECONDS = 120.0
 _gradual_client_local = threading.local()
 _gradual_client_registry_lock = threading.Lock()
 _gradual_client_registry: list[httpx.Client] = []
+_gradual_scope_lock = threading.Lock()
+_gradual_scope_refcount = 0
 
 
 def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client:
@@ -83,7 +86,7 @@ def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client
     client: httpx.Client | None = getattr(_gradual_client_local, "client", None)
     client_key: tuple[str, bool] | None = getattr(_gradual_client_local, "key", None)
 
-    if client is None or client_key != key:
+    if client is None or client_key != key or client.is_closed:
         if client is not None:
             try:
                 client.close()
@@ -106,6 +109,14 @@ def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client
 
 def _close_gradual_http_clients() -> None:
     """Close any thread-local clients created for gradual uploads."""
+    # Best-effort clear for the current thread so sequential operations don't
+    # accidentally reuse a closed client.
+    try:
+        _gradual_client_local.client = None
+        _gradual_client_local.key = None
+    except Exception:
+        pass
+
     with _gradual_client_registry_lock:
         clients = list(_gradual_client_registry)
         _gradual_client_registry.clear()
@@ -114,6 +125,30 @@ def _close_gradual_http_clients() -> None:
             c.close()
         except Exception:
             pass
+
+
+@contextlib.contextmanager
+def _gradual_http_clients_scope() -> Iterator[None]:
+    """Scope gradual httpx client lifecycle to an upload operation.
+
+    Gradual uploads use a per-thread httpx.Client. Since the registry is global,
+    concurrent gradual upload operations must not close each other's clients.
+
+    This context manager refcounts active gradual operations and only performs a
+    global close when the last active operation completes.
+    """
+    global _gradual_scope_refcount
+    with _gradual_scope_lock:
+        _gradual_scope_refcount += 1
+
+    try:
+        yield
+    finally:
+        with _gradual_scope_lock:
+            _gradual_scope_refcount -= 1
+            if _gradual_scope_refcount <= 0:
+                _gradual_scope_refcount = 0
+                _close_gradual_http_clients()
 
 
 # =============================================================================
@@ -1483,202 +1518,411 @@ class UploadService(BaseService):
             ValueError: If source_path is not a directory or ZIP file.
             FileNotFoundError: If source_path does not exist.
         """
-        start_time = time.time()
-        source_path = Path(source_path)
+        with _gradual_http_clients_scope():
+            start_time = time.time()
+            source_path = Path(source_path)
 
-        if not source_path.exists():
-            raise FileNotFoundError(f"Source not found: {source_path}")
+            if not source_path.exists():
+                raise FileNotFoundError(f"Source not found: {source_path}")
 
-        base_url = self.client.base_url
-        session_token = self.client.session_token
-        verify_ssl = self.client.verify_ssl
+            temp_dir: str | None = None
+            files: list[Path] = []
 
-        temp_dir: str | None = None
-        files: list[Path] = []
+            try:
+                if source_path.is_file() and source_path.suffix.lower() == ".zip":
+                    temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
+                    temp_path = Path(temp_dir)
+                    with zipfile.ZipFile(source_path, "r") as zf:
+                        for member in zf.infolist():
+                            if member.is_dir():
+                                continue
+                            target = (temp_path / member.filename).resolve()
+                            if not target.is_relative_to(temp_path.resolve()):
+                                continue
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            with zf.open(member) as src, open(target, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                    files = sorted(
+                        f
+                        for f in temp_path.rglob("*")
+                        if f.is_file() and not f.name.startswith(".")
+                    )
+                elif source_path.is_dir():
+                    files = sorted(
+                        f
+                        for f in source_path.rglob("*")
+                        if f.is_file() and not f.name.startswith(".")
+                    )
+                else:
+                    raise ValueError("gradual-DICOM requires a directory or ZIP file")
 
-        try:
-            if source_path.is_file() and source_path.suffix.lower() == ".zip":
-                temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
-                temp_path = Path(temp_dir)
-                with zipfile.ZipFile(source_path, "r") as zf:
-                    for member in zf.infolist():
-                        if member.is_dir():
-                            continue
-                        target = (temp_path / member.filename).resolve()
-                        if not target.is_relative_to(temp_path.resolve()):
-                            continue
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(member) as src, open(target, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
-                files = sorted(
-                    f for f in temp_path.rglob("*") if f.is_file() and not f.name.startswith(".")
+                if not files:
+                    return UploadSummary(
+                        success=False,
+                        total=0,
+                        succeeded=0,
+                        failed=0,
+                        duration=time.time() - start_time,
+                        errors=["No files found to upload"],
+                    )
+
+                # Prefer stable relative paths in logs/errors (especially for ZIP
+                # extractions into a temp directory).
+                display_root = Path(temp_dir) if temp_dir else source_path
+
+                return self._upload_dicom_gradual_from_files(
+                    files=files,
+                    display_root=display_root,
+                    project=project,
+                    subject=subject,
+                    session=session,
+                    workers=workers,
+                    progress_callback=progress_callback,
+                    start_time=start_time,
                 )
-            elif source_path.is_dir():
-                files = sorted(
-                    f for f in source_path.rglob("*") if f.is_file() and not f.name.startswith(".")
-                )
-            else:
-                raise ValueError("gradual-DICOM requires a directory or ZIP file")
 
-            if not files:
+            finally:
+                if temp_dir:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def upload_dicom_gradual_files(
+        self,
+        *,
+        files: Sequence[Path],
+        project: str,
+        subject: str,
+        session: str,
+        workers: int = DEFAULT_UPLOAD_WORKERS,
+        progress_callback: Callable[[UploadProgress], None] | None = None,
+    ) -> UploadSummary:
+        """Upload a specific list of DICOM files via the gradual-DICOM handler.
+
+        Unlike :meth:`upload_dicom_gradual`, this method uploads only the files
+        explicitly provided and does not scan any directories.
+
+        Args:
+            files: Explicit list of files to upload.
+            project: Target project ID.
+            subject: Target subject label.
+            session: Target session label.
+            workers: Number of parallel upload workers.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            UploadSummary with results.
+
+        Raises:
+            FileNotFoundError: If any provided path does not exist.
+            ValueError: If any provided path is not a file.
+        """
+        with _gradual_http_clients_scope():
+            start_time = time.time()
+            file_list = [Path(p) for p in files]
+            if not file_list:
                 return UploadSummary(
                     success=False,
                     total=0,
                     succeeded=0,
                     failed=0,
-                    duration=time.time() - start_time,
-                    errors=["No files found to upload"],
+                    duration=0.0,
+                    errors=["No files provided"],
                 )
 
-            def report(phase: OperationPhase, **kwargs: Any) -> None:
-                if progress_callback:
-                    progress_callback(UploadProgress(phase=phase, **kwargs))
+            resolved_to_original: dict[Path, Path] = {}
+            duplicate_resolved: set[Path] = set()
+            for p in file_list:
+                resolved = p.expanduser().resolve(strict=False)
+                if resolved in resolved_to_original:
+                    duplicate_resolved.add(resolved)
+                else:
+                    resolved_to_original[resolved] = p
 
-            report(
-                OperationPhase.PREPARING,
-                total=len(files),
-                message=f"Found {len(files)} files for gradual-DICOM upload",
+            if duplicate_resolved:
+                dup_str = ", ".join(sorted(str(p) for p in duplicate_resolved))
+                raise ValueError(f"Duplicate file paths provided: {dup_str}")
+
+            for p in file_list:
+                if not p.exists():
+                    raise FileNotFoundError(f"File not found: {p}")
+                if not p.is_file():
+                    raise ValueError(f"Not a file: {p}")
+
+            # Use a stable common root for relative display paths.
+            try:
+                common = Path(os.path.commonpath([str(p.resolve()) for p in file_list]))
+                display_root = common if common.is_dir() else common.parent
+            except Exception:
+                display_root = file_list[0].parent
+
+            return self._upload_dicom_gradual_from_files(
+                files=file_list,
+                display_root=display_root,
+                project=project,
+                subject=subject,
+                session=session,
+                workers=workers,
+                progress_callback=progress_callback,
+                start_time=start_time,
             )
 
-            total_files = len(files)
+    def _upload_dicom_gradual_from_files(
+        self,
+        *,
+        files: Sequence[Path],
+        display_root: Path,
+        project: str,
+        subject: str,
+        session: str,
+        workers: int,
+        progress_callback: Callable[[UploadProgress], None] | None,
+        start_time: float,
+    ) -> UploadSummary:
+        """Upload a precomputed list of files using the gradual-DICOM handler.
 
-            # Prefer stable relative paths in logs/errors (especially for ZIP extractions
-            # into a temp directory).
-            display_root = source_path
-            if temp_dir:
-                display_root = Path(temp_dir)
+        Args:
+            files: Files to upload.
+            display_root: Root used for stable relative display paths.
+            project: Target project ID.
+            subject: Target subject label.
+            session: Target session label.
+            workers: Number of parallel upload workers.
+            progress_callback: Optional callback for progress updates.
+            start_time: Start timestamp for duration calculation.
 
-            def display(path: Path) -> str:
-                try:
-                    return str(path.relative_to(display_root))
-                except Exception:
-                    return path.name
+        Returns:
+            UploadSummary with results.
+        """
+        base_url = self.client.base_url
+        session_token = self.client.session_token
+        verify_ssl = self.client.verify_ssl
 
-            failed_paths: set[Path] = set()
-            error_by_path: dict[Path, str] = {}
-            completed = 0
+        file_list = list(files)
 
-            # Warm-up: upload a small set of files sequentially before going wide-parallel.
-            #
-            # XNAT can return transient HTTP 400s when a session/scan is being created in
-            # prearchive. With high concurrency, multiple workers can hit that "cold start"
-            # race at the same time.
-            def scan_id_for(path: Path) -> str | None:
-                """Extract scan ID from standard session layout paths, if present."""
-                try:
-                    rel = path.relative_to(display_root)
-                except Exception:
-                    return None
-                parts = rel.parts
-                # Expected layout: scans/<scan_id>/resources/DICOM/files/<...>
-                if (
-                    len(parts) >= 6
-                    and parts[0] == "scans"
-                    and parts[2] == "resources"
-                    and parts[3] == "DICOM"
-                    and parts[4] == "files"
-                ):
-                    return parts[1]
+        def report(phase: OperationPhase, **kwargs: Any) -> None:
+            if progress_callback:
+                progress_callback(UploadProgress(phase=phase, **kwargs))
+
+        report(
+            OperationPhase.PREPARING,
+            total=len(file_list),
+            message=f"Found {len(file_list)} files for gradual-DICOM upload",
+        )
+
+        total_files = len(file_list)
+
+        def display(path: Path) -> str:
+            try:
+                return str(path.relative_to(display_root))
+            except Exception:
+                return path.name
+
+        failed_paths: set[Path] = set()
+        error_by_path: dict[Path, str] = {}
+        completed = 0
+
+        # Warm-up: upload a small set of files sequentially before going wide-parallel.
+        #
+        # XNAT can return transient HTTP 400s when a session/scan is being created in
+        # prearchive. With high concurrency, multiple workers can hit that "cold start"
+        # race at the same time.
+        def scan_id_for(path: Path) -> str | None:
+            """Extract scan ID from standard session layout paths, if present."""
+            try:
+                rel = path.relative_to(display_root)
+            except Exception:
                 return None
+            parts = rel.parts
+            # Expected layout: scans/<scan_id>/resources/DICOM/files/<...>
+            if (
+                len(parts) >= 6
+                and parts[0] == "scans"
+                and parts[2] == "resources"
+                and parts[3] == "DICOM"
+                and parts[4] == "files"
+            ):
+                return parts[1]
+            return None
 
-            def _scan_sort_key(scan_id: str) -> tuple[int, int, str]:
-                try:
-                    return (0, int(scan_id), scan_id)
-                except ValueError:
-                    return (1, 0, scan_id)
+        def _scan_sort_key(scan_id: str) -> tuple[int, int, str]:
+            try:
+                return (0, int(scan_id), scan_id)
+            except ValueError:
+                return (1, 0, scan_id)
 
-            scan_groups: dict[str, list[Path]] = {}
-            other_files: list[Path] = []
-            for p in files:
-                sid = scan_id_for(p)
-                if sid:
-                    scan_groups.setdefault(sid, []).append(p)
-                else:
-                    other_files.append(p)
-
-            warmup_files: list[Path] = []
-            remaining_files: list[Path] = []
-
-            if scan_groups:
-                # Warm up one file per scan (capped) and interleave remaining uploads
-                # across scans to reduce per-scan contention under high worker counts.
-                from collections import deque
-
-                queues: dict[str, deque[Path]] = {
-                    sid: deque(paths) for sid, paths in scan_groups.items()
-                }
-                if other_files:
-                    queues["_other"] = deque(other_files)
-
-                scan_ids = sorted(queues.keys(), key=_scan_sort_key)
-                max_warmup_scans = min(50, len(scan_ids))
-                warmup_scan_ids = [sid for sid in scan_ids if sid != "_other"][:max_warmup_scans]
-
-                for sid in warmup_scan_ids:
-                    q = queues.get(sid)
-                    if q:
-                        warmup_files.append(q.popleft())
-
-                # Round-robin remaining files across scan queues
-                scan_order = deque(scan_ids)
-                while scan_order:
-                    sid = scan_order.popleft()
-                    q = queues.get(sid)
-                    if not q:
-                        queues.pop(sid, None)
-                        continue
-                    remaining_files.append(q.popleft())
-                    if q:
-                        scan_order.append(sid)
-                    else:
-                        queues.pop(sid, None)
+        scan_groups: dict[str, list[Path]] = {}
+        other_files: list[Path] = []
+        for p in file_list:
+            sid = scan_id_for(p)
+            if sid:
+                scan_groups.setdefault(sid, []).append(p)
             else:
-                # Fallback: warm up a few files in path order
-                warmup_n = min(5, total_files)
-                warmup_files = files[:warmup_n]
-                remaining_files = files[warmup_n:]
+                other_files.append(p)
 
-            if warmup_files:
-                report(
-                    OperationPhase.PREPARING,
-                    message=f"Warming up gradual-DICOM upload with {len(warmup_files)} file(s)...",
-                )
+        warmup_files: list[Path] = []
+        remaining_files: list[Path] = []
 
-            for p in warmup_files:
-                name, ok, err = _upload_single_file_gradual(
+        if scan_groups:
+            # Warm up one file per scan (capped) and interleave remaining uploads
+            # across scans to reduce per-scan contention under high worker counts.
+            from collections import deque
+
+            queues: dict[str, deque[Path]] = {
+                sid: deque(paths) for sid, paths in scan_groups.items()
+            }
+            if other_files:
+                queues["_other"] = deque(other_files)
+
+            scan_ids = sorted(queues.keys(), key=_scan_sort_key)
+            max_warmup_scans = min(50, len(scan_ids))
+            warmup_scan_ids = [sid for sid in scan_ids if sid != "_other"][:max_warmup_scans]
+
+            for sid in warmup_scan_ids:
+                q = queues.get(sid)
+                if q:
+                    warmup_files.append(q.popleft())
+
+            # Round-robin remaining files across scan queues
+            scan_order = deque(scan_ids)
+            while scan_order:
+                sid = scan_order.popleft()
+                q = queues.get(sid)
+                if not q:
+                    queues.pop(sid, None)
+                    continue
+                remaining_files.append(q.popleft())
+                if q:
+                    scan_order.append(sid)
+                else:
+                    queues.pop(sid, None)
+        else:
+            # Fallback: warm up a few files in provided order
+            warmup_n = min(5, total_files)
+            warmup_files = file_list[:warmup_n]
+            remaining_files = file_list[warmup_n:]
+
+        if warmup_files:
+            report(
+                OperationPhase.PREPARING,
+                message=f"Warming up gradual-DICOM upload with {len(warmup_files)} file(s)...",
+            )
+
+        for p in warmup_files:
+            _name, ok, err = _upload_single_file_gradual(
+                base_url=base_url,
+                session_token=session_token,
+                verify_ssl=verify_ssl,
+                file_path=p,
+                display_path=display(p),
+                project=project,
+                subject=subject,
+                session=session,
+            )
+            completed += 1
+            if not ok:
+                failed_paths.add(p)
+                error_by_path[p] = err
+
+            succeeded_so_far = completed - len(failed_paths)
+            report(
+                OperationPhase.UPLOADING,
+                current=completed,
+                total=total_files,
+                success=ok,
+                message=(
+                    f"Uploaded {completed}/{total_files} "
+                    f"({succeeded_so_far} ok, {len(failed_paths)} failed)"
+                ),
+            )
+
+        # Main pass: parallel per-file upload (bounded in-flight window)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            prefetch = max(1, workers * 2)
+            file_iter = iter(remaining_files)
+
+            in_flight: set[Future[tuple[str, bool, str]]] = set()
+            future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
+
+            def _submit_one(path: Path) -> None:
+                fut: Future[tuple[str, bool, str]] = executor.submit(  # type: ignore[arg-type]
+                    _upload_single_file_gradual,
                     base_url=base_url,
                     session_token=session_token,
                     verify_ssl=verify_ssl,
-                    file_path=p,
-                    display_path=display(p),
+                    file_path=path,
+                    display_path=display(path),
                     project=project,
                     subject=subject,
                     session=session,
                 )
-                completed += 1
-                if not ok:
-                    failed_paths.add(p)
-                    error_by_path[p] = err
+                in_flight.add(fut)
+                future_to_path[fut] = path
 
-                succeeded_so_far = completed - len(failed_paths)
-                report(
-                    OperationPhase.UPLOADING,
-                    current=completed,
-                    total=total_files,
-                    success=ok,
-                    message=f"Uploaded {completed}/{total_files} ({succeeded_so_far} ok, {len(failed_paths)} failed)",
-                )
+            for _ in range(min(prefetch, len(remaining_files))):
+                try:
+                    _submit_one(next(file_iter))
+                except StopIteration:
+                    break
 
-            # Main pass: parallel per-file upload (bounded in-flight window)
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                prefetch = max(1, workers * 2)
-                file_iter = iter(remaining_files)
+            while in_flight:
+                done, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
+                in_flight = _pending
 
-                in_flight: set[Future[tuple[str, bool, str]]] = set()
-                future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
+                for future in done:
+                    completed += 1
+                    p = future_to_path.pop(future)
 
-                def _submit_one(path: Path) -> None:
-                    fut: Future[tuple[str, bool, str]] = executor.submit(  # type: ignore[arg-type]
+                    try:
+                        _name, ok, err = future.result()
+                    except Exception as e:
+                        ok = False
+                        err = str(e)
+
+                    if not ok:
+                        failed_paths.add(p)
+                        error_by_path[p] = err
+
+                    succeeded_so_far = completed - len(failed_paths)
+                    report(
+                        OperationPhase.UPLOADING,
+                        current=completed,
+                        total=total_files,
+                        success=ok,
+                        message=(
+                            f"Uploaded {completed}/{total_files} "
+                            f"({succeeded_so_far} ok, {len(failed_paths)} failed)"
+                        ),
+                    )
+
+                    while len(in_flight) < prefetch:
+                        try:
+                            _submit_one(next(file_iter))
+                        except StopIteration:
+                            break
+
+        # Salvage pass: retry a small number of failed files at lower concurrency.
+        # This helps when XNAT returns transient 400s under high parallel load.
+        max_salvage = min(5000, max(500, int(total_files * 0.01)))
+        if failed_paths and len(failed_paths) <= max_salvage:
+            retry_workers = max(1, min(4, workers))
+            report(
+                OperationPhase.PREPARING,
+                message=(
+                    f"Retrying {len(failed_paths)} failed file(s) "
+                    f"at lower concurrency ({retry_workers} workers)..."
+                ),
+            )
+
+            to_retry = sorted(failed_paths, key=display)
+            remaining_failed: set[Path] = set(failed_paths)
+
+            with ThreadPoolExecutor(max_workers=retry_workers) as retry_executor:
+                prefetch = max(1, retry_workers * 2)
+                retry_iter = iter(to_retry)
+                retry_in_flight: set[Future[tuple[str, bool, str]]] = set()
+                retry_future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
+
+                def _submit_retry(path: Path) -> None:
+                    fut: Future[tuple[str, bool, str]] = retry_executor.submit(  # type: ignore[arg-type]
                         _upload_single_file_gradual,
                         base_url=base_url,
                         session_token=session_token,
@@ -1689,187 +1933,102 @@ class UploadService(BaseService):
                         subject=subject,
                         session=session,
                     )
-                    in_flight.add(fut)
-                    future_to_path[fut] = path
+                    retry_in_flight.add(fut)
+                    retry_future_to_path[fut] = path
 
-                for _ in range(min(prefetch, len(remaining_files))):
+                for _ in range(min(prefetch, len(to_retry))):
                     try:
-                        _submit_one(next(file_iter))
+                        _submit_retry(next(retry_iter))
                     except StopIteration:
                         break
 
-                while in_flight:
-                    done, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
-                    in_flight = _pending
+                while retry_in_flight:
+                    done, _pending = wait(retry_in_flight, return_when=FIRST_COMPLETED)
+                    retry_in_flight = _pending
 
                     for future in done:
-                        completed += 1
-                        p = future_to_path.pop(future)
-
+                        p = retry_future_to_path.pop(future)
                         try:
                             _name, ok, err = future.result()
                         except Exception as e:
                             ok = False
                             err = str(e)
 
-                        if not ok:
-                            failed_paths.add(p)
+                        if ok:
+                            remaining_failed.discard(p)
+                            error_by_path.pop(p, None)
+                        else:
                             error_by_path[p] = err
 
-                        succeeded_so_far = completed - len(failed_paths)
-                        report(
-                            OperationPhase.UPLOADING,
-                            current=completed,
-                            total=total_files,
-                            success=ok,
-                            message=(
-                                f"Uploaded {completed}/{total_files} "
-                                f"({succeeded_so_far} ok, {len(failed_paths)} failed)"
-                            ),
-                        )
-
-                        while len(in_flight) < prefetch:
+                        while len(retry_in_flight) < prefetch:
                             try:
-                                _submit_one(next(file_iter))
+                                _submit_retry(next(retry_iter))
                             except StopIteration:
                                 break
 
-            # Salvage pass: retry a small number of failed files at lower concurrency.
-            # This helps when XNAT returns transient 400s under high parallel load.
-            max_salvage = min(5000, max(500, int(total_files * 0.01)))
-            if failed_paths and len(failed_paths) <= max_salvage:
-                retry_workers = max(1, min(4, workers))
-                report(
-                    OperationPhase.PREPARING,
-                    message=(
-                        f"Retrying {len(failed_paths)} failed file(s) "
-                        f"at lower concurrency ({retry_workers} workers)..."
-                    ),
-                )
+            failed_paths = remaining_failed
 
-                to_retry = sorted(failed_paths, key=display)
-                remaining_failed: set[Path] = set(failed_paths)
-
-                with ThreadPoolExecutor(max_workers=retry_workers) as retry_executor:
-                    prefetch = max(1, retry_workers * 2)
-                    retry_iter = iter(to_retry)
-                    retry_in_flight: set[Future[tuple[str, bool, str]]] = set()
-                    retry_future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
-
-                    def _submit_retry(path: Path) -> None:
-                        fut: Future[tuple[str, bool, str]] = retry_executor.submit(  # type: ignore[arg-type]
-                            _upload_single_file_gradual,
-                            base_url=base_url,
-                            session_token=session_token,
-                            verify_ssl=verify_ssl,
-                            file_path=path,
-                            display_path=display(path),
-                            project=project,
-                            subject=subject,
-                            session=session,
-                        )
-                        retry_in_flight.add(fut)
-                        retry_future_to_path[fut] = path
-
-                    for _ in range(min(prefetch, len(to_retry))):
-                        try:
-                            _submit_retry(next(retry_iter))
-                        except StopIteration:
-                            break
-
-                    while retry_in_flight:
-                        done, _pending = wait(retry_in_flight, return_when=FIRST_COMPLETED)
-                        retry_in_flight = _pending
-
-                        for future in done:
-                            p = retry_future_to_path.pop(future)
-                            try:
-                                _name, ok, err = future.result()
-                            except Exception as e:
-                                ok = False
-                                err = str(e)
-
-                            if ok:
-                                remaining_failed.discard(p)
-                                error_by_path.pop(p, None)
-                            else:
-                                error_by_path[p] = err
-
-                            while len(retry_in_flight) < prefetch:
-                                try:
-                                    _submit_retry(next(retry_iter))
-                                except StopIteration:
-                                    break
-
-                failed_paths = remaining_failed
-
-            # Final safety net: if only a handful of files are still failing, retry them
-            # sequentially. This is a pragmatic way to reach 100% completion on flaky
-            # networks without rerunning the whole upload.
-            if failed_paths and len(failed_paths) <= 50:
-                report(
-                    OperationPhase.PREPARING,
-                    message=f"Final sequential retry for {len(failed_paths)} file(s)...",
-                )
-
-                remaining_failed = set[Path]()
-                for p in sorted(failed_paths, key=display):
-                    _name, ok, err = _upload_single_file_gradual(
-                        base_url=base_url,
-                        session_token=session_token,
-                        verify_ssl=verify_ssl,
-                        file_path=p,
-                        display_path=display(p),
-                        project=project,
-                        subject=subject,
-                        session=session,
-                    )
-                    if ok:
-                        error_by_path.pop(p, None)
-                    else:
-                        remaining_failed.add(p)
-                        error_by_path[p] = err
-
-                failed_paths = remaining_failed
-
-            duration = time.time() - start_time
-            failed = len(failed_paths)
-            succeeded = total_files - failed
-            overall_success = failed == 0
-
-            errors = [
-                f"{display(p)}: {error_by_path.get(p, '')}".rstrip(": ")
-                for p in sorted(failed_paths, key=display)
-            ]
-
+        # Final safety net: if only a handful of files are still failing, retry them
+        # sequentially.
+        if failed_paths and len(failed_paths) <= 50:
             report(
-                OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
-                current=total_files,
-                total=total_files,
-                message=(
-                    f"Uploaded {succeeded} files via gradual-DICOM"
-                    if overall_success
-                    else f"Uploaded {succeeded}/{total_files} files ({failed} failed)"
-                ),
-                success=overall_success,
-                errors=errors,
+                OperationPhase.PREPARING,
+                message=f"Final sequential retry for {len(failed_paths)} file(s)...",
             )
 
-            return UploadSummary(
-                success=overall_success,
-                total=total_files,
-                succeeded=succeeded,
-                failed=failed,
-                duration=duration,
-                errors=errors,
-                total_files=total_files,
-                session_id=session,
-            )
+            remaining_failed = set[Path]()
+            for p in sorted(failed_paths, key=display):
+                _name, ok, err = _upload_single_file_gradual(
+                    base_url=base_url,
+                    session_token=session_token,
+                    verify_ssl=verify_ssl,
+                    file_path=p,
+                    display_path=display(p),
+                    project=project,
+                    subject=subject,
+                    session=session,
+                )
+                if ok:
+                    error_by_path.pop(p, None)
+                else:
+                    remaining_failed.add(p)
+                    error_by_path[p] = err
 
-        finally:
-            _close_gradual_http_clients()
-            if temp_dir:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            failed_paths = remaining_failed
+
+        duration = time.time() - start_time
+        failed = len(failed_paths)
+        succeeded = total_files - failed
+        overall_success = failed == 0
+
+        errors = [
+            f"{display(p)}: {error_by_path.get(p, '')}".rstrip(": ")
+            for p in sorted(failed_paths, key=display)
+        ]
+
+        report(
+            OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
+            current=total_files,
+            total=total_files,
+            message=(
+                f"Uploaded {succeeded} files via gradual-DICOM"
+                if overall_success
+                else f"Uploaded {succeeded}/{total_files} files ({failed} failed)"
+            ),
+            success=overall_success,
+            errors=errors,
+        )
+
+        return UploadSummary(
+            success=overall_success,
+            total=total_files,
+            succeeded=succeeded,
+            failed=failed,
+            duration=duration,
+            errors=errors,
+            total_files=total_files,
+            session_id=session,
+        )
 
     def upload_resource(
         self,
