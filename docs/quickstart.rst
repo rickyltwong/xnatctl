@@ -212,10 +212,9 @@ number and resource type:
 
 .. tip::
 
-   By default, scans are downloaded as ZIP archives that are then extracted. If
-   you want to skip extraction and keep the raw ZIP files, omit the ``--unzip``
-   flag. Conversely, ``--unzip`` (the default) automatically extracts archives
-   after download so you can work with the files immediately.
+   By default, scans are downloaded as ZIP archives. To automatically extract
+   them into a directory structure, add the ``--unzip`` flag. Use
+   ``--unzip --cleanup`` to remove the ZIP files after successful extraction.
 
 
 Step 5: Upload Data (Preview)

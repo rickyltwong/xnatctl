@@ -15,10 +15,18 @@ separate pathway that speaks native DICOM to an XNAT DICOM Receiver -- this is
 what ``xnatctl session upload-dicom`` uses. Both ultimately land data in the same
 XNAT archive, but they differ in how data is packaged, transmitted, and routed.
 
-This guide walks you through each method, explains when to choose one over
-another, and covers the full lifecycle from upload through verification. For
-background on XNAT's data hierarchy, prearchive staging area, and the difference
-between IDs and labels, see :doc:`concepts`.
+The simplest upload command looks like this:
+
+.. code-block:: console
+
+   $ xnatctl session upload /path/to/DICOM_ROOT \
+       -P MYPROJECT -S MYSUBJECT -E MYSESSION
+
+This uploads a directory of DICOM files to XNAT using the default method. The
+rest of this guide explains the available methods, tuning options, and the full
+lifecycle from upload through verification. For background on XNAT's data
+hierarchy, prearchive staging area, and the difference between IDs and labels,
+see :doc:`concepts`.
 
 
 .. _upload-method-comparison:

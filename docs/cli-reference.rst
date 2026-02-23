@@ -21,7 +21,9 @@ Every xnatctl command accepts these global options:
        and the ``XNAT_PROFILE`` environment variable.
    * - ``--output TEXT`` / ``-o``
      - Output format: ``json`` or ``table`` (default: ``table``). JSON is useful for
-       scripting and piping into tools like ``jq``.
+       scripting and piping into tools like ``jq``. **Not to be confused with** the
+       ``--out`` flag on download commands, which specifies a filesystem destination
+       path.
    * - ``--quiet`` / ``-q``
      - Suppress non-essential output; print only IDs.
    * - ``--verbose`` / ``-v``
@@ -66,6 +68,8 @@ The table below lists every command family with a one-line description.
      - Administrative operations (catalogs, users, audit)
    * - ``api``
      - Raw REST API access (escape hatch)
+   * - ``local``
+     - Offline operations on downloaded data (extract ZIPs)
    * - ``dicom``
      - DICOM validation and inspection utilities
 
@@ -493,6 +497,30 @@ Install and use DICOM utilities:
 
    These commands are independent of the XNAT server. Use them to pre-validate or
    anonymize files before uploading with ``session upload`` or ``session upload-dicom``.
+
+local
+-----
+
+The ``local`` commands perform offline operations on previously downloaded data.
+They do not require an XNAT connection.
+
+- ``local extract`` -- Extract ZIP files from downloaded sessions into organized
+  directory structures
+
+Extract downloaded session ZIPs:
+
+.. code-block:: console
+
+   $ xnatctl local extract ./data/XNAT_E00001
+   $ xnatctl local extract ./data --recursive
+   $ xnatctl local extract ./data --recursive --no-cleanup
+   $ xnatctl local extract ./data --recursive --dry-run
+
+.. tip::
+
+   Use ``local extract`` when you downloaded sessions without ``--unzip`` and want
+   to extract them later. The ``--cleanup`` flag (on by default) removes ZIP files
+   after successful extraction.
 
 Getting Help
 ------------
