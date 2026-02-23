@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import builtins
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.resource import Resource, ResourceFile
@@ -14,6 +14,78 @@ from .base import BaseService
 
 class ResourceService(BaseService):
     """Service for XNAT resource operations."""
+
+    @staticmethod
+    def _parse_optional_int(value: object) -> int | None:
+        """Parse an optional integer from XNAT-ish API values.
+
+        XNAT sometimes returns empty strings or non-numeric strings for numeric
+        fields; those should be treated as missing.
+
+        Args:
+            value: Input value from API.
+
+        Returns:
+            Parsed integer, or None if not parseable.
+        """
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            try:
+                return int(stripped)
+            except ValueError:
+                return None
+        return None
+
+    @classmethod
+    def _normalize_resource_row(
+        cls, row: Mapping[str, object], session_id: str
+    ) -> dict[str, object]:
+        """Normalize a resource row so it is safe to validate with Resource.
+
+        Args:
+            row: Raw row from XNAT ResultSet.
+            session_id: Parent session ID used for stable fallback IDs.
+
+        Returns:
+            Normalized copy of the row.
+        """
+        normalized: dict[str, object] = dict(row)
+
+        normalized["file_count"] = cls._parse_optional_int(normalized.get("file_count"))
+        normalized["file_size"] = cls._parse_optional_int(normalized.get("file_size"))
+
+        fallback_uri = normalized.get("xnat_abstractresource_id") or normalized.get("id")
+        if not fallback_uri:
+            fallback_uri = normalized.get("URI") or normalized.get("uri")
+
+        raw_id = normalized.get("ID")
+        if isinstance(raw_id, str) and not raw_id.strip():
+            raw_id = None
+
+        if raw_id is None:
+            label_value = normalized.get("label") or normalized.get("Label")
+            label = label_value.strip() if isinstance(label_value, str) else None
+            if not label:
+                label = None
+
+            if fallback_uri:
+                normalized["ID"] = str(fallback_uri)
+            elif label is not None:
+                normalized["ID"] = f"{session_id}:{label}"
+            else:
+                normalized["ID"] = session_id
+        else:
+            normalized["ID"] = str(raw_id)
+
+        return normalized
 
     def list(
         self,
@@ -44,18 +116,19 @@ class ResourceService(BaseService):
             else:
                 path = f"/data/experiments/{session_id}/resources"
 
-        params = {"format": "json"}
+        params: dict[str, str] = {"format": "json"}
         data = self._get(path, params=params)
         results = self._extract_results(data)
 
         resources = []
         for r in results:
+            r = self._normalize_resource_row(r, session_id=session_id)
             r["session_id"] = session_id
             if scan_id:
                 r["scan_id"] = scan_id
             if project:
                 r["project"] = project
-            resources.append(Resource(**r))
+            resources.append(Resource.model_validate(r))
 
         return resources
 
@@ -116,7 +189,7 @@ class ResourceService(BaseService):
             else:
                 path = f"/data/experiments/{session_id}/resources/{resource_label}/files"
 
-        params = {"format": "json"}
+        params: dict[str, str] = {"format": "json"}
         data = self._get(path, params=params)
         results = self._extract_results(data)
 
@@ -157,7 +230,7 @@ class ResourceService(BaseService):
             else:
                 path = f"/data/experiments/{session_id}/resources/{resource_label}"
 
-        params: dict[str, Any] = {}
+        params: dict[str, str] = {}
         if format:
             params["format"] = format
         if content:
@@ -199,7 +272,7 @@ class ResourceService(BaseService):
             else:
                 path = f"/data/experiments/{session_id}/resources/{resource_label}"
 
-        params: dict[str, Any] = {}
+        params: dict[str, str] = {}
         if remove_files:
             params["removeFiles"] = "true"
 
@@ -214,7 +287,7 @@ class ResourceService(BaseService):
         project: str | None = None,
         extract: bool = False,
         overwrite: bool = False,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Upload a file to a resource.
 
         Args:
@@ -243,7 +316,7 @@ class ResourceService(BaseService):
             else:
                 path = f"/data/experiments/{session_id}/resources/{resource_label}/files/{file_path.name}"
 
-        params: dict[str, Any] = {}
+        params: dict[str, str] = {}
         if extract:
             params["extract"] = "true"
         if overwrite:
@@ -288,7 +361,7 @@ class ResourceService(BaseService):
         scan_id: str | None = None,
         project: str | None = None,
         overwrite: bool = False,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Upload a directory to a resource (creates ZIP first).
 
         Args:
