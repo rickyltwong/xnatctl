@@ -168,7 +168,7 @@ def user() -> None:
     pass
 
 
-@user.command("add-to-groups")
+@user.command("add")
 @click.argument("username")
 @click.argument("groups", nargs=-1, required=True)
 @click.option("--projects", help="Comma-separated project IDs to generate group names")
@@ -176,20 +176,20 @@ def user() -> None:
 @global_options
 @require_auth
 @handle_errors
-def user_add_to_groups(
+def user_add(
     ctx: Context,
     username: str,
     groups: tuple,
     projects: str | None,
     role: str,
 ) -> None:
-    """Add user to XNAT groups.
+    """Add a user to XNAT groups.
 
     Groups can be specified directly or generated from project IDs.
 
     Example:
-        xnatctl admin user add-to-groups jsmith PROJ1_member PROJ2_owner
-        xnatctl admin user add-to-groups jsmith --projects PROJ1,PROJ2 --role member
+        xnatctl admin user add jsmith PROJ1_member PROJ2_owner
+        xnatctl admin user add jsmith --projects PROJ1,PROJ2 --role member
     """
     from urllib.parse import quote
 
