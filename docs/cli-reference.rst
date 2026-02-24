@@ -532,6 +532,9 @@ Install and use DICOM utilities:
    These commands are independent of the XNAT server. Use them to pre-validate or
    anonymize files before uploading with ``session upload`` or ``session upload-dicom``.
 
+For detailed documentation on each DICOM command, installation of the optional
+extra, and workflow examples, see :doc:`dicom`.
+
 local
 -----
 
