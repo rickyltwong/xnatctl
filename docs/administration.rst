@@ -253,9 +253,9 @@ do not yet have dedicated xnatctl commands. You can access them using the
 
 .. code-block:: console
 
-   $ xnatctl api get /data/version
+   $ xnatctl api get /xapi/siteConfig/buildInfo/version
 
-Returns the XNAT version, build number, and other server metadata.
+Returns the XNAT version string (e.g. ``1.9.1.2``).
 
 **Site configuration**
 

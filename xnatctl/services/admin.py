@@ -274,7 +274,7 @@ class AdminService(BaseService):
         Returns:
             Server info dict with version, build info, etc.
         """
-        path = "/data/version"
+        path = "/xapi/siteConfig/buildInfo/version"
         return cast(dict[str, Any], self._get(path))
 
     def get_site_config(
