@@ -99,6 +99,7 @@ Trigger a catalog refresh for a specific project (admin operation):
    cli-reference
    downloading
    uploading
+   dicom
    workflows
    administration
    xnat-compatibility

@@ -143,9 +143,11 @@ utilities.
 
 **With DICOM extras:**
 
-The ``dicom`` extra installs `pydicom <https://pydicom.github.io/>`_, which
-enables the ``xnatctl dicom validate`` and ``xnatctl dicom inspect`` commands
-for local DICOM file inspection before upload:
+The ``dicom`` extra installs `pydicom <https://pydicom.github.io/>`_ and
+`pynetdicom <https://pydicom.github.io/pynetdicom/>`_, which enable the
+``xnatctl dicom`` commands (validate, inspect, list-tags, anonymize) for local
+DICOM file operations and the ``xnatctl session upload-dicom`` C-STORE
+pathway. See :doc:`dicom` for full command documentation:
 
 .. code-block:: console
 
