@@ -6,6 +6,8 @@ import builtins
 from collections.abc import Mapping
 from pathlib import Path
 
+import httpx
+
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.resource import Resource, ResourceFile
 
@@ -236,7 +238,12 @@ class ResourceService(BaseService):
         if content:
             params["content"] = content
 
-        self._put(path, params=params)
+        try:
+            self._put(path, params=params)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 409:
+                raise
+            # 409 Conflict means the resource already exists; proceed to return it
         return self.get(session_id, resource_label, scan_id=scan_id, project=project)
 
     def delete(

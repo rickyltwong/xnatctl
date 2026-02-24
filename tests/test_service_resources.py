@@ -207,6 +207,34 @@ class TestResourceCreate:
         assert "/scans/1/resources/DICOM" in call_path
 
 
+    def test_create_existing_resource_409(
+        self, service: ResourceService, mock_client: MagicMock
+    ) -> None:
+        """Create returns existing resource on 409 Conflict."""
+        resp_409 = httpx.Response(status_code=409, request=httpx.Request("PUT", "http://x"))
+        mock_client.put.side_effect = httpx.HTTPStatusError(
+            "409 Conflict", request=resp_409.request, response=resp_409
+        )
+        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
+
+        result = service.create("E001", "DICOM")
+
+        assert isinstance(result, Resource)
+        assert result.label == "DICOM"
+
+    def test_create_non_409_error_raises(
+        self, service: ResourceService, mock_client: MagicMock
+    ) -> None:
+        """Create raises on non-409 HTTP errors."""
+        resp_500 = httpx.Response(status_code=500, request=httpx.Request("PUT", "http://x"))
+        mock_client.put.side_effect = httpx.HTTPStatusError(
+            "500 Internal Server Error", request=resp_500.request, response=resp_500
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            service.create("E001", "DICOM")
+
+
 class TestResourceDelete:
     """Tests for ResourceService.delete."""
 
