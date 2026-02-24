@@ -34,8 +34,8 @@ Pre-built binaries are published for the following platforms:
      - x86_64
      - ``xnatctl-linux-amd64.tar.gz``
    * - macOS
-     - x86_64
-     - ``xnatctl-darwin-amd64.tar.gz``
+     - Apple Silicon (arm64)
+     - ``xnatctl-darwin-arm64.tar.gz``
    * - Windows
      - x86_64
      - ``xnatctl-windows-amd64.zip``
