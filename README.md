@@ -166,6 +166,7 @@ For a detailed walkthrough, see the [Quick Start guide](docs/quickstart.rst).
 | `xnatctl pipeline`  | Pipeline execution (list/run/status/cancel)      |
 | `xnatctl admin`     | Administrative operations (users/catalogs/audit) |
 | `xnatctl api`       | Raw API access (escape hatch for any endpoint)   |
+| `xnatctl local`     | Offline operations (extract downloaded ZIPs)     |
 | `xnatctl dicom`     | DICOM utilities (requires `xnatctl[dicom]`)      |
 
 For complete usage and examples, see the [CLI Reference](docs/cli-reference.rst).

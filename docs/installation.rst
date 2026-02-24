@@ -202,6 +202,27 @@ This prints the top-level command groups (``project``, ``session``, ``auth``,
 etc.) along with global options like ``--output``, ``--profile``, and
 ``--quiet``.
 
+Shell Completion
+^^^^^^^^^^^^^^^^
+
+xnatctl can generate tab-completion scripts for bash, zsh, and fish. Install
+the script for your shell to get auto-completion of commands, sub-commands,
+and options:
+
+.. code-block:: console
+
+   # Bash
+   $ xnatctl completion bash > ~/.local/share/bash-completion/completions/xnatctl
+
+   # Zsh (ensure ~/.zfunc is in your fpath)
+   $ mkdir -p ~/.zfunc
+   $ xnatctl completion zsh > ~/.zfunc/_xnatctl
+
+   # Fish
+   $ xnatctl completion fish > ~/.config/fish/completions/xnatctl.fish
+
+Restart your shell after installing the completion script.
+
 .. _installation-troubleshooting:
 
 Troubleshooting

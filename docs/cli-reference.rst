@@ -72,6 +72,12 @@ The table below lists every command family with a one-line description.
      - Offline operations on downloaded data (extract ZIPs)
    * - ``dicom``
      - DICOM validation and inspection utilities
+   * - ``whoami``
+     - Show current user and authentication context
+   * - ``health``
+     - Server connectivity and version checks
+   * - ``completion``
+     - Generate shell completion scripts (bash/zsh/fish)
 
 config
 ------
@@ -470,6 +476,9 @@ Add a user to project groups and view audit entries:
    Catalog refresh runs in parallel by default. Use ``--no-parallel`` for sequential
    execution or ``--workers N`` to control concurrency.
 
+For detailed admin workflows, prerequisites, and workarounds for tasks not yet
+exposed as CLI commands, see :doc:`administration`.
+
 api
 ---
 
@@ -546,6 +555,34 @@ Extract downloaded session ZIPs:
    Use ``local extract`` when you downloaded sessions without ``--unzip`` and want
    to extract them later. The ``--cleanup`` flag (on by default) removes ZIP files
    after successful extraction.
+
+completion
+----------
+
+The ``completion`` commands generate shell auto-completion scripts for bash,
+zsh, and fish. Once installed, pressing Tab completes command names, options,
+and sub-commands.
+
+- ``completion bash`` -- Generate bash completion script
+- ``completion zsh`` -- Generate zsh completion script
+- ``completion fish`` -- Generate fish completion script
+
+Install completions for your shell:
+
+.. code-block:: console
+
+   # Bash
+   $ xnatctl completion bash > ~/.local/share/bash-completion/completions/xnatctl
+
+   # Zsh (add ~/.zfunc to fpath in .zshrc first)
+   $ mkdir -p ~/.zfunc
+   $ xnatctl completion zsh > ~/.zfunc/_xnatctl
+
+   # Fish
+   $ xnatctl completion fish > ~/.config/fish/completions/xnatctl.fish
+
+After installing, restart your shell or source your shell config file for
+completions to take effect.
 
 Getting Help
 ------------
