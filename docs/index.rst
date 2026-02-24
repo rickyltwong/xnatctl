@@ -43,9 +43,12 @@ Feature Highlights
   ``xnatctl auth login``; the session token is cached locally and refreshed
   automatically, including transparent re-authentication on expiry.
 
-- **Pure HTTP with httpx** -- No heavyweight dependencies like pyxnat.
-  xnatctl talks directly to XNAT's REST API with automatic retries and
-  exponential backoff on transient errors.
+- **Pure HTTP with httpx** -- Existing Python libraries like
+  `pyxnat <https://pyxnat.github.io/pyxnat/>`_ and
+  `xnatpy <https://xnat.readthedocs.io/>`_ inspired this project, but they are
+  importable libraries that require writing Python code. xnatctl is a standalone
+  CLI that talks directly to XNAT's REST API with automatic retries and
+  exponential backoff -- no Python environment required.
 
 
 Quick Example

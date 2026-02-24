@@ -34,8 +34,10 @@ scriptable interface to your XNAT server.
   so you stay authenticated without repeated prompts.
 
 - **Pure HTTP** -- xnatctl talks directly to the XNAT REST API using httpx.
-  There is no dependency on pyxnat or any Java bridge, which keeps the install
-  lightweight and the behavior predictable.
+  Existing Python libraries like [pyxnat](https://pyxnat.github.io/pyxnat/) and
+  [xnatpy](https://xnat.readthedocs.io/) inspired this project, but they are
+  importable libraries that require writing Python code. xnatctl is a standalone
+  CLI that ships as a single binary -- no Python environment required.
 
 ## Installation
 
