@@ -100,6 +100,7 @@ Trigger a catalog refresh for a specific project (admin operation):
    downloading
    uploading
    workflows
+   administration
    xnat-compatibility
 
 .. toctree::
