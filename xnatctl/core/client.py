@@ -431,7 +431,7 @@ class XNATClient:
             NetworkError: If server is unreachable.
         """
         start = time.time()
-        resp = self.get("/data/version")
+        resp = self.get("/xapi/siteConfig/buildInfo/version")
         latency = int((time.time() - start) * 1000)
 
         return {

@@ -18,7 +18,7 @@ If you encounter a bug, please open an issue on
 detail as possible. A good bug report includes:
 
 - **xnatctl version** -- run ``xnatctl --version`` and paste the output.
-- **XNAT server version** -- available from the XNAT admin panel or ``/data/version``.
+- **XNAT server version** -- run ``xnatctl health ping`` or ``xnatctl api get /xapi/siteConfig/buildInfo/version``.
 - **Exact command** -- the full command you ran, e.g. ``xnatctl session list -P MY_PROJECT``.
 - **Full error output** -- copy the complete traceback or error message.
 - **OS and Python version** -- e.g. "Ubuntu 22.04, Python 3.12.1".
