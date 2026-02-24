@@ -7,20 +7,32 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions: {}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_FROZEN: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
-          version: "latest"
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.12
@@ -29,20 +41,23 @@ jobs:
         run: uv sync --dev
 
       - name: Run ruff check
-        run: uv run ruff check xnatctl
+        run: uv run ruff check xnatctl scripts
 
       - name: Run ruff format check
-        run: uv run ruff format --check xnatctl
+        run: uv run ruff format --check xnatctl scripts
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
-          version: "latest"
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.12
@@ -50,22 +65,41 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      - name: Cache mypy results
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .mypy_cache
+          key: mypy-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+
       - name: Run mypy
         run: uv run mypy xnatctl --ignore-missing-imports
 
   test:
-    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
-
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
-          version: "latest"
+          enable-cache: true
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -77,54 +111,59 @@ jobs:
         run: uv run pytest tests/ -v --tb=short
 
       - name: Run tests with coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         run: uv run pytest tests/ --cov=xnatctl --cov-report=xml
 
       - name: Upload coverage
-        if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [lint, typecheck, test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
-          version: "latest"
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.12
+
+      - name: Set reproducible build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
 
       - name: Build package
         run: uv build
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/
 
   auto-tag:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [lint, typecheck, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
 
       - name: Set up Python
         run: uv python install 3.12
@@ -163,7 +202,7 @@ jobs:
 
       - name: Create GitHub release
         if: steps.tag.outputs.created == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
@@ -175,6 +214,7 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [auto-tag, build]
     if: needs.auto-tag.outputs.created == 'true' && !(contains(needs.auto-tag.outputs.version, 'alpha') || contains(needs.auto-tag.outputs.version, 'beta') || contains(needs.auto-tag.outputs.version, 'rc'))
     permissions:
@@ -184,16 +224,19 @@ jobs:
       url: https://pypi.org/p/xnatctl
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+        with:
+          skip-existing: true
 
   publish-testpypi:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [auto-tag, build]
     if: needs.auto-tag.outputs.created == 'true' && (contains(needs.auto-tag.outputs.version, 'alpha') || contains(needs.auto-tag.outputs.version, 'beta') || contains(needs.auto-tag.outputs.version, 'rc'))
     permissions:
@@ -203,51 +246,50 @@ jobs:
       url: https://test.pypi.org/p/xnatctl
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
 
       - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
           repository-url: https://test.pypi.org/legacy/
 
   binary:
     needs: auto-tag
     if: needs.auto-tag.outputs.created == 'true'
+    timeout-minutes: 30
     permissions:
       contents: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             platform: linux
             arch: amd64
-          - os: macos-latest
+          - os: macos-13
             platform: darwin
             arch: amd64
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
           - os: windows-latest
             platform: windows
             arch: amd64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
-      - name: Install deps (Linux/macOS)
-        if: matrix.platform != 'windows'
-        run: |
-          pip install --upgrade pip
-          pip install pyinstaller
-          pip install .
-
-      - name: Install deps (Windows)
-        if: matrix.platform == 'windows'
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
@@ -284,7 +326,7 @@ jobs:
         shell: pwsh
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binary-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
@@ -292,14 +334,17 @@ jobs:
 
   upload-binaries:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [auto-tag, binary]
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Download all binary artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: binary-*
           merge-multiple: true
@@ -313,6 +358,18 @@ jobs:
             xnatctl-linux-amd64.tar.gz.sha256 \
             xnatctl-darwin-amd64.tar.gz \
             xnatctl-darwin-amd64.tar.gz.sha256 \
+            xnatctl-darwin-arm64.tar.gz \
+            xnatctl-darwin-arm64.tar.gz.sha256 \
             xnatctl-windows-amd64.zip \
             xnatctl-windows-amd64.zip.sha256 \
             --clobber
+
+  check:
+    if: always()
+    needs: [lint, typecheck, test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
+        with:
+          jobs: ${{ toJSON(needs) }}
