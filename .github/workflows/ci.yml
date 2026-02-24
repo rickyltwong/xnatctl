@@ -269,9 +269,6 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             arch: amd64
-          - os: macos-13
-            platform: darwin
-            arch: amd64
           - os: macos-latest
             platform: darwin
             arch: arm64
@@ -356,8 +353,6 @@ jobs:
           gh release upload "${{ needs.auto-tag.outputs.tag }}" \
             xnatctl-linux-amd64.tar.gz \
             xnatctl-linux-amd64.tar.gz.sha256 \
-            xnatctl-darwin-amd64.tar.gz \
-            xnatctl-darwin-amd64.tar.gz.sha256 \
             xnatctl-darwin-arm64.tar.gz \
             xnatctl-darwin-arm64.tar.gz.sha256 \
             xnatctl-windows-amd64.zip \
