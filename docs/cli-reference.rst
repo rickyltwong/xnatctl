@@ -448,7 +448,7 @@ The ``admin`` commands provide server administration operations. These typically
 require elevated privileges on the XNAT server.
 
 - ``admin refresh-catalogs`` -- Refresh catalog XMLs for experiments in a project
-- ``admin user add-to-groups`` -- Add a user to one or more XNAT groups
+- ``admin user add`` -- Add a user to one or more XNAT groups
 - ``admin audit`` -- View the audit log (depends on server configuration)
 
 Refresh catalogs with checksum generation and stale entry cleanup:
@@ -462,7 +462,7 @@ Add a user to project groups and view audit entries:
 
 .. code-block:: console
 
-   $ xnatctl admin user add-to-groups jsmith --projects PROJ1,PROJ2 --role member
+   $ xnatctl admin user add jsmith --projects PROJ1,PROJ2 --role member
    $ xnatctl admin audit --project MYPROJ --limit 20
 
 .. note::

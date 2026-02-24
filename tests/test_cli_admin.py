@@ -179,8 +179,8 @@ class TestAdminRefreshCatalogs:
         assert "refreshed" in result.output
 
 
-class TestAdminUserAddToGroups:
-    """Tests for admin user add-to-groups command."""
+class TestAdminUserAdd:
+    """Tests for admin user add command."""
 
     def test_add_user_to_groups(self, runner: CliRunner) -> None:
         client = _mock_client()
@@ -196,7 +196,7 @@ class TestAdminUserAddToGroups:
                         [
                             "admin",
                             "user",
-                            "add-to-groups",
+                            "add",
                             "jsmith",
                             "PROJ1_member",
                             "PROJ2_owner",
@@ -220,7 +220,7 @@ class TestAdminUserAddToGroups:
                         [
                             "admin",
                             "user",
-                            "add-to-groups",
+                            "add",
                             "jsmith",
                             "EXTRA_group",
                             "--projects",
@@ -252,7 +252,7 @@ class TestAdminUserAddToGroups:
                         [
                             "admin",
                             "user",
-                            "add-to-groups",
+                            "add",
                             "jsmith",
                             "PROJ1_member",
                         ],
