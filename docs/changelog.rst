@@ -1,6 +1,12 @@
 Changelog
 =========
 
+0.1.3 (2026)
+-------------
+
+- Fix server version endpoint (use ``/xapi/siteConfig/buildInfo/version``)
+- Build Linux binary on manylinux_2_28 for RHEL 8+/AlmaLinux 9 compatibility
+
 0.1.2 (2026)
 -------------
 
