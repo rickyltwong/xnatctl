@@ -294,12 +294,23 @@ jobs:
       - name: Set up Python (manylinux container)
         if: matrix.container != ''
         run: |
-          PYTHON=/opt/python/cp312-cp312/bin/python
-          echo "$(dirname $PYTHON)" >> $GITHUB_PATH
+          # manylinux CPython is static; PyInstaller requires --enable-shared.
+          # Build a shared-library Python from the bundled source.
+          PYVER=3.12
+          SRCVER=3.12.12
+          PREFIX=/opt/python-shared
+          cd /tmp
+          curl -sSL "https://www.python.org/ftp/python/${SRCVER}/Python-${SRCVER}.tgz" | tar xz
+          cd "Python-${SRCVER}"
+          ./configure --prefix="$PREFIX" --enable-shared --enable-optimizations \
+            --with-lto LDFLAGS="-Wl,-rpath,$PREFIX/lib" > /dev/null 2>&1
+          make -j"$(nproc)" > /dev/null 2>&1
+          make install > /dev/null 2>&1
+          echo "$PREFIX/bin" >> $GITHUB_PATH
 
       - name: Install deps
         run: |
-          python -m pip install --upgrade pip
+          python3 -m pip install --upgrade pip
           pip install pyinstaller
           pip install .
 
