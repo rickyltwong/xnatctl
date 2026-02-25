@@ -269,22 +269,33 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             arch: amd64
+            container: quay.io/pypa/manylinux_2_28_x86_64
           - os: macos-latest
             platform: darwin
             arch: arm64
+            container: ""
           - os: windows-latest
             platform: windows
             arch: amd64
+            container: ""
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || null }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
 
-      - name: Set up Python
+      - name: Set up Python (non-container)
+        if: matrix.container == ''
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+
+      - name: Set up Python (manylinux container)
+        if: matrix.container != ''
+        run: |
+          PYTHON=/opt/python/cp312-cp312/bin/python
+          echo "$(dirname $PYTHON)" >> $GITHUB_PATH
 
       - name: Install deps
         run: |
