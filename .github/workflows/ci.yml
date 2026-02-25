@@ -295,15 +295,15 @@ jobs:
         if: matrix.container != ''
         run: |
           # manylinux CPython is static; PyInstaller requires --enable-shared.
-          # Build a shared-library Python from the bundled source.
-          PYVER=3.12
+          # Build a minimal shared-library Python from source.
+          yum install -y openssl-devel libffi-devel bzip2-devel xz-devel > /dev/null 2>&1
           SRCVER=3.12.12
           PREFIX=/opt/python-shared
           cd /tmp
           curl -sSL "https://www.python.org/ftp/python/${SRCVER}/Python-${SRCVER}.tgz" | tar xz
           cd "Python-${SRCVER}"
-          ./configure --prefix="$PREFIX" --enable-shared --enable-optimizations \
-            --with-lto LDFLAGS="-Wl,-rpath,$PREFIX/lib" > /dev/null 2>&1
+          ./configure --prefix="$PREFIX" --enable-shared \
+            LDFLAGS="-Wl,-rpath,$PREFIX/lib" > /dev/null 2>&1
           make -j"$(nproc)" > /dev/null 2>&1
           make install > /dev/null 2>&1
           echo "$PREFIX/bin" >> $GITHUB_PATH
