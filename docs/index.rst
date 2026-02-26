@@ -109,6 +109,7 @@ Trigger a catalog refresh for a specific project (admin operation):
    :caption: User Guide
 
    cli-reference
+   skill
    downloading
    uploading
    dicom
