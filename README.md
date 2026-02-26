@@ -4,7 +4,7 @@ A modern command-line interface for XNAT neuroimaging server administration.
 
 ## What is xnatctl?
 
-xnatctl is a command-line tool for managing neuroimaging data on XNAT servers.
+xnatctl is a command-line tool for managing neuroimaging data on XNAT servers.[^xnat]
 It lets you browse projects and subjects, download and upload imaging sessions,
 run processing pipelines, and perform administrative tasks -- all from your
 terminal. Whether you are a researcher downloading data for analysis or a system
@@ -294,3 +294,5 @@ uv run mypy xnatctl
 ## License
 
 MIT
+
+[^xnat]: XNAT is an open source project produced by NRG at the Washington University School of Medicine. See `https://xnat.org/`.
