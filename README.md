@@ -36,8 +36,15 @@ scriptable interface to your XNAT server.
 - **Pure HTTP** -- xnatctl talks directly to the XNAT REST API using httpx.
   Existing Python libraries like [pyxnat](https://pyxnat.github.io/pyxnat/) and
   [xnatpy](https://xnat.readthedocs.io/) inspired this project, but they are
-  importable libraries that require writing Python code. xnatctl is a standalone
-  CLI that ships as a single binary -- no Python environment required.
+  excellent *Python libraries* intended to be imported into your own code. xnatctl
+  exists for the complementary use case: a **CLI-first** workflow where you want to
+  explore resources, automate API interactions from shell scripts, and run common
+  administrative tasks without writing a bespoke Python program.
+
+  The command structure and UX borrow from tools like `kubectl` and `airflowctl`:
+  resource-centric subcommands, consistent flags, and output you can read as a human
+  or pipe into other tools. xnatctl ships as a standalone CLI that can be installed
+  as a single binary (no Python environment required).
 
 ## Installation
 

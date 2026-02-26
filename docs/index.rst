@@ -46,9 +46,16 @@ Feature Highlights
 - **Pure HTTP with httpx** -- Existing Python libraries like
   `pyxnat <https://pyxnat.github.io/pyxnat/>`_ and
   `xnatpy <https://xnat.readthedocs.io/>`_ inspired this project, but they are
-  importable libraries that require writing Python code. xnatctl is a standalone
-  CLI that talks directly to XNAT's REST API with automatic retries and
-  exponential backoff -- no Python environment required.
+  excellent *Python libraries* intended to be imported into your own code. xnatctl
+  exists for the complementary use case: a **CLI-first** workflow where you want to
+  explore resources, automate API interactions from shell scripts, and run common
+  administrative tasks without writing a bespoke Python program.
+
+  The command structure and UX borrow from tools like ``kubectl`` and ``airflowctl``:
+  resource-centric subcommands, consistent flags, and output you can read as a human
+  or pipe into other tools. xnatctl is a standalone CLI that talks directly to XNAT's
+  REST API with automatic retries and exponential backoff -- no Python environment
+  required.
 
 
 Quick Example
