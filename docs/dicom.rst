@@ -106,16 +106,17 @@ import failures can be harder to diagnose.
 
 **Required tags checked:**
 
-The validator checks for five tags that are essential for XNAT import:
+The validator checks for these tags that are essential for XNAT import:
 
 - ``PatientID`` (0010,0020)
+- ``PatientName`` (0010,0010)
 - ``StudyInstanceUID`` (0020,000D)
 - ``SeriesInstanceUID`` (0020,000E)
 - ``SOPInstanceUID`` (0008,0018)
 - ``Modality`` (0008,0060)
 
-Files missing any of these tags are reported as invalid. The validator also
-warns when a file contains more than 100 private tags, which can cause
+Files missing any of these tags, or where any of these values are blank/empty, are reported as
+invalid. The validator also warns when a file contains more than 100 private tags, which can cause
 performance issues during import.
 
 **Examples:**

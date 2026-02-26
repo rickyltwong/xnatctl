@@ -88,9 +88,18 @@ def dicom_validate(
             errors = []
             warnings = []
 
+            def _is_empty_required_value(value: object) -> bool:
+                if value is None:
+                    return True
+                if isinstance(value, (bytes, bytearray)):
+                    return len(value) == 0
+                s = str(value)
+                return s.strip() == ""
+
             # Check required DICOM tags
             required_tags = [
                 ("PatientID", 0x00100020),
+                ("PatientName", 0x00100010),
                 ("StudyInstanceUID", 0x0020000D),
                 ("SeriesInstanceUID", 0x0020000E),
                 ("SOPInstanceUID", 0x00080018),
@@ -98,8 +107,11 @@ def dicom_validate(
             ]
 
             for name, tag in required_tags:
-                if tag not in ds:
+                elem = ds.get(tag)
+                if elem is None:
                     errors.append(f"Missing required tag: {name}")
+                elif _is_empty_required_value(getattr(elem, "value", None)):
+                    errors.append(f"Empty required tag value: {name}")
 
             # Check for private tags that might cause issues
             private_count = sum(1 for elem in ds if elem.tag.is_private)
@@ -119,6 +131,7 @@ def dicom_validate(
                     "errors": errors,
                     "warnings": warnings,
                     "patient_id": getattr(ds, "PatientID", ""),
+                    "patient_name": str(getattr(ds, "PatientName", "")),
                     "modality": getattr(ds, "Modality", ""),
                 }
             )
