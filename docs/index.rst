@@ -2,7 +2,7 @@ xnatctl
 =======
 
 **xnatctl** is a modern command-line interface for administering
-`XNAT <https://xnat.org>`_ neuroimaging servers. If you manage imaging
+`XNAT <https://xnat.org>`_ [#xnat]_ neuroimaging servers. If you manage imaging
 studies, move DICOM data between systems, or automate research workflows
 against XNAT's REST API, xnatctl gives you a single, consistent tool to do
 it all from your terminal.
@@ -18,6 +18,8 @@ single ``--profile`` flag.
 Whether you are a neuroimaging researcher downloading a handful of scans or a
 platform engineer bulk-loading thousands of DICOM series, xnatctl is designed
 to stay out of your way while keeping you informed about what is happening.
+
+.. [#xnat] XNAT is an open source project produced by NRG at the Washington University School of Medicine. See https://xnat.org/.
 
 
 Feature Highlights
