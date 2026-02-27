@@ -201,8 +201,8 @@ You can also run the built-in help to see the full list of available commands:
    $ xnatctl --help
 
 This prints the top-level command groups (``project``, ``session``, ``auth``,
-etc.) along with global options like ``--output``, ``--profile``, and
-``--quiet``.
+etc.). Many resource-oriented commands support common options like
+``--output``, ``--profile``, and ``--quiet``.
 
 Shell Completion
 ^^^^^^^^^^^^^^^^

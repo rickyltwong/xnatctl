@@ -5,10 +5,12 @@ This is the complete command reference for xnatctl. Every command family, sub-co
 and option is documented here. If you are new to xnatctl, start with the
 :doc:`quickstart` guide for a hands-on introduction.
 
-Global Options
---------------
+Common Command Options
+----------------------
 
-Every xnatctl command accepts these global options:
+Most resource-oriented commands (for example ``project``, ``subject``,
+``session``, ``scan``, ``resource``, ``prearchive``, ``pipeline``, ``admin``,
+and ``api``) accept these common options:
 
 .. list-table::
    :header-rows: 1
@@ -31,9 +33,18 @@ Every xnatctl command accepts these global options:
    * - ``--help``
      - Show the help message for any command or sub-command.
 
-These options work before or after the sub-command name. For example, both
-``xnatctl --output json project list`` and ``xnatctl project list --output json``
-are valid.
+These options are command-level options and should be passed after the
+sub-command path. For example:
+
+.. code-block:: console
+
+   $ xnatctl project list --output json
+
+.. note::
+
+   Top-level utility groups such as ``config``, ``auth``, ``completion``,
+   ``local``, ``health``, and ``dicom`` expose their own options and do not
+   universally support ``--quiet`` or ``--verbose``.
 
 Command Summary
 ---------------

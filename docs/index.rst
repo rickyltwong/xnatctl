@@ -33,9 +33,10 @@ Feature Highlights
   multiple XNAT servers in a single YAML file; switch contexts without
   editing environment variables.
 
-- **Consistent output formats** -- Pass ``--output json`` for machine-readable
-  output, ``--output table`` for human-friendly tables, or ``--quiet`` to emit
-  only resource IDs (ideal for shell pipelines).
+- **Consistent output formats** -- Resource-oriented commands support
+  ``--output json`` for machine-readable output, ``--output table`` for
+  human-friendly tables, or ``--quiet`` to emit only resource IDs (ideal for
+  shell pipelines).
 
 - **Parallel batch operations** -- Uploads and downloads run in parallel by
   default with configurable worker counts and real-time progress bars, so

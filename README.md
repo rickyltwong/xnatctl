@@ -21,9 +21,10 @@ scriptable interface to your XNAT server.
   profiles and switch between them instantly. Keep separate profiles for
   production, development, and collaboration servers in a single config file.
 
-- **Consistent output formats** -- every command supports `--output json|table`
-  and `--quiet` (IDs only), so you can pipe results into scripts or read them
-  in a human-friendly table without changing your workflow.
+- **Consistent output formats** -- resource-oriented commands support
+  `--output json|table` and `--quiet` (IDs only), so you can pipe results into
+  scripts or read them in a human-friendly table without changing your
+  workflow.
 
 - **Parallel operations** -- batch uploads and downloads run across multiple
   workers with real-time progress tracking. Large transfers stay fast without
