@@ -314,6 +314,68 @@ def handle_errors(f: F) -> F:
 
 
 # =============================================================================
+# Destination Profile Helpers
+# =============================================================================
+
+
+def dest_profile_options(f: F) -> F:
+    """Add destination profile options for transfer commands."""
+
+    @click.option("--dest-profile", help="Destination config profile name")
+    @click.option("--dest-url", help="Destination XNAT URL (inline)")
+    @click.option("--dest-user", help="Destination username (inline)")
+    @click.option("--dest-pass", help="Destination password (inline)")
+    @wraps(f)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return f(*args, **kwargs)
+
+    return wrapper  # type: ignore
+
+
+def create_dest_client(
+    ctx: Context,
+    dest_profile: str | None = None,
+    dest_url: str | None = None,
+    dest_user: str | None = None,
+    dest_pass: str | None = None,
+) -> XNATClient:
+    """Create an XNATClient for the destination server.
+
+    Args:
+        ctx: CLI context.
+        dest_profile: Profile name to load from config.
+        dest_url: Inline destination URL.
+        dest_user: Inline destination username.
+        dest_pass: Inline destination password.
+
+    Returns:
+        Configured XNATClient (not yet authenticated).
+
+    Raises:
+        ConfigurationError: If no destination specified.
+    """
+    if dest_profile:
+        config = ctx.config or Config.load()
+        profile = config.get_profile(dest_profile)
+        username, password = get_credentials(profile)
+        return XNATClient(
+            base_url=profile.url,
+            username=username,
+            password=password,
+            timeout=profile.timeout,
+            verify_ssl=profile.verify_ssl,
+        )
+    elif dest_url:
+        return XNATClient(
+            base_url=dest_url,
+            username=dest_user,
+            password=dest_pass,
+        )
+    else:
+        raise ConfigurationError("Destination not specified. Use --dest-profile or --dest-url.")
+
+
+# =============================================================================
 # Exit Codes
 # =============================================================================
 
