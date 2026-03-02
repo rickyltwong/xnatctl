@@ -368,3 +368,71 @@ class DicomStoreError(DicomError):
             self.details["host"] = host
         if port:
             self.details["port"] = port
+
+
+# =============================================================================
+# Transfer Errors
+# =============================================================================
+
+
+class TransferError(OperationError):
+    """Error during project transfer."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__("transfer", message, details)
+
+
+class TransferConflictError(TransferError):
+    """Conflict detected on destination during transfer."""
+
+    def __init__(
+        self,
+        entity_type: str,
+        local_id: str,
+        remote_id: str,
+        reason: str,
+    ):
+        super().__init__(
+            f"Conflict on {entity_type} {local_id} (remote {remote_id}): {reason}",
+            {"entity_type": entity_type, "local_id": local_id, "remote_id": remote_id},
+        )
+        self.entity_type = entity_type
+        self.local_id = local_id
+        self.remote_id = remote_id
+        self.reason = reason
+
+
+class TransferCircuitBreakerError(TransferError):
+    """Too many consecutive transfer failures."""
+
+    def __init__(self, failures: int, max_failures: int):
+        super().__init__(
+            f"Circuit breaker: {failures}/{max_failures} consecutive failures",
+            {"failures": failures, "max_failures": max_failures},
+        )
+        self.failures = failures
+        self.max_failures = max_failures
+
+
+class TransferVerificationError(TransferError):
+    """Post-transfer verification failed."""
+
+    def __init__(self, entity_id: str, expected: int, actual: int):
+        super().__init__(
+            f"Verification failed for {entity_id}: expected {expected} files, got {actual}",
+            {"entity_id": entity_id, "expected": expected, "actual": actual},
+        )
+        self.entity_id = entity_id
+        self.expected = expected
+        self.actual = actual
+
+
+class TransferConfigError(TransferError):
+    """Invalid transfer configuration."""
+
+    def __init__(self, message: str, field: str | None = None):
+        details: dict[str, Any] = {}
+        if field:
+            details["field"] = field
+        super().__init__(message, details)
+        self.field = field
