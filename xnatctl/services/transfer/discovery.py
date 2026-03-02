@@ -45,13 +45,13 @@ def _parse_xnat_timestamp(ts: str) -> datetime:
     """Parse an XNAT timestamp string into a timezone-aware datetime.
 
     Args:
-        ts: Timestamp string in XNAT format (e.g. '2026-01-01 10:00:00.0')
+        ts: Timestamp string in XNAT format (e.g. '2026-01-01 10:00:00.941')
 
     Returns:
         Timezone-aware UTC datetime
     """
-    cleaned = ts.strip().rstrip("0").rstrip(".")
-    dt = datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
+    base = ts.strip().split(".")[0]
+    dt = datetime.strptime(base, "%Y-%m-%d %H:%M:%S")
     return dt.replace(tzinfo=UTC)
 
 
@@ -106,7 +106,8 @@ class DiscoveryService(BaseService):
                 continue
 
             insert_dt = _parse_xnat_timestamp(row["insert_date"])
-            modified_dt = _parse_xnat_timestamp(row["last_modified"])
+            modified_raw = row.get("last_modified")
+            modified_dt = _parse_xnat_timestamp(modified_raw) if modified_raw else insert_dt
             change = _classify_change(insert_dt, modified_dt, cutoff)
             if change is None:
                 continue
@@ -149,7 +150,8 @@ class DiscoveryService(BaseService):
                 continue
 
             insert_dt = _parse_xnat_timestamp(row["insert_date"])
-            modified_dt = _parse_xnat_timestamp(row["last_modified"])
+            modified_raw = row.get("last_modified")
+            modified_dt = _parse_xnat_timestamp(modified_raw) if modified_raw else insert_dt
             change = _classify_change(insert_dt, modified_dt, cutoff)
             if change is None:
                 continue

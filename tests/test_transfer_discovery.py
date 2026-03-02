@@ -9,6 +9,7 @@ import pytest
 from xnatctl.services.transfer.discovery import (
     ChangeType,
     DiscoveryService,
+    _parse_xnat_timestamp,
 )
 
 
@@ -29,6 +30,28 @@ def mock_client() -> MagicMock:
 @pytest.fixture
 def service(mock_client: MagicMock) -> DiscoveryService:
     return DiscoveryService(mock_client)
+
+
+class TestParseXnatTimestamp:
+    def test_trailing_zero_fractional(self) -> None:
+        dt = _parse_xnat_timestamp("2026-01-01 10:00:00.0")
+        assert dt.year == 2026
+        assert dt.second == 0
+
+    def test_nonzero_fractional_seconds(self) -> None:
+        dt = _parse_xnat_timestamp("2025-06-15 14:32:18.941")
+        assert dt.year == 2025
+        assert dt.hour == 14
+        assert dt.minute == 32
+        assert dt.second == 18
+
+    def test_no_fractional(self) -> None:
+        dt = _parse_xnat_timestamp("2026-01-01 10:00:00")
+        assert dt.second == 0
+
+    def test_whitespace_stripped(self) -> None:
+        dt = _parse_xnat_timestamp("  2026-01-01 10:00:00.123  ")
+        assert dt.year == 2026
 
 
 class TestDiscoverSubjects:
@@ -79,6 +102,27 @@ class TestDiscoverSubjects:
 
         assert len(entities) == 1
         assert entities[0].change_type == ChangeType.MODIFIED
+
+    def test_missing_last_modified_falls_back_to_insert_date(
+        self, service: DiscoveryService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get.return_value = _make_response({
+            "ResultSet": {
+                "Result": [
+                    {
+                        "ID": "XNAT_S001",
+                        "label": "SUB001",
+                        "project": "PROJ",
+                        "insert_date": "2024-04-19 08:49:24.941",
+                    },
+                ]
+            }
+        })
+
+        entities = service.discover_subjects("PROJ", last_sync_time=None)
+
+        assert len(entities) == 1
+        assert entities[0].insert_date == entities[0].last_modified
 
     def test_skips_shared_subjects(
         self, service: DiscoveryService, mock_client: MagicMock
