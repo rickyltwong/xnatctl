@@ -322,6 +322,7 @@ class XNATClient:
         params: dict[str, Any] | None = None,
         json: Any | None = None,
         data: Any | None = None,
+        files: Any | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
     ) -> httpx.Response:
@@ -332,6 +333,7 @@ class XNATClient:
             params=params,
             json=json,
             data=data,
+            files=files,
             headers=headers,
             timeout=timeout,
         )
