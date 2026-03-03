@@ -304,8 +304,8 @@ def scan_delete(
 @click.option(
     "--resource",
     "-r",
-    default=None,
-    help="Resource type to download (DICOM, NIFTI, etc). Omit for all resources.",
+    multiple=True,
+    help="Resource types to download (repeatable). Omit for all resources.",
 )
 @click.option("--unzip/--no-unzip", default=False, help="Extract downloaded ZIPs")
 @click.option(
@@ -324,7 +324,7 @@ def scan_download(
     scans: str,
     out: str,
     name: str | None,
-    resource: str | None,
+    resource: tuple[str, ...],
     unzip: bool,
     cleanup: bool,
     dry_run: bool,
@@ -368,9 +368,12 @@ def scan_download(
     else:
         scan_ids = scan_ids_input
 
+    # Convert resource tuple to single value for service layer
+    resource_filter: str | None = resource[0] if len(resource) == 1 else None
+
     if dry_run:
         scan_desc = "all scans" if use_all_keyword else f"{len(scan_ids)} scans"
-        resource_desc = resource if resource else "all resources"
+        resource_desc = ", ".join(resource) if resource else "all resources"
         click.echo(
             f"[DRY-RUN] Would download {scan_desc} ({resource_desc}) to {output_dir}/{name or session_id}/"
         )
@@ -391,17 +394,46 @@ def scan_download(
                 click.echo(f"\r  Downloading: {pct}% ({mb:.1f} MB)", nl=False)
 
     try:
-        summary = service.download_scans(
-            session_id=session_id,
-            scan_ids=scan_ids,
-            output_dir=session_output,
-            project=project,
-            resource=resource,
-            zip_filename="scans.zip",
-            extract=unzip,
-            cleanup=cleanup,
-            progress_callback=progress_cb if not ctx.quiet else None,
-        )
+        if len(resource) > 1:
+            # Multiple specific resources: download each separately
+            summaries = []
+            for res in resource:
+                s = service.download_scans(
+                    session_id=session_id,
+                    scan_ids=scan_ids,
+                    output_dir=session_output,
+                    project=project,
+                    resource=res,
+                    zip_filename=f"scans_{res}.zip",
+                    extract=unzip,
+                    cleanup=cleanup,
+                    progress_callback=progress_cb if not ctx.quiet else None,
+                )
+                summaries.append(s)
+            # Merge summaries across all resources
+            summary = summaries[0]
+            for s in summaries[1:]:
+                summary.total_files += s.total_files
+                summary.total_size_mb += s.total_size_mb
+                summary.total += s.total
+                summary.succeeded += s.succeeded
+                summary.failed += s.failed
+                summary.duration += s.duration
+                summary.errors.extend(s.errors)
+                if not s.success:
+                    summary.success = False
+        else:
+            summary = service.download_scans(
+                session_id=session_id,
+                scan_ids=scan_ids,
+                output_dir=session_output,
+                project=project,
+                resource=resource_filter,
+                zip_filename="scans.zip",
+                extract=unzip,
+                cleanup=cleanup,
+                progress_callback=progress_cb if not ctx.quiet else None,
+            )
     except ValueError as e:
         print_error(str(e))
         raise SystemExit(1) from None
@@ -421,9 +453,14 @@ def scan_download(
         )
     else:
         if summary.success:
-            kept_zip_suffix = (
-                f" (kept {session_output / 'scans.zip'})" if unzip and not cleanup else ""
-            )
+            if unzip and not cleanup:
+                if len(resource) > 1:
+                    kept_zip_suffix = f" (kept {len(resource)} ZIP files)"
+                else:
+                    zip_name = f"scans_{resource[0]}.zip" if resource else "scans.zip"
+                    kept_zip_suffix = f" (kept {session_output / zip_name})"
+            else:
+                kept_zip_suffix = ""
             print_success(
                 f"Downloaded scans ({summary.total_size_mb:.1f} MB) to {summary.output_path}{kept_zip_suffix}"
             )
