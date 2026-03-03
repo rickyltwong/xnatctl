@@ -76,6 +76,28 @@ class FilterEngine:
 
         return type_filter.scan_resources.should_include(resource_label)
 
+    def should_include_session_resource(self, session_xsi_type: str, resource_label: str) -> bool:
+        """Check if a session-level resource should be transferred.
+
+        Args:
+            session_xsi_type: Parent session's XSI type.
+            resource_label: Resource label.
+
+        Returns:
+            True if the resource passes the filter.
+        """
+        sessions = self.config.imaging_sessions
+        if sessions.sync_type == FilterSyncType.ALL:
+            return True
+        if sessions.sync_type == FilterSyncType.NONE:
+            return False
+
+        type_filter = sessions.get_type_filter(session_xsi_type)
+        if type_filter is None:
+            return False
+
+        return type_filter.resources.should_include(resource_label)
+
     def should_include_project_resource(self, resource_label: str) -> bool:
         """Check if a project-level resource should be transferred.
 
