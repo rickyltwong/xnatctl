@@ -163,6 +163,10 @@ class TransferConfig(BaseModel):
     dest_project: str
     sync_new_only: bool = True
     max_failures: int = 5
+    scan_retry_count: int = 3
+    scan_retry_delay: float = 5.0
+    verify_after_transfer: bool = True
+    scan_workers: int = Field(default=4, ge=1)
     filtering: FilterConfig = Field(default_factory=FilterConfig)
 
     @classmethod
@@ -207,6 +211,10 @@ class TransferConfig(BaseModel):
             "dest_project": dest_project,
             "sync_new_only": True,
             "max_failures": 5,
+            "scan_retry_count": 3,
+            "scan_retry_delay": 5.0,
+            "verify_after_transfer": True,
+            "scan_workers": 4,
             "filtering": {
                 "project_resources": {"sync_type": "all"},
                 "subject_resources": {"sync_type": "all"},

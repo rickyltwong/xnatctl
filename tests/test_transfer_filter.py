@@ -1,4 +1,5 @@
 """Tests for transfer filter engine."""
+
 from __future__ import annotations
 
 import pytest
@@ -79,6 +80,47 @@ class TestFilterResources:
         assert engine.should_include_project_resource("anything") is False
 
 
+class TestFilterSessionResources:
+    def test_includes_when_all(self) -> None:
+        config = FilterConfig(
+            imaging_sessions=ImagingSessionFilter(
+                sync_type=FilterSyncType.INCLUDE,
+                xsi_types=[
+                    XsiTypeFilter(
+                        xsi_type="xnat:mrSessionData",
+                        resources=ResourceFilter(sync_type=FilterSyncType.ALL),
+                    ),
+                ],
+            ),
+        )
+        engine = FilterEngine(config)
+        assert engine.should_include_session_resource("xnat:mrSessionData", "QC") is True
+
+    def test_excludes_when_not_in_include_list(self, engine: FilterEngine) -> None:
+        # The fixture config has resources with default ALL
+        # but the xsi_type filter is set; for a non-matching xsi_type it returns False
+        assert engine.should_include_session_resource("xnat:petSessionData", "QC") is False
+
+    def test_includes_matching_resource(self) -> None:
+        config = FilterConfig(
+            imaging_sessions=ImagingSessionFilter(
+                sync_type=FilterSyncType.INCLUDE,
+                xsi_types=[
+                    XsiTypeFilter(
+                        xsi_type="xnat:mrSessionData",
+                        resources=ResourceFilter(
+                            sync_type=FilterSyncType.INCLUDE,
+                            items=["QC"],
+                        ),
+                    ),
+                ],
+            ),
+        )
+        engine = FilterEngine(config)
+        assert engine.should_include_session_resource("xnat:mrSessionData", "QC") is True
+        assert engine.should_include_session_resource("xnat:mrSessionData", "PROTOCOLS") is False
+
+
 class TestFilterAllConfig:
     def test_default_config_includes_everything(self) -> None:
         engine = FilterEngine(FilterConfig())
@@ -91,3 +133,4 @@ class TestFilterAllConfig:
         assert engine.should_include_experiment(exp) is True
         assert engine.should_include_scan("xnat:mrSessionData", "T1w") is True
         assert engine.should_include_project_resource("any") is True
+        assert engine.should_include_session_resource("xnat:mrSessionData", "any") is True
