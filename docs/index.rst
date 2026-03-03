@@ -113,6 +113,7 @@ Trigger a catalog refresh for a specific project (admin operation):
    skill
    downloading
    uploading
+   transferring
    dicom
    workflows
    administration

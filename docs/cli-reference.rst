@@ -173,6 +173,11 @@ commands you run after authenticating.
 - ``project list`` -- List all projects you have access to
 - ``project show`` -- Display detailed information about a specific project
 - ``project create`` -- Create a new project on the server
+- ``project transfer`` -- Transfer project data to another XNAT instance
+- ``project transfer-check`` -- Pre-flight connectivity and permissions check
+- ``project transfer-status`` -- Show status of the last transfer run
+- ``project transfer-history`` -- Show full transfer history for a project
+- ``project transfer-init`` -- Generate a starter transfer configuration YAML
 
 List projects as a table or JSON, inspect one, or create a new project:
 
@@ -183,10 +188,21 @@ List projects as a table or JSON, inspect one, or create a new project:
    $ xnatctl project show MYPROJECT
    $ xnatctl project create NEWPROJ --name "New Project" --pi Smith
 
+Transfer a project to another XNAT server:
+
+.. code-block:: console
+
+   $ xnatctl project transfer-check -P SRC --dest-profile staging --dest-project DST
+   $ xnatctl project transfer -P SRC --dest-profile staging --dest-project DST --dry-run
+   $ xnatctl project transfer -P SRC --dest-profile staging --dest-project DST --yes
+
 .. tip::
 
    Use ``-q`` with ``project list`` to get a plain list of project IDs for scripting:
    ``xnatctl project list -q | head -5``.
+
+For detailed transfer documentation, configuration, and filtering options, see
+:doc:`transferring`.
 
 subject
 -------
