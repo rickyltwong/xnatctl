@@ -357,8 +357,8 @@ Download specific scans or all scans at once:
 
 .. tip::
 
-   Use ``--resource`` with ``scan download`` to download only a specific resource
-   type (e.g., ``DICOM`` or ``NIFTI``).
+   Use ``-r`` / ``--resource`` with ``scan download`` to download a specific resource
+   type (e.g., ``-r DICOM`` or ``-r NIFTI``).
 
 For more download patterns, see :doc:`downloading`.
 

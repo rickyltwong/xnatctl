@@ -29,10 +29,10 @@ decision guide.
      - Key flags
    * - Download everything from a session (all scans, all resources)
      - ``session download``
-     - ``-E``, ``--workers``, ``--include-resources``
+     - ``-E``, ``--workers``, ``-r``, ``--exclude-resource``, ``--session-resources``
    * - Download one or more specific scans from a session
      - ``scan download``
-     - ``-E``, ``-s``, ``--resource``
+     - ``-E``, ``-s``, ``-r`` / ``--resource``
    * - Download a single named resource (e.g., DICOM, NIFTI, BIDS)
      - ``resource download``
      - positional ``SESSION_ID`` and ``RESOURCE_LABEL``, ``--scan``
@@ -109,6 +109,24 @@ progress as individual scans complete.
    or 16 if your XNAT server and network can handle the concurrency. Going
    beyond 16 rarely helps and may trigger server-side rate limiting.
 
+Filtering by resource type
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default, ``session download`` fetches all scan resource types (DICOM, NII,
+SNAPSHOTS, etc.). Use ``-r`` to include only specific types, or
+``--exclude-resource`` to skip certain types. Both flags are repeatable.
+
+.. code-block:: console
+
+   $ xnatctl session download -E XNAT_E00001 --out ./data -w 8 -r DICOM
+   $ xnatctl session download -E XNAT_E00001 --out ./data -w 8 -r DICOM -r NII
+   $ xnatctl session download -E XNAT_E00001 --out ./data -w 8 --exclude-resource SNAPSHOTS
+
+.. note::
+
+   ``-r`` and ``--exclude-resource`` are mutually exclusive. Resource filtering
+   automatically enables the parallel download path even with ``--workers 1``.
+
 Including session-level resources
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -119,7 +137,12 @@ focused on imaging data.
 
 .. code-block:: console
 
-   $ xnatctl session download -E XNAT_E00001 --out ./data --include-resources
+   $ xnatctl session download -E XNAT_E00001 --out ./data --session-resources
+
+.. note::
+
+   ``--session-resources`` replaces the deprecated ``--include-resources`` flag.
+   The old flag still works but will be removed in a future release.
 
 Extracting ZIPs automatically
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -188,7 +211,7 @@ Download a specific resource type
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 By default, ``scan download`` fetches all resources for the requested scans. If
-you only need one resource type, use ``--resource`` to filter.
+you only need one resource type, use ``-r`` / ``--resource`` to filter.
 
 .. code-block:: console
 
@@ -243,7 +266,8 @@ After downloading and extracting a session with ``--unzip``, your local
 directory mirrors the XNAT data hierarchy. Understanding this layout helps you
 write scripts that process downloaded data reliably.
 
-A parallel session download (``--workers > 1``) produces the following structure.
+A parallel session download (``--workers > 1``, or ``-r`` / ``--exclude-resource``)
+produces the following structure. Each scan may contain multiple resource types.
 
 .. code-block:: text
 
@@ -253,14 +277,20 @@ A parallel session download (``--workers > 1``) produces the following structure
            +-- 1/
            |   +-- resources/
            |       +-- DICOM/
+           |       |   +-- files/
+           |       |       +-- 0001.dcm
+           |       |       +-- 0002.dcm
+           |       +-- SNAPSHOTS/
            |           +-- files/
-           |               +-- 0001.dcm
-           |               +-- 0002.dcm
+           |               +-- snap_t1.jpg
            +-- 2/
            |   +-- resources/
            |       +-- DICOM/
+           |       |   +-- files/
+           |       |       +-- 0001.dcm
+           |       +-- NII/
            |           +-- files/
-           |               +-- 0001.dcm
+           |               +-- bold.nii.gz
            +-- 3/
                +-- resources/
                    +-- DICOM/
@@ -273,7 +303,7 @@ The general path pattern is always:
 
    {output_dir}/{session}/scans/{scan_id}/resources/{resource_label}/files/
 
-If you also passed ``--include-resources``, session-level resources appear
+If you also passed ``--session-resources``, session-level resources appear
 alongside the ``scans/`` directory:
 
 .. code-block:: text
@@ -283,12 +313,15 @@ alongside the ``scans/`` directory:
        +-- scans/
        |   +-- 1/
        |   +-- 2/
-       +-- resources_QC/
-       +-- resources_PROTOCOLS/
+       +-- resources/
+           +-- QC/
+           |   +-- report.pdf
+           +-- PROTOCOLS/
+               +-- protocol.pdf
 
 .. tip::
 
-   You can rely on the ``scans/{scan_id}/resources/DICOM/files/`` path
+   You can rely on the ``scans/{scan_id}/resources/{label}/files/`` path
    convention when writing processing scripts. This layout is consistent across
    parallel downloads and matches the structure expected by XNAT's compressed
    uploader for round-trip workflows.
