@@ -597,6 +597,37 @@ class TestScanDownload:
         assert result.exit_code != 0
         assert "path separators" in result.output
 
+    def test_scan_download_multiple_resources_rejected(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """Multiple --resource values are rejected."""
+        ctx, mock_client = _make_authenticated_context()
+
+        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
+            Context, "get_client", return_value=mock_client
+        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+            mock_auth_cls.return_value = ctx.auth_manager
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "-r",
+                    "DICOM",
+                    "-r",
+                    "NII",
+                    "--out",
+                    str(tmp_path),
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "Only one --resource" in result.output
+
     def test_scan_download_happy_path(self, runner: CliRunner, tmp_path) -> None:
         """Successful download produces success message."""
         ctx, mock_client = _make_authenticated_context()

@@ -305,7 +305,7 @@ def scan_delete(
     "--resource",
     "-r",
     multiple=True,
-    help="Resource types to download (repeatable). Omit for all resources.",
+    help="Resource type to download (e.g., DICOM). Omit for all resources.",
 )
 @click.option("--unzip/--no-unzip", default=False, help="Extract downloaded ZIPs")
 @click.option(
@@ -337,7 +337,8 @@ def scan_download(
     The output directory defaults to the value passed to -E/--experiment.
     Override it with --name.
 
-    Use --resource to download specific resource type (DICOM, NIFTI, etc).
+    Use --resource to download a specific resource type (DICOM, NIFTI, etc).
+    Only one --resource value is supported per invocation.
     Omit --resource to download all resources for the scans.
 
     Examples:
@@ -368,12 +369,17 @@ def scan_download(
     else:
         scan_ids = scan_ids_input
 
-    # Convert resource tuple to single value for service layer
-    resource_filter: str | None = resource[0] if len(resource) == 1 else None
+    # Validate resource option (only one value supported)
+    if len(resource) > 1:
+        raise click.ClickException(
+            "Only one --resource value is supported per invocation. "
+            "Use session download with -r for multi-resource filtering."
+        )
+    resource_filter: str | None = resource[0] if resource else None
 
     if dry_run:
         scan_desc = "all scans" if use_all_keyword else f"{len(scan_ids)} scans"
-        resource_desc = ", ".join(resource) if resource else "all resources"
+        resource_desc = resource[0] if resource else "all resources"
         click.echo(
             f"[DRY-RUN] Would download {scan_desc} ({resource_desc}) to {output_dir}/{name or session_id}/"
         )
@@ -394,46 +400,17 @@ def scan_download(
                 click.echo(f"\r  Downloading: {pct}% ({mb:.1f} MB)", nl=False)
 
     try:
-        if len(resource) > 1:
-            # Multiple specific resources: download each separately
-            summaries = []
-            for res in resource:
-                s = service.download_scans(
-                    session_id=session_id,
-                    scan_ids=scan_ids,
-                    output_dir=session_output,
-                    project=project,
-                    resource=res,
-                    zip_filename=f"scans_{res}.zip",
-                    extract=unzip,
-                    cleanup=cleanup,
-                    progress_callback=progress_cb if not ctx.quiet else None,
-                )
-                summaries.append(s)
-            # Merge summaries across all resources
-            summary = summaries[0]
-            for s in summaries[1:]:
-                summary.total_files += s.total_files
-                summary.total_size_mb += s.total_size_mb
-                summary.total += s.total
-                summary.succeeded += s.succeeded
-                summary.failed += s.failed
-                summary.duration += s.duration
-                summary.errors.extend(s.errors)
-                if not s.success:
-                    summary.success = False
-        else:
-            summary = service.download_scans(
-                session_id=session_id,
-                scan_ids=scan_ids,
-                output_dir=session_output,
-                project=project,
-                resource=resource_filter,
-                zip_filename="scans.zip",
-                extract=unzip,
-                cleanup=cleanup,
-                progress_callback=progress_cb if not ctx.quiet else None,
-            )
+        summary = service.download_scans(
+            session_id=session_id,
+            scan_ids=scan_ids,
+            output_dir=session_output,
+            project=project,
+            resource=resource_filter,
+            zip_filename="scans.zip",
+            extract=unzip,
+            cleanup=cleanup,
+            progress_callback=progress_cb if not ctx.quiet else None,
+        )
     except ValueError as e:
         print_error(str(e))
         raise SystemExit(1) from None

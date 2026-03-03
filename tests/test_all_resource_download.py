@@ -600,10 +600,10 @@ class TestSessionDownloadResourceFlags:
 class TestScanDownloadMultiResource:
     """Tests for scan download multiple --resource support."""
 
-    def test_dry_run_multiple_resources(
+    def test_multiple_resources_rejected(
         self, runner: CliRunner, tmp_path: Path,
     ) -> None:
-        """Dry run with multiple -r flags shows all resource types."""
+        """Multiple -r flags are rejected with a clear error."""
         ctx, mock_client = _make_authenticated_context()
 
         with patch(
@@ -620,13 +620,11 @@ class TestScanDownloadMultiResource:
                     "-s", "1",
                     "-r", "DICOM", "-r", "NII",
                     "--out", str(tmp_path),
-                    "--dry-run",
                 ],
             )
 
-        assert result.exit_code == 0
-        assert "DICOM" in result.output
-        assert "NII" in result.output
+        assert result.exit_code != 0
+        assert "Only one --resource" in result.output
 
     def test_single_resource_passes_filter(
         self, runner: CliRunner, tmp_path: Path,
@@ -699,27 +697,18 @@ class TestScanDownloadMultiResource:
         call_kwargs = mock_dl_cls.return_value.download_scans.call_args[1]
         assert call_kwargs["resource"] is None
 
-    def test_multiple_resources_downloads_each(
+    def test_multiple_resources_rejected_with_dry_run(
         self, runner: CliRunner, tmp_path: Path,
     ) -> None:
-        """Multiple -r flags trigger per-resource download calls."""
+        """Multiple -r flags are rejected even with --dry-run."""
         ctx, mock_client = _make_authenticated_context()
-        mock_summary = DownloadSummary(
-            success=True, total=1, succeeded=1, failed=0,
-            duration=1.0, total_files=5, total_size_mb=10.0,
-            output_path=str(tmp_path / "XNAT_E00001"),
-            session_id="XNAT_E00001",
-        )
 
         with patch(
             "xnatctl.cli.common.Config.load", return_value=ctx.config,
         ), patch.object(
             Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls, patch(
-            "xnatctl.services.downloads.DownloadService",
-        ) as mock_dl_cls:
+        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
             mock_auth_cls.return_value = ctx.auth_manager
-            mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
                 cli,
                 [
@@ -728,12 +717,12 @@ class TestScanDownloadMultiResource:
                     "-s", "1",
                     "-r", "DICOM", "-r", "NII",
                     "--out", str(tmp_path),
+                    "--dry-run",
                 ],
             )
 
-        assert result.exit_code == 0
-        # Should be called twice - once for each resource
-        assert mock_dl_cls.return_value.download_scans.call_count == 2
+        assert result.exit_code != 0
+        assert "Only one --resource" in result.output
 
 
 # =============================================================================
