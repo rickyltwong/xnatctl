@@ -400,3 +400,8 @@ previous attempt, making downloads effectively idempotent.
    For very large sessions on unreliable networks, consider downloading scans
    individually with ``scan download -s <id>`` so you can retry only the scans
    that failed rather than re-downloading the entire session.
+
+.. note::
+
+   To copy data directly between two XNAT servers without downloading to your
+   local machine, use ``project transfer`` instead. See :doc:`transferring`.

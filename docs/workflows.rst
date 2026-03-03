@@ -299,9 +299,23 @@ it suitable for use in CI/CD pipelines or cron jobs that alert on failure.
 Migrating Data Between XNAT Servers
 ------------------------------------
 
-**Scenario.** You need to copy sessions from a production XNAT server to a
-development server for testing. xnatctl profiles make this straightforward: download
-from one profile, upload to another.
+**Recommended approach.** Use ``project transfer`` for server-to-server
+migrations. It handles subject/experiment creation, per-scan DICOM import,
+non-DICOM resource upload, state tracking, and post-transfer verification
+automatically.
+
+.. code-block:: console
+
+   $ xnatctl project transfer -p prod -P NEUROIMAGING \
+       --dest-profile dev --dest-project NEUROIMAGING --yes
+
+The transfer runs incrementally -- re-running the same command skips
+already-transferred subjects. For full documentation including configuration
+files and filtering options, see :doc:`transferring`.
+
+**Manual approach (download + upload).** For ad hoc copies of individual
+sessions, or when you need to transform data between servers, you can
+download from one profile and upload to another.
 
 Before you begin, make sure you have two profiles configured in your
 ``~/.config/xnatctl/config.yaml``:
@@ -364,17 +378,15 @@ Then run the migration script:
 
 .. warning::
 
-   The target server must already have the matching project and subject created
-   before you upload. If the project or subject does not exist on the destination,
-   create them first with ``xnatctl project create`` and the XNAT web UI. Also
-   verify that the target server's DICOM routing rules will not reassign your
-   sessions to a different project.
+   The manual approach requires the target project and subject to already exist
+   on the destination. Create them first with ``xnatctl project create`` and the
+   XNAT web UI. The ``project transfer`` command handles this automatically.
 
-**What to expect.** Sessions are downloaded to a local staging directory, then
-uploaded to the development server. This is a full copy -- the data passes through
-your local machine, so ensure you have sufficient disk space in the staging
-directory. For large migrations, consider processing sessions in batches rather than
-all at once.
+**What to expect.** With the manual approach, sessions are downloaded to a local
+staging directory, then uploaded to the development server. The data passes through
+your local machine, so ensure you have sufficient disk space. For large migrations,
+use ``project transfer`` instead -- it transfers data server-to-server without
+local staging.
 
 
 Using xnatctl in CI/CD
