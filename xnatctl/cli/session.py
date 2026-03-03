@@ -259,6 +259,108 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             )
 
 
+def _extract_scan_zip(
+    zip_path: Path,
+    scan_base: Path,
+    *,
+    resource_label: str | None = None,
+    exclude_resources: frozenset[str] = frozenset(),
+) -> tuple[int, int]:
+    """Extract a scan ZIP into standard XNAT layout.
+
+    Handles both filtered ZIPs (single resource) and unfiltered ZIPs
+    (multiple resources).  XNAT ZIP structure:
+        {exp}/scans/{id}/resources/{label}/files/{filename...}
+
+    Args:
+        zip_path: Path to the downloaded ZIP file.
+        scan_base: Target directory (e.g. session_dir/scans/{scan_id}).
+        resource_label: If set, all files go under resources/{label}/files/.
+            When None, resource labels are inferred from ZIP paths.
+        exclude_resources: Resource labels to skip during extraction.
+
+    Returns:
+        Tuple of (files_extracted, duplicates_renamed).
+    """
+    import shutil
+    import zipfile
+
+    files_extracted = 0
+    duplicates_renamed = 0
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for member in zf.infolist():
+            if member.is_dir():
+                continue
+            member_path = Path(member.filename)
+            if any(part.startswith(".") for part in member_path.parts):
+                continue
+
+            parts = member_path.parts
+
+            # Detect resource label and relative file path from ZIP entry.
+            detected_label: str | None = None
+            rel: Path | None = None
+            if "resources" in parts and "files" in parts:
+                res_idx = parts.index("resources")
+                files_idx = parts.index("files")
+                if files_idx > res_idx + 1:
+                    detected_label = parts[res_idx + 1]
+                    rel_parts = parts[files_idx + 1 :]
+                    if rel_parts:
+                        rel = Path(*rel_parts)
+
+            # Fallback: strip up to "files/" if present, else strip top folder.
+            if rel is None:
+                if "files" in parts:
+                    idx = parts.index("files")
+                    rel_parts = parts[idx + 1 :]
+                    if not rel_parts:
+                        continue
+                    rel = Path(*rel_parts)
+                elif len(parts) > 1:
+                    rel = Path(*parts[1:])
+                else:
+                    rel = member_path
+
+            if not rel.name or rel.name.startswith("."):
+                continue
+
+            effective_label = resource_label or detected_label or "UNKNOWN"
+
+            if effective_label in exclude_resources:
+                continue
+
+            target_dir = scan_base / "resources" / effective_label / "files"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            resolved_root = target_dir.resolve()
+
+            dest = (target_dir / rel).resolve()
+            if not dest.is_relative_to(resolved_root):
+                continue
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            final_dest = dest
+            if final_dest.exists():
+                duplicates_renamed += 1
+                stem = final_dest.stem
+                suffix = final_dest.suffix
+                i = 1
+                while True:
+                    candidate = final_dest.with_name(f"{stem}__dup{i}{suffix}")
+                    if not candidate.exists():
+                        final_dest = candidate
+                        break
+                    i += 1
+
+            with zf.open(member) as src, open(final_dest, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            files_extracted += 1
+
+    return files_extracted, duplicates_renamed
+
+
 def _download_session_fast(
     client,
     session_project: str,
@@ -267,8 +369,16 @@ def _download_session_fast(
     session_dir: Path,
     workers: int = 8,
     quiet: bool = False,
+    include_resources: tuple[str, ...] = (),
+    exclude_resources: tuple[str, ...] = (),
 ) -> None:
     """Download session scans in parallel and extract to standard structure.
+
+    Uses a two-tier strategy:
+    - No filter / exclude filter: one unfiltered request per scan
+      (``/scans/{id}/files``), exclude applied during extraction.
+    - Include filter: one request per (scan, resource) pair
+      (``/scans/{id}/resources/{label}/files``).
 
     Args:
         client: Authenticated XNATClient.
@@ -278,12 +388,13 @@ def _download_session_fast(
         session_dir: Output directory for session data.
         workers: Maximum parallel download workers.
         quiet: Suppress progress output.
+        include_resources: Resource types to include (empty = all).
+        exclude_resources: Resource types to exclude.
 
     Produces the XNAT compressed-uploader layout:
-        {session_dir}/scans/{scan_id}/resources/DICOM/files/{files...}
+        {session_dir}/scans/{scan_id}/resources/{label}/files/{files...}
     """
     import tempfile
-    import zipfile
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     import httpx
@@ -304,90 +415,78 @@ def _download_session_fast(
     session_token = client.session_token
     verify_ssl = client.verify_ssl
     timeout = client.timeout
+    exclude_set = frozenset(exclude_resources)
 
-    def download_and_extract_scan(scan_id: str) -> tuple[str, bool, str]:
-        """Download a single scan ZIP and extract into standard layout."""
-        import shutil
+    # Two-tier task list: (scan_id, resource_label_or_None)
+    download_tasks: list[tuple[str, str | None]] = []
+    if include_resources:
+        for sid in scan_ids:
+            for res in include_resources:
+                download_tasks.append((sid, res))
+    else:
+        for sid in scan_ids:
+            download_tasks.append((sid, None))
 
-        scan_url = f"/data/projects/{session_project}/subjects/{subject}/experiments/{resolved_session_id}/scans/{scan_id}/resources/DICOM/files"
+    def download_and_extract(
+        scan_id: str,
+        resource_label: str | None,
+    ) -> tuple[str, bool, str]:
+        """Download a scan ZIP and extract into standard layout."""
+        base = (
+            f"/data/projects/{session_project}/subjects/{subject}"
+            f"/experiments/{resolved_session_id}/scans/{scan_id}"
+        )
+        if resource_label:
+            scan_url = f"{base}/resources/{resource_label}/files"
+        else:
+            scan_url = f"{base}/files"
+
         try:
-            with httpx.Client(base_url=base_url, timeout=timeout, verify=verify_ssl) as http:
+            with httpx.Client(
+                base_url=base_url,
+                timeout=timeout,
+                verify=verify_ssl,
+            ) as http:
                 cookies = {"JSESSIONID": session_token} if session_token else {}
                 with http.stream(
-                    "GET", scan_url, params={"format": "zip"}, cookies=cookies
+                    "GET",
+                    scan_url,
+                    params={"format": "zip"},
+                    cookies=cookies,
                 ) as resp:
                     resp.raise_for_status()
-                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".zip",
+                        delete=False,
+                    ) as tmp:
                         tmp_path = Path(tmp.name)
                         for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                             tmp.write(chunk)
 
             try:
-                # Build target directory in standard layout
-                target_dir = session_dir / "scans" / scan_id / "resources" / "DICOM" / "files"
-                target_dir.mkdir(parents=True, exist_ok=True)
-
-                # Extract files from ZIP, preserving (safe) relative paths.
-                #
-                # Avoid flattening to basename only: some XNAT ZIPs can contain repeated
-                # filenames under different directories, and flattening would overwrite
-                # earlier files silently (leading to missing DICOMs on re-upload).
-                with zipfile.ZipFile(tmp_path, "r") as zf:
-                    resolved_root = target_dir.resolve()
-                    renamed = 0
-                    for member in zf.infolist():
-                        if member.is_dir():
-                            continue
-                        member_path = Path(member.filename)
-                        if any(part.startswith(".") for part in member_path.parts):
-                            continue
-
-                        parts = member_path.parts
-                        # Prefer stripping up to "files/" if present; otherwise strip
-                        # the top-level folder to avoid deep XNAT zip prefixes.
-                        if "files" in parts:
-                            idx = parts.index("files")
-                            rel_parts = parts[idx + 1 :]
-                            if not rel_parts:
-                                continue
-                            rel = Path(*rel_parts)
-                        elif len(parts) > 1:
-                            rel = Path(*parts[1:])
-                        else:
-                            rel = member_path
-
-                        if not rel.name or rel.name.startswith("."):
-                            continue
-
-                        dest = (target_dir / rel).resolve()
-                        if not dest.is_relative_to(resolved_root):
-                            continue
-
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-
-                        final_dest = dest
-                        if final_dest.exists():
-                            renamed += 1
-                            stem = final_dest.stem
-                            suffix = final_dest.suffix
-                            i = 1
-                            while True:
-                                candidate = final_dest.with_name(f"{stem}__dup{i}{suffix}")
-                                if not candidate.exists():
-                                    final_dest = candidate
-                                    break
-                                i += 1
-
-                        with zf.open(member) as src, open(final_dest, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
+                scan_base = session_dir / "scans" / scan_id
+                extracted, renamed = _extract_scan_zip(
+                    tmp_path,
+                    scan_base,
+                    resource_label=resource_label,
+                    exclude_resources=exclude_set,
+                )
             finally:
                 tmp_path.unlink(missing_ok=True)
 
-            status = f"renamed {renamed} duplicate filenames" if renamed else ""
+            parts = []
+            if resource_label:
+                parts.append(resource_label)
+            if extracted == 0:
+                parts.append("empty")
+            if renamed:
+                parts.append(f"renamed {renamed} duplicates")
+            status = ", ".join(parts) if parts else ""
             return scan_id, True, status
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                return scan_id, True, "no DICOM"
+                label_desc = f" ({resource_label})" if resource_label else ""
+                return scan_id, True, f"no files{label_desc}"
             return scan_id, False, str(e)
         except Exception as e:
             return scan_id, False, str(e)
@@ -395,23 +494,26 @@ def _download_session_fast(
     succeeded = []
     failed = []
 
-    pool_size = min(len(scan_ids), workers)
+    pool_size = min(len(download_tasks), workers)
     with ThreadPoolExecutor(max_workers=pool_size) as executor:
-        futures = {executor.submit(download_and_extract_scan, sid): sid for sid in scan_ids}
+        futures = {
+            executor.submit(download_and_extract, sid, res): (sid, res)
+            for sid, res in download_tasks
+        }
         for future in as_completed(futures):
-            scan_id, success, error = future.result()
+            scan_id, success, msg = future.result()
             if success:
                 succeeded.append(scan_id)
                 if not quiet:
-                    status = f" ({error})" if error else ""
+                    status = f" ({msg})" if msg else ""
                     click.echo(f"  Scan {scan_id} done{status}")
             else:
-                failed.append((scan_id, error))
+                failed.append((scan_id, msg))
                 if not quiet:
-                    click.echo(f"  Scan {scan_id} FAILED: {error}")
+                    click.echo(f"  Scan {scan_id} FAILED: {msg}")
 
     if failed and not quiet:
-        click.echo(f"Warning: {len(failed)}/{len(scan_ids)} scans failed")
+        click.echo(f"Warning: {len(failed)}/{len(download_tasks)} downloads failed")
 
 
 @session.command("download")
@@ -438,7 +540,24 @@ def _download_session_fast(
     show_default=True,
     help="Parallel download workers (1 = sequential single-ZIP, >1 = parallel per-scan)",
 )
-@click.option("--include-resources", is_flag=True, help="Include session-level resources")
+@click.option(
+    "--resource",
+    "-r",
+    multiple=True,
+    help="Resource types to include (repeatable). Omit for all scan resources.",
+)
+@click.option(
+    "--exclude-resource",
+    multiple=True,
+    help="Resource types to exclude (repeatable). Cannot combine with --resource.",
+)
+@click.option("--session-resources", is_flag=True, help="Include session-level resources")
+@click.option(
+    "--include-resources",
+    is_flag=True,
+    hidden=True,
+    help="[Deprecated] Use --session-resources instead",
+)
 @click.option("--unzip/--no-unzip", default=False, help="Extract downloaded ZIPs")
 @click.option(
     "--cleanup/--no-cleanup",
@@ -456,6 +575,9 @@ def session_download(
     out: str,
     name: str | None,
     workers: int,
+    resource: tuple[str, ...],
+    exclude_resource: tuple[str, ...],
+    session_resources: bool,
     include_resources: bool,
     unzip: bool,
     cleanup: bool,
@@ -466,17 +588,35 @@ def session_download(
     -E accepts an XNAT experiment ID (accession #) or a session label.
     When using a label, -P is required (or set default_project in your profile).
 
+    By default, all scan resource types (DICOM, NII, SNAPSHOTS, etc.) are
+    downloaded. Use -r to include specific types, or --exclude-resource to
+    exclude specific types.
+
     Example:
         xnatctl session download -E XNAT_E00001
-        xnatctl session download -E XNAT_E00001 --out ./data
         xnatctl session download -E XNAT_E00001 --out ./data --workers 8
-        xnatctl session download -E SESSION_LABEL -P MYPROJECT --out ./data
-        xnatctl session download -E XNAT_E00001 --name CLM01_CAMH_0041 --out ./data
-        xnatctl session download -E XNAT_E00001 --out ./data --include-resources
-        xnatctl session download -E XNAT_E00001 --out ./data --unzip --cleanup
+        xnatctl session download -E XNAT_E00001 -w 8 -r DICOM
+        xnatctl session download -E XNAT_E00001 -w 8 -r DICOM -r NII
+        xnatctl session download -E XNAT_E00001 -w 8 --exclude-resource SNAPSHOTS
+        xnatctl session download -E XNAT_E00001 --out ./data --session-resources
         xnatctl session download -E XNAT_E00001 --out ./data --dry-run
     """
+    import warnings
+
     from xnatctl.core.validation import validate_path_writable
+
+    # Handle deprecated --include-resources
+    if include_resources:
+        warnings.warn(
+            "--include-resources is deprecated, use --session-resources instead",
+            DeprecationWarning,
+            stacklevel=1,
+        )
+        session_resources = True
+
+    # Validate mutual exclusion
+    if resource and exclude_resource:
+        raise click.UsageError("--resource and --exclude-resource are mutually exclusive")
 
     out_path = Path(out)
 
@@ -550,7 +690,13 @@ def session_download(
         click.echo(f"  Subject: {subject}")
         click.echo(f"  Output: {out_path / (name or session_id)}")
         click.echo(f"  Workers: {workers}")
-        click.echo(f"  Include resources: {include_resources}")
+        if resource:
+            click.echo(f"  Resources: {', '.join(resource)}")
+        elif exclude_resource:
+            click.echo(f"  Exclude resources: {', '.join(exclude_resource)}")
+        else:
+            click.echo("  Resources: all")
+        click.echo(f"  Session resources: {session_resources}")
         return
 
     # Create session directory
@@ -559,25 +705,36 @@ def session_download(
 
     from xnatctl.core.output import create_progress
 
-    if workers > 1:
+    # Use parallel path when filtering is active (even with workers=1)
+    use_parallel = workers > 1 or resource or exclude_resource
+
+    if use_parallel:
         _download_session_fast(
             client=client,
             session_project=session_project,
             subject=subject,
             resolved_session_id=resolved_session_id,
             session_dir=session_dir,
-            workers=workers,
+            workers=max(workers, 1),
             quiet=ctx.quiet,
+            include_resources=resource,
+            exclude_resources=exclude_resource,
         )
     else:
         with create_progress() as progress:
             task = progress.add_task("Downloading scans...", total=100)
 
-            scans_url = f"/data/projects/{session_project}/subjects/{subject}/experiments/{resolved_session_id}/scans/ALL/files"
+            scans_url = (
+                f"/data/projects/{session_project}/subjects/{subject}"
+                f"/experiments/{resolved_session_id}/scans/ALL/files"
+            )
             scans_zip = session_dir / "scans.zip"
 
             with client._get_client().stream(
-                "GET", scans_url, params={"format": "zip"}, cookies=client._get_cookies()
+                "GET",
+                scans_url,
+                params={"format": "zip"},
+                cookies=client._get_cookies(),
             ) as resp:
                 resp.raise_for_status()
                 total = int(resp.headers.get("content-length", 0))
@@ -592,32 +749,39 @@ def session_download(
 
             progress.update(task, completed=100, description="Scans downloaded")
 
-            if include_resources:
-                task2 = progress.add_task("Downloading resources...", total=None)
-                try:
-                    res_url = f"/data/projects/{session_project}/subjects/{subject}/experiments/{resolved_session_id}/resources"
-                    res_resp = client.get_json(res_url)
-                    resources = res_resp.get("ResultSet", {}).get("Result", [])
+    # Download session-level resources (outside scans)
+    if session_resources:
+        if not ctx.quiet:
+            click.echo("Downloading session-level resources...")
+        try:
+            res_url = (
+                f"/data/projects/{session_project}/subjects/{subject}"
+                f"/experiments/{resolved_session_id}/resources"
+            )
+            res_resp = client.get_json(res_url)
+            sess_resources = res_resp.get("ResultSet", {}).get("Result", [])
 
-                    for res in resources:
-                        label = res.get("label", "resource")
-                        res_zip = session_dir / f"resources_{label}.zip"
-                        files_url = f"{res_url}/{label}/files"
+            for res in sess_resources:
+                label = res.get("label", "resource")
+                res_zip = session_dir / f"resources_{label}.zip"
+                files_url = f"{res_url}/{label}/files"
 
-                        with client._get_client().stream(
-                            "GET",
-                            files_url,
-                            params={"format": "zip"},
-                            cookies=client._get_cookies(),
-                        ) as resp:
-                            resp.raise_for_status()
-                            with open(res_zip, "wb") as f:
-                                for chunk in resp.iter_bytes():
-                                    f.write(chunk)
+                with client._get_client().stream(
+                    "GET",
+                    files_url,
+                    params={"format": "zip"},
+                    cookies=client._get_cookies(),
+                ) as resp:
+                    resp.raise_for_status()
+                    with open(res_zip, "wb") as f:
+                        for chunk in resp.iter_bytes():
+                            f.write(chunk)
 
-                    progress.update(task2, description=f"Resources downloaded ({len(resources)})")
-                except Exception as e:
-                    progress.update(task2, description=f"Resources: {e}")
+            if not ctx.quiet:
+                click.echo(f"  Session resources downloaded ({len(sess_resources)})")
+        except Exception as e:
+            if not ctx.quiet:
+                click.echo(f"  Session resources: {e}")
 
     # Extract ZIPs if requested
     if unzip:

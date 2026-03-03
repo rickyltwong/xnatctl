@@ -340,7 +340,7 @@ class DownloadService(BaseService):
         scan_id: str,
         output_dir: Path,
         project: str | None = None,
-        resource: str = "DICOM",
+        resource: str | None = None,
         progress_callback: Callable[[DownloadProgress], None] | None = None,
     ) -> DownloadSummary:
         """Download a specific scan.
@@ -350,12 +350,21 @@ class DownloadService(BaseService):
             scan_id: Scan ID
             output_dir: Output directory
             project: Project ID
-            resource: Resource type to download (DICOM, NIFTI, etc)
+            resource: Resource type to download (None = all resources)
             progress_callback: Progress callback
 
         Returns:
             DownloadSummary with results
         """
+        if resource is None:
+            return self.download_scans(
+                session_id=session_id,
+                scan_ids=[scan_id],
+                output_dir=output_dir,
+                project=project,
+                resource=None,
+                progress_callback=progress_callback,
+            )
         return self.download_resource(
             session_id=session_id,
             resource_label=resource,
