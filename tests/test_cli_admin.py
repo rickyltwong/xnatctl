@@ -108,9 +108,7 @@ class TestAdminRefreshCatalogs:
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                    result = runner.invoke(
-                        cli, ["admin", "refresh-catalogs", "EMPTYPROJ"]
-                    )
+                    result = runner.invoke(cli, ["admin", "refresh-catalogs", "EMPTYPROJ"])
 
         assert result.exit_code == 0
         assert "No experiments" in result.output
