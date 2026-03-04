@@ -86,6 +86,7 @@ class TestRefreshCatalogs:
 
     def test_refresh_with_failure(self, service: AdminService, mock_client: MagicMock) -> None:
         """Failed refreshes are tracked."""
+
         def put_side_effect(path: str, **kwargs: object) -> MagicMock:
             if "E002" in path:
                 raise RuntimeError("server error")
@@ -93,17 +94,13 @@ class TestRefreshCatalogs:
 
         mock_client.put.side_effect = put_side_effect
 
-        result = service.refresh_catalogs(
-            "PROJ01", experiments=["E001", "E002"], parallel=False
-        )
+        result = service.refresh_catalogs("PROJ01", experiments=["E001", "E002"], parallel=False)
 
         assert "E001" in result["refreshed"]
         assert "E002" in result["failed"]
         assert len(result["errors"]) == 1
 
-    def test_refresh_progress_callback(
-        self, service: AdminService, mock_client: MagicMock
-    ) -> None:
+    def test_refresh_progress_callback(self, service: AdminService, mock_client: MagicMock) -> None:
         """Progress callback is invoked."""
         mock_client.put.return_value = _resp("", content_type="text/plain")
         callback = MagicMock()
@@ -136,9 +133,7 @@ class TestAddUserToGroups:
         assert "PROJ01_owner" in result["failed"]
         assert len(result["errors"]) == 1
 
-    def test_add_user_without_projects(
-        self, service: AdminService, mock_client: MagicMock
-    ) -> None:
+    def test_add_user_without_projects(self, service: AdminService, mock_client: MagicMock) -> None:
         """Groups without project expansion."""
         mock_client.put.return_value = _resp("", content_type="text/plain")
 
@@ -203,9 +198,7 @@ class TestGetUser:
 
         assert result["login"] == "admin"
 
-    def test_get_user_from_result_set(
-        self, service: AdminService, mock_client: MagicMock
-    ) -> None:
+    def test_get_user_from_result_set(self, service: AdminService, mock_client: MagicMock) -> None:
         """Get user returns full dict when response is a dict (isinstance check matches first)."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": [{"login": "admin"}]}})
 
@@ -239,15 +232,11 @@ class TestAuditLog:
         call_path = mock_client.get.call_args[0][0]
         assert call_path == "/data/audit"
 
-    def test_audit_log_with_filters(
-        self, service: AdminService, mock_client: MagicMock
-    ) -> None:
+    def test_audit_log_with_filters(self, service: AdminService, mock_client: MagicMock) -> None:
         """Audit log passes filter params."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
 
-        service.audit_log(
-            project="PROJ01", username="admin", action="LOGIN", since="7d", limit=50
-        )
+        service.audit_log(project="PROJ01", username="admin", action="LOGIN", since="7d", limit=50)
 
         params = mock_client.get.call_args[1]["params"]
         assert params["project"] == "PROJ01"

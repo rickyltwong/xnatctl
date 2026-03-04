@@ -61,9 +61,7 @@ class TestApiGet:
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                    result = runner.invoke(
-                        cli, ["api", "get", "/data/projects"]
-                    )
+                    result = runner.invoke(cli, ["api", "get", "/data/projects"])
 
         assert result.exit_code == 0
         assert "PROJ1" in result.output
@@ -101,9 +99,7 @@ class TestApiGet:
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                    result = runner.invoke(
-                        cli, ["api", "get", "/some/path", "-o", "json"]
-                    )
+                    result = runner.invoke(cli, ["api", "get", "/some/path", "-o", "json"])
 
         assert result.exit_code == 0
         assert "key" in result.output
@@ -118,9 +114,7 @@ class TestApiGet:
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                    result = runner.invoke(
-                        cli, ["api", "get", "/some/text/endpoint"]
-                    )
+                    result = runner.invoke(cli, ["api", "get", "/some/text/endpoint"])
 
         assert result.exit_code == 0
         assert "plain text response" in result.output

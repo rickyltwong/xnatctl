@@ -139,9 +139,7 @@ class TestSessionGet:
 class TestSessionCreate:
     """Tests for SessionService.create."""
 
-    def test_create_default_xsi_type(
-        self, service: SessionService, mock_client: MagicMock
-    ) -> None:
+    def test_create_default_xsi_type(self, service: SessionService, mock_client: MagicMock) -> None:
         """Create uses default xnat:mrSessionData."""
         mock_client.put.return_value = _resp("", content_type="text/plain")
         mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_SESSION]}})

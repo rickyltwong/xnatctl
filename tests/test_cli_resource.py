@@ -70,9 +70,7 @@ class TestResourceList:
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                    result = runner.invoke(
-                        cli, ["resource", "list", "XNAT_E00001"]
-                    )
+                    result = runner.invoke(cli, ["resource", "list", "XNAT_E00001"])
 
         assert result.exit_code == 0
 
@@ -123,9 +121,7 @@ class TestResourceList:
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                    result = runner.invoke(
-                        cli, ["resource", "list", "XNAT_E00001", "--quiet"]
-                    )
+                    result = runner.invoke(cli, ["resource", "list", "XNAT_E00001", "--quiet"])
 
         assert result.exit_code == 0
         assert "DICOM" in result.output
@@ -137,9 +133,7 @@ class TestResourceList:
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                    result = runner.invoke(
-                        cli, ["resource", "list", "XNAT_E00001"]
-                    )
+                    result = runner.invoke(cli, ["resource", "list", "XNAT_E00001"])
 
         assert result.exit_code == 0
 
@@ -176,9 +170,7 @@ class TestResourceShow:
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                    result = runner.invoke(
-                        cli, ["resource", "show", "XNAT_E00001", "DICOM"]
-                    )
+                    result = runner.invoke(cli, ["resource", "show", "XNAT_E00001", "DICOM"])
 
         assert result.exit_code == 0
 
@@ -189,9 +181,7 @@ class TestResourceShow:
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                    result = runner.invoke(
-                        cli, ["resource", "show", "XNAT_E00001", "MISSING"]
-                    )
+                    result = runner.invoke(cli, ["resource", "show", "XNAT_E00001", "MISSING"])
 
         assert result.exit_code != 0
 

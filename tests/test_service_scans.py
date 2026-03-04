@@ -130,9 +130,7 @@ class TestScanDelete:
 class TestScanDeleteMultiple:
     """Tests for ScanService.delete_multiple."""
 
-    def test_delete_multiple_sequential(
-        self, service: ScanService, mock_client: MagicMock
-    ) -> None:
+    def test_delete_multiple_sequential(self, service: ScanService, mock_client: MagicMock) -> None:
         """Sequential deletion of multiple scans."""
         mock_client.delete.return_value = _resp("")
 
@@ -146,6 +144,7 @@ class TestScanDeleteMultiple:
         self, service: ScanService, mock_client: MagicMock
     ) -> None:
         """Failed deletions are tracked."""
+
         def delete_side_effect(path: str, **kwargs: object) -> MagicMock:
             if "scans/2" in path:
                 raise RuntimeError("server error")
@@ -160,15 +159,17 @@ class TestScanDeleteMultiple:
         assert "2" in result["failed"]
         assert len(result["errors"]) == 1
 
-    def test_delete_multiple_wildcard(
-        self, service: ScanService, mock_client: MagicMock
-    ) -> None:
+    def test_delete_multiple_wildcard(self, service: ScanService, mock_client: MagicMock) -> None:
         """Wildcard '*' fetches all scan IDs first."""
         mock_client.get.return_value = _resp(
-            {"ResultSet": {"Result": [
-                {**SAMPLE_SCAN, "ID": "1"},
-                {**SAMPLE_SCAN, "ID": "2"},
-            ]}}
+            {
+                "ResultSet": {
+                    "Result": [
+                        {**SAMPLE_SCAN, "ID": "1"},
+                        {**SAMPLE_SCAN, "ID": "2"},
+                    ]
+                }
+            }
         )
         mock_client.delete.return_value = _resp("")
 

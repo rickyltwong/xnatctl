@@ -56,9 +56,7 @@ class TestConfigInit:
 
         assert result.exit_code == 0
 
-    def test_config_init_existing_profile_no_force(
-        self, runner: CliRunner, tmp_path: Path
-    ) -> None:
+    def test_config_init_existing_profile_no_force(self, runner: CliRunner, tmp_path: Path) -> None:
         config_file = tmp_path / "config.yaml"
         config_file.write_text("dummy")
 
@@ -232,9 +230,7 @@ class TestConfigRemoveProfile:
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
             with patch.object(cfg, "save"):
-                result = runner.invoke(
-                    cli, ["config", "remove-profile", "dev", "--yes"]
-                )
+                result = runner.invoke(cli, ["config", "remove-profile", "dev", "--yes"])
 
         assert result.exit_code == 0
         assert "removed" in result.output
@@ -243,9 +239,7 @@ class TestConfigRemoveProfile:
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            result = runner.invoke(
-                cli, ["config", "remove-profile", "nonexist", "--yes"]
-            )
+            result = runner.invoke(cli, ["config", "remove-profile", "nonexist", "--yes"])
 
         assert result.exit_code != 0
 
@@ -253,9 +247,7 @@ class TestConfigRemoveProfile:
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            result = runner.invoke(
-                cli, ["config", "remove-profile", "default", "--yes"]
-            )
+            result = runner.invoke(cli, ["config", "remove-profile", "default", "--yes"])
 
         assert result.exit_code != 0
 
@@ -263,8 +255,6 @@ class TestConfigRemoveProfile:
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            result = runner.invoke(
-                cli, ["config", "remove-profile", "dev"], input="n\n"
-            )
+            result = runner.invoke(cli, ["config", "remove-profile", "dev"], input="n\n")
 
         assert result.exit_code != 0

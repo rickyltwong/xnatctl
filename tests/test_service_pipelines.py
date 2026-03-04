@@ -138,9 +138,7 @@ class TestPipelineStatus:
 
         assert result["status"] == "Running"
 
-    def test_status_from_result_set(
-        self, service: PipelineService, mock_client: MagicMock
-    ) -> None:
+    def test_status_from_result_set(self, service: PipelineService, mock_client: MagicMock) -> None:
         """Status returns full dict when response is a dict (isinstance check matches first)."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": [{"status": "Complete"}]}})
 
@@ -253,9 +251,7 @@ class TestPipelineListJobs:
         call_path = mock_client.get.call_args[0][0]
         assert "/data/experiments/E001/pipelines/jobs" in call_path
 
-    def test_list_jobs_by_project(
-        self, service: PipelineService, mock_client: MagicMock
-    ) -> None:
+    def test_list_jobs_by_project(self, service: PipelineService, mock_client: MagicMock) -> None:
         """List jobs filtered by project."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
 
@@ -264,9 +260,7 @@ class TestPipelineListJobs:
         call_path = mock_client.get.call_args[0][0]
         assert "/data/projects/PROJ01/pipelines/jobs" in call_path
 
-    def test_list_jobs_with_status(
-        self, service: PipelineService, mock_client: MagicMock
-    ) -> None:
+    def test_list_jobs_with_status(self, service: PipelineService, mock_client: MagicMock) -> None:
         """Status filter is passed as param."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
 

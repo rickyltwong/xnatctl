@@ -81,9 +81,7 @@ class TestPrearchiveList:
                         "xnatctl.cli.prearchive.PrearchiveService",
                         return_value=mock_service,
                     ):
-                        result = runner.invoke(
-                            cli, ["prearchive", "list", "--project", "PROJ1"]
-                        )
+                        result = runner.invoke(cli, ["prearchive", "list", "--project", "PROJ1"])
 
         assert result.exit_code == 0
         mock_service.list.assert_called_once_with(project="PROJ1")
@@ -109,9 +107,7 @@ class TestPrearchiveList:
                         "xnatctl.cli.prearchive.PrearchiveService",
                         return_value=mock_service,
                     ):
-                        result = runner.invoke(
-                            cli, ["prearchive", "list", "--quiet"]
-                        )
+                        result = runner.invoke(cli, ["prearchive", "list", "--quiet"])
 
         assert result.exit_code == 0
         assert "PROJ1/20240115_120000/Session1" in result.output
