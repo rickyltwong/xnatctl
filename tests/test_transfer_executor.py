@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -99,6 +100,19 @@ class TestCreateExperiment:
         assert "EXP001" in call_args[0][0]
         assert call_args[1]["params"]["xsiType"] == "xnat:mrSessionData"
         assert result == "/data/experiments/XNAT_E001"
+
+
+class TestCreateScan:
+    def test_create_scan_puts_with_type(
+        self, executor: TransferExecutor, dest_client: MagicMock
+    ) -> None:
+        dest_client.put.return_value = _make_response(text="")
+        result = executor.create_scan("DST", "SUB001", "EXP001", "22", "TEAvg_se")
+        dest_client.put.assert_called_once()
+        call_args = dest_client.put.call_args
+        assert "/scans/22" in call_args[0][0]
+        assert call_args[1]["params"]["type"] == "TEAvg_se"
+        assert call_args[1]["params"]["xsiType"] == "xnat:mrScanData"
 
 
 class TestCheckExperimentExists:
@@ -346,3 +360,447 @@ class TestValidateZip:
         data = _make_valid_zip()
         zip_path.write_bytes(data)
         assert TransferExecutor.validate_zip(zip_path, expected_size=len(data)) is True
+
+
+class TestFindPrearchiveEntry:
+    def test_returns_matching_entry(
+        self, executor: TransferExecutor, dest_client: MagicMock
+    ) -> None:
+        dest_client.get.return_value = _make_response(
+            json_data={
+                "ResultSet": {
+                    "Result": [
+                        {"name": "EXP001", "status": "READY", "timestamp": "20260101_100000"},
+                        {"name": "EXP002", "status": "RECEIVING", "timestamp": "20260101_110000"},
+                    ]
+                }
+            }
+        )
+        entry = executor.find_prearchive_entry("DST", "EXP001")
+        assert entry is not None
+        assert entry["status"] == "READY"
+
+    def test_returns_none_when_not_found(
+        self, executor: TransferExecutor, dest_client: MagicMock
+    ) -> None:
+        dest_client.get.return_value = _make_response(
+            json_data={"ResultSet": {"Result": []}}
+        )
+        assert executor.find_prearchive_entry("DST", "EXP001") is None
+
+    def test_matches_folder_name(
+        self, executor: TransferExecutor, dest_client: MagicMock
+    ) -> None:
+        dest_client.get.return_value = _make_response(
+            json_data={
+                "ResultSet": {
+                    "Result": [
+                        {"name": "other", "folderName": "EXP001", "status": "READY"},
+                    ]
+                }
+            }
+        )
+        entry = executor.find_prearchive_entry("DST", "EXP001")
+        assert entry is not None
+
+
+class TestArchivePrearchive:
+    def test_posts_commit_action(
+        self, executor: TransferExecutor, dest_client: MagicMock
+    ) -> None:
+        dest_client.post.return_value = _make_response(text="OK")
+        executor.archive_prearchive(
+            dest_project="DST",
+            timestamp="20260101_100000",
+            session_name="EXP001",
+            subject_label="SUB001",
+            experiment_label="EXP001",
+        )
+        dest_client.post.assert_called_once()
+        call_args = dest_client.post.call_args
+        assert "20260101_100000" in call_args[0][0]
+        assert call_args[1]["params"]["action"] == "commit"
+        assert call_args[1]["params"]["subject"] == "SUB001"
+        assert call_args[1]["params"]["label"] == "EXP001"
+
+
+class TestCountDestScans:
+    def test_returns_scan_count(
+        self, executor: TransferExecutor, dest_client: MagicMock
+    ) -> None:
+        dest_client.get.return_value = _make_response(
+            json_data={
+                "ResultSet": {
+                    "Result": [
+                        {"ID": "1", "type": "T1w"},
+                        {"ID": "2", "type": "fMRI"},
+                        {"ID": "3", "type": "DWI"},
+                    ]
+                }
+            }
+        )
+        count = executor.count_dest_scans("DST", "SUB001", "EXP001")
+        assert count == 3
+
+    def test_returns_zero_when_empty(
+        self, executor: TransferExecutor, dest_client: MagicMock
+    ) -> None:
+        dest_client.get.return_value = _make_response(
+            json_data={"ResultSet": {"Result": []}}
+        )
+        assert executor.count_dest_scans("DST", "SUB001", "EXP001") == 0
+
+
+class TestWaitForArchive:
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_returns_immediately_when_scans_present(
+        self,
+        mock_sleep: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """No prearchive entry + scans already in archive -> immediate return."""
+        # find_prearchive_entry returns None (no entry)
+        # count_dest_scans returns 5
+        dest_client.get.side_effect = [
+            _make_response(json_data={"ResultSet": {"Result": []}}),  # prearchive
+            _make_response(  # scan count
+                json_data={
+                    "ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}
+                }
+            ),
+        ]
+        actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5)
+        assert actual == 5
+        mock_sleep.assert_not_called()
+
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_archives_ready_entry_then_returns(
+        self,
+        mock_sleep: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """Prearchive entry READY -> archive it -> next poll finds scans."""
+        dest_client.get.side_effect = [
+            # Poll 1: find_prearchive_entry -> READY
+            _make_response(
+                json_data={
+                    "ResultSet": {
+                        "Result": [
+                            {"name": "EXP001", "status": "READY", "timestamp": "20260101_100000"}
+                        ]
+                    }
+                }
+            ),
+            # Poll 2: find_prearchive_entry -> empty (archived)
+            _make_response(json_data={"ResultSet": {"Result": []}}),
+            # Poll 2: count_dest_scans -> 3
+            _make_response(
+                json_data={
+                    "ResultSet": {"Result": [{"ID": str(i)} for i in range(3)]}
+                }
+            ),
+        ]
+        dest_client.post.return_value = _make_response(text="OK")
+
+        actual = executor.wait_for_archive(
+            "DST", "SUB001", "EXP001", 3, timeout=60, interval=0.01
+        )
+        assert actual == 3
+        dest_client.post.assert_called_once()  # archive_prearchive called
+
+    @patch("xnatctl.services.transfer.executor.time.monotonic")
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_timeout_returns_partial_count(
+        self,
+        mock_sleep: MagicMock,
+        mock_monotonic: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """Timeout exceeded -> return whatever count is available."""
+        # monotonic calls: (1) deadline=0+10=10, (2) check=5 < 10 -> not timed out,
+        # (3) deadline check on second loop=15 >= 10 -> timed out
+        mock_monotonic.side_effect = [0.0, 5.0, 15.0]
+
+        dest_client.get.side_effect = [
+            # Loop 1: find_prearchive_entry -> RECEIVING
+            _make_response(
+                json_data={
+                    "ResultSet": {
+                        "Result": [
+                            {"name": "EXP001", "status": "RECEIVING", "timestamp": "ts"}
+                        ]
+                    }
+                }
+            ),
+            # Loop 2: find_prearchive_entry -> still RECEIVING
+            _make_response(
+                json_data={
+                    "ResultSet": {
+                        "Result": [
+                            {"name": "EXP001", "status": "RECEIVING", "timestamp": "ts"}
+                        ]
+                    }
+                }
+            ),
+            # Timeout branch: count_dest_scans -> 1
+            _make_response(
+                json_data={"ResultSet": {"Result": [{"ID": "1"}]}}
+            ),
+        ]
+
+        actual = executor.wait_for_archive(
+            "DST", "SUB001", "EXP001", 5, timeout=10, interval=0.01
+        )
+        assert actual == 1
+
+
+# -- Sample XNAT experiment XML for XML overlay tests --
+
+_SAMPLE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<xnat:MRSession xmlns:xnat="http://nrg.wustl.edu/xnat"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://nrg.wustl.edu/xnat https://src.example.org/schemas/xnat/xnat.xsd"
+    ID="XNAT_E001" label="EXP001" project="SRC"
+    session_type="Guimond, Synthia^Development"
+    modality="MR" UID="1.2.3.4.5">
+  <!-- hidden_fields[internal_db_ref] -->
+  <xnat:subject_ID>XNAT_S001</xnat:subject_ID>
+  <xnat:prearchivePath>/data/prearchive/SRC/20260101/EXP001</xnat:prearchivePath>
+  <xnat:date>2026-01-01</xnat:date>
+  <xnat:time>10:00:00</xnat:time>
+  <xnat:acquisition_site>Site A</xnat:acquisition_site>
+  <xnat:scanner manufacturer="Siemens" model="Prisma"/>
+  <xnat:sharing>
+    <xnat:share label="shared_exp" project="OTHER"/>
+  </xnat:sharing>
+  <xnat:fields>
+    <xnat:field name="custom_field">value</xnat:field>
+  </xnat:fields>
+  <xnat:resources>
+    <xnat:resource label="QC" file_count="1"/>
+  </xnat:resources>
+  <xnat:scans>
+    <xnat:scan ID="1" type="T1w" xnat:quality="usable">
+      <xnat:image_session_ID>XNAT_E001</xnat:image_session_ID>
+      <xnat:series_description>T1w MPRAGE</xnat:series_description>
+      <xnat:quality>usable</xnat:quality>
+      <xnat:parameters>
+        <xnat:tr>2300</xnat:tr>
+        <xnat:te>2.98</xnat:te>
+      </xnat:parameters>
+      <xnat:file label="DICOM" URI="/data/experiments/XNAT_E001/scans/1/resources/DICOM"/>
+    </xnat:scan>
+    <xnat:scan ID="2" type="fMRI">
+      <xnat:image_session_ID>XNAT_E001</xnat:image_session_ID>
+      <xnat:quality>usable</xnat:quality>
+    </xnat:scan>
+  </xnat:scans>
+  <xnat:addParam name="extra_param">extra_value</xnat:addParam>
+</xnat:MRSession>
+"""
+
+
+class TestFetchExperimentXml:
+    def test_fetches_xml_from_source(
+        self, executor: TransferExecutor, source_client: MagicMock
+    ) -> None:
+        source_client.get.return_value = _make_response(text=_SAMPLE_XML)
+        result = executor.fetch_experiment_xml("XNAT_E001")
+        assert result == _SAMPLE_XML
+        source_client.get.assert_called_once_with(
+            "/data/experiments/XNAT_E001",
+            params={"format": "xml"},
+        )
+
+
+class TestRewriteExperimentXml:
+    def test_strips_internal_elements(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+
+        # Flatten all local tag names
+        all_tags = {
+            elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag
+            for elem in root.iter()
+        }
+
+        assert "subject_ID" not in all_tags
+        assert "prearchivePath" not in all_tags
+        assert "image_session_ID" not in all_tags
+        assert "sharing" not in all_tags
+        assert "share" not in all_tags
+        assert "fields" not in all_tags
+        assert "file" not in all_tags
+
+    def test_strips_session_level_resources(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+
+        # Session-level resources should be removed
+        # But scan-level elements should remain
+        all_tags = {
+            elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag
+            for elem in root.iter()
+        }
+        assert "resources" not in all_tags
+
+    def test_strips_schema_location(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+
+        xsi_ns = "http://www.w3.org/2001/XMLSchema-instance"
+        assert f"{{{xsi_ns}}}schemaLocation" not in root.attrib
+
+    def test_strips_html_comments(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        assert "hidden_fields" not in cleaned
+
+    def test_preserves_session_type(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+        assert root.attrib.get("session_type") == "Guimond, Synthia^Development"
+
+    def test_preserves_scan_quality(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+
+        xnat_ns = ""
+        for elem in root.iter():
+            if "xnat" in elem.tag and "}" in elem.tag:
+                xnat_ns = elem.tag[1 : elem.tag.index("}")]
+                break
+
+        qualities = root.findall(f".//{{{xnat_ns}}}quality")
+        assert len(qualities) == 2
+
+    def test_preserves_scan_parameters(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+
+        xnat_ns = ""
+        for elem in root.iter():
+            if "xnat" in elem.tag and "}" in elem.tag:
+                xnat_ns = elem.tag[1 : elem.tag.index("}")]
+                break
+
+        tr_elems = root.findall(f".//{{{xnat_ns}}}tr")
+        assert len(tr_elems) == 1
+        assert tr_elems[0].text == "2300"
+
+    def test_preserves_acquisition_site(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+
+        xnat_ns = ""
+        for elem in root.iter():
+            if "xnat" in elem.tag and "}" in elem.tag:
+                xnat_ns = elem.tag[1 : elem.tag.index("}")]
+                break
+
+        site = root.find(f"{{{xnat_ns}}}acquisition_site")
+        assert site is not None
+        assert site.text == "Site A"
+
+    def test_preserves_add_param(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+
+        xnat_ns = ""
+        for elem in root.iter():
+            if "xnat" in elem.tag and "}" in elem.tag:
+                xnat_ns = elem.tag[1 : elem.tag.index("}")]
+                break
+
+        params = root.findall(f"{{{xnat_ns}}}addParam")
+        assert len(params) == 1
+        assert params[0].text == "extra_value"
+
+    def test_rewrites_experiment_id(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML, "XNAT_E999")
+        root = ET.fromstring(cleaned)
+        assert root.attrib["ID"] == "XNAT_E999"
+
+    def test_rewrites_project_attribute(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(
+            _SAMPLE_XML, dest_project="DST"
+        )
+        root = ET.fromstring(cleaned)
+        assert root.attrib["project"] == "DST"
+
+    def test_preserves_id_when_no_dest(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+        assert root.attrib["ID"] == "XNAT_E001"
+
+    def test_preserves_project_when_no_dest(self, executor: TransferExecutor) -> None:
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+        assert root.attrib["project"] == "SRC"
+
+
+class TestApplyXmlOverlay:
+    def test_fetches_rewrites_and_puts(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        source_client.get.return_value = _make_response(text=_SAMPLE_XML)
+        dest_client.get.return_value = _make_response(
+            json_data={"ResultSet": {"Result": [{"ID": "XNAT_E999"}]}}
+        )
+        dest_client.put.return_value = _make_response(text="OK")
+
+        executor.apply_xml_overlay(
+            source_experiment_id="XNAT_E001",
+            dest_project="DST",
+            dest_subject="SUB001",
+            dest_experiment_label="EXP001",
+        )
+
+        # Verify source XML was fetched
+        source_client.get.assert_called_once_with(
+            "/data/experiments/XNAT_E001",
+            params={"format": "xml"},
+        )
+
+        # Verify PUT was called with text/xml content type
+        dest_client.put.assert_called_once()
+        call_args = dest_client.put.call_args
+        assert "/data/projects/DST/subjects/SUB001/experiments/EXP001" in call_args[0][0]
+        assert call_args[1]["headers"]["Content-Type"] == "text/xml"
+
+        # Verify the XML was cleaned, ID and project rewritten
+        put_data = call_args[1]["data"]
+        root = ET.fromstring(put_data)
+        assert root.attrib["ID"] == "XNAT_E999"
+        assert root.attrib["project"] == "DST"
+
+    def test_handles_missing_dest_experiment(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """When dest experiment not found, ID is preserved from source."""
+        source_client.get.return_value = _make_response(text=_SAMPLE_XML)
+        dest_client.get.return_value = _make_response(
+            json_data={"ResultSet": {"Result": []}}
+        )
+        dest_client.put.return_value = _make_response(text="OK")
+
+        executor.apply_xml_overlay(
+            source_experiment_id="XNAT_E001",
+            dest_project="DST",
+            dest_subject="SUB001",
+            dest_experiment_label="EXP001",
+        )
+
+        put_data = dest_client.put.call_args[1]["data"]
+        root = ET.fromstring(put_data)
+        # ID not rewritten when check_experiment_exists returns None
+        assert root.attrib["ID"] == "XNAT_E001"

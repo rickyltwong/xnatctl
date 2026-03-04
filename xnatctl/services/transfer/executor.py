@@ -7,10 +7,14 @@ DICOM-zip imports with retry, non-DICOM resource uploads, and ZIP validation.
 from __future__ import annotations
 
 import logging
+import re
 import time
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+import defusedxml.ElementTree as DefusedET
 
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
@@ -64,6 +68,35 @@ class TransferExecutor:
         resp = self.dest.put(
             f"/data/archive/projects/{dest_project}/subjects/{dest_subject}/experiments/{label}",
             params={"xsiType": xsi_type},
+        )
+        return resp.text.strip()
+
+    def create_scan(
+        self,
+        dest_project: str,
+        dest_subject: str,
+        dest_experiment: str,
+        scan_id: str,
+        scan_type: str,
+        xsi_type: str = "xnat:mrScanData",
+    ) -> str:
+        """Create an empty scan on the destination.
+
+        Args:
+            dest_project: Destination project ID.
+            dest_subject: Destination subject label.
+            dest_experiment: Destination experiment label.
+            scan_id: Scan ID to create.
+            scan_type: Scan type string.
+            xsi_type: XSI type for the scan.
+
+        Returns:
+            Response text from PUT.
+        """
+        resp = self.dest.put(
+            f"/data/projects/{dest_project}/subjects/{dest_subject}"
+            f"/experiments/{dest_experiment}/scans/{scan_id}",
+            params={"xsiType": xsi_type, "type": scan_type},
         )
         return resp.text.strip()
 
@@ -273,6 +306,360 @@ class TransferExecutor:
             zip_path.unlink(missing_ok=True)
 
         return total_bytes
+
+    def find_prearchive_entry(self, dest_project: str, session_label: str) -> dict[str, Any] | None:
+        """Find a prearchive entry matching a session label on the destination.
+
+        Args:
+            dest_project: Destination project ID.
+            session_label: Session label to search for.
+
+        Returns:
+            Prearchive entry dict with timestamp, status, name, etc., or None.
+        """
+        resp = self.dest.get(
+            f"/data/prearchive/projects/{dest_project}",
+            params={"format": "json"},
+        )
+        data = resp.json()
+        results: list[dict[str, Any]] = data.get("ResultSet", {}).get("Result", [])
+        for entry in results:
+            if entry.get("name") == session_label or entry.get("folderName") == session_label:
+                return entry
+        return None
+
+    def archive_prearchive(
+        self,
+        dest_project: str,
+        timestamp: str,
+        session_name: str,
+        subject_label: str,
+        experiment_label: str,
+    ) -> None:
+        """Manually archive a prearchive entry on the destination.
+
+        Args:
+            dest_project: Destination project ID.
+            timestamp: Prearchive entry timestamp.
+            session_name: Session folder name in prearchive.
+            subject_label: Subject label for archiving.
+            experiment_label: Experiment label for archiving.
+        """
+        self.dest.post(
+            f"/data/prearchive/projects/{dest_project}/{timestamp}/{session_name}",
+            params={
+                "action": "commit",
+                "SOURCE": "prearchive",
+                "subject": subject_label,
+                "label": experiment_label,
+            },
+        )
+
+    def count_dest_scans(
+        self,
+        dest_project: str,
+        subject_label: str,
+        experiment_label: str,
+    ) -> int:
+        """Count scans in an archived experiment on the destination.
+
+        Args:
+            dest_project: Destination project ID.
+            subject_label: Subject label.
+            experiment_label: Experiment label.
+
+        Returns:
+            Number of scans found.
+        """
+        resp = self.dest.get(
+            f"/data/projects/{dest_project}/subjects/{subject_label}"
+            f"/experiments/{experiment_label}/scans",
+            params={"format": "json"},
+        )
+        data = resp.json()
+        results: list[dict[str, Any]] = data.get("ResultSet", {}).get("Result", [])
+        return len(results)
+
+    def fetch_experiment_xml(self, experiment_id: str) -> str:
+        """Fetch experiment XML from source.
+
+        Args:
+            experiment_id: Source experiment accession ID.
+
+        Returns:
+            Raw XML string.
+        """
+        resp = self.source.get(
+            f"/data/experiments/{experiment_id}",
+            params={"format": "xml"},
+        )
+        return resp.text
+
+    def _rewrite_experiment_xml(
+        self,
+        xml_text: str,
+        dest_experiment_id: str | None = None,
+        dest_project: str | None = None,
+    ) -> str:
+        """Strip internal references from experiment XML for overlay.
+
+        Removes file/catalog elements, subject_ID, prearchivePath,
+        image_session_ID, sharing, fields, session-level resources,
+        and schemaLocation. Rewrites experiment ID and project if provided.
+
+        Args:
+            xml_text: Raw source experiment XML.
+            dest_experiment_id: Destination experiment accession ID.
+            dest_project: Destination project ID.
+
+        Returns:
+            Cleaned XML string suitable for PUT overlay.
+        """
+        # Strip HTML comments (hidden_fields, internal DB refs)
+        xml_text = re.sub(r"<!--.*?-->", "", xml_text, flags=re.DOTALL)
+
+        root = DefusedET.fromstring(xml_text)
+
+        # Collect all namespace URIs used in the document (tags + attributes)
+        ns_uris: set[str] = set()
+        for elem in root.iter():
+            tag = elem.tag
+            if tag.startswith("{"):
+                ns_uris.add(tag[1 : tag.index("}")])
+            for attr_name in elem.attrib:
+                if attr_name.startswith("{"):
+                    ns_uris.add(attr_name[1 : attr_name.index("}")])
+
+        # Build namespace map: prefix -> URI
+        ns_map: dict[str, str] = {}
+        for uri in ns_uris:
+            if "xnat" in uri:
+                ns_map["xnat"] = uri
+            elif "XMLSchema-instance" in uri:
+                ns_map["xsi"] = uri
+
+        xnat_ns = ns_map.get("xnat", "")
+        xsi_ns = ns_map.get("xsi", "")
+
+        # Elements to remove (direct children or nested within scans)
+        remove_local_names = {
+            "file",
+            "subject_ID",
+            "prearchivePath",
+            "image_session_ID",
+            "sharing",
+            "fields",
+        }
+
+        # Remove session-level resources (but not scan-level resources)
+        # Session-level resources are direct children of root
+        if xnat_ns:
+            for tag_name in ("resources",):
+                for child in root.findall(f"{{{xnat_ns}}}{tag_name}"):
+                    root.remove(child)
+
+        # Recursively remove targeted elements
+        self._remove_elements_recursive(root, remove_local_names, xnat_ns)
+
+        # Remove xsi:schemaLocation attribute
+        if xsi_ns:
+            schema_attr = f"{{{xsi_ns}}}schemaLocation"
+            if schema_attr in root.attrib:
+                del root.attrib[schema_attr]
+
+        # Rewrite root ID and project attributes
+        if dest_experiment_id is not None and "ID" in root.attrib:
+            root.attrib["ID"] = dest_experiment_id
+        if dest_project is not None and "project" in root.attrib:
+            root.attrib["project"] = dest_project
+
+        # Register namespaces to avoid ns0/ns1 prefixes in output
+        for prefix, uri in ns_map.items():
+            ET.register_namespace(prefix, uri)
+
+        return ET.tostring(root, encoding="unicode", xml_declaration=True)
+
+    @staticmethod
+    def _remove_elements_recursive(
+        parent: ET.Element,
+        local_names: set[str],
+        xnat_ns: str,
+    ) -> None:
+        """Remove elements matching local names from parent and descendants.
+
+        Args:
+            parent: Parent XML element.
+            local_names: Set of local tag names to remove.
+            xnat_ns: XNAT namespace URI.
+        """
+        to_remove: list[ET.Element] = []
+        for child in parent:
+            tag = child.tag
+            local = tag.rsplit("}", 1)[-1] if "}" in tag else tag
+            if local in local_names:
+                to_remove.append(child)
+            else:
+                TransferExecutor._remove_elements_recursive(child, local_names, xnat_ns)
+        for child in to_remove:
+            parent.remove(child)
+
+    def apply_xml_overlay(
+        self,
+        source_experiment_id: str,
+        dest_project: str,
+        dest_subject: str,
+        dest_experiment_label: str,
+    ) -> None:
+        """Fetch source experiment XML and overlay on destination.
+
+        Args:
+            source_experiment_id: Source experiment accession ID.
+            dest_project: Destination project ID.
+            dest_subject: Destination subject label.
+            dest_experiment_label: Destination experiment label.
+        """
+        xml_text = self.fetch_experiment_xml(source_experiment_id)
+
+        dest_experiment_id = self.check_experiment_exists(dest_project, dest_experiment_label)
+
+        cleaned_xml = self._rewrite_experiment_xml(xml_text, dest_experiment_id, dest_project)
+
+        self.dest.put(
+            f"/data/projects/{dest_project}/subjects/{dest_subject}"
+            f"/experiments/{dest_experiment_label}",
+            data=cleaned_xml.encode("utf-8"),
+            headers={"Content-Type": "text/xml"},
+        )
+
+        logger.info(
+            "XML metadata overlay applied for %s -> %s/%s",
+            source_experiment_id,
+            dest_project,
+            dest_experiment_label,
+        )
+
+    def _safe_count_dest_scans(
+        self,
+        dest_project: str,
+        subject_label: str,
+        experiment_label: str,
+        context: str,
+    ) -> int:
+        """Count dest scans, returning 0 on failure.
+
+        Args:
+            dest_project: Destination project ID.
+            subject_label: Subject label.
+            experiment_label: Experiment label.
+            context: Log context on failure.
+
+        Returns:
+            Scan count, or 0 if the query fails.
+        """
+        try:
+            return self.count_dest_scans(dest_project, subject_label, experiment_label)
+        except Exception as exc:
+            logger.debug(
+                "count_dest_scans failed for %s (%s): %s",
+                experiment_label,
+                context,
+                exc,
+            )
+            return 0
+
+    def wait_for_archive(
+        self,
+        dest_project: str,
+        subject_label: str,
+        experiment_label: str,
+        expected_scans: int,
+        timeout: float = 300.0,
+        interval: float = 5.0,
+    ) -> int:
+        """Wait for experiment scans to appear in archive after DICOM import.
+
+        Polls the prearchive and archive until the expected number of scans
+        are available, manually archiving READY entries found in prearchive.
+
+        Args:
+            dest_project: Destination project ID.
+            subject_label: Subject label.
+            experiment_label: Experiment label.
+            expected_scans: Number of scans expected in archive.
+            timeout: Maximum seconds to wait.
+            interval: Seconds between poll attempts.
+
+        Returns:
+            Actual scan count found in archive when done.
+        """
+        deadline = time.monotonic() + timeout
+        prearchive_cleared = False
+
+        while True:
+            if not prearchive_cleared:
+                entry = self.find_prearchive_entry(dest_project, experiment_label)
+                if entry is not None:
+                    status = entry.get("status", "")
+                    if status == "RECEIVING":
+                        logger.debug(
+                            "Prearchive entry for %s still RECEIVING, waiting...",
+                            experiment_label,
+                        )
+                    elif status == "READY":
+                        timestamp = entry.get("timestamp", "")
+                        if not timestamp:
+                            logger.warning(
+                                "Prearchive entry for %s is READY but has no timestamp, skipping",
+                                experiment_label,
+                            )
+                        else:
+                            logger.info(
+                                "Archiving prearchive entry for %s (status=READY)",
+                                experiment_label,
+                            )
+                            self.archive_prearchive(
+                                dest_project=dest_project,
+                                timestamp=timestamp,
+                                session_name=entry.get("name", experiment_label),
+                                subject_label=subject_label,
+                                experiment_label=experiment_label,
+                            )
+                    else:
+                        logger.debug(
+                            "Prearchive entry for %s has status=%s, waiting...",
+                            experiment_label,
+                            status,
+                        )
+                else:
+                    prearchive_cleared = True
+
+            if prearchive_cleared:
+                actual = self._safe_count_dest_scans(
+                    dest_project, subject_label, experiment_label, "polling"
+                )
+                if actual >= expected_scans:
+                    logger.info(
+                        "Archive has %d/%d scans for %s",
+                        actual,
+                        expected_scans,
+                        experiment_label,
+                    )
+                    return actual
+
+            if time.monotonic() >= deadline:
+                actual = self._safe_count_dest_scans(
+                    dest_project, subject_label, experiment_label, "timeout"
+                )
+                logger.warning(
+                    "Archive wait timed out for %s: %d/%d scans after %.0fs",
+                    experiment_label,
+                    actual,
+                    expected_scans,
+                    timeout,
+                )
+                return actual
+
+            time.sleep(interval)
 
     @staticmethod
     def validate_zip(zip_path: Path, expected_size: int | None = None) -> bool:

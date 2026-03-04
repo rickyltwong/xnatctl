@@ -166,7 +166,10 @@ class TransferConfig(BaseModel):
     scan_retry_count: int = 3
     scan_retry_delay: float = 5.0
     verify_after_transfer: bool = True
+    transfer_xml_metadata: bool = True
     scan_workers: int = Field(default=4, ge=1)
+    archive_wait_timeout: float = Field(default=10800.0, ge=0)
+    archive_poll_interval: float = Field(default=5.0, gt=0)
     filtering: FilterConfig = Field(default_factory=FilterConfig)
 
     @classmethod
@@ -214,7 +217,10 @@ class TransferConfig(BaseModel):
             "scan_retry_count": 3,
             "scan_retry_delay": 5.0,
             "verify_after_transfer": True,
+            "transfer_xml_metadata": True,
             "scan_workers": 4,
+            "archive_wait_timeout": 10800.0,
+            "archive_poll_interval": 5.0,
             "filtering": {
                 "project_resources": {"sync_type": "all"},
                 "subject_resources": {"sync_type": "all"},
