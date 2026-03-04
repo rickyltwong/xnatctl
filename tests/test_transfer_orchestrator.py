@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
 from xnatctl.core.state import TransferStateStore
 from xnatctl.models.transfer import TransferConfig
+from xnatctl.services.transfer.discovery import ChangeType, DiscoveredEntity
 from xnatctl.services.transfer.orchestrator import (
     TransferOrchestrator,
     TransferResult,
@@ -236,3 +239,319 @@ class TestSuccessPropagation:
 
         assert result.success is False
         assert result.experiments_failed >= 1
+
+
+class TestPrearchiveResolution:
+    def test_wait_for_prearchive_calls_executor(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """_wait_for_prearchive_resolution delegates to executor.wait_for_archive."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=5)
+
+        orchestrator._wait_for_prearchive_resolution(
+            exp, "DST", subject, 5
+        )
+
+        orchestrator.executor.wait_for_archive.assert_called_once_with(
+            dest_project="DST",
+            subject_label="SUB001",
+            experiment_label="EXP001",
+            expected_scans=5,
+            timeout=orchestrator.config.archive_wait_timeout,
+            interval=orchestrator.config.archive_poll_interval,
+        )
+
+    def test_partial_archive_logs_warning(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Warns when fewer scans than expected are archived."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=2)
+
+        with patch("xnatctl.services.transfer.orchestrator.logger") as mock_logger:
+            orchestrator._wait_for_prearchive_resolution(
+                exp, "DST", subject, 5
+            )
+            mock_logger.warning.assert_called_once()
+
+
+class TestTwoPhaseTransferScans:
+    def test_dicom_only_skips_non_dicom(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """dicom_only=True only transfers DICOM resources."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+        scans = [{"ID": "1", "type": "T1w"}]
+
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[
+                {"label": "DICOM", "file_count": "100"},
+                {"label": "SNAPSHOTS", "file_count": "2"},
+            ]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        result = TransferResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator._transfer_scans(
+                scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=True
+            )
+
+        orchestrator.executor.transfer_scan_dicom.assert_called_once()
+        orchestrator.executor.transfer_resource.assert_not_called()
+
+    def test_non_dicom_only_skips_dicom(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """dicom_only=False only transfers non-DICOM resources."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+        scans = [{"ID": "1", "type": "T1w"}]
+
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[
+                {"label": "DICOM", "file_count": "100"},
+                {"label": "NII", "file_count": "1"},
+            ]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        result = TransferResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator._transfer_scans(
+                scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=False
+            )
+
+        orchestrator.executor.transfer_scan_dicom.assert_not_called()
+        orchestrator.executor.transfer_resource.assert_called_once()
+
+    def test_shared_cache_prevents_double_fetch(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Shared scan_resources_cache reuses phase 1 results in phase 3."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+        scans = [{"ID": "1", "type": "T1w"}]
+
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[
+                {"label": "DICOM", "file_count": "100"},
+                {"label": "NII", "file_count": "1"},
+            ]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        result = TransferResult()
+        cache: dict[str, list[dict[str, str]]] = {}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator._transfer_scans(
+                scans, exp, "DST", subject, Path(tmpdir), result,
+                dicom_only=True, scan_resources_cache=cache,
+            )
+            orchestrator._transfer_scans(
+                scans, exp, "DST", subject, Path(tmpdir), result,
+                dicom_only=False, scan_resources_cache=cache,
+            )
+
+        # discover_scan_resources called once (phase 1), reused in phase 3
+        orchestrator.executor.discover_scan_resources.assert_called_once()
+
+
+class TestXmlMetadataOverlay:
+    def test_xml_overlay_called_after_prearchive(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """XML overlay is called between prearchive wait and non-DICOM resources."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.discover_scans = MagicMock(return_value=[])
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+
+        result = TransferResult()
+        orchestrator.config.verify_after_transfer = False
+
+        orchestrator._transfer_experiment(exp, 1, "DST", subject, result)
+
+        orchestrator.executor.apply_xml_overlay.assert_called_once_with(
+            source_experiment_id="XNAT_E001",
+            dest_project="DST",
+            dest_subject="SUB001",
+            dest_experiment_label="EXP001",
+        )
+
+    def test_xml_overlay_disabled(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """XML overlay is skipped when transfer_xml_metadata=False."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.config.transfer_xml_metadata = False
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.discover_scans = MagicMock(return_value=[])
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+
+        result = TransferResult()
+        orchestrator.config.verify_after_transfer = False
+
+        orchestrator._transfer_experiment(exp, 1, "DST", subject, result)
+
+        orchestrator.executor.apply_xml_overlay.assert_not_called()
+
+    def test_xml_overlay_failure_non_fatal(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """XML overlay failure does not block the transfer."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.discover_scans = MagicMock(return_value=[])
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.apply_xml_overlay = MagicMock(
+            side_effect=RuntimeError("XML overlay failed")
+        )
+
+        result = TransferResult()
+        orchestrator.config.verify_after_transfer = False
+
+        with patch("xnatctl.services.transfer.orchestrator.logger") as mock_logger:
+            orchestrator._transfer_experiment(exp, 1, "DST", subject, result)
+            mock_logger.warning.assert_called_once()
+
+        # Transfer still succeeds
+        assert result.experiments_synced == 1
+
+    def test_xml_overlay_progress_callback(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Progress callback is invoked after successful XML overlay."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.discover_scans = MagicMock(return_value=[])
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+
+        result = TransferResult()
+        orchestrator.config.verify_after_transfer = False
+        callback = MagicMock()
+
+        orchestrator._transfer_experiment(exp, 1, "DST", subject, result, callback)
+
+        # Verify callback was called with XML overlay message
+        xml_calls = [
+            c for c in callback.call_args_list if "XML metadata overlay" in str(c)
+        ]
+        assert len(xml_calls) == 1

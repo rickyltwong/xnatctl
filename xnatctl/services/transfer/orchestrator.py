@@ -330,8 +330,55 @@ class TransferOrchestrator:
         with tempfile.TemporaryDirectory() as work_dir_str:
             work_dir = Path(work_dir_str)
 
-            # Discover and transfer scans
+            # Discover scans
             scans = self.executor.discover_scans(exp.local_id)
+
+            # Shared cache: scan resources discovered in phase 1 are
+            # reused in phase 3 to avoid redundant API calls.
+            scan_resources_cache: dict[str, list[dict[str, Any]]] = {}
+
+            # Phase 1: Transfer DICOM resources only (parallel)
+            dicom_scan_count = self._transfer_scans(
+                scans,
+                exp,
+                dest_project,
+                subject,
+                work_dir,
+                result,
+                progress_callback,
+                dicom_only=True,
+                scan_resources_cache=scan_resources_cache,
+            )
+
+            # Phase 2: Wait for prearchive resolution
+            if dicom_scan_count > 0:
+                self._wait_for_prearchive_resolution(
+                    exp,
+                    dest_project,
+                    subject,
+                    dicom_scan_count,
+                    progress_callback,
+                )
+
+            # Phase 2.5: XML metadata overlay
+            if self.config.transfer_xml_metadata:
+                try:
+                    self.executor.apply_xml_overlay(
+                        source_experiment_id=exp.local_id,
+                        dest_project=dest_project,
+                        dest_subject=subject.local_label,
+                        dest_experiment_label=exp.local_label,
+                    )
+                    if progress_callback:
+                        progress_callback(f"    XML metadata overlay applied for {exp.local_label}")
+                except Exception:
+                    logger.warning(
+                        "XML metadata overlay failed for %s, continuing...",
+                        exp.local_label,
+                        exc_info=True,
+                    )
+
+            # Phase 3: Transfer non-DICOM scan resources (parallel)
             self._transfer_scans(
                 scans,
                 exp,
@@ -340,9 +387,11 @@ class TransferOrchestrator:
                 work_dir,
                 result,
                 progress_callback,
+                dicom_only=False,
+                scan_resources_cache=scan_resources_cache,
             )
 
-            # Transfer session-level resources
+            # Phase 4: Transfer session-level resources
             self._transfer_session_resources(
                 exp,
                 dest_project,
@@ -382,8 +431,13 @@ class TransferOrchestrator:
         work_dir: Path,
         result: TransferResult,
         progress_callback: Callable[[str], None] | None = None,
-    ) -> None:
-        """Transfer all scans for an experiment, in parallel.
+        dicom_only: bool = True,
+        scan_resources_cache: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> int:
+        """Transfer scans for an experiment, in parallel.
+
+        When dicom_only=True, only DICOM resources are transferred.
+        When dicom_only=False, only non-DICOM resources are transferred.
 
         Args:
             scans: List of scan dicts from source.
@@ -393,34 +447,60 @@ class TransferOrchestrator:
             work_dir: Temporary working directory.
             result: Mutable result to update.
             progress_callback: Optional progress callback.
+            dicom_only: Phase selector (True=DICOM, False=non-DICOM).
+            scan_resources_cache: Shared cache of scan resources across phases.
+
+        Returns:
+            Number of scans processed in this phase.
         """
-        # Filter scans
+        if scan_resources_cache is None:
+            scan_resources_cache = {}
+
         xsi_type = exp.xsi_type or ""
         filtered_scans = [
             s for s in scans if self.filter_engine.should_include_scan(xsi_type, s.get("type", ""))
         ]
 
         if not filtered_scans:
-            return
+            return 0
 
         workers = min(self.config.scan_workers, len(filtered_scans))
+        processed = 0
 
         def transfer_single_scan(
             scan: dict[str, Any],
-        ) -> tuple[str, bool, str]:
+        ) -> tuple[str, bool, bool, str]:
+            """Returns (scan_id, success, transferred, error)."""
             scan_id = scan.get("ID", "")
             scan_work_dir = work_dir / f"scan_{scan_id}"
             try:
-                self._transfer_single_scan(
+                did_transfer = self._transfer_single_scan(
                     scan,
                     exp,
                     dest_project,
                     subject,
                     scan_work_dir,
+                    dicom_only=dicom_only,
+                    scan_resources_cache=scan_resources_cache,
                 )
-                return scan_id, True, ""
+                return scan_id, True, did_transfer, ""
             except Exception as e:
-                return scan_id, False, str(e)
+                return scan_id, False, False, str(e)
+
+        def record_result(scan_id: str, success: bool, transferred: bool, error: str) -> int:
+            """Record scan result and return 1 if transferred, 0 otherwise."""
+            if success:
+                if dicom_only:
+                    result.scans_synced += 1
+                else:
+                    result.resources_synced += 1
+                return 1 if transferred else 0
+            if dicom_only:
+                result.scans_failed += 1
+            else:
+                result.resources_failed += 1
+            result.errors.append(f"Scan {scan_id} ({exp.local_label}): {error}")
+            return 0
 
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -428,20 +508,12 @@ class TransferOrchestrator:
                     pool.submit(transfer_single_scan, s): s.get("ID", "") for s in filtered_scans
                 }
                 for future in as_completed(futures):
-                    scan_id, success, error = future.result()
-                    if success:
-                        result.scans_synced += 1
-                    else:
-                        result.scans_failed += 1
-                        result.errors.append(f"Scan {scan_id} ({exp.local_label}): {error}")
+                    processed += record_result(*future.result())
         else:
             for scan in filtered_scans:
-                scan_id, success, error = transfer_single_scan(scan)
-                if success:
-                    result.scans_synced += 1
-                else:
-                    result.scans_failed += 1
-                    result.errors.append(f"Scan {scan_id} ({exp.local_label}): {error}")
+                processed += record_result(*transfer_single_scan(scan))
+
+        return processed
 
     def _transfer_single_scan(
         self,
@@ -450,8 +522,10 @@ class TransferOrchestrator:
         dest_project: str,
         subject: DiscoveredEntity,
         work_dir: Path,
-    ) -> None:
-        """Transfer a single scan: DICOM + non-DICOM resources.
+        dicom_only: bool = True,
+        scan_resources_cache: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> bool:
+        """Transfer a single scan's resources.
 
         Args:
             scan: Scan dict from source.
@@ -459,18 +533,53 @@ class TransferOrchestrator:
             dest_project: Destination project ID.
             subject: Parent subject entity.
             work_dir: Temporary working directory for this scan.
+            dicom_only: Phase selector (True=DICOM, False=non-DICOM).
+            scan_resources_cache: Shared cache of scan resources across phases.
+
+        Returns:
+            True if at least one resource was actually transferred.
         """
         scan_id = scan.get("ID", "")
         xsi_type = exp.xsi_type or ""
+        transferred = False
 
-        resources = self.executor.discover_scan_resources(exp.local_id, scan_id)
+        # Use cached resources or discover and cache.
+        # Thread safety: each scan_id is processed by exactly one thread
+        # within a phase, so dict keys are disjoint across workers (CPython GIL).
+        cached = (scan_resources_cache or {}).get(scan_id)
+        if cached is not None:
+            resources = cached
+        else:
+            resources = self.executor.discover_scan_resources(exp.local_id, scan_id)
+            if scan_resources_cache is not None:
+                scan_resources_cache[scan_id] = resources
+
+        has_dicom = any(r.get("label") == "DICOM" for r in resources)
+
+        # Scans without DICOM won't be created by DICOM import;
+        # create them explicitly before uploading non-DICOM resources.
+        if not has_dicom and not dicom_only:
+            scan_type = scan.get("type", "")
+            self.executor.create_scan(
+                dest_project=dest_project,
+                dest_subject=subject.local_label,
+                dest_experiment=exp.local_label,
+                scan_id=scan_id,
+                scan_type=scan_type,
+            )
 
         for res in resources:
             res_label = res.get("label", "")
             if not self.filter_engine.should_include_scan_resource(xsi_type, res_label):
                 continue
 
-            if res_label == "DICOM":
+            is_dicom = res_label == "DICOM"
+
+            # Phase filtering: skip resources not matching current phase
+            if is_dicom != dicom_only:
+                continue
+
+            if is_dicom:
                 self.executor.transfer_scan_dicom(
                     source_experiment_id=exp.local_id,
                     scan_id=scan_id,
@@ -498,6 +607,48 @@ class TransferOrchestrator:
                     resource_label=f"{scan_id}_{res_label}",
                     work_dir=work_dir,
                 )
+            transferred = True
+
+        return transferred
+
+    def _wait_for_prearchive_resolution(
+        self,
+        exp: DiscoveredEntity,
+        dest_project: str,
+        subject: DiscoveredEntity,
+        expected_scans: int,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Wait for DICOM imports to resolve from prearchive to archive.
+
+        Args:
+            exp: Experiment entity.
+            dest_project: Destination project ID.
+            subject: Parent subject entity.
+            expected_scans: Number of DICOM scans imported.
+            progress_callback: Optional progress callback.
+        """
+        if progress_callback:
+            progress_callback(
+                f"    Waiting for {expected_scans} scans to archive for {exp.local_label}..."
+            )
+
+        actual = self.executor.wait_for_archive(
+            dest_project=dest_project,
+            subject_label=subject.local_label,
+            experiment_label=exp.local_label,
+            expected_scans=expected_scans,
+            timeout=self.config.archive_wait_timeout,
+            interval=self.config.archive_poll_interval,
+        )
+
+        if actual < expected_scans:
+            logger.warning(
+                "Only %d/%d scans archived for %s; non-DICOM uploads may partially fail",
+                actual,
+                expected_scans,
+                exp.local_label,
+            )
 
     def _transfer_session_resources(
         self,
