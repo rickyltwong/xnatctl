@@ -74,27 +74,28 @@ def session_list(
     sessions = []
     for r in results:
         xsi_type = r.get("xsiType", "")
+        xsi_lower = xsi_type.lower()
 
-        # Filter by modality
+        # Filter by modality (case-insensitive)
         if modality:
-            if modality == "MR" and "MRSession" not in xsi_type:
+            if modality == "MR" and "mrsession" not in xsi_lower:
                 continue
-            elif modality == "PET" and "PETSession" not in xsi_type:
+            elif modality == "PET" and "petsession" not in xsi_lower:
                 continue
-            elif modality == "CT" and "CTSession" not in xsi_type:
+            elif modality == "CT" and "ctsession" not in xsi_lower:
                 continue
-            elif modality == "EEG" and "EEGSession" not in xsi_type:
+            elif modality == "EEG" and "eegsession" not in xsi_lower:
                 continue
 
-        # Extract modality from xsiType
+        # Extract modality from xsiType (case-insensitive)
         detected_modality = "?"
-        if "MRSession" in xsi_type:
+        if "mrsession" in xsi_lower:
             detected_modality = "MR"
-        elif "PETSession" in xsi_type:
+        elif "petsession" in xsi_lower:
             detected_modality = "PET"
-        elif "CTSession" in xsi_type:
+        elif "ctsession" in xsi_lower:
             detected_modality = "CT"
-        elif "EEGSession" in xsi_type:
+        elif "eegsession" in xsi_lower:
             detected_modality = "EEG"
 
         sessions.append(

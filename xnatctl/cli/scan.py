@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -15,6 +16,39 @@ from xnatctl.cli.common import (
     require_auth,
 )
 from xnatctl.core.output import OutputFormat, print_error, print_json, print_output, print_success
+
+if TYPE_CHECKING:
+    from xnatctl.core.client import XNATClient
+
+
+def _resolve_scan_params(client: XNATClient, base: str) -> dict[str, Any]:
+    """Resolve the scan xsiType from the parent experiment.
+
+    XNAT defaults to ``xnat:imageScanData`` subtypes when listing scans.
+    Non-imaging sessions (e.g. EEG) need an explicit ``xsiType`` parameter
+    so their scans are included in results.
+
+    Args:
+        client: Authenticated XNAT client.
+        base: Experiment base path (e.g. ``/data/experiments/{id}``).
+
+    Returns:
+        Query params dict with ``xsiType`` set when derivable, empty otherwise.
+    """
+    params: dict[str, Any] = {}
+    try:
+        exp_resp = client.get_json(base)
+    except Exception:
+        return params
+    exp_results = exp_resp.get("ResultSet", {}).get("Result", [])
+    if exp_results:
+        session_xsi = exp_results[0].get("xsiType", "")
+        if session_xsi and "sessiondata" in session_xsi.lower():
+            scan_xsi = session_xsi.replace("SessionData", "ScanData").replace(
+                "sessionData", "scanData"
+            )
+            params["xsiType"] = scan_xsi
+    return params
 
 
 @click.group()
@@ -65,7 +99,9 @@ def scan_list(ctx: Context, session_id: str, project: str | None) -> None:
         if project
         else f"/data/experiments/{session_id}"
     )
-    resp = client.get_json(f"{base}/scans")
+
+    scan_params = _resolve_scan_params(client, base)
+    resp = client.get_json(f"{base}/scans", params=scan_params)
     results = resp.get("ResultSet", {}).get("Result", [])
 
     # Transform for output
@@ -232,7 +268,8 @@ def scan_delete(
 
     # If wildcard, get all scan IDs
     if scan_ids is None:
-        resp = client.get_json(f"{base}/scans")
+        scan_params = _resolve_scan_params(client, base)
+        resp = client.get_json(f"{base}/scans", params=scan_params)
         results = resp.get("ResultSet", {}).get("Result", [])
         scan_ids = [r.get("ID", "") for r in results if r.get("ID")]
 

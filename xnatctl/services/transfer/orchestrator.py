@@ -1103,6 +1103,11 @@ class TransferOrchestrator:
         # 409 is tolerated: auto-archive may have already created the scan.
         if not has_dicom and not dicom_only:
             scan_type = scan.get("type", "")
+            scan_xsi = (
+                xsi_type.replace("SessionData", "ScanData").replace("sessionData", "scanData")
+                if xsi_type
+                else "xnat:mrScanData"
+            )
             try:
                 self.executor.create_scan(
                     dest_project=dest_project,
@@ -1110,6 +1115,7 @@ class TransferOrchestrator:
                     dest_experiment=exp.local_label,
                     scan_id=scan_id,
                     scan_type=scan_type,
+                    xsi_type=scan_xsi,
                 )
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 409:

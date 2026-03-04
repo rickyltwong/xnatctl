@@ -56,34 +56,43 @@ def _make_authenticated_context(
 # =============================================================================
 
 
+def _exp_metadata(xsi_type: str = "xnat:mrSessionData") -> dict[str, Any]:
+    """Build a minimal experiment metadata response."""
+    return {"ResultSet": {"Result": [{"xsiType": xsi_type}]}}
+
+
+def _scan_results(scans: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Build a scan listing response."""
+    return {"ResultSet": {"Result": scans or []}}
+
+
 class TestScanList:
     """Tests for `scan list` command."""
 
     def test_scan_list_happy_path(self, runner: CliRunner) -> None:
         """List scans for a session returns table output."""
         ctx, mock_client = _make_authenticated_context()
-        mock_client.get_json.return_value = {
-            "ResultSet": {
-                "Result": [
-                    {
-                        "ID": "1",
-                        "type": "T1w",
-                        "series_description": "T1-weighted",
-                        "quality": "usable",
-                        "frames": "176",
-                        "note": "",
-                    },
-                    {
-                        "ID": "2",
-                        "type": "T2w",
-                        "series_description": "T2-weighted",
-                        "quality": "usable",
-                        "frames": "32",
-                        "note": "",
-                    },
-                ]
-            }
-        }
+        mock_client.get_json.side_effect = [
+            _exp_metadata("xnat:mrSessionData"),
+            _scan_results([
+                {
+                    "ID": "1",
+                    "type": "T1w",
+                    "series_description": "T1-weighted",
+                    "quality": "usable",
+                    "frames": "176",
+                    "note": "",
+                },
+                {
+                    "ID": "2",
+                    "type": "T2w",
+                    "series_description": "T2-weighted",
+                    "quality": "usable",
+                    "frames": "32",
+                    "note": "",
+                },
+            ]),
+        ]
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -100,7 +109,10 @@ class TestScanList:
     def test_scan_list_with_project(self, runner: CliRunner) -> None:
         """List scans with -P scopes to project endpoint."""
         ctx, mock_client = _make_authenticated_context()
-        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+        mock_client.get_json.side_effect = [
+            _exp_metadata(),
+            _scan_results(),
+        ]
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -111,13 +123,17 @@ class TestScanList:
             result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
 
         assert result.exit_code == 0
-        call_url = mock_client.get_json.call_args[0][0]
-        assert "/data/projects/TESTPROJ/experiments/SESS001/scans" in call_url
+        # Second call is the scans listing
+        scan_call_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/data/projects/TESTPROJ/experiments/SESS001/scans" in scan_call_url
 
     def test_scan_list_without_project_uses_direct_endpoint(self, runner: CliRunner) -> None:
         """Without -P uses /data/experiments endpoint."""
         ctx, mock_client = _make_authenticated_context(default_project=None)
-        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+        mock_client.get_json.side_effect = [
+            _exp_metadata(),
+            _scan_results(),
+        ]
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -128,13 +144,16 @@ class TestScanList:
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
-        call_url = mock_client.get_json.call_args[0][0]
-        assert "/data/experiments/XNAT_E00001/scans" in call_url
+        scan_call_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/data/experiments/XNAT_E00001/scans" in scan_call_url
 
     def test_scan_list_default_project_fallback(self, runner: CliRunner) -> None:
         """Falls back to profile default_project for label resolution."""
         ctx, mock_client = _make_authenticated_context(default_project="FALLBACK")
-        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+        mock_client.get_json.side_effect = [
+            _exp_metadata(),
+            _scan_results(),
+        ]
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -145,26 +164,25 @@ class TestScanList:
             result = runner.invoke(cli, ["scan", "list", "-E", "SESS_LABEL"])
 
         assert result.exit_code == 0
-        call_url = mock_client.get_json.call_args[0][0]
-        assert "/data/projects/FALLBACK/" in call_url
+        scan_call_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/data/projects/FALLBACK/" in scan_call_url
 
     def test_scan_list_json_output(self, runner: CliRunner) -> None:
         """JSON output returns scan data."""
         ctx, mock_client = _make_authenticated_context()
-        mock_client.get_json.return_value = {
-            "ResultSet": {
-                "Result": [
-                    {
-                        "ID": "1",
-                        "type": "T1w",
-                        "series_description": "T1-weighted",
-                        "quality": "usable",
-                        "frames": "176",
-                        "note": "",
-                    }
-                ]
-            }
-        }
+        mock_client.get_json.side_effect = [
+            _exp_metadata(),
+            _scan_results([
+                {
+                    "ID": "1",
+                    "type": "T1w",
+                    "series_description": "T1-weighted",
+                    "quality": "usable",
+                    "frames": "176",
+                    "note": "",
+                }
+            ]),
+        ]
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -180,20 +198,19 @@ class TestScanList:
     def test_scan_list_quiet(self, runner: CliRunner) -> None:
         """Quiet mode outputs IDs only."""
         ctx, mock_client = _make_authenticated_context()
-        mock_client.get_json.return_value = {
-            "ResultSet": {
-                "Result": [
-                    {
-                        "ID": "1",
-                        "type": "T1w",
-                        "series_description": "T1-weighted",
-                        "quality": "usable",
-                        "frames": "176",
-                        "note": "",
-                    }
-                ]
-            }
-        }
+        mock_client.get_json.side_effect = [
+            _exp_metadata(),
+            _scan_results([
+                {
+                    "ID": "1",
+                    "type": "T1w",
+                    "series_description": "T1-weighted",
+                    "quality": "usable",
+                    "frames": "176",
+                    "note": "",
+                }
+            ]),
+        ]
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -209,7 +226,10 @@ class TestScanList:
     def test_scan_list_empty(self, runner: CliRunner) -> None:
         """Empty result set does not error."""
         ctx, mock_client = _make_authenticated_context()
-        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+        mock_client.get_json.side_effect = [
+            _exp_metadata(),
+            _scan_results(),
+        ]
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -220,6 +240,48 @@ class TestScanList:
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
+
+    def test_scan_list_eeg_session_passes_correct_xsi_type(self, runner: CliRunner) -> None:
+        """EEG sessions pass xsiType=xnat:eegScanData to the scans endpoint."""
+        ctx, mock_client = _make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata("xnat:eegSessionData"),
+            _scan_results([{"ID": "1", "type": "EEG", "series_description": "", "quality": ""}]),
+        ]
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx.auth_manager
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result.exit_code == 0
+        assert "EEG" in result.output
+        # Verify xsiType was passed to the scans call
+        scan_call_kwargs = mock_client.get_json.call_args_list[1][1]
+        assert scan_call_kwargs["params"]["xsiType"] == "xnat:eegScanData"
+
+    def test_scan_list_mr_session_passes_mr_xsi_type(self, runner: CliRunner) -> None:
+        """MR sessions pass xsiType=xnat:mrScanData to the scans endpoint."""
+        ctx, mock_client = _make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata("xnat:mrSessionData"),
+            _scan_results(),
+        ]
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx.auth_manager
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result.exit_code == 0
+        scan_call_kwargs = mock_client.get_json.call_args_list[1][1]
+        assert scan_call_kwargs["params"]["xsiType"] == "xnat:mrScanData"
 
 
 # =============================================================================
@@ -378,15 +440,10 @@ class TestScanDelete:
     def test_scan_delete_wildcard_dry_run(self, runner: CliRunner) -> None:
         """Wildcard '*' fetches all scan IDs in dry run."""
         ctx, mock_client = _make_authenticated_context()
-        mock_client.get_json.return_value = {
-            "ResultSet": {
-                "Result": [
-                    {"ID": "1"},
-                    {"ID": "2"},
-                    {"ID": "3"},
-                ]
-            }
-        }
+        mock_client.get_json.side_effect = [
+            _exp_metadata(),
+            _scan_results([{"ID": "1"}, {"ID": "2"}, {"ID": "3"}]),
+        ]
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
