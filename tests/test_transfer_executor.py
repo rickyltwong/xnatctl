@@ -39,6 +39,39 @@ def _make_valid_zip() -> bytes:
     return buf.getvalue()
 
 
+def _make_nested_zip(
+    experiment_label: str = "EXP001",
+    scan_id: str = "4",
+    resource_label: str = "SNAPSHOTS",
+    filenames: list[str] | None = None,
+) -> bytes:
+    """Create a ZIP with XNAT's nested directory structure.
+
+    XNAT serves ZIPs with paths like:
+    ``experiment_label/scans/scan_id/resources/label/files/filename``
+
+    Args:
+        experiment_label: Experiment label for directory prefix.
+        scan_id: Scan ID for directory prefix.
+        resource_label: Resource label for directory prefix.
+        filenames: Leaf filenames to include.
+
+    Returns:
+        ZIP bytes with nested directory hierarchy.
+    """
+    import io
+
+    if filenames is None:
+        filenames = ["image_qc.gif", "montage_2x3.gif"]
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        prefix = f"{experiment_label}/scans/{scan_id}/resources/{resource_label}/files"
+        for name in filenames:
+            zf.writestr(f"{prefix}/{name}", f"data for {name}")
+    return buf.getvalue()
+
+
 def _mock_stream_download(source_client: MagicMock, data: bytes) -> None:
     """Configure source_client to return data from streaming download."""
     stream_ctx = MagicMock()
@@ -317,6 +350,41 @@ class TestTransferResource:
                 work_dir=Path(tmpdir),
             )
             assert not (Path(tmpdir) / "NII.zip").exists()
+            assert not (Path(tmpdir) / "NII_flat.zip").exists()
+
+    def test_uploads_flat_zip_from_nested_source(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Nested XNAT ZIP hierarchy is flattened before upload."""
+        nested_zip = _make_nested_zip(
+            experiment_label="SRC_EXP",
+            scan_id="4",
+            resource_label="SNAPSHOTS",
+            filenames=["qc_image.gif", "montage.gif"],
+        )
+        _mock_stream_download(source_client, nested_zip)
+        dest_client.put.return_value = _make_response(text="OK")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor.transfer_resource(
+                source_path="/data/experiments/E001/scans/4/resources/SNAPSHOTS/files",
+                dest_path="/data/experiments/E002/scans/4/resources/SNAPSHOTS/files",
+                resource_label="SNAPSHOTS",
+                work_dir=Path(tmpdir),
+            )
+
+        # Verify the uploaded ZIP contains only flat filenames
+        call_args = dest_client.put.call_args
+        uploaded_data = call_args[1]["data"]
+
+        import io
+
+        with zipfile.ZipFile(io.BytesIO(uploaded_data), "r") as zf:
+            names = zf.namelist()
+        assert sorted(names) == ["montage.gif", "qc_image.gif"]
 
     def test_raises_on_invalid_zip(
         self,
@@ -333,6 +401,73 @@ class TestTransferResource:
                     resource_label="BAD",
                     work_dir=Path(tmpdir),
                 )
+
+
+class TestFlattenZip:
+    def test_strips_xnat_prefix(self, tmp_path: Path) -> None:
+        """XNAT prefix up to files/ is stripped, leaf filenames preserved."""
+        src = tmp_path / "nested.zip"
+        dst = tmp_path / "flat.zip"
+        with zipfile.ZipFile(src, "w") as zf:
+            zf.writestr("EXP/scans/1/resources/SNAP/files/a.gif", "aaa")
+            zf.writestr("EXP/scans/1/resources/SNAP/files/b.gif", "bbb")
+
+        TransferExecutor._flatten_zip(src, dst)
+
+        with zipfile.ZipFile(dst, "r") as zf:
+            assert sorted(zf.namelist()) == ["a.gif", "b.gif"]
+            assert zf.read("a.gif") == b"aaa"
+            assert zf.read("b.gif") == b"bbb"
+
+    def test_preserves_subdirs_under_files(self, tmp_path: Path) -> None:
+        """Subdirectory structure within files/ is preserved."""
+        src = tmp_path / "nested.zip"
+        dst = tmp_path / "flat.zip"
+        with zipfile.ZipFile(src, "w") as zf:
+            zf.writestr("EXP/scans/1/resources/BIDS/files/sub-01/anat/T1w.nii", "data")
+            zf.writestr("EXP/scans/1/resources/BIDS/files/dataset_description.json", "{}")
+
+        TransferExecutor._flatten_zip(src, dst)
+
+        with zipfile.ZipFile(dst, "r") as zf:
+            assert sorted(zf.namelist()) == ["dataset_description.json", "sub-01/anat/T1w.nii"]
+
+    def test_skips_directory_entries(self, tmp_path: Path) -> None:
+        """Directory-only entries in the ZIP are excluded."""
+        src = tmp_path / "nested.zip"
+        dst = tmp_path / "flat.zip"
+        with zipfile.ZipFile(src, "w") as zf:
+            zf.writestr("dir/files/", "")
+            zf.writestr("dir/files/file.txt", "content")
+
+        TransferExecutor._flatten_zip(src, dst)
+
+        with zipfile.ZipFile(dst, "r") as zf:
+            assert zf.namelist() == ["file.txt"]
+
+    def test_raises_on_duplicate_paths(self, tmp_path: Path) -> None:
+        """Duplicate relative paths from different prefixes raise ValueError."""
+        src = tmp_path / "dup.zip"
+        dst = tmp_path / "flat.zip"
+        with zipfile.ZipFile(src, "w") as zf:
+            zf.writestr("path_a/files/qc.gif", "aaa")
+            zf.writestr("path_b/files/qc.gif", "bbb")
+
+        with pytest.raises(ValueError, match="Duplicate path 'qc.gif'"):
+            TransferExecutor._flatten_zip(src, dst)
+
+    def test_already_flat_zip_unchanged(self, tmp_path: Path) -> None:
+        """ZIP with no directory structure passes through unchanged."""
+        src = tmp_path / "flat_in.zip"
+        dst = tmp_path / "flat_out.zip"
+        with zipfile.ZipFile(src, "w") as zf:
+            zf.writestr("file1.dcm", "data1")
+            zf.writestr("file2.dcm", "data2")
+
+        TransferExecutor._flatten_zip(src, dst)
+
+        with zipfile.ZipFile(dst, "r") as zf:
+            assert sorted(zf.namelist()) == ["file1.dcm", "file2.dcm"]
 
 
 class TestValidateZip:
