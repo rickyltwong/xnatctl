@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 from xnatctl.core.state import EntityStatus, SyncStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.conflicts import ConflictChecker
@@ -317,16 +319,6 @@ class TransferOrchestrator:
         if progress_callback:
             progress_callback(f"  Experiment {exp.local_label}...")
 
-        # Check experiment existence on destination
-        existing_id = self.executor.check_experiment_exists(dest_project, exp.local_label)
-        if not existing_id:
-            self.executor.create_experiment(
-                dest_project,
-                subject.local_label,
-                exp.local_label,
-                exp.xsi_type or "xnat:imageSessionData",
-            )
-
         with tempfile.TemporaryDirectory() as work_dir_str:
             work_dir = Path(work_dir_str)
 
@@ -336,6 +328,23 @@ class TransferOrchestrator:
             # Shared cache: scan resources discovered in phase 1 are
             # reused in phase 3 to avoid redundant API calls.
             scan_resources_cache: dict[str, list[dict[str, Any]]] = {}
+
+            # Check experiment existence on destination.
+            # Only pre-create when no DICOM scans exist (DICOM upload
+            # auto-archives and creates the experiment itself; pre-creating
+            # causes a prearchive CONFLICT).
+            existing_id = self.executor.check_experiment_exists(dest_project, exp.local_label)
+            if not existing_id:
+                has_any_dicom = self._scans_have_transferable_dicom(
+                    scans, exp, scan_resources_cache
+                )
+                if not has_any_dicom:
+                    self.executor.create_experiment(
+                        dest_project,
+                        subject.local_label,
+                        exp.local_label,
+                        exp.xsi_type or "xnat:imageSessionData",
+                    )
 
             # Phase 1: Transfer DICOM resources only (parallel)
             dicom_scan_count = self._transfer_scans(
@@ -421,6 +430,45 @@ class TransferOrchestrator:
                 parent_local_id=subject.local_id,
                 status=EntityStatus.SYNCED,
             )
+
+    def _scans_have_transferable_dicom(
+        self,
+        scans: list[dict[str, Any]],
+        exp: DiscoveredEntity,
+        scan_resources_cache: dict[str, list[dict[str, Any]]],
+    ) -> bool:
+        """Check whether any scan has a DICOM resource that will be transferred.
+
+        Consults the filter engine so that the decision to skip experiment
+        pre-creation only applies when DICOM will actually be imported
+        (triggering auto-archive).
+
+        Populates *scan_resources_cache* as a side effect so Phase 1
+        can reuse the results without redundant API calls.
+
+        Args:
+            scans: List of scan dicts from source.
+            exp: Parent experiment entity.
+            scan_resources_cache: Shared cache to populate.
+
+        Returns:
+            True if at least one scan has a DICOM resource that passes
+            the resource filter.
+        """
+        xsi_type = exp.xsi_type or ""
+        for scan in scans:
+            if not self.filter_engine.should_include_scan(xsi_type, scan.get("type", "")):
+                continue
+            scan_id = scan.get("ID", "")
+            resources = self.executor.discover_scan_resources(exp.local_id, scan_id)
+            scan_resources_cache[scan_id] = resources
+            for r in resources:
+                label = r.get("label", "")
+                if label == "DICOM" and self.filter_engine.should_include_scan_resource(
+                    xsi_type, label
+                ):
+                    return True
+        return False
 
     def _transfer_scans(
         self,
@@ -558,15 +606,25 @@ class TransferOrchestrator:
 
         # Scans without DICOM won't be created by DICOM import;
         # create them explicitly before uploading non-DICOM resources.
+        # 409 is tolerated: auto-archive may have already created the scan.
         if not has_dicom and not dicom_only:
             scan_type = scan.get("type", "")
-            self.executor.create_scan(
-                dest_project=dest_project,
-                dest_subject=subject.local_label,
-                dest_experiment=exp.local_label,
-                scan_id=scan_id,
-                scan_type=scan_type,
-            )
+            try:
+                self.executor.create_scan(
+                    dest_project=dest_project,
+                    dest_subject=subject.local_label,
+                    dest_experiment=exp.local_label,
+                    scan_id=scan_id,
+                    scan_type=scan_type,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 409:
+                    logger.debug(
+                        "Scan %s already exists on destination, continuing",
+                        scan_id,
+                    )
+                else:
+                    raise
 
         for res in resources:
             res_label = res.get("label", "")
