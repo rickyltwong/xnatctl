@@ -95,6 +95,9 @@ AGENTS.md
 *.local.*
 .omc/
 
+# Claude review state
+.claude_review_state.json
+
 # Git worktrees
 .worktrees/
 worktrees/

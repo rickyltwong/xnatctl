@@ -107,7 +107,7 @@ class TestCreateScan:
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
         dest_client.put.return_value = _make_response(text="")
-        result = executor.create_scan("DST", "SUB001", "EXP001", "22", "TEAvg_se")
+        executor.create_scan("DST", "SUB001", "EXP001", "22", "TEAvg_se")
         dest_client.put.assert_called_once()
         call_args = dest_client.put.call_args
         assert "/scans/22" in call_args[0][0]
@@ -383,14 +383,10 @@ class TestFindPrearchiveEntry:
     def test_returns_none_when_not_found(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.get.return_value = _make_response(
-            json_data={"ResultSet": {"Result": []}}
-        )
+        dest_client.get.return_value = _make_response(json_data={"ResultSet": {"Result": []}})
         assert executor.find_prearchive_entry("DST", "EXP001") is None
 
-    def test_matches_folder_name(
-        self, executor: TransferExecutor, dest_client: MagicMock
-    ) -> None:
+    def test_matches_folder_name(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
         dest_client.get.return_value = _make_response(
             json_data={
                 "ResultSet": {
@@ -405,9 +401,7 @@ class TestFindPrearchiveEntry:
 
 
 class TestArchivePrearchive:
-    def test_posts_commit_action(
-        self, executor: TransferExecutor, dest_client: MagicMock
-    ) -> None:
+    def test_posts_commit_action(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
         dest_client.post.return_value = _make_response(text="OK")
         executor.archive_prearchive(
             dest_project="DST",
@@ -423,11 +417,24 @@ class TestArchivePrearchive:
         assert call_args[1]["params"]["subject"] == "SUB001"
         assert call_args[1]["params"]["label"] == "EXP001"
 
-
-class TestCountDestScans:
-    def test_returns_scan_count(
+    def test_posts_overwrite_when_specified(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
+        dest_client.post.return_value = _make_response(text="OK")
+        executor.archive_prearchive(
+            dest_project="DST",
+            timestamp="20260101_100000",
+            session_name="EXP001",
+            subject_label="SUB001",
+            experiment_label="EXP001",
+            overwrite="append",
+        )
+        call_args = dest_client.post.call_args
+        assert call_args[1]["params"]["overwrite"] == "append"
+
+
+class TestCountDestScans:
+    def test_returns_scan_count(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
         dest_client.get.return_value = _make_response(
             json_data={
                 "ResultSet": {
@@ -445,9 +452,7 @@ class TestCountDestScans:
     def test_returns_zero_when_empty(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.get.return_value = _make_response(
-            json_data={"ResultSet": {"Result": []}}
-        )
+        dest_client.get.return_value = _make_response(json_data={"ResultSet": {"Result": []}})
         assert executor.count_dest_scans("DST", "SUB001", "EXP001") == 0
 
 
@@ -465,9 +470,7 @@ class TestWaitForArchive:
         dest_client.get.side_effect = [
             _make_response(json_data={"ResultSet": {"Result": []}}),  # prearchive
             _make_response(  # scan count
-                json_data={
-                    "ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}
-                }
+                json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}}
             ),
         ]
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5)
@@ -496,17 +499,11 @@ class TestWaitForArchive:
             # Poll 2: find_prearchive_entry -> empty (archived)
             _make_response(json_data={"ResultSet": {"Result": []}}),
             # Poll 2: count_dest_scans -> 3
-            _make_response(
-                json_data={
-                    "ResultSet": {"Result": [{"ID": str(i)} for i in range(3)]}
-                }
-            ),
+            _make_response(json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(3)]}}),
         ]
         dest_client.post.return_value = _make_response(text="OK")
 
-        actual = executor.wait_for_archive(
-            "DST", "SUB001", "EXP001", 3, timeout=60, interval=0.01
-        )
+        actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 3, timeout=60, interval=0.01)
         assert actual == 3
         dest_client.post.assert_called_once()  # archive_prearchive called
 
@@ -529,9 +526,7 @@ class TestWaitForArchive:
             _make_response(
                 json_data={
                     "ResultSet": {
-                        "Result": [
-                            {"name": "EXP001", "status": "RECEIVING", "timestamp": "ts"}
-                        ]
+                        "Result": [{"name": "EXP001", "status": "RECEIVING", "timestamp": "ts"}]
                     }
                 }
             ),
@@ -539,22 +534,52 @@ class TestWaitForArchive:
             _make_response(
                 json_data={
                     "ResultSet": {
-                        "Result": [
-                            {"name": "EXP001", "status": "RECEIVING", "timestamp": "ts"}
-                        ]
+                        "Result": [{"name": "EXP001", "status": "RECEIVING", "timestamp": "ts"}]
                     }
                 }
             ),
             # Timeout branch: count_dest_scans -> 1
-            _make_response(
-                json_data={"ResultSet": {"Result": [{"ID": "1"}]}}
-            ),
+            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
 
-        actual = executor.wait_for_archive(
-            "DST", "SUB001", "EXP001", 5, timeout=10, interval=0.01
-        )
+        actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5, timeout=10, interval=0.01)
         assert actual == 1
+
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_resolves_conflict_with_overwrite(
+        self,
+        mock_sleep: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """CONFLICT prearchive entry -> archive with overwrite=append."""
+        dest_client.get.side_effect = [
+            # Poll 1: find_prearchive_entry -> CONFLICT
+            _make_response(
+                json_data={
+                    "ResultSet": {
+                        "Result": [
+                            {
+                                "name": "EXP001",
+                                "status": "CONFLICT",
+                                "timestamp": "20260101_100000",
+                            }
+                        ]
+                    }
+                }
+            ),
+            # Poll 2: find_prearchive_entry -> empty (archived)
+            _make_response(json_data={"ResultSet": {"Result": []}}),
+            # Poll 2: count_dest_scans -> 5
+            _make_response(json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}}),
+        ]
+        dest_client.post.return_value = _make_response(text="OK")
+
+        actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5, timeout=60, interval=0.01)
+        assert actual == 5
+        # Verify archive_prearchive was called with overwrite=append
+        call_args = dest_client.post.call_args
+        assert call_args[1]["params"]["overwrite"] == "append"
 
 
 # -- Sample XNAT experiment XML for XML overlay tests --
@@ -624,8 +649,7 @@ class TestRewriteExperimentXml:
 
         # Flatten all local tag names
         all_tags = {
-            elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag
-            for elem in root.iter()
+            elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag for elem in root.iter()
         }
 
         assert "subject_ID" not in all_tags
@@ -643,8 +667,7 @@ class TestRewriteExperimentXml:
         # Session-level resources should be removed
         # But scan-level elements should remain
         all_tags = {
-            elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag
-            for elem in root.iter()
+            elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag for elem in root.iter()
         }
         assert "resources" not in all_tags
 
@@ -725,9 +748,7 @@ class TestRewriteExperimentXml:
         assert root.attrib["ID"] == "XNAT_E999"
 
     def test_rewrites_project_attribute(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(
-            _SAMPLE_XML, dest_project="DST"
-        )
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML, dest_project="DST")
         root = ET.fromstring(cleaned)
         assert root.attrib["project"] == "DST"
 
@@ -788,9 +809,7 @@ class TestApplyXmlOverlay:
     ) -> None:
         """When dest experiment not found, ID is preserved from source."""
         source_client.get.return_value = _make_response(text=_SAMPLE_XML)
-        dest_client.get.return_value = _make_response(
-            json_data={"ResultSet": {"Result": []}}
-        )
+        dest_client.get.return_value = _make_response(json_data={"ResultSet": {"Result": []}})
         dest_client.put.return_value = _make_response(text="OK")
 
         executor.apply_xml_overlay(

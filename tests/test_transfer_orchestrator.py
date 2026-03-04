@@ -223,6 +223,8 @@ class TestSuccessPropagation:
                     }
                 }
             ),
+            # discover_scans (empty -> no DICOM -> experiment pre-created)
+            _make_response({"ResultSet": {"Result": []}}),
         ]
 
         # check_experiment_exists -> not found, then create fails
@@ -261,9 +263,7 @@ class TestPrearchiveResolution:
 
         orchestrator.executor.wait_for_archive = MagicMock(return_value=5)
 
-        orchestrator._wait_for_prearchive_resolution(
-            exp, "DST", subject, 5
-        )
+        orchestrator._wait_for_prearchive_resolution(exp, "DST", subject, 5)
 
         orchestrator.executor.wait_for_archive.assert_called_once_with(
             dest_project="DST",
@@ -294,9 +294,7 @@ class TestPrearchiveResolution:
         orchestrator.executor.wait_for_archive = MagicMock(return_value=2)
 
         with patch("xnatctl.services.transfer.orchestrator.logger") as mock_logger:
-            orchestrator._wait_for_prearchive_resolution(
-                exp, "DST", subject, 5
-            )
+            orchestrator._wait_for_prearchive_resolution(exp, "DST", subject, 5)
             mock_logger.warning.assert_called_once()
 
 
@@ -407,12 +405,24 @@ class TestTwoPhaseTransferScans:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             orchestrator._transfer_scans(
-                scans, exp, "DST", subject, Path(tmpdir), result,
-                dicom_only=True, scan_resources_cache=cache,
+                scans,
+                exp,
+                "DST",
+                subject,
+                Path(tmpdir),
+                result,
+                dicom_only=True,
+                scan_resources_cache=cache,
             )
             orchestrator._transfer_scans(
-                scans, exp, "DST", subject, Path(tmpdir), result,
-                dicom_only=False, scan_resources_cache=cache,
+                scans,
+                exp,
+                "DST",
+                subject,
+                Path(tmpdir),
+                result,
+                dicom_only=False,
+                scan_resources_cache=cache,
             )
 
         # discover_scan_resources called once (phase 1), reused in phase 3
@@ -551,7 +561,156 @@ class TestXmlMetadataOverlay:
         orchestrator._transfer_experiment(exp, 1, "DST", subject, result, callback)
 
         # Verify callback was called with XML overlay message
-        xml_calls = [
-            c for c in callback.call_args_list if "XML metadata overlay" in str(c)
-        ]
+        xml_calls = [c for c in callback.call_args_list if "XML metadata overlay" in str(c)]
         assert len(xml_calls) == 1
+
+
+class TestDeferredExperimentCreation:
+    """Experiment should NOT be pre-created when DICOM scans exist.
+
+    DICOM auto-archive creates the experiment; pre-creating causes
+    a prearchive CONFLICT.
+    """
+
+    def test_no_precreate_when_transferable_dicom_exists(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Experiment is not pre-created when scans have transferable DICOM."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+
+        result = TransferResult()
+        orchestrator.config.verify_after_transfer = False
+
+        orchestrator._transfer_experiment(exp, 1, "DST", subject, result)
+
+        orchestrator.executor.create_experiment.assert_not_called()
+
+    def test_precreate_when_dicom_excluded_by_filter(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Experiment IS pre-created when DICOM exists but filter excludes it."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[
+                {"label": "DICOM", "file_count": "100"},
+                {"label": "SNAPSHOTS", "file_count": "2"},
+            ]
+        )
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.transfer_resource = MagicMock()
+        orchestrator.executor.create_scan = MagicMock()
+
+        # Mock filter to exclude DICOM resources
+        orchestrator.filter_engine.should_include_scan_resource = MagicMock(
+            side_effect=lambda xsi, label: label != "DICOM"
+        )
+
+        result = TransferResult()
+        orchestrator.config.verify_after_transfer = False
+
+        orchestrator._transfer_experiment(exp, 1, "DST", subject, result)
+
+        orchestrator.executor.create_experiment.assert_called_once()
+
+    def test_precreate_when_no_dicom_scans(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Experiment IS pre-created when no scans have DICOM resources."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "SNAPSHOTS", "file_count": "2"}]
+        )
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.transfer_resource = MagicMock()
+        orchestrator.executor.create_scan = MagicMock()
+
+        result = TransferResult()
+        orchestrator.config.verify_after_transfer = False
+
+        orchestrator._transfer_experiment(exp, 1, "DST", subject, result)
+
+        orchestrator.executor.create_experiment.assert_called_once()
+
+    def test_skip_precreate_when_experiment_already_exists(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Experiment is not created when it already exists on destination."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value="XNAT_E999")
+        orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.discover_scans = MagicMock(return_value=[])
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+
+        result = TransferResult()
+        orchestrator.config.verify_after_transfer = False
+
+        orchestrator._transfer_experiment(exp, 1, "DST", subject, result)
+
+        orchestrator.executor.create_experiment.assert_not_called()

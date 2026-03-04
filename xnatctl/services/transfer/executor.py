@@ -335,6 +335,7 @@ class TransferExecutor:
         session_name: str,
         subject_label: str,
         experiment_label: str,
+        overwrite: str | None = None,
     ) -> None:
         """Manually archive a prearchive entry on the destination.
 
@@ -344,15 +345,20 @@ class TransferExecutor:
             session_name: Session folder name in prearchive.
             subject_label: Subject label for archiving.
             experiment_label: Experiment label for archiving.
+            overwrite: Overwrite mode (``"append"`` or ``"delete"``).
+                Used to resolve prearchive CONFLICT entries.
         """
+        params: dict[str, str] = {
+            "action": "commit",
+            "SOURCE": "prearchive",
+            "subject": subject_label,
+            "label": experiment_label,
+        }
+        if overwrite is not None:
+            params["overwrite"] = overwrite
         self.dest.post(
             f"/data/prearchive/projects/{dest_project}/{timestamp}/{session_name}",
-            params={
-                "action": "commit",
-                "SOURCE": "prearchive",
-                "subject": subject_label,
-                "label": experiment_label,
-            },
+            params=params,
         )
 
     def count_dest_scans(
@@ -624,6 +630,26 @@ class TransferExecutor:
                                 subject_label=subject_label,
                                 experiment_label=experiment_label,
                             )
+                    elif status == "CONFLICT":
+                        timestamp = entry.get("timestamp", "")
+                        if timestamp:
+                            logger.info(
+                                "Resolving CONFLICT for %s by archiving with overwrite",
+                                experiment_label,
+                            )
+                            self.archive_prearchive(
+                                dest_project=dest_project,
+                                timestamp=timestamp,
+                                session_name=entry.get("name", experiment_label),
+                                subject_label=subject_label,
+                                experiment_label=experiment_label,
+                                overwrite="append",
+                            )
+                    elif status == "_BUILDING":
+                        logger.debug(
+                            "Prearchive entry for %s is building, waiting...",
+                            experiment_label,
+                        )
                     else:
                         logger.debug(
                             "Prearchive entry for %s has status=%s, waiting...",
