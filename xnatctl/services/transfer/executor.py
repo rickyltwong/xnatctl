@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import time
 import xml.etree.ElementTree as ET
 import zipfile
@@ -20,6 +21,25 @@ if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_xnat_prefix(filename: str) -> str:
+    """Strip XNAT directory prefix from a ZIP entry path.
+
+    Removes everything up to and including the ``files/`` segment,
+    preserving any subdirectory structure within the resource.
+    Falls back to the leaf filename if no ``files/`` segment is found.
+
+    Args:
+        filename: ZIP entry path (e.g. ``EXP/scans/1/resources/SNAP/files/img.gif``).
+
+    Returns:
+        Relative path after ``files/`` (e.g. ``img.gif``), or leaf filename.
+    """
+    parts = filename.split("/files/", 1)
+    if len(parts) == 2 and parts[1]:
+        return parts[1]
+    return Path(filename).name
 
 
 class TransferExecutor:
@@ -269,6 +289,10 @@ class TransferExecutor:
     ) -> int:
         """Download a resource from source and upload to destination.
 
+        Downloads the resource as a ZIP, flattens the directory hierarchy
+        (XNAT ZIPs include full experiment/scan/resource paths), then
+        uploads the flat ZIP so files appear directly in the resource.
+
         Args:
             source_path: Source resource files REST path.
             dest_path: Destination resource files REST path.
@@ -294,8 +318,12 @@ class TransferExecutor:
                 f"downloaded {total_bytes} bytes, expected {content_length}"
             )
 
+        flat_zip_path = work_dir / f"{resource_label}_flat.zip"
         try:
-            with open(zip_path, "rb") as f:
+            self._flatten_zip(zip_path, flat_zip_path)
+            zip_path.unlink(missing_ok=True)
+
+            with open(flat_zip_path, "rb") as f:
                 self.dest.put(
                     dest_path,
                     params={"overwrite": "true", "extract": "true"},
@@ -303,9 +331,47 @@ class TransferExecutor:
                     headers={"Content-Type": "application/zip"},
                 )
         finally:
+            flat_zip_path.unlink(missing_ok=True)
             zip_path.unlink(missing_ok=True)
 
         return total_bytes
+
+    @staticmethod
+    def _flatten_zip(source_zip: Path, dest_zip: Path) -> None:
+        """Strip XNAT directory prefix from ZIP entries.
+
+        XNAT ZIP downloads include the full hierarchy
+        (``experiment/scans/id/resources/label/files/...``).
+        This strips everything up to and including the ``files/`` segment,
+        preserving any subdirectory structure within the resource itself.
+
+        Falls back to leaf filename for entries without a ``files/`` segment.
+
+        Uses streaming copy to avoid loading entire members into memory.
+
+        Args:
+            source_zip: Path to source ZIP with nested dirs.
+            dest_zip: Path to write stripped ZIP.
+
+        Raises:
+            ValueError: If duplicate relative paths are detected.
+        """
+        with (
+            zipfile.ZipFile(source_zip, "r") as zf_in,
+            zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as zf_out,
+        ):
+            seen: set[str] = set()
+            for info in zf_in.infolist():
+                if info.is_dir():
+                    continue
+                relative = _strip_xnat_prefix(info.filename)
+                if not relative:
+                    continue
+                if relative in seen:
+                    raise ValueError(f"Duplicate path '{relative}' in ZIP (from '{info.filename}')")
+                seen.add(relative)
+                with zf_in.open(info) as src, zf_out.open(relative, "w") as dst:
+                    shutil.copyfileobj(src, dst)
 
     def find_prearchive_entry(self, dest_project: str, session_label: str) -> dict[str, Any] | None:
         """Find a prearchive entry matching a session label on the destination.
