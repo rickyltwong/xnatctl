@@ -85,9 +85,11 @@ class TestScanList:
             }
         }
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
@@ -100,13 +102,13 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
-            result = runner.invoke(
-                cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"]
-            )
+            result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
 
         assert result.exit_code == 0
         call_url = mock_client.get_json.call_args[0][0]
@@ -117,9 +119,11 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context(default_project=None)
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
@@ -132,9 +136,11 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context(default_project="FALLBACK")
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(cli, ["scan", "list", "-E", "SESS_LABEL"])
 
@@ -160,13 +166,13 @@ class TestScanList:
             }
         }
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
-            result = runner.invoke(
-                cli, ["scan", "list", "-E", "XNAT_E00001", "-o", "json"]
-            )
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001", "-o", "json"])
 
         assert result.exit_code == 0
         assert "T1w" in result.output
@@ -189,13 +195,13 @@ class TestScanList:
             }
         }
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
-            result = runner.invoke(
-                cli, ["scan", "list", "-E", "XNAT_E00001", "-q"]
-            )
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001", "-q"])
 
         assert result.exit_code == 0
         assert "1" in result.output
@@ -205,9 +211,11 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
@@ -228,11 +236,7 @@ class TestScanShow:
 
         def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
             if url.endswith("/resources"):
-                return {
-                    "ResultSet": {
-                        "Result": [{"label": "DICOM"}, {"label": "NIFTI"}]
-                    }
-                }
+                return {"ResultSet": {"Result": [{"label": "DICOM"}, {"label": "NIFTI"}]}}
             return {
                 "ResultSet": {
                     "Result": [
@@ -250,9 +254,11 @@ class TestScanShow:
 
         mock_client.get_json.side_effect = _get_json_side
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(cli, ["scan", "show", "-E", "XNAT_E00001", "1"])
 
@@ -276,13 +282,13 @@ class TestScanShow:
             }
         }
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
-            result = runner.invoke(
-                cli, ["scan", "show", "-E", "SESS001", "-P", "TESTPROJ", "1"]
-            )
+            result = runner.invoke(cli, ["scan", "show", "-E", "SESS001", "-P", "TESTPROJ", "1"])
 
         assert result.exit_code == 0
         call_url = mock_client.get_json.call_args_list[0][0][0]
@@ -293,9 +299,11 @@ class TestScanShow:
         ctx, mock_client = _make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(cli, ["scan", "show", "-E", "XNAT_E00001", "999"])
 
@@ -314,9 +322,11 @@ class TestScanDelete:
         """Dry run lists scans to delete without deleting."""
         ctx, mock_client = _make_authenticated_context()
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -343,9 +353,11 @@ class TestScanDelete:
         mock_response.status_code = 200
         mock_client.delete.return_value = mock_response
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -376,9 +388,11 @@ class TestScanDelete:
             }
         }
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -404,9 +418,11 @@ class TestScanDelete:
         mock_response.status_code = 204
         mock_client.delete.return_value = mock_response
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -432,9 +448,11 @@ class TestScanDelete:
         ctx, mock_client = _make_authenticated_context()
         mock_client.delete.side_effect = Exception("Server error")
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -458,9 +476,11 @@ class TestScanDelete:
         mock_ok.status_code = 200
         mock_client.delete.side_effect = [mock_ok, Exception("fail")]
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -492,9 +512,11 @@ class TestScanDownload:
         """Dry run previews download without fetching data."""
         ctx, mock_client = _make_authenticated_context()
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -519,9 +541,11 @@ class TestScanDownload:
         """Dry run with '*' shows 'all scans'."""
         ctx, mock_client = _make_authenticated_context()
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -546,9 +570,11 @@ class TestScanDownload:
         """Dry run with --resource shows resource type."""
         ctx, mock_client = _make_authenticated_context()
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -574,9 +600,11 @@ class TestScanDownload:
         """Name with path separator is rejected."""
         ctx, mock_client = _make_authenticated_context()
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -597,15 +625,15 @@ class TestScanDownload:
         assert result.exit_code != 0
         assert "path separators" in result.output
 
-    def test_scan_download_multiple_resources_rejected(
-        self, runner: CliRunner, tmp_path
-    ) -> None:
+    def test_scan_download_multiple_resources_rejected(self, runner: CliRunner, tmp_path) -> None:
         """Multiple --resource values are rejected."""
         ctx, mock_client = _make_authenticated_context()
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
@@ -643,11 +671,12 @@ class TestScanDownload:
             session_id="XNAT_E00001",
         )
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls, patch(
-            "xnatctl.services.downloads.DownloadService"
-        ) as mock_dl_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
@@ -683,11 +712,12 @@ class TestScanDownload:
             errors=["Connection timed out"],
         )
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls, patch(
-            "xnatctl.services.downloads.DownloadService"
-        ) as mock_dl_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
@@ -721,11 +751,12 @@ class TestScanDownload:
             session_id="XNAT_E00001",
         )
 
-        with patch("xnatctl.cli.common.Config.load", return_value=ctx.config), patch.object(
-            Context, "get_client", return_value=mock_client
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls, patch(
-            "xnatctl.services.downloads.DownloadService"
-        ) as mock_dl_cls:
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(

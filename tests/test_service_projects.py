@@ -26,7 +26,9 @@ def service(mock_client: MagicMock) -> ProjectService:
     return ProjectService(mock_client)
 
 
-def _make_response(json_data: dict | list | str, content_type: str = "application/json") -> MagicMock:
+def _make_response(
+    json_data: dict | list | str, content_type: str = "application/json"
+) -> MagicMock:
     """Build a mock httpx.Response."""
     resp = MagicMock(spec=httpx.Response)
     resp.json.return_value = json_data
@@ -67,8 +69,7 @@ class TestProjectList:
     def test_list_with_limit(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Limit truncates results."""
         rows = [
-            {**SAMPLE_PROJECT_ROW, "ID": f"PROJ{i:02d}", "label": f"PROJ{i:02d}"}
-            for i in range(5)
+            {**SAMPLE_PROJECT_ROW, "ID": f"PROJ{i:02d}", "label": f"PROJ{i:02d}"} for i in range(5)
         ]
         mock_client.get.return_value = _make_response({"ResultSet": {"Result": rows}})
 
@@ -146,9 +147,7 @@ class TestProjectCreate:
         assert put_kwargs[1]["params"]["name"] == "Test Project"
         assert put_kwargs[1]["params"]["accessibility"] == "private"
 
-    def test_create_optional_params(
-        self, service: ProjectService, mock_client: MagicMock
-    ) -> None:
+    def test_create_optional_params(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Optional params are only sent when provided."""
         mock_client.put.return_value = _make_response("", content_type="text/plain")
         mock_client.get.return_value = _make_response(
@@ -197,9 +196,7 @@ class TestProjectGetSubjects:
         assert len(result) == 1
         assert result[0]["ID"] == "SUBJ01"
 
-    def test_get_subjects_with_limit(
-        self, service: ProjectService, mock_client: MagicMock
-    ) -> None:
+    def test_get_subjects_with_limit(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Limit truncates subject results."""
         rows = [{"ID": f"SUBJ{i:02d}"} for i in range(5)]
         mock_client.get.return_value = _make_response({"ResultSet": {"Result": rows}})

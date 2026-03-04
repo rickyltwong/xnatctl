@@ -107,15 +107,17 @@ class TestPrearchiveArchive:
         post_params = mock_client.post.call_args[1]["params"]
         assert post_params["action"] == "commit"
 
-    def test_archive_with_options(
-        self, service: PrearchiveService, mock_client: MagicMock
-    ) -> None:
+    def test_archive_with_options(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """Archive passes subject, label, overwrite."""
         mock_client.post.return_value = _resp("", content_type="text/plain")
 
         service.archive(
-            "PROJ01", "20240115_120000", "session_01",
-            subject="SUB01", experiment_label="MR001", overwrite=True,
+            "PROJ01",
+            "20240115_120000",
+            "session_01",
+            subject="SUB01",
+            experiment_label="MR001",
+            overwrite=True,
         )
 
         post_params = mock_client.post.call_args[1]["params"]

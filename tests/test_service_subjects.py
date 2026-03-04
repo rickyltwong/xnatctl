@@ -217,22 +217,16 @@ class TestSubjectRenamePattern:
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
         """Subjects where old == new label are skipped."""
-        mock_client.get.return_value = _resp(
-            {"ResultSet": {"Result": [SAMPLE_SUBJECT]}}
-        )
+        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
         result = service.rename_pattern("PROJ01", r"^(SUB001)$", "{1}", dry_run=True)
 
         assert len(result["skipped"]) == 1
         assert result["skipped"][0]["reason"] == "no change"
 
-    def test_pattern_rename_dry_run(
-        self, service: SubjectService, mock_client: MagicMock
-    ) -> None:
+    def test_pattern_rename_dry_run(self, service: SubjectService, mock_client: MagicMock) -> None:
         """Pattern rename in dry-run mode."""
-        mock_client.get.return_value = _resp(
-            {"ResultSet": {"Result": [SAMPLE_SUBJECT]}}
-        )
+        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
         result = service.rename_pattern("PROJ01", r"^SUB(\d+)$", "SUBJ_{1}", dry_run=True)
 

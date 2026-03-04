@@ -42,7 +42,6 @@ def _mock_client() -> MagicMock:
     return client
 
 
-
 class TestSubjectList:
     """Tests for subject list command."""
 
@@ -63,12 +62,8 @@ class TestSubjectList:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
-                    result = runner.invoke(
-                        cli, ["subject", "list", "--project", "TESTPROJ"]
-                    )
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["subject", "list", "--project", "TESTPROJ"])
 
         assert result.exit_code == 0
         assert "SUB001" in result.output
@@ -76,16 +71,12 @@ class TestSubjectList:
     def test_subject_list_uses_default_project(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.return_value = {
-            "ResultSet": {
-                "Result": [{"ID": "XNAT_S001", "label": "SUB001", "src": ""}]
-            }
+            "ResultSet": {"Result": [{"ID": "XNAT_S001", "label": "SUB001", "src": ""}]}
         }
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["subject", "list"])
 
         assert result.exit_code == 0
@@ -106,9 +97,7 @@ class TestSubjectList:
 
         with patch("xnatctl.core.config.Config.load", return_value=cfg):
             with patch("xnatctl.cli.common.Config.load", return_value=cfg):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["subject", "list"])
 
         assert result.exit_code != 0
@@ -127,12 +116,8 @@ class TestSubjectList:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
-                    result = runner.invoke(
-                        cli, ["subject", "list", "-P", "TESTPROJ", "--quiet"]
-                    )
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["subject", "list", "-P", "TESTPROJ", "--quiet"])
 
         assert result.exit_code == 0
         assert "SUB001" in result.output
@@ -150,9 +135,7 @@ class TestSubjectList:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
                         [
@@ -177,13 +160,7 @@ class TestSubjectShow:
     def test_subject_show(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.side_effect = [
-            {
-                "ResultSet": {
-                    "Result": [
-                        {"ID": "XNAT_S001", "label": "SUB001"}
-                    ]
-                }
-            },
+            {"ResultSet": {"Result": [{"ID": "XNAT_S001", "label": "SUB001"}]}},
             {
                 "ResultSet": {
                     "Result": [
@@ -195,12 +172,8 @@ class TestSubjectShow:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
-                    result = runner.invoke(
-                        cli, ["subject", "show", "SUB001", "-P", "TESTPROJ"]
-                    )
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["subject", "show", "SUB001", "-P", "TESTPROJ"])
 
         assert result.exit_code == 0
         assert "SUB001" in result.output
@@ -211,12 +184,8 @@ class TestSubjectShow:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
-                    result = runner.invoke(
-                        cli, ["subject", "show", "NOSUB", "-P", "TESTPROJ"]
-                    )
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["subject", "show", "NOSUB", "-P", "TESTPROJ"])
 
         assert result.exit_code != 0
 
@@ -229,9 +198,7 @@ class TestSubjectDelete:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
                         [
@@ -256,9 +223,7 @@ class TestSubjectDelete:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
                         [
@@ -284,9 +249,7 @@ class TestSubjectDelete:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
                         [

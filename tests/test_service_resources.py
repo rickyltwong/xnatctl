@@ -206,7 +206,6 @@ class TestResourceCreate:
         call_path = mock_client.put.call_args[0][0]
         assert "/scans/1/resources/DICOM" in call_path
 
-
     def test_create_existing_resource_409(
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:

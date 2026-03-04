@@ -107,9 +107,7 @@ class TestAuthLogin:
 
         cfg = Config(
             default_profile="default",
-            profiles={
-                "default": Profile(url="https://xnat.example.org", verify_ssl=False)
-            },
+            profiles={"default": Profile(url="https://xnat.example.org", verify_ssl=False)},
         )
 
         with patch("xnatctl.cli.auth.Config.load", return_value=cfg):
@@ -225,9 +223,7 @@ class TestAuthTest:
 
         cfg = Config(
             default_profile="default",
-            profiles={
-                "default": Profile(url="https://xnat.example.org", verify_ssl=False)
-            },
+            profiles={"default": Profile(url="https://xnat.example.org", verify_ssl=False)},
         )
 
         with patch("xnatctl.cli.auth.Config.load", return_value=cfg):

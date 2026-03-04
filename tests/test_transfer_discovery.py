@@ -1,4 +1,5 @@
 """Tests for transfer discovery service."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -58,19 +59,21 @@ class TestDiscoverSubjects:
     def test_all_new_when_no_last_sync(
         self, service: DiscoveryService, mock_client: MagicMock
     ) -> None:
-        mock_client.get.return_value = _make_response({
-            "ResultSet": {
-                "Result": [
-                    {
-                        "ID": "XNAT_S001",
-                        "label": "SUB001",
-                        "project": "PROJ",
-                        "insert_date": "2026-01-01 10:00:00.0",
-                        "last_modified": "2026-01-15 10:00:00.0",
-                    },
-                ]
+        mock_client.get.return_value = _make_response(
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_S001",
+                            "label": "SUB001",
+                            "project": "PROJ",
+                            "insert_date": "2026-01-01 10:00:00.0",
+                            "last_modified": "2026-01-15 10:00:00.0",
+                        },
+                    ]
+                }
             }
-        })
+        )
 
         entities = service.discover_subjects("PROJ", last_sync_time=None)
 
@@ -78,22 +81,22 @@ class TestDiscoverSubjects:
         assert entities[0].change_type == ChangeType.NEW
         assert entities[0].local_id == "XNAT_S001"
 
-    def test_classifies_modified(
-        self, service: DiscoveryService, mock_client: MagicMock
-    ) -> None:
-        mock_client.get.return_value = _make_response({
-            "ResultSet": {
-                "Result": [
-                    {
-                        "ID": "XNAT_S001",
-                        "label": "SUB001",
-                        "project": "PROJ",
-                        "insert_date": "2026-01-01 10:00:00.0",
-                        "last_modified": "2026-02-01 10:00:00.0",
-                    },
-                ]
+    def test_classifies_modified(self, service: DiscoveryService, mock_client: MagicMock) -> None:
+        mock_client.get.return_value = _make_response(
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_S001",
+                            "label": "SUB001",
+                            "project": "PROJ",
+                            "insert_date": "2026-01-01 10:00:00.0",
+                            "last_modified": "2026-02-01 10:00:00.0",
+                        },
+                    ]
+                }
             }
-        })
+        )
 
         entities = service.discover_subjects(
             "PROJ",
@@ -106,40 +109,42 @@ class TestDiscoverSubjects:
     def test_missing_last_modified_falls_back_to_insert_date(
         self, service: DiscoveryService, mock_client: MagicMock
     ) -> None:
-        mock_client.get.return_value = _make_response({
-            "ResultSet": {
-                "Result": [
-                    {
-                        "ID": "XNAT_S001",
-                        "label": "SUB001",
-                        "project": "PROJ",
-                        "insert_date": "2024-04-19 08:49:24.941",
-                    },
-                ]
+        mock_client.get.return_value = _make_response(
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_S001",
+                            "label": "SUB001",
+                            "project": "PROJ",
+                            "insert_date": "2024-04-19 08:49:24.941",
+                        },
+                    ]
+                }
             }
-        })
+        )
 
         entities = service.discover_subjects("PROJ", last_sync_time=None)
 
         assert len(entities) == 1
         assert entities[0].insert_date == entities[0].last_modified
 
-    def test_skips_shared_subjects(
-        self, service: DiscoveryService, mock_client: MagicMock
-    ) -> None:
-        mock_client.get.return_value = _make_response({
-            "ResultSet": {
-                "Result": [
-                    {
-                        "ID": "XNAT_S001",
-                        "label": "SUB001",
-                        "project": "OTHER_PROJ",
-                        "insert_date": "2026-01-01 10:00:00.0",
-                        "last_modified": "2026-01-01 10:00:00.0",
-                    },
-                ]
+    def test_skips_shared_subjects(self, service: DiscoveryService, mock_client: MagicMock) -> None:
+        mock_client.get.return_value = _make_response(
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_S001",
+                            "label": "SUB001",
+                            "project": "OTHER_PROJ",
+                            "insert_date": "2026-01-01 10:00:00.0",
+                            "last_modified": "2026-01-01 10:00:00.0",
+                        },
+                    ]
+                }
             }
-        })
+        )
 
         entities = service.discover_subjects("PROJ", last_sync_time=None)
 
@@ -150,24 +155,24 @@ class TestDiscoverExperiments:
     def test_discovers_experiments_for_subject(
         self, service: DiscoveryService, mock_client: MagicMock
     ) -> None:
-        mock_client.get.return_value = _make_response({
-            "ResultSet": {
-                "Result": [
-                    {
-                        "ID": "XNAT_E001",
-                        "label": "EXP001",
-                        "xsiType": "xnat:mrSessionData",
-                        "project": "PROJ",
-                        "insert_date": "2026-01-01 10:00:00.0",
-                        "last_modified": "2026-01-01 10:00:00.0",
-                    },
-                ]
+        mock_client.get.return_value = _make_response(
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_E001",
+                            "label": "EXP001",
+                            "xsiType": "xnat:mrSessionData",
+                            "project": "PROJ",
+                            "insert_date": "2026-01-01 10:00:00.0",
+                            "last_modified": "2026-01-01 10:00:00.0",
+                        },
+                    ]
+                }
             }
-        })
-
-        entities = service.discover_experiments(
-            "PROJ", "XNAT_S001", last_sync_time=None
         )
+
+        entities = service.discover_experiments("PROJ", "XNAT_S001", last_sync_time=None)
 
         assert len(entities) == 1
         assert entities[0].xsi_type == "xnat:mrSessionData"

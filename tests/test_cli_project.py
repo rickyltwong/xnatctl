@@ -33,7 +33,6 @@ def _mock_config() -> Config:
     return cfg
 
 
-
 class TestProjectList:
     """Tests for project list command."""
 
@@ -63,9 +62,7 @@ class TestProjectList:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=mock_client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "list"])
 
         assert result.exit_code == 0
@@ -91,12 +88,8 @@ class TestProjectList:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=mock_client
-                ):
-                    result = runner.invoke(
-                        cli, ["project", "list", "--output", "json"]
-                    )
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "list", "--output", "json"])
 
         assert result.exit_code == 0
         assert "PROJ1" in result.output
@@ -121,9 +114,7 @@ class TestProjectList:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=mock_client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "list", "--quiet"])
 
         assert result.exit_code == 0
@@ -138,9 +129,7 @@ class TestProjectList:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=mock_client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "list"])
 
         assert result.exit_code == 0
@@ -175,9 +164,7 @@ class TestProjectShow:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=mock_client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "show", "PROJ1"])
 
         assert result.exit_code == 0
@@ -192,9 +179,7 @@ class TestProjectShow:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=mock_client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "show", "NONEXIST"])
 
         assert result.exit_code != 0
@@ -214,9 +199,7 @@ class TestProjectCreate:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=mock_client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(
                         cli,
                         [
@@ -245,12 +228,8 @@ class TestProjectCreate:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=mock_client
-                ):
-                    result = runner.invoke(
-                        cli, ["project", "create", "EXISTING"]
-                    )
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "create", "EXISTING"])
 
         assert result.exit_code != 0
 
@@ -265,9 +244,7 @@ class TestProjectCreate:
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
             with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
-                with patch(
-                    "xnatctl.cli.common.XNATClient", return_value=mock_client
-                ):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(
                         cli,
                         [

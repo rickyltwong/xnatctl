@@ -23,7 +23,6 @@ from xnatctl.cli.session import _extract_scan_zip
 from xnatctl.core.config import Config, Profile
 from xnatctl.models.progress import DownloadSummary
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -106,7 +105,9 @@ class TestExtractScanZip:
             )
 
         extracted, renamed = _extract_scan_zip(
-            zip_path, scan_base, resource_label="DICOM",
+            zip_path,
+            scan_base,
+            resource_label="DICOM",
         )
 
         assert extracted == 1
@@ -132,7 +133,9 @@ class TestExtractScanZip:
             )
 
         extracted, _ = _extract_scan_zip(
-            zip_path, scan_base, exclude_resources=frozenset({"SNAPSHOTS"}),
+            zip_path,
+            scan_base,
+            exclude_resources=frozenset({"SNAPSHOTS"}),
         )
 
         assert extracted == 2
@@ -147,17 +150,21 @@ class TestExtractScanZip:
 
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/img.dcm", b"dicom",
+                "XNAT_E00001/scans/1/resources/DICOM/files/img.dcm",
+                b"dicom",
             )
             zf.writestr(
-                "XNAT_E00001/scans/1/resources/SNAPSHOTS/files/t.jpg", b"snap",
+                "XNAT_E00001/scans/1/resources/SNAPSHOTS/files/t.jpg",
+                b"snap",
             )
             zf.writestr(
-                "XNAT_E00001/scans/1/resources/NII/files/b.nii.gz", b"nii",
+                "XNAT_E00001/scans/1/resources/NII/files/b.nii.gz",
+                b"nii",
             )
 
         extracted, _ = _extract_scan_zip(
-            zip_path, scan_base,
+            zip_path,
+            scan_base,
             exclude_resources=frozenset({"SNAPSHOTS", "NII"}),
         )
 
@@ -182,9 +189,7 @@ class TestExtractScanZip:
         extracted, _ = _extract_scan_zip(zip_path, scan_base)
 
         assert extracted == 1
-        assert not (
-            scan_base / "resources" / "DICOM" / "files" / ".DS_Store"
-        ).exists()
+        assert not (scan_base / "resources" / "DICOM" / "files" / ".DS_Store").exists()
 
     def test_duplicate_filenames_renamed(self, tmp_path: Path) -> None:
         """Duplicate filenames are renamed with __dup suffix."""
@@ -303,7 +308,9 @@ class TestSessionDownloadResourceFlags:
     """Tests for session download --resource / --exclude-resource flags."""
 
     def test_dry_run_with_resource_filter(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """Dry run with --resource shows resource types."""
         ctx, mock_client = _make_authenticated_context()
@@ -319,19 +326,34 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
-                    "session", "download",
-                    "-E", "XNAT_E00001", "-P", "TESTPROJ",
-                    "--out", str(tmp_path),
-                    "-r", "DICOM", "-r", "NII",
+                    "session",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-P",
+                    "TESTPROJ",
+                    "--out",
+                    str(tmp_path),
+                    "-r",
+                    "DICOM",
+                    "-r",
+                    "NII",
                     "--dry-run",
                 ],
             )
@@ -342,7 +364,9 @@ class TestSessionDownloadResourceFlags:
         assert "NII" in result.output
 
     def test_dry_run_with_exclude_resource(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """Dry run with --exclude-resource shows excluded types."""
         ctx, mock_client = _make_authenticated_context()
@@ -358,19 +382,32 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
-                    "session", "download",
-                    "-E", "XNAT_E00001", "-P", "TESTPROJ",
-                    "--out", str(tmp_path),
-                    "--exclude-resource", "SNAPSHOTS",
+                    "session",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-P",
+                    "TESTPROJ",
+                    "--out",
+                    str(tmp_path),
+                    "--exclude-resource",
+                    "SNAPSHOTS",
                     "--dry-run",
                 ],
             )
@@ -379,7 +416,9 @@ class TestSessionDownloadResourceFlags:
         assert "Exclude resources: SNAPSHOTS" in result.output
 
     def test_dry_run_with_session_resources(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """Dry run with --session-resources shows flag status."""
         ctx, mock_client = _make_authenticated_context()
@@ -395,18 +434,30 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
-                    "session", "download",
-                    "-E", "XNAT_E00001", "-P", "TESTPROJ",
-                    "--out", str(tmp_path),
+                    "session",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-P",
+                    "TESTPROJ",
+                    "--out",
+                    str(tmp_path),
                     "--session-resources",
                     "--dry-run",
                 ],
@@ -416,7 +467,9 @@ class TestSessionDownloadResourceFlags:
         assert "Session resources: True" in result.output
 
     def test_resource_and_exclude_resource_mutual_exclusion(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """--resource and --exclude-resource cannot be combined."""
         ctx, mock_client = _make_authenticated_context()
@@ -432,20 +485,34 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
-                    "session", "download",
-                    "-E", "XNAT_E00001", "-P", "TESTPROJ",
-                    "--out", str(tmp_path),
-                    "-r", "DICOM",
-                    "--exclude-resource", "SNAPSHOTS",
+                    "session",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-P",
+                    "TESTPROJ",
+                    "--out",
+                    str(tmp_path),
+                    "-r",
+                    "DICOM",
+                    "--exclude-resource",
+                    "SNAPSHOTS",
                     "--dry-run",
                 ],
             )
@@ -454,7 +521,9 @@ class TestSessionDownloadResourceFlags:
         assert "mutually exclusive" in result.output
 
     def test_include_resources_deprecation_warning(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """--include-resources emits DeprecationWarning and maps to --session-resources."""
         ctx, mock_client = _make_authenticated_context()
@@ -470,20 +539,34 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls, pytest.warns(
-            DeprecationWarning, match="--include-resources is deprecated",
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            pytest.warns(
+                DeprecationWarning,
+                match="--include-resources is deprecated",
+            ),
         ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
-                    "session", "download",
-                    "-E", "XNAT_E00001", "-P", "TESTPROJ",
-                    "--out", str(tmp_path),
+                    "session",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-P",
+                    "TESTPROJ",
+                    "--out",
+                    str(tmp_path),
                     "--include-resources",
                     "--dry-run",
                 ],
@@ -510,7 +593,9 @@ class TestSessionDownloadResourceFlags:
         assert "--include-resources" not in result.output
 
     def test_resource_filter_forces_parallel_path(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """--resource with workers=1 still uses parallel path."""
         ctx, mock_client = _make_authenticated_context()
@@ -526,22 +611,37 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls, patch(
-            "xnatctl.cli.session._download_session_fast",
-        ) as mock_fast:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            patch(
+                "xnatctl.cli.session._download_session_fast",
+            ) as mock_fast,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
-                    "session", "download",
-                    "-E", "XNAT_E00001", "-P", "TESTPROJ",
-                    "--out", str(tmp_path),
-                    "-w", "1",
-                    "-r", "DICOM",
+                    "session",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-P",
+                    "TESTPROJ",
+                    "--out",
+                    str(tmp_path),
+                    "-w",
+                    "1",
+                    "-r",
+                    "DICOM",
                 ],
             )
 
@@ -551,7 +651,9 @@ class TestSessionDownloadResourceFlags:
         assert call_kwargs["include_resources"] == ("DICOM",)
 
     def test_exclude_resource_forces_parallel_path(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """--exclude-resource with workers=1 still uses parallel path."""
         ctx, mock_client = _make_authenticated_context()
@@ -567,22 +669,37 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls, patch(
-            "xnatctl.cli.session._download_session_fast",
-        ) as mock_fast:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            patch(
+                "xnatctl.cli.session._download_session_fast",
+            ) as mock_fast,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
-                    "session", "download",
-                    "-E", "XNAT_E00001", "-P", "TESTPROJ",
-                    "--out", str(tmp_path),
-                    "-w", "1",
-                    "--exclude-resource", "SNAPSHOTS",
+                    "session",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-P",
+                    "TESTPROJ",
+                    "--out",
+                    str(tmp_path),
+                    "-w",
+                    "1",
+                    "--exclude-resource",
+                    "SNAPSHOTS",
                 ],
             )
 
@@ -601,25 +718,41 @@ class TestScanDownloadMultiResource:
     """Tests for scan download multiple --resource support."""
 
     def test_multiple_resources_rejected(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """Multiple -r flags are rejected with a clear error."""
         ctx, mock_client = _make_authenticated_context()
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
-                    "scan", "download",
-                    "-E", "XNAT_E00001",
-                    "-s", "1",
-                    "-r", "DICOM", "-r", "NII",
-                    "--out", str(tmp_path),
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "-r",
+                    "DICOM",
+                    "-r",
+                    "NII",
+                    "--out",
+                    str(tmp_path),
                 ],
             )
 
@@ -627,34 +760,54 @@ class TestScanDownloadMultiResource:
         assert "Only one --resource" in result.output
 
     def test_single_resource_passes_filter(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """Single -r passes resource filter to service."""
         ctx, mock_client = _make_authenticated_context()
         mock_summary = DownloadSummary(
-            success=True, total=1, succeeded=1, failed=0,
-            duration=1.0, total_files=5, total_size_mb=10.0,
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=1.0,
+            total_files=5,
+            total_size_mb=10.0,
             output_path=str(tmp_path / "XNAT_E00001"),
             session_id="XNAT_E00001",
         )
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls, patch(
-            "xnatctl.services.downloads.DownloadService",
-        ) as mock_dl_cls:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            patch(
+                "xnatctl.services.downloads.DownloadService",
+            ) as mock_dl_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
                 cli,
                 [
-                    "scan", "download",
-                    "-E", "XNAT_E00001",
-                    "-s", "1",
-                    "-r", "DICOM",
-                    "--out", str(tmp_path),
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "-r",
+                    "DICOM",
+                    "--out",
+                    str(tmp_path),
                 ],
             )
 
@@ -663,33 +816,52 @@ class TestScanDownloadMultiResource:
         assert call_kwargs["resource"] == "DICOM"
 
     def test_no_resource_passes_none(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """No -r flag passes resource=None (all resources)."""
         ctx, mock_client = _make_authenticated_context()
         mock_summary = DownloadSummary(
-            success=True, total=1, succeeded=1, failed=0,
-            duration=1.0, total_files=5, total_size_mb=10.0,
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=1.0,
+            total_files=5,
+            total_size_mb=10.0,
             output_path=str(tmp_path / "XNAT_E00001"),
             session_id="XNAT_E00001",
         )
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls, patch(
-            "xnatctl.services.downloads.DownloadService",
-        ) as mock_dl_cls:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            patch(
+                "xnatctl.services.downloads.DownloadService",
+            ) as mock_dl_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
                 cli,
                 [
-                    "scan", "download",
-                    "-E", "XNAT_E00001",
-                    "-s", "1",
-                    "--out", str(tmp_path),
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
                 ],
             )
 
@@ -698,25 +870,41 @@ class TestScanDownloadMultiResource:
         assert call_kwargs["resource"] is None
 
     def test_multiple_resources_rejected_with_dry_run(
-        self, runner: CliRunner, tmp_path: Path,
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
     ) -> None:
         """Multiple -r flags are rejected even with --dry-run."""
         ctx, mock_client = _make_authenticated_context()
 
-        with patch(
-            "xnatctl.cli.common.Config.load", return_value=ctx.config,
-        ), patch.object(
-            Context, "get_client", return_value=mock_client,
-        ), patch("xnatctl.cli.common.AuthManager") as mock_auth_cls:
+        with (
+            patch(
+                "xnatctl.cli.common.Config.load",
+                return_value=ctx.config,
+            ),
+            patch.object(
+                Context,
+                "get_client",
+                return_value=mock_client,
+            ),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
             mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
-                    "scan", "download",
-                    "-E", "XNAT_E00001",
-                    "-s", "1",
-                    "-r", "DICOM", "-r", "NII",
-                    "--out", str(tmp_path),
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "-r",
+                    "DICOM",
+                    "-r",
+                    "NII",
+                    "--out",
+                    str(tmp_path),
                     "--dry-run",
                 ],
             )
@@ -740,9 +928,15 @@ class TestDownloadScanDefault:
         mock_client = MagicMock()
         service = DownloadService(mock_client)
         mock_summary = DownloadSummary(
-            success=True, total=1, succeeded=1, failed=0,
-            duration=1.0, total_files=5, total_size_mb=10.0,
-            output_path="/tmp/test", session_id="XNAT_E00001",
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=1.0,
+            total_files=5,
+            total_size_mb=10.0,
+            output_path="/tmp/test",
+            session_id="XNAT_E00001",
         )
 
         with patch.object(service, "download_scans", return_value=mock_summary) as mock_scans:
@@ -771,13 +965,21 @@ class TestDownloadScanDefault:
         mock_client = MagicMock()
         service = DownloadService(mock_client)
         mock_summary = DownloadSummary(
-            success=True, total=1, succeeded=1, failed=0,
-            duration=1.0, total_files=5, total_size_mb=10.0,
-            output_path="/tmp/test", session_id="XNAT_E00001",
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=1.0,
+            total_files=5,
+            total_size_mb=10.0,
+            output_path="/tmp/test",
+            session_id="XNAT_E00001",
         )
 
         with patch.object(
-            service, "download_resource", return_value=mock_summary,
+            service,
+            "download_resource",
+            return_value=mock_summary,
         ) as mock_res:
             result = service.download_scan(
                 session_id="XNAT_E00001",

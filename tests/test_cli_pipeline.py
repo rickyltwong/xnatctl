@@ -85,9 +85,7 @@ class TestPipelineList:
                         "xnatctl.cli.pipeline.PipelineService",
                         return_value=mock_service,
                     ):
-                        result = runner.invoke(
-                            cli, ["pipeline", "list", "--project", "PROJ1"]
-                        )
+                        result = runner.invoke(cli, ["pipeline", "list", "--project", "PROJ1"])
 
         assert result.exit_code == 0
         mock_service.list.assert_called_once_with(project="PROJ1")
@@ -106,9 +104,7 @@ class TestPipelineList:
                         "xnatctl.cli.pipeline.PipelineService",
                         return_value=mock_service,
                     ):
-                        result = runner.invoke(
-                            cli, ["pipeline", "list", "--quiet"]
-                        )
+                        result = runner.invoke(cli, ["pipeline", "list", "--quiet"])
 
         assert result.exit_code == 0
         assert "dcm2niix" in result.output
@@ -235,9 +231,7 @@ class TestPipelineStatus:
                         "xnatctl.cli.pipeline.PipelineService",
                         return_value=mock_service,
                     ):
-                        result = runner.invoke(
-                            cli, ["pipeline", "status", "JOB123"]
-                        )
+                        result = runner.invoke(cli, ["pipeline", "status", "JOB123"])
 
         assert result.exit_code == 0
         assert "Running" in result.output
@@ -281,9 +275,7 @@ class TestPipelineCancel:
                         "xnatctl.cli.pipeline.PipelineService",
                         return_value=mock_service,
                     ):
-                        result = runner.invoke(
-                            cli, ["pipeline", "cancel", "JOB123", "--yes"]
-                        )
+                        result = runner.invoke(cli, ["pipeline", "cancel", "JOB123", "--yes"])
 
         assert result.exit_code == 0
         assert "Cancelled" in result.output
@@ -300,9 +292,7 @@ class TestPipelineCancel:
                         "xnatctl.cli.pipeline.PipelineService",
                         return_value=mock_service,
                     ):
-                        result = runner.invoke(
-                            cli, ["pipeline", "cancel", "JOB123"], input="n\n"
-                        )
+                        result = runner.invoke(cli, ["pipeline", "cancel", "JOB123"], input="n\n")
 
         assert result.exit_code != 0
         mock_service.cancel.assert_not_called()
