@@ -42,6 +42,71 @@ def _mock_client() -> MagicMock:
     return client
 
 
+class TestBuildQueryString:
+    """Tests for _build_query_string helper."""
+
+    def test_empty_params(self) -> None:
+        from xnatctl.cli.api import _build_query_string
+
+        assert _build_query_string(()) == ""
+
+    def test_simple_params(self) -> None:
+        from xnatctl.cli.api import _build_query_string
+
+        result = _build_query_string(("columns=ID,label", "format=json"))
+        assert "columns=" in result
+        assert "format=json" in result
+
+    def test_xsi_colon_preserved(self) -> None:
+        from xnatctl.cli.api import _build_query_string
+
+        result = _build_query_string(("xsiType=xnat:mrSessionData",))
+        assert "xsiType=xnat:mrSessionData" in result
+        assert "%3A" not in result
+
+    def test_xsi_slash_preserved(self) -> None:
+        from xnatctl.cli.api import _build_query_string
+
+        result = _build_query_string(
+            ("xnat:experimentData/subject_ID=XNAT_S00001",)
+        )
+        assert "xnat:experimentData/subject_ID=XNAT_S00001" in result
+
+    def test_brackets_preserved(self) -> None:
+        from xnatctl.cli.api import _build_query_string
+
+        result = _build_query_string(
+            ("xnat:mrSessionData/fields/field[name=type]/field=Research",)
+        )
+        assert "[name=type]" in result
+        # Value should be "Research", not "type]/field=Research"
+        assert result.endswith("=Research")
+        assert "field[name=type]/field" in result
+
+    def test_split_param_bracket_edge_case(self) -> None:
+        """Split on first = outside brackets, not inside."""
+        from xnatctl.cli.api import _split_param
+
+        result = _split_param(
+            "xnat:mrSessionData/fields/field[name=session_type]/field=Research"
+        )
+        assert result is not None
+        key, value = result
+        assert key == "xnat:mrSessionData/fields/field[name=session_type]/field"
+        assert value == "Research"
+
+    def test_split_param_no_equals(self) -> None:
+        from xnatctl.cli.api import _split_param
+
+        assert _split_param("noequalssign") is None
+
+    def test_no_equals_skipped(self) -> None:
+        from xnatctl.cli.api import _build_query_string
+
+        result = _build_query_string(("noequalssign",))
+        assert result == ""
+
+
 class TestApiGet:
     """Tests for api get command."""
 
@@ -88,7 +153,8 @@ class TestApiGet:
 
         assert result.exit_code == 0
         call_args = client.get.call_args
-        assert call_args[1]["params"]["columns"] == "ID,name"
+        url = call_args[0][0]
+        assert "columns=ID%2Cname" in url or "columns=ID,name" in url
 
     def test_api_get_json_output_format(self, runner: CliRunner) -> None:
         client = _mock_client()
@@ -120,6 +186,36 @@ class TestApiGet:
         assert "plain text response" in result.output
 
 
+    def test_api_get_xsi_typed_params_not_encoded(self, runner: CliRunner) -> None:
+        """XSI-typed param keys like xnat:mrSessionData preserve colons."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"ResultSet": {"Result": []}}
+        client.get.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "get",
+                            "/data/experiments",
+                            "-P",
+                            "xsiType=xnat:mrSessionData",
+                            "-P",
+                            "columns=ID,label",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        url = client.get.call_args[0][0]
+        # Colons must NOT be percent-encoded
+        assert "xsiType=xnat:mrSessionData" in url
+        assert "%3A" not in url.split("?")[1]  # no encoded colons
+
+
 class TestApiPost:
     """Tests for api post command."""
 
@@ -144,8 +240,10 @@ class TestApiPost:
                     )
 
         assert result.exit_code == 0
-        call_kwargs = client.post.call_args[1]
-        assert call_kwargs["json"] == {"ID": "NEWPROJ"}
+        call_args = client.post.call_args
+        assert call_args[1]["json"] == {"ID": "NEWPROJ"}
+        # URL should be the path directly (no query string)
+        assert call_args[0][0] == "/data/projects"
 
     def test_api_post_with_file(self, runner: CliRunner, tmp_path) -> None:
         client = _mock_client()
@@ -198,6 +296,60 @@ class TestApiPost:
         assert call_kwargs["json"] is None
 
 
+    def test_api_post_shows_status_code(self, runner: CliRunner) -> None:
+        """POST response shows HTTP status code on stderr."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "XNAT_E00001"
+        mock_resp.text = "XNAT_E00001"
+        client.post.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/data/experiments",
+                            "-P",
+                            "xnat:mrSessionData/subject_ID=XNAT_S00001",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        # Status line goes to stderr (captured in output by CliRunner)
+        assert "[200]" in result.output
+
+    def test_api_post_xsi_params_preserved(self, runner: CliRunner) -> None:
+        """POST with XSI-typed params preserves colons and slashes."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "XNAT_E00001"
+        client.post.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/data/experiments",
+                            "-P",
+                            "xnat:experimentData/subject_ID=XNAT_S00001",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        url = client.post.call_args[0][0]
+        assert "xnat:experimentData/subject_ID=XNAT_S00001" in url
+
+
 class TestApiPut:
     """Tests for api put command."""
 
@@ -222,6 +374,36 @@ class TestApiPut:
                     )
 
         assert result.exit_code == 0
+
+    def test_api_put_shows_status_code(self, runner: CliRunner) -> None:
+        """PUT response shows HTTP status code on stderr."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "XNAT_E00001"
+        mock_resp.text = "XNAT_E00001"
+        client.put.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/data/experiments/XNAT_E00001",
+                            "-P",
+                            "xnat:mrSessionData/fields/field[name=session_type]/field=Research",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        assert "[200]" in result.output
+        # XSI-typed key preserved
+        url = client.put.call_args[0][0]
+        assert "xnat:mrSessionData" in url
+        assert "%3A" not in url.split("?")[1]
 
 
 class TestApiDelete:
@@ -287,4 +469,5 @@ class TestApiDelete:
 
         assert result.exit_code == 0
         call_args = client.delete.call_args
-        assert call_args[1]["params"]["removeFiles"] == "true"
+        url = call_args[0][0]
+        assert "removeFiles=true" in url

@@ -174,9 +174,16 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
 
     session_data = results[0]
 
-    # Get scans
+    # Get scans — resolve xsiType so non-imaging sessions return results
     try:
-        scans_resp = client.get_json(f"{base}/scans")
+        scan_params: dict[str, str] = {}
+        session_xsi = session_data.get("xsiType", "")
+        if session_xsi and "sessiondata" in session_xsi.lower():
+            scan_xsi = session_xsi.replace("SessionData", "ScanData").replace(
+                "sessionData", "scanData"
+            )
+            scan_params["xsiType"] = scan_xsi
+        scans_resp = client.get_json(f"{base}/scans", params=scan_params)
         scans = scans_resp.get("ResultSet", {}).get("Result", [])
     except Exception:
         scans = []

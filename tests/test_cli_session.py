@@ -335,6 +335,59 @@ class TestSessionShow:
         first_get_call = mock_client.get_json.call_args_list[0]
         assert "/data/projects/TESTPROJ/experiments/SESS001" in first_get_call[0][0]
 
+    def test_session_show_non_mr_resolves_scan_xsi(self, runner: CliRunner) -> None:
+        """Non-MR session (e.g. EEG) resolves scan xsiType for scan listing."""
+        ctx, mock_client = _make_authenticated_context()
+        call_count = 0
+
+        def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            if url.endswith("/scans"):
+                return {
+                    "ResultSet": {
+                        "Result": [
+                            {"ID": "1", "type": "EEG", "series_description": "EEG recording"}
+                        ]
+                    }
+                }
+            if url.endswith("/resources"):
+                return {"ResultSet": {"Result": []}}
+            return {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_E00010",
+                            "label": "EEG_SESS",
+                            "subject_label": "SUB001",
+                            "project": "TESTPROJ",
+                            "date": "2025-06-01",
+                            "xsiType": "xnat:eegSessionData",
+                        }
+                    ]
+                }
+            }
+
+        mock_client.get_json.side_effect = _get_json_side
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx.auth_manager
+            result = runner.invoke(cli, ["session", "show", "-E", "XNAT_E00010", "-o", "json"])
+
+        assert result.exit_code == 0
+        # Find the scans call and verify xsiType param was passed
+        for call in mock_client.get_json.call_args_list:
+            if "/scans" in call[0][0]:
+                params = call[1].get("params", {})
+                assert params.get("xsiType") == "xnat:eegScanData"
+                break
+        else:
+            pytest.fail("No /scans call found")
+
     def test_session_show_not_found(self, runner: CliRunner) -> None:
         """Non-existent session prints error and exits 1."""
         ctx, mock_client = _make_authenticated_context()

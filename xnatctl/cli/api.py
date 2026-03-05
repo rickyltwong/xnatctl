@@ -5,6 +5,8 @@ Provides direct access to XNAT REST endpoints as an escape hatch.
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import click
 
 from xnatctl.cli.common import (
@@ -14,6 +16,56 @@ from xnatctl.cli.common import (
     require_auth,
 )
 from xnatctl.core.output import OutputFormat, print_json, print_output
+
+
+def _split_param(param: str) -> tuple[str, str] | None:
+    """Split a ``key=value`` param at the first ``=`` outside brackets.
+
+    XNAT field paths may contain ``=`` inside bracket expressions
+    (e.g. ``field[name=session_type]/field=Research``).  A naive
+    ``split("=", 1)`` would split on the wrong ``=``.
+
+    Args:
+        param: A ``key=value`` string.
+
+    Returns:
+        ``(key, value)`` tuple, or ``None`` if no valid split found.
+    """
+    depth = 0
+    for i, ch in enumerate(param):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth = max(0, depth - 1)
+        elif ch == "=" and depth == 0:
+            return param[:i], param[i + 1 :]
+    return None
+
+
+def _build_query_string(params: tuple) -> str:
+    """Build a raw query string preserving special chars in keys.
+
+    httpx URL-encodes query parameter keys (e.g. ``xnat:mrSessionData``
+    becomes ``xnat%3AmrSessionData``), which XNAT rejects.  This helper
+    builds a pre-encoded query string where colons, slashes, and other
+    characters in keys are preserved verbatim.
+
+    Args:
+        params: Tuple of ``key=value`` strings from Click ``-P`` options.
+
+    Returns:
+        A ``key=value&...`` query string (empty string if no params).
+    """
+    parts: list[str] = []
+    for param in params:
+        result = _split_param(param)
+        if result is not None:
+            key, value = result
+            # Preserve key verbatim (XNAT XSI paths contain :, /, [], =)
+            # Only percent-encode the value for safety (spaces, etc.)
+            encoded_value = quote(value, safe=":/[]@!$&'()*+,;=-._~")
+            parts.append(f"{key}={encoded_value}")
+    return "&".join(parts)
 
 
 @click.group()
@@ -61,14 +113,10 @@ def api_get(
     """
     client = ctx.get_client()
 
-    # Parse params
-    query_params = {}
-    for param in params:
-        if "=" in param:
-            key, value = param.split("=", 1)
-            query_params[key] = value
+    qs = _build_query_string(params)
+    url = f"{path}?{qs}" if qs else path
 
-    resp = client.get(path, params=query_params if query_params else None)
+    resp = client.get(url)
 
     try:
         data = resp.json()
@@ -138,12 +186,8 @@ def api_post(
 
     client = ctx.get_client()
 
-    # Parse params
-    query_params = {}
-    for param in params:
-        if "=" in param:
-            key, value = param.split("=", 1)
-            query_params[key] = value
+    qs = _build_query_string(params)
+    url = f"{path}?{qs}" if qs else path
 
     # Get body
     body = None
@@ -163,17 +207,18 @@ def api_post(
             body = data
 
     resp = client.post(
-        path,
-        params=query_params if query_params else None,
+        url,
         json=json_body,
         data=body,
     )
 
+    click.echo(f"[{resp.status_code}] POST {path}", err=True)
     try:
         result = resp.json()
         print_json(result)
     except Exception:
-        click.echo(resp.text)
+        if resp.text:
+            click.echo(resp.text)
 
 
 @api.command("put")
@@ -216,12 +261,8 @@ def api_put(
 
     client = ctx.get_client()
 
-    # Parse params
-    query_params = {}
-    for param in params:
-        if "=" in param:
-            key, value = param.split("=", 1)
-            query_params[key] = value
+    qs = _build_query_string(params)
+    url = f"{path}?{qs}" if qs else path
 
     # Get body
     body = None
@@ -241,17 +282,18 @@ def api_put(
             body = data
 
     resp = client.put(
-        path,
-        params=query_params if query_params else None,
+        url,
         json=json_body,
         data=body,
     )
 
+    click.echo(f"[{resp.status_code}] PUT {path}", err=True)
     try:
         result = resp.json()
         print_json(result)
     except Exception:
-        click.echo(resp.text)
+        if resp.text:
+            click.echo(resp.text)
 
 
 @api.command("delete")
@@ -288,14 +330,10 @@ def api_delete(
 
     client = ctx.get_client()
 
-    # Parse params
-    query_params = {}
-    for param in params:
-        if "=" in param:
-            key, value = param.split("=", 1)
-            query_params[key] = value
+    qs = _build_query_string(params)
+    url = f"{path}?{qs}" if qs else path
 
-    resp = client.delete(path, params=query_params if query_params else None)
+    resp = client.delete(url)
 
     if resp.status_code in (200, 204):
         click.echo(f"Deleted: {path}")
