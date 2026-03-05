@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -22,6 +24,7 @@ from xnatctl.services.transfer.conflicts import ConflictChecker
 from xnatctl.services.transfer.discovery import DiscoveredEntity, DiscoveryService
 from xnatctl.services.transfer.executor import TransferExecutor
 from xnatctl.services.transfer.filter import FilterEngine
+from xnatctl.services.transfer.poller import ArchivePoller, DeferredExperiment
 from xnatctl.services.transfer.verifier import Verifier
 
 if TYPE_CHECKING:
@@ -263,39 +266,111 @@ class TransferOrchestrator:
             status=EntityStatus.SYNCED,
         )
 
-        experiments = self.discovery.discover_experiments(
+        all_experiments = self.discovery.discover_experiments(
             src_proj,
             subject.local_id,
             last_sync_time=None,
         )
+        experiments = [
+            e for e in all_experiments if self.filter_engine.should_include_experiment(e)
+        ]
 
-        for exp in experiments:
-            if not self.filter_engine.should_include_experiment(exp):
-                continue
+        if not experiments:
+            return
 
-            try:
-                self._transfer_experiment(
-                    exp,
-                    sync_id,
-                    dest_project,
-                    subject,
-                    result,
-                    progress_callback,
-                )
-            except Exception as e:
-                result.experiments_failed += 1
-                result.success = False
-                result.errors.append(f"Experiment {exp.local_label}: {e}")
-                self.state_store.record_entity(
-                    sync_id=sync_id,
-                    entity_type="experiment",
-                    local_id=exp.local_id,
-                    local_label=exp.local_label,
-                    xsi_type=exp.xsi_type,
-                    parent_local_id=subject.local_id,
-                    status=EntityStatus.FAILED,
-                    message=str(e),
-                )
+        poller = ArchivePoller(self.executor, self.config.archive_poll_interval)
+        poller.start()
+        deferred: deque[DeferredExperiment] = deque()
+        pipelining_disabled = False
+
+        try:
+            for exp in experiments:
+                # Service prearchive actions from poller signals
+                if not pipelining_disabled:
+                    self._service_prearchive_actions(deferred)
+
+                # Drain ready experiments before next upload
+                self._drain_ready(deferred, result, progress_callback)
+
+                # Throttle: block if too many pending archives
+                while not pipelining_disabled and len(deferred) >= self.config.max_pending_archives:
+                    self._service_prearchive_actions(deferred)
+                    drained = self._drain_ready(deferred, result, progress_callback)
+                    if drained:
+                        break
+                    if not poller.is_alive:
+                        logger.warning("Poller died during throttle; draining with blocking wait")
+                        self._drain_all_blocking(deferred, result, progress_callback)
+                        pipelining_disabled = True
+                        break
+                    time.sleep(0.5)
+
+                # Upload DICOM phase
+                try:
+                    ctx = self._upload_dicom_phase(
+                        exp, sync_id, dest_project, subject, result, progress_callback
+                    )
+                    if ctx is not None:
+                        if pipelining_disabled:
+                            # No poller: block on archive then finalize immediately
+                            self.executor.wait_for_archive(
+                                ctx.dest_project,
+                                ctx.subject.local_label,
+                                ctx.exp.local_label,
+                                ctx.dicom_scan_count,
+                                timeout=self.config.archive_wait_timeout,
+                                interval=self.config.archive_poll_interval,
+                            )
+                            self._finalize_experiment(ctx, result, progress_callback)
+                        else:
+                            poller.enqueue(ctx)
+                            deferred.append(ctx)
+                    else:
+                        # No DICOM: finalize immediately
+                        self._finalize_experiment_no_dicom(
+                            exp, sync_id, dest_project, subject, result, progress_callback
+                        )
+                except Exception as e:
+                    result.experiments_failed += 1
+                    result.success = False
+                    result.errors.append(f"Experiment {exp.local_label}: {e}")
+                    self.state_store.record_entity(
+                        sync_id=sync_id,
+                        entity_type="experiment",
+                        local_id=exp.local_id,
+                        local_label=exp.local_label,
+                        xsi_type=exp.xsi_type,
+                        parent_local_id=subject.local_id,
+                        status=EntityStatus.FAILED,
+                        message=str(e),
+                    )
+
+            # Drain all remaining deferred experiments
+            if pipelining_disabled:
+                self._drain_all_blocking(deferred, result, progress_callback)
+            else:
+                while deferred:
+                    self._service_prearchive_actions(deferred)
+                    self._drain_ready(deferred, result, progress_callback)
+
+                    if not deferred:
+                        break
+
+                    if not poller.is_alive:
+                        logger.warning("Poller died; falling back to blocking wait")
+                        self._drain_all_blocking(deferred, result, progress_callback)
+                        break
+
+                    # Wait briefly for any experiment to become ready
+                    deferred[0].archive_ready.wait(timeout=1.0)
+        finally:
+            poller.stop()
+            # Clean up any remaining temp directories
+            for ctx in deferred:
+                try:
+                    ctx.work_dir_handle.cleanup()
+                except Exception:
+                    pass
 
     def _transfer_experiment(
         self,
@@ -430,6 +505,425 @@ class TransferOrchestrator:
                 parent_local_id=subject.local_id,
                 status=EntityStatus.SYNCED,
             )
+
+    def _upload_dicom_phase(
+        self,
+        exp: DiscoveredEntity,
+        sync_id: int,
+        dest_project: str,
+        subject: DiscoveredEntity,
+        result: TransferResult,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> DeferredExperiment | None:
+        """Upload DICOM resources for an experiment (Phase 1).
+
+        Returns DeferredExperiment context if DICOM was uploaded (needs archive
+        wait), or None if experiment has no DICOM (should be finalized immediately).
+
+        Args:
+            exp: Discovered experiment entity.
+            sync_id: Current sync run ID.
+            dest_project: Destination project ID.
+            subject: Parent subject entity.
+            result: Mutable result to update.
+            progress_callback: Optional progress callback.
+
+        Returns:
+            DeferredExperiment if DICOM uploaded, None otherwise.
+        """
+        if progress_callback:
+            progress_callback(f"  Experiment {exp.local_label}...")
+
+        work_dir_handle = tempfile.TemporaryDirectory()
+        try:
+            work_dir = Path(work_dir_handle.name)
+
+            scans = self.executor.discover_scans(exp.local_id)
+            scan_resources_cache: dict[str, list[dict[str, Any]]] = {}
+
+            existing_id = self.executor.check_experiment_exists(dest_project, exp.local_label)
+            if not existing_id:
+                has_any_dicom = self._scans_have_transferable_dicom(
+                    scans, exp, scan_resources_cache
+                )
+                if not has_any_dicom:
+                    self.executor.create_experiment(
+                        dest_project,
+                        subject.local_label,
+                        exp.local_label,
+                        exp.xsi_type or "xnat:imageSessionData",
+                    )
+                    work_dir_handle.cleanup()
+                    return None
+
+            # Phase 1: Upload DICOM
+            dicom_scan_count = self._transfer_scans(
+                scans,
+                exp,
+                dest_project,
+                subject,
+                work_dir,
+                result,
+                progress_callback,
+                dicom_only=True,
+                scan_resources_cache=scan_resources_cache,
+            )
+
+            if dicom_scan_count == 0:
+                # All DICOM transfers failed or were skipped. Ensure experiment
+                # exists on dest so the no-DICOM finalize path can proceed.
+                if not existing_id:
+                    self.executor.create_experiment(
+                        dest_project,
+                        subject.local_label,
+                        exp.local_label,
+                        exp.xsi_type or "xnat:imageSessionData",
+                    )
+                work_dir_handle.cleanup()
+                return None
+
+            return DeferredExperiment(
+                exp=exp,
+                subject=subject,
+                scans=scans,
+                scan_resources_cache=scan_resources_cache,
+                dicom_scan_count=dicom_scan_count,
+                sync_id=sync_id,
+                dest_project=dest_project,
+                work_dir=work_dir,
+                work_dir_handle=work_dir_handle,
+                archive_timeout_at=time.monotonic() + self.config.archive_wait_timeout,
+            )
+        except Exception:
+            work_dir_handle.cleanup()
+            raise
+
+    def _finalize_experiment(
+        self,
+        ctx: DeferredExperiment,
+        result: TransferResult,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Complete deferred phases for an experiment after archive is ready.
+
+        Runs Phase 2.5 (XML overlay), Phase 3 (non-DICOM resources),
+        Phase 4 (session resources), and verification.
+
+        Args:
+            ctx: Deferred experiment context.
+            result: Mutable result to update.
+            progress_callback: Optional progress callback.
+        """
+        try:
+            exp, subject, dest_project = ctx.exp, ctx.subject, ctx.dest_project
+
+            # Phase 2.5: XML metadata overlay
+            if self.config.transfer_xml_metadata:
+                try:
+                    self.executor.apply_xml_overlay(
+                        source_experiment_id=exp.local_id,
+                        dest_project=dest_project,
+                        dest_subject=subject.local_label,
+                        dest_experiment_label=exp.local_label,
+                    )
+                    if progress_callback:
+                        progress_callback(f"    XML overlay applied for {exp.local_label}")
+                except Exception:
+                    logger.warning(
+                        "XML overlay failed for %s",
+                        exp.local_label,
+                        exc_info=True,
+                    )
+
+            # Phase 3: Transfer non-DICOM scan resources
+            self._transfer_scans(
+                ctx.scans,
+                exp,
+                dest_project,
+                subject,
+                ctx.work_dir,
+                result,
+                progress_callback,
+                dicom_only=False,
+                scan_resources_cache=ctx.scan_resources_cache,
+            )
+
+            # Phase 4: Transfer session-level resources
+            self._transfer_session_resources(
+                exp, dest_project, subject, ctx.work_dir, result, progress_callback
+            )
+
+            # Verification
+            if self.config.verify_after_transfer:
+                self._verify_and_record_experiment(exp, ctx.sync_id, dest_project, subject, result)
+            else:
+                result.experiments_synced += 1
+                self.state_store.record_entity(
+                    sync_id=ctx.sync_id,
+                    entity_type="experiment",
+                    local_id=exp.local_id,
+                    local_label=exp.local_label,
+                    xsi_type=exp.xsi_type,
+                    parent_local_id=subject.local_id,
+                    status=EntityStatus.SYNCED,
+                )
+        finally:
+            ctx.work_dir_handle.cleanup()
+
+    def _finalize_experiment_no_dicom(
+        self,
+        exp: DiscoveredEntity,
+        sync_id: int,
+        dest_project: str,
+        subject: DiscoveredEntity,
+        result: TransferResult,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Full pipeline for experiments with no DICOM resources.
+
+        Runs XML overlay, non-DICOM resources, session resources, and
+        verification. Uses a fresh temp directory with context-manager scope.
+
+        Args:
+            exp: Discovered experiment entity.
+            sync_id: Current sync run ID.
+            dest_project: Destination project ID.
+            subject: Parent subject entity.
+            result: Mutable result to update.
+            progress_callback: Optional progress callback.
+        """
+        with tempfile.TemporaryDirectory() as work_dir_str:
+            work_dir = Path(work_dir_str)
+
+            scans = self.executor.discover_scans(exp.local_id)
+            scan_resources_cache: dict[str, list[dict[str, Any]]] = {}
+
+            # XML overlay
+            if self.config.transfer_xml_metadata:
+                try:
+                    self.executor.apply_xml_overlay(
+                        source_experiment_id=exp.local_id,
+                        dest_project=dest_project,
+                        dest_subject=subject.local_label,
+                        dest_experiment_label=exp.local_label,
+                    )
+                    if progress_callback:
+                        progress_callback(f"    XML overlay applied for {exp.local_label}")
+                except Exception:
+                    logger.warning(
+                        "XML overlay failed for %s",
+                        exp.local_label,
+                        exc_info=True,
+                    )
+
+            # Non-DICOM resources
+            self._transfer_scans(
+                scans,
+                exp,
+                dest_project,
+                subject,
+                work_dir,
+                result,
+                progress_callback,
+                dicom_only=False,
+                scan_resources_cache=scan_resources_cache,
+            )
+
+            # Session-level resources
+            self._transfer_session_resources(
+                exp, dest_project, subject, work_dir, result, progress_callback
+            )
+
+        # Verification
+        if self.config.verify_after_transfer:
+            self._verify_and_record_experiment(exp, sync_id, dest_project, subject, result)
+        else:
+            result.experiments_synced += 1
+            self.state_store.record_entity(
+                sync_id=sync_id,
+                entity_type="experiment",
+                local_id=exp.local_id,
+                local_label=exp.local_label,
+                xsi_type=exp.xsi_type,
+                parent_local_id=subject.local_id,
+                status=EntityStatus.SYNCED,
+            )
+
+    def _service_prearchive_actions(
+        self,
+        deferred: deque[DeferredExperiment],
+    ) -> None:
+        """Resolve prearchive READY/CONFLICT for any signaled experiments.
+
+        Called on main thread. Performs mutating POST via archive_prearchive().
+
+        Args:
+            deferred: Queue of deferred experiments to check.
+        """
+        for ctx in deferred:
+            if not ctx.needs_archive_action.is_set():
+                continue
+
+            try:
+                entry = self.executor.find_prearchive_entry(ctx.dest_project, ctx.exp.local_label)
+                if entry is None:
+                    ctx.prearchive_cleared = True
+                    ctx.needs_archive_action.clear()
+                else:
+                    timestamp = entry.get("timestamp", "")
+                    status = entry.get("status", "")
+                    if timestamp and status in ("READY", "CONFLICT"):
+                        overwrite = "append" if status == "CONFLICT" else None
+                        folder = entry.get("folderName") or entry.get("name", ctx.exp.local_label)
+                        self.executor.archive_prearchive(
+                            dest_project=ctx.dest_project,
+                            timestamp=timestamp,
+                            session_name=folder,
+                            subject_label=ctx.subject.local_label,
+                            experiment_label=ctx.exp.local_label,
+                            overwrite=overwrite,
+                        )
+                        ctx.prearchive_cleared = True
+                        ctx.needs_archive_action.clear()
+                    else:
+                        ctx.needs_archive_action.clear()
+            except Exception:
+                logger.warning(
+                    "Prearchive resolution failed for %s, will retry",
+                    ctx.exp.local_label,
+                    exc_info=True,
+                )
+
+    def _drain_ready(
+        self,
+        deferred: deque[DeferredExperiment],
+        result: TransferResult,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Finalize any experiment whose archive is ready.
+
+        Scans the entire deferred queue (not just head) to avoid
+        head-of-line blocking when a later experiment archives first.
+
+        Args:
+            deferred: Queue of deferred experiments.
+            result: Mutable result to update.
+            progress_callback: Optional progress callback.
+
+        Returns:
+            True if at least one experiment was drained.
+        """
+        drained = False
+        remaining: deque[DeferredExperiment] = deque()
+        ready_items: list[DeferredExperiment] = []
+        for ctx in deferred:
+            if ctx.archive_ready.is_set():
+                ready_items.append(ctx)
+            else:
+                remaining.append(ctx)
+        deferred.clear()
+        deferred.extend(remaining)
+
+        for ctx in ready_items:
+            try:
+                self._finalize_experiment(ctx, result, progress_callback)
+            except Exception as e:
+                result.experiments_failed += 1
+                result.success = False
+                result.errors.append(f"Experiment {ctx.exp.local_label}: {e}")
+                self.state_store.record_entity(
+                    sync_id=ctx.sync_id,
+                    entity_type="experiment",
+                    local_id=ctx.exp.local_id,
+                    local_label=ctx.exp.local_label,
+                    xsi_type=ctx.exp.xsi_type,
+                    parent_local_id=ctx.subject.local_id,
+                    status=EntityStatus.FAILED,
+                    message=str(e),
+                )
+            drained = True
+        return drained
+
+    def _drain_all_blocking(
+        self,
+        deferred: deque[DeferredExperiment],
+        result: TransferResult,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Drain all deferred experiments using blocking wait.
+
+        Fallback when the poller thread has died. First drains any
+        already-ready items, then blocks on each remaining experiment's
+        archive_ready event with a short timeout before falling back to
+        the synchronous wait_for_archive().
+
+        Args:
+            deferred: Queue of deferred experiments.
+            result: Mutable result to update.
+            progress_callback: Optional progress callback.
+        """
+        # First drain anything already ready
+        self._drain_ready(deferred, result, progress_callback)
+
+        while deferred:
+            ctx = deferred.popleft()
+            # Service prearchive action if needed
+            if ctx.needs_archive_action.is_set():
+                try:
+                    entry = self.executor.find_prearchive_entry(
+                        ctx.dest_project, ctx.exp.local_label
+                    )
+                    if entry is None:
+                        ctx.prearchive_cleared = True
+                    elif entry.get("status") in ("READY", "CONFLICT"):
+                        overwrite = "append" if entry["status"] == "CONFLICT" else None
+                        folder = entry.get("folderName") or entry.get("name", ctx.exp.local_label)
+                        self.executor.archive_prearchive(
+                            dest_project=ctx.dest_project,
+                            timestamp=entry.get("timestamp", ""),
+                            session_name=folder,
+                            subject_label=ctx.subject.local_label,
+                            experiment_label=ctx.exp.local_label,
+                            overwrite=overwrite,
+                        )
+                        ctx.prearchive_cleared = True
+                except Exception:
+                    logger.warning(
+                        "Prearchive resolution failed for %s in blocking drain",
+                        ctx.exp.local_label,
+                        exc_info=True,
+                    )
+                ctx.needs_archive_action.clear()
+
+            # Block until ready or use wait_for_archive as fallback
+            if not ctx.archive_ready.is_set():
+                if progress_callback:
+                    progress_callback(f"    Blocking wait for {ctx.exp.local_label}...")
+                self.executor.wait_for_archive(
+                    ctx.dest_project,
+                    ctx.subject.local_label,
+                    ctx.exp.local_label,
+                    ctx.dicom_scan_count,
+                    timeout=self.config.archive_wait_timeout,
+                    interval=self.config.archive_poll_interval,
+                )
+
+            try:
+                self._finalize_experiment(ctx, result, progress_callback)
+            except Exception as e:
+                result.experiments_failed += 1
+                result.success = False
+                result.errors.append(f"Experiment {ctx.exp.local_label}: {e}")
+                self.state_store.record_entity(
+                    sync_id=ctx.sync_id,
+                    entity_type="experiment",
+                    local_id=ctx.exp.local_id,
+                    local_label=ctx.exp.local_label,
+                    xsi_type=ctx.exp.xsi_type,
+                    parent_local_id=ctx.subject.local_id,
+                    status=EntityStatus.FAILED,
+                    message=str(e),
+                )
 
     def _scans_have_transferable_dicom(
         self,

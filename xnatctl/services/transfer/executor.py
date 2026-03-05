@@ -373,6 +373,27 @@ class TransferExecutor:
                 with zf_in.open(info) as src, zf_out.open(relative, "w") as dst:
                     shutil.copyfileobj(src, dst)
 
+    def list_prearchive_entries(self, dest_project: str) -> list[dict[str, Any]]:
+        """List all prearchive entries for a project on the destination.
+
+        Returns the full prearchive listing for a project. Used by
+        ArchivePoller to fetch a single snapshot per poll cycle instead
+        of N individual find_prearchive_entry() calls.
+
+        Args:
+            dest_project: Destination project ID.
+
+        Returns:
+            List of prearchive entry dicts with name, folderName, status, timestamp, etc.
+        """
+        resp = self.dest.get(
+            f"/data/prearchive/projects/{dest_project}",
+            params={"format": "json"},
+        )
+        data = resp.json()
+        results: list[dict[str, Any]] = data.get("ResultSet", {}).get("Result", [])
+        return results
+
     def find_prearchive_entry(self, dest_project: str, session_label: str) -> dict[str, Any] | None:
         """Find a prearchive entry matching a session label on the destination.
 
@@ -668,75 +689,85 @@ class TransferExecutor:
         prearchive_cleared = False
 
         while True:
-            if not prearchive_cleared:
-                entry = self.find_prearchive_entry(dest_project, experiment_label)
-                if entry is not None:
-                    status = entry.get("status", "")
-                    if status == "RECEIVING":
-                        logger.debug(
-                            "Prearchive entry for %s still RECEIVING, waiting...",
-                            experiment_label,
-                        )
-                    elif status == "READY":
-                        timestamp = entry.get("timestamp", "")
-                        if not timestamp:
-                            logger.warning(
-                                "Prearchive entry for %s is READY but has no timestamp, skipping",
+            try:
+                if not prearchive_cleared:
+                    entry = self.find_prearchive_entry(dest_project, experiment_label)
+                    if entry is not None:
+                        status = entry.get("status", "")
+                        if status == "RECEIVING":
+                            logger.debug(
+                                "Prearchive entry for %s still RECEIVING, waiting...",
+                                experiment_label,
+                            )
+                        elif status == "READY":
+                            timestamp = entry.get("timestamp", "")
+                            if not timestamp:
+                                logger.warning(
+                                    "Prearchive entry for %s is READY but has no timestamp,"
+                                    " skipping",
+                                    experiment_label,
+                                )
+                            else:
+                                logger.info(
+                                    "Archiving prearchive entry for %s (status=READY)",
+                                    experiment_label,
+                                )
+                                self.archive_prearchive(
+                                    dest_project=dest_project,
+                                    timestamp=timestamp,
+                                    session_name=entry.get("folderName")
+                                    or entry.get("name", experiment_label),
+                                    subject_label=subject_label,
+                                    experiment_label=experiment_label,
+                                )
+                        elif status == "CONFLICT":
+                            timestamp = entry.get("timestamp", "")
+                            if timestamp:
+                                logger.info(
+                                    "Resolving CONFLICT for %s by archiving with overwrite",
+                                    experiment_label,
+                                )
+                                self.archive_prearchive(
+                                    dest_project=dest_project,
+                                    timestamp=timestamp,
+                                    session_name=entry.get("folderName")
+                                    or entry.get("name", experiment_label),
+                                    subject_label=subject_label,
+                                    experiment_label=experiment_label,
+                                    overwrite="append",
+                                )
+                        elif status == "_BUILDING":
+                            logger.debug(
+                                "Prearchive entry for %s is building, waiting...",
                                 experiment_label,
                             )
                         else:
-                            logger.info(
-                                "Archiving prearchive entry for %s (status=READY)",
+                            logger.debug(
+                                "Prearchive entry for %s has status=%s, waiting...",
                                 experiment_label,
+                                status,
                             )
-                            self.archive_prearchive(
-                                dest_project=dest_project,
-                                timestamp=timestamp,
-                                session_name=entry.get("name", experiment_label),
-                                subject_label=subject_label,
-                                experiment_label=experiment_label,
-                            )
-                    elif status == "CONFLICT":
-                        timestamp = entry.get("timestamp", "")
-                        if timestamp:
-                            logger.info(
-                                "Resolving CONFLICT for %s by archiving with overwrite",
-                                experiment_label,
-                            )
-                            self.archive_prearchive(
-                                dest_project=dest_project,
-                                timestamp=timestamp,
-                                session_name=entry.get("name", experiment_label),
-                                subject_label=subject_label,
-                                experiment_label=experiment_label,
-                                overwrite="append",
-                            )
-                    elif status == "_BUILDING":
-                        logger.debug(
-                            "Prearchive entry for %s is building, waiting...",
-                            experiment_label,
-                        )
                     else:
-                        logger.debug(
-                            "Prearchive entry for %s has status=%s, waiting...",
-                            experiment_label,
-                            status,
-                        )
-                else:
-                    prearchive_cleared = True
+                        prearchive_cleared = True
 
-            if prearchive_cleared:
-                actual = self._safe_count_dest_scans(
-                    dest_project, subject_label, experiment_label, "polling"
-                )
-                if actual >= expected_scans:
-                    logger.info(
-                        "Archive has %d/%d scans for %s",
-                        actual,
-                        expected_scans,
-                        experiment_label,
+                if prearchive_cleared:
+                    actual = self._safe_count_dest_scans(
+                        dest_project, subject_label, experiment_label, "polling"
                     )
-                    return actual
+                    if actual >= expected_scans:
+                        logger.info(
+                            "Archive has %d/%d scans for %s",
+                            actual,
+                            expected_scans,
+                            experiment_label,
+                        )
+                        return actual
+            except Exception:
+                logger.debug(
+                    "Poll cycle error for %s, retrying next cycle",
+                    experiment_label,
+                    exc_info=True,
+                )
 
             if time.monotonic() >= deadline:
                 actual = self._safe_count_dest_scans(
