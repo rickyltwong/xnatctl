@@ -393,6 +393,26 @@ class TransferStateStore:
         row = cur.fetchone()
         return row["remote_id"] if row else None
 
+    def get_experiment_parents(self, experiment_local_ids: set[str]) -> set[str]:
+        """Get parent subject IDs for given experiment IDs from entity_manifest.
+
+        Args:
+            experiment_local_ids: Set of experiment local (source) IDs.
+
+        Returns:
+            Set of parent subject local IDs.
+        """
+        if not experiment_local_ids:
+            return set()
+        placeholders = ",".join("?" for _ in experiment_local_ids)
+        cur = self._conn.execute(
+            f"""SELECT DISTINCT parent_local_id FROM entity_manifest
+                WHERE entity_type='experiment' AND local_id IN ({placeholders})
+                AND parent_local_id IS NOT NULL""",
+            list(experiment_local_ids),
+        )
+        return {row["parent_local_id"] for row in cur.fetchall()}
+
     def get_all_mappings(
         self,
         source_url: str,
