@@ -168,6 +168,7 @@ class TransferConfig(BaseModel):
     verify_after_transfer: bool = True
     transfer_xml_metadata: bool = True
     scan_workers: int = Field(default=4, ge=1)
+    max_pending_archives: int = Field(default=5, ge=1)
     archive_wait_timeout: float = Field(default=10800.0, ge=0)
     archive_poll_interval: float = Field(default=5.0, gt=0)
     filtering: FilterConfig = Field(default_factory=FilterConfig)
@@ -219,6 +220,7 @@ class TransferConfig(BaseModel):
             "verify_after_transfer": True,
             "transfer_xml_metadata": True,
             "scan_workers": 4,
+            "max_pending_archives": 5,
             "archive_wait_timeout": 10800.0,
             "archive_poll_interval": 5.0,
             "filtering": {
