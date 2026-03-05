@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from xnatctl.core.state import SyncStatus, TransferStateStore
+from xnatctl.core.state import EntityStatus, SyncStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.discovery import ChangeType, DiscoveredEntity
 from xnatctl.services.transfer.orchestrator import (
@@ -1323,6 +1323,164 @@ class TestDestReconciliation:
         ]
 
         # No dest conflict check since no prior mapping
+        dest_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
+
+        subject_resp = MagicMock()
+        subject_resp.text = "/data/subjects/XNAT_S001"
+        dest_client.put.return_value = subject_resp
+
+        result = orchestrator.run()
+
+        assert result.subjects_synced == 1
+
+
+class TestExperimentReconciliation:
+    """Tests for reconciliation of previously-synced experiments deleted from dest."""
+
+    @staticmethod
+    def _subject_response(subjects: list[tuple[str, str]]) -> MagicMock:
+        """Build mock discover_subjects HTTP response.
+
+        Args:
+            subjects: List of (id, label) tuples.
+        """
+        rows = [
+            {
+                "ID": sid,
+                "label": slabel,
+                "project": "SRC",
+                "insert_date": "2026-01-01 10:00:00.0",
+                "last_modified": "2026-01-01 10:00:00.0",
+            }
+            for sid, slabel in subjects
+        ]
+        return _make_response({"ResultSet": {"Result": rows}})
+
+    @staticmethod
+    def _experiments_response() -> MagicMock:
+        """Empty experiments response."""
+        return _make_response({"ResultSet": {"Result": []}})
+
+    def test_reconcile_re_syncs_subject_with_deleted_experiment(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+        state_store: TransferStateStore,
+    ) -> None:
+        """Subject whose experiment was deleted from dest is re-synced."""
+        src_url = str(source_client.base_url)
+        dst_url = str(dest_client.base_url)
+
+        # Simulate a prior successful sync with subject + experiment mappings
+        prev_sync = state_store.start_sync(src_url, "SRC", dst_url, "DST")
+        state_store.end_sync(prev_sync, SyncStatus.COMPLETED, subjects_synced=1)
+        state_store.save_id_mapping(
+            src_url, "SRC", dst_url, "DST", "XNAT_S001", "XNAT_S999", "subject"
+        )
+        state_store.save_id_mapping(
+            src_url, "SRC", dst_url, "DST", "XNAT_E001", "XNAT_E999", "experiment"
+        )
+        # Record experiment in entity_manifest so parent lookup works
+        state_store.record_entity(
+            sync_id=prev_sync,
+            entity_type="experiment",
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            remote_id="XNAT_E999",
+            parent_local_id="XNAT_S001",
+            status=EntityStatus.SYNCED,
+        )
+
+        # Source: subject unchanged, incremental returns it but unchanged
+        # Full discovery returns the subject
+        source_client.get.side_effect = [
+            # Incremental discover_subjects
+            self._subject_response([("XNAT_S001", "SUB001")]),
+            # Full discover_subjects for experiment reconciliation
+            self._subject_response([("XNAT_S001", "SUB001")]),
+            # discover_experiments for the re-synced subject
+            self._experiments_response(),
+        ]
+
+        # Dest: subject exists but experiment does NOT
+        dest_client.get.side_effect = [
+            # list_dest_subjects: subject still there
+            _make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
+            # list_dest_experiments: experiment missing
+            _make_response({"ResultSet": {"Result": []}}),
+            # conflict_checker.check_subject
+            _make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
+        ]
+
+        subject_resp = MagicMock()
+        subject_resp.text = "/data/subjects/XNAT_S999"
+        dest_client.put.return_value = subject_resp
+
+        result = orchestrator.run()
+
+        # Subject should be re-synced due to missing experiment
+        assert result.subjects_synced == 1
+
+    def test_no_experiment_reconcile_when_dest_has_experiment(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+        state_store: TransferStateStore,
+    ) -> None:
+        """Subject is not re-synced when its experiments still exist on dest."""
+        src_url = str(source_client.base_url)
+        dst_url = str(dest_client.base_url)
+
+        prev_sync = state_store.start_sync(src_url, "SRC", dst_url, "DST")
+        state_store.end_sync(prev_sync, SyncStatus.COMPLETED, subjects_synced=1)
+        state_store.save_id_mapping(
+            src_url, "SRC", dst_url, "DST", "XNAT_S001", "XNAT_S999", "subject"
+        )
+        state_store.save_id_mapping(
+            src_url, "SRC", dst_url, "DST", "XNAT_E001", "XNAT_E999", "experiment"
+        )
+        state_store.record_entity(
+            sync_id=prev_sync,
+            entity_type="experiment",
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            remote_id="XNAT_E999",
+            parent_local_id="XNAT_S001",
+            status=EntityStatus.SYNCED,
+        )
+
+        # Source: subject unchanged
+        source_client.get.side_effect = [
+            self._subject_response([("XNAT_S001", "SUB001")]),
+        ]
+
+        # Dest: both subject and experiment exist
+        dest_client.get.side_effect = [
+            # list_dest_subjects
+            _make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
+            # list_dest_experiments
+            _make_response({"ResultSet": {"Result": [{"ID": "XNAT_E999"}]}}),
+        ]
+
+        result = orchestrator.run()
+
+        assert result.subjects_synced == 0
+        dest_client.put.assert_not_called()
+
+    def test_no_experiment_reconcile_on_first_sync(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """First sync (no last_sync_time) skips experiment reconciliation."""
+        source_client.get.side_effect = [
+            self._subject_response([("XNAT_S001", "SUB001")]),
+            self._experiments_response(),
+        ]
+
         dest_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
 
         subject_resp = MagicMock()

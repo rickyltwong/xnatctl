@@ -71,6 +71,23 @@ class TransferExecutor:
         results: list[dict[str, Any]] = data.get("ResultSet", {}).get("Result", [])
         return {r["ID"] for r in results if "ID" in r}
 
+    def list_dest_experiments(self, dest_project: str) -> set[str]:
+        """List all experiment accession IDs on the destination project.
+
+        Args:
+            dest_project: Destination project ID.
+
+        Returns:
+            Set of experiment accession IDs present on the destination.
+        """
+        resp = self.dest.get(
+            f"/data/projects/{dest_project}/experiments",
+            params={"format": "json", "columns": "ID"},
+        )
+        data = resp.json()
+        results: list[dict[str, Any]] = data.get("ResultSet", {}).get("Result", [])
+        return {r["ID"] for r in results if "ID" in r}
+
     def create_subject(self, dest_project: str, label: str) -> str:
         """Create a subject on the destination.
 
