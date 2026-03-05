@@ -81,7 +81,8 @@ Thumbs.db
 
 # Docs build
 docs/_build/
-docs/plans/*.md
+docs/plans/
+docs/features/
 
 # Project specific
 *.log
@@ -93,10 +94,6 @@ AGENTS.md
 .agents/
 .agents
 *.local.*
-.omc/
-
-# Claude review state
-.claude_review_state.json
 
 # Git worktrees
 .worktrees/
