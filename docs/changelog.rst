@@ -1,6 +1,48 @@
 Changelog
 =========
 
+0.2.1 (2026)
+-------------
+
+**Features**
+
+- Pipelined transfer: overlap DICOM uploads with server-side archiving via background poller thread
+- ``max_pending_archives`` config field to throttle concurrent server-side import jobs
+
+**Bug fixes**
+
+- Use ``folderName`` (not ``name``) for prearchive archive requests in ``wait_for_archive``
+- Add exception guard around ``wait_for_archive`` poll loop for transient HTTP error resilience
+- Flatten ZIP hierarchy for non-DICOM resource uploads
+- Ensure experiment is created when all DICOM uploads fail but DICOM was expected
+- Resolve ``xsiType`` correctly for non-imaging sessions in scan list
+
+0.2.0 (2026)
+-------------
+
+**Features**
+
+- ``project transfer`` command for cross-instance project synchronisation
+- Transfer orchestrator with per-scan pipeline, retry, and verification
+- Transfer executor with DICOM-zip import and non-DICOM resource repack
+- Discovery service for subjects, experiments, and scans
+- Filter engine for xsiType, scan type, and resource label filtering
+- XML metadata overlay to preserve session/scan metadata after DICOM import
+- Prearchive resolution (READY/CONFLICT) during archive wait
+- Scan resource caching across DICOM and non-DICOM transfer phases
+- Deferred experiment creation (skip pre-create when DICOM import will create)
+- Dest-profile CLI helper for dual-instance configuration
+
+**Bug fixes**
+
+- Handle XNAT timestamps with fractional seconds and missing ``last_modified``
+- Reject multiple ``--resource`` values in ``scan download``
+
+**Docs**
+
+- Add project transfer command documentation
+- Update session downloading guide for multi-resource support
+
 0.1.3 (2026)
 -------------
 
