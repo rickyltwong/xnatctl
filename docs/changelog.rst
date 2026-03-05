@@ -1,6 +1,16 @@
 Changelog
 =========
 
+0.2.2 (2026)
+-------------
+
+**Bug fixes**
+
+- Reconcile experiments deleted from destination during incremental transfer
+- Save experiment ID mappings for future reconciliation
+- Preserve special characters (colons, brackets) in ``api get/put/post/delete`` query parameter keys
+- Resolve ``xsiType`` for non-imaging sessions in ``session show`` scan listing
+
 0.2.1 (2026)
 -------------
 
@@ -11,6 +21,7 @@ Changelog
 
 **Bug fixes**
 
+- Reconcile previously-synced subjects deleted from destination
 - Use ``folderName`` (not ``name``) for prearchive archive requests in ``wait_for_archive``
 - Add exception guard around ``wait_for_archive`` poll loop for transient HTTP error resilience
 - Flatten ZIP hierarchy for non-DICOM resource uploads
