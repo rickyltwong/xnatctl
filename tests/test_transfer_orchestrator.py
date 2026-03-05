@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from xnatctl.core.state import TransferStateStore
+from xnatctl.core.state import SyncStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.discovery import ChangeType, DiscoveredEntity
 from xnatctl.services.transfer.orchestrator import (
@@ -1198,3 +1198,137 @@ class TestPipelinedTransfer:
         assert conflict_resolved, (
             "Expected archive_prearchive called with overwrite='append' for CONFLICT"
         )
+
+
+class TestDestReconciliation:
+    """Tests for reconciliation of previously-synced subjects deleted from dest."""
+
+    @staticmethod
+    def _subject_response(subjects: list[tuple[str, str]]) -> MagicMock:
+        """Build mock discover_subjects HTTP response.
+
+        Args:
+            subjects: List of (id, label) tuples.
+        """
+        rows = [
+            {
+                "ID": sid,
+                "label": slabel,
+                "project": "SRC",
+                "insert_date": "2026-01-01 10:00:00.0",
+                "last_modified": "2026-01-01 10:00:00.0",
+            }
+            for sid, slabel in subjects
+        ]
+        return _make_response({"ResultSet": {"Result": rows}})
+
+    @staticmethod
+    def _experiments_response() -> MagicMock:
+        """Empty experiments response."""
+        return _make_response({"ResultSet": {"Result": []}})
+
+    def test_reconcile_re_syncs_deleted_subject(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+        state_store: TransferStateStore,
+    ) -> None:
+        """Subject deleted from dest is re-synced on next run."""
+        # Simulate a prior successful sync
+        src_url = str(source_client.base_url)
+        dst_url = str(dest_client.base_url)
+        prev_sync = state_store.start_sync(src_url, "SRC", dst_url, "DST")
+        state_store.end_sync(prev_sync, SyncStatus.COMPLETED, subjects_synced=1)
+        state_store.save_id_mapping(
+            src_url, "SRC", dst_url, "DST", "XNAT_S001", "XNAT_S999", "subject"
+        )
+
+        # Source: subject unchanged (insert_date == last_modified < last_sync)
+        # Incremental discovery returns empty (nothing changed)
+        # Full discovery returns the subject
+        source_client.get.side_effect = [
+            # Incremental discover_subjects: returns subject but _classify_change filters it
+            self._subject_response([("XNAT_S001", "SUB001")]),
+            # list_dest_subjects (from reconciliation) is on dest_client
+            # Full discover_subjects (from reconciliation)
+            self._subject_response([("XNAT_S001", "SUB001")]),
+            # discover_experiments for the re-synced subject
+            self._experiments_response(),
+        ]
+
+        # Dest: subject does NOT exist (deleted)
+        dest_client.get.side_effect = [
+            # list_dest_subjects: empty (subject was deleted)
+            _make_response({"ResultSet": {"Result": []}}),
+            # conflict_checker.check_subject: empty (subject gone)
+            _make_response({"ResultSet": {"Result": []}}),
+        ]
+
+        # create_subject returns URI
+        subject_resp = MagicMock()
+        subject_resp.text = "/data/subjects/XNAT_S999"
+        dest_client.put.return_value = subject_resp
+
+        result = orchestrator.run()
+
+        assert result.subjects_synced == 1
+        # create_subject was called (PUT to dest)
+        dest_client.put.assert_called()
+
+    def test_no_reconcile_when_dest_has_subject(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+        state_store: TransferStateStore,
+    ) -> None:
+        """Subject still on dest is not re-synced."""
+        src_url = str(source_client.base_url)
+        dst_url = str(dest_client.base_url)
+        prev_sync = state_store.start_sync(src_url, "SRC", dst_url, "DST")
+        state_store.end_sync(prev_sync, SyncStatus.COMPLETED, subjects_synced=1)
+        state_store.save_id_mapping(
+            src_url, "SRC", dst_url, "DST", "XNAT_S001", "XNAT_S999", "subject"
+        )
+
+        # Source: subject unchanged
+        source_client.get.side_effect = [
+            self._subject_response([("XNAT_S001", "SUB001")]),
+        ]
+
+        # Dest: subject still exists
+        dest_client.get.return_value = _make_response(
+            {"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}
+        )
+
+        result = orchestrator.run()
+
+        # No subjects to sync (all exist on dest, unchanged on source)
+        assert result.subjects_synced == 0
+        dest_client.put.assert_not_called()
+
+    def test_no_reconcile_on_first_sync(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """First sync (no last_sync_time) skips reconciliation entirely."""
+        source_client.get.side_effect = [
+            # discover_subjects: new subject
+            self._subject_response([("XNAT_S001", "SUB001")]),
+            # discover_experiments
+            self._experiments_response(),
+        ]
+
+        # No dest conflict check since no prior mapping
+        dest_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
+
+        subject_resp = MagicMock()
+        subject_resp.text = "/data/subjects/XNAT_S001"
+        dest_client.put.return_value = subject_resp
+
+        result = orchestrator.run()
+
+        assert result.subjects_synced == 1

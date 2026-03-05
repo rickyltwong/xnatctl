@@ -21,7 +21,7 @@ import httpx
 from xnatctl.core.state import EntityStatus, SyncStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.conflicts import ConflictChecker
-from xnatctl.services.transfer.discovery import DiscoveredEntity, DiscoveryService
+from xnatctl.services.transfer.discovery import ChangeType, DiscoveredEntity, DiscoveryService
 from xnatctl.services.transfer.executor import TransferExecutor
 from xnatctl.services.transfer.filter import FilterEngine
 from xnatctl.services.transfer.poller import ArchivePoller, DeferredExperiment
@@ -109,6 +109,77 @@ class TransferOrchestrator:
         """
         return consecutive_failures >= self.config.max_failures
 
+    def _reconcile_with_dest(
+        self,
+        incremental_subjects: list[DiscoveredEntity],
+        src_proj: str,
+        dst_proj: str,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> list[DiscoveredEntity]:
+        """Find previously-synced subjects that no longer exist on the destination.
+
+        Compares id_mapping entries against actual destination subjects. Any
+        mapped subject missing from the destination is returned for re-sync.
+
+        Args:
+            incremental_subjects: Subjects from incremental discovery.
+            src_proj: Source project ID.
+            dst_proj: Destination project ID.
+            progress_callback: Optional progress callback.
+
+        Returns:
+            List of subjects to re-sync (ChangeType.RETRY).
+        """
+        src_url = str(self.source_client.base_url)
+        dst_url = str(self.dest_client.base_url)
+
+        mappings = self.state_store.get_all_mappings(src_url, src_proj, dst_url, dst_proj)
+        subject_mappings = [m for m in mappings if m["entity_type"] == "subject"]
+        if not subject_mappings:
+            return []
+
+        included_ids = {s.local_id for s in incremental_subjects}
+        stale_candidates = [m for m in subject_mappings if m["local_id"] not in included_ids]
+        if not stale_candidates:
+            return []
+
+        # Single batch query: all subject IDs on dest
+        try:
+            dest_subject_ids = self.executor.list_dest_subjects(dst_proj)
+        except Exception:
+            logger.warning("Failed to query dest subjects for reconciliation", exc_info=True)
+            return []
+
+        missing_local_ids = {
+            m["local_id"] for m in stale_candidates if m["remote_id"] not in dest_subject_ids
+        }
+        if not missing_local_ids:
+            return []
+
+        # Re-discover missing subjects from source (full discovery, no cutoff)
+        all_source = self.discovery.discover_subjects(src_proj, last_sync_time=None)
+        source_by_id = {s.local_id: s for s in all_source}
+
+        reconciled: list[DiscoveredEntity] = []
+        for local_id in missing_local_ids:
+            source = source_by_id.get(local_id)
+            if source is None:
+                continue
+            reconciled.append(
+                DiscoveredEntity(
+                    local_id=source.local_id,
+                    local_label=source.local_label,
+                    change_type=ChangeType.RETRY,
+                    xsi_type=source.xsi_type,
+                    insert_date=source.insert_date,
+                    last_modified=source.last_modified,
+                )
+            )
+            if progress_callback:
+                progress_callback(f"  Subject {source.local_label} missing on dest, will re-sync")
+
+        return reconciled
+
     def run(
         self,
         dry_run: bool = False,
@@ -148,6 +219,18 @@ class TransferOrchestrator:
                 progress_callback("Discovering subjects...")
 
             subjects = self.discovery.discover_subjects(src_proj, last_sync_time=last_sync)
+
+            # Reconcile: re-include previously-synced subjects deleted from dest
+            if last_sync:
+                reconciled = self._reconcile_with_dest(
+                    subjects, src_proj, dst_proj, progress_callback
+                )
+                if reconciled:
+                    if progress_callback:
+                        progress_callback(
+                            f"  Reconciliation: {len(reconciled)} subject(s) missing on dest"
+                        )
+                    subjects.extend(reconciled)
 
             consecutive_failures = 0
             for subject in subjects:
