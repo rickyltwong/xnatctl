@@ -714,3 +714,487 @@ class TestDeferredExperimentCreation:
         orchestrator._transfer_experiment(exp, 1, "DST", subject, result)
 
         orchestrator.executor.create_experiment.assert_not_called()
+
+
+class TestPipelinedTransfer:
+    """Integration tests for the pipelined transfer flow.
+
+    The pipelined flow uploads DICOM for experiment A, enqueues to poller,
+    starts uploading experiment B while poller monitors A. When A is ready,
+    main thread finalizes A between uploads.
+    """
+
+    @staticmethod
+    def _subject_response() -> MagicMock:
+        """Build mock discover_subjects HTTP response."""
+        return _make_response(
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_S001",
+                            "label": "SUB001",
+                            "project": "SRC",
+                            "insert_date": "2026-01-01 10:00:00.0",
+                            "last_modified": "2026-01-01 10:00:00.0",
+                        }
+                    ]
+                }
+            }
+        )
+
+    @staticmethod
+    def _experiments_response(
+        experiments: list[tuple[str, str, str]],
+    ) -> MagicMock:
+        """Build mock discover_experiments HTTP response.
+
+        Args:
+            experiments: List of (id, label, xsiType) tuples.
+        """
+        rows = [
+            {
+                "ID": eid,
+                "label": elabel,
+                "project": "SRC",
+                "xsiType": xsi,
+                "insert_date": "2026-01-01 10:00:00.0",
+            }
+            for eid, elabel, xsi in experiments
+        ]
+        return _make_response({"ResultSet": {"Result": rows}})
+
+    @staticmethod
+    def _setup_fast_poller(orchestrator: TransferOrchestrator) -> None:
+        """Configure orchestrator for fast test polling."""
+        orchestrator.config.verify_after_transfer = False
+        orchestrator.config.archive_poll_interval = 0.05
+        orchestrator.config.archive_wait_timeout = 5.0
+        orchestrator.config.scan_workers = 1
+
+    @staticmethod
+    def _mock_create_subject(dest_client: MagicMock) -> None:
+        """Mock dest_client.put to return a subject URI."""
+        subject_resp = MagicMock()
+        subject_resp.text = "/data/subjects/XNAT_S999"
+        dest_client.put.return_value = subject_resp
+
+    def test_pipelined_transfer_two_experiments(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Two DICOM experiments are uploaded and finalized via the pipeline."""
+        self._setup_fast_poller(orchestrator)
+
+        source_client.get.side_effect = [
+            self._subject_response(),
+            self._experiments_response(
+                [
+                    ("XNAT_E001", "EXP001", "xnat:mrSessionData"),
+                    ("XNAT_E002", "EXP002", "xnat:mrSessionData"),
+                ]
+            ),
+        ]
+        self._mock_create_subject(dest_client)
+
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
+        orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
+        orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
+        orchestrator.executor.archive_prearchive = MagicMock()
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        result = orchestrator.run()
+
+        assert result.subjects_synced == 1
+        assert result.experiments_synced == 2
+        assert orchestrator.executor.transfer_scan_dicom.call_count == 2
+        assert orchestrator.executor.apply_xml_overlay.call_count == 2
+
+    def test_no_dicom_experiment_finalized_immediately(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Experiment with no DICOM is pre-created and finalized without poller."""
+        self._setup_fast_poller(orchestrator)
+
+        source_client.get.side_effect = [
+            self._subject_response(),
+            self._experiments_response(
+                [
+                    ("XNAT_E001", "EXP001", "xnat:mrSessionData"),
+                ]
+            ),
+        ]
+        self._mock_create_subject(dest_client)
+
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "SNAPSHOTS", "file_count": "2"}]
+        )
+        orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.transfer_resource = MagicMock()
+        orchestrator.executor.create_scan = MagicMock()
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
+        orchestrator.executor.count_dest_scans = MagicMock(return_value=0)
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=0)
+
+        result = orchestrator.run()
+
+        assert result.experiments_synced == 1
+        orchestrator.executor.create_experiment.assert_called_once()
+        orchestrator.executor.transfer_scan_dicom.assert_not_called()
+
+    def test_deferred_experiment_failure_continues(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Failure finalizing first experiment does not block the second."""
+        self._setup_fast_poller(orchestrator)
+
+        source_client.get.side_effect = [
+            self._subject_response(),
+            self._experiments_response(
+                [
+                    ("XNAT_E001", "EXP001", "xnat:mrSessionData"),
+                    ("XNAT_E002", "EXP002", "xnat:mrSessionData"),
+                ]
+            ),
+        ]
+        self._mock_create_subject(dest_client)
+
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
+        orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
+        orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
+        orchestrator.executor.archive_prearchive = MagicMock()
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        # First experiment's finalize fails via session resource discovery error.
+        # discover_session_resources is called during _finalize_experiment.
+        call_count = 0
+
+        def session_resources_side_effect(experiment_id: str) -> list:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("session resource discovery boom")
+            return []
+
+        orchestrator.executor.discover_session_resources = MagicMock(
+            side_effect=session_resources_side_effect
+        )
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+
+        result = orchestrator.run()
+
+        # Second experiment should still be synced
+        assert result.experiments_synced >= 1
+        assert orchestrator.executor.transfer_scan_dicom.call_count == 2
+
+    def test_temp_dir_cleanup_on_success(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Temp directories are cleaned up after successful pipelined transfer."""
+        self._setup_fast_poller(orchestrator)
+
+        source_client.get.side_effect = [
+            self._subject_response(),
+            self._experiments_response(
+                [
+                    ("XNAT_E001", "EXP001", "xnat:mrSessionData"),
+                ]
+            ),
+        ]
+        self._mock_create_subject(dest_client)
+
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
+        orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
+        orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        cleanup_calls: list[str] = []
+        original_tempdir = tempfile.TemporaryDirectory
+
+        class TrackingTempDir(original_tempdir):  # type: ignore[misc]
+            """TemporaryDirectory subclass that tracks cleanup calls."""
+
+            def cleanup(self) -> None:
+                cleanup_calls.append(self.name)
+                super().cleanup()
+
+        with patch(
+            "xnatctl.services.transfer.orchestrator.tempfile.TemporaryDirectory",
+            TrackingTempDir,
+        ):
+            result = orchestrator.run()
+
+        assert result.experiments_synced == 1
+        # _upload_dicom_phase creates one TemporaryDirectory per DICOM experiment
+        assert len(cleanup_calls) >= 1
+
+    def test_backward_compatible_single_experiment(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Single DICOM experiment produces the same result via pipelined path."""
+        self._setup_fast_poller(orchestrator)
+
+        source_client.get.side_effect = [
+            self._subject_response(),
+            self._experiments_response(
+                [
+                    ("XNAT_E001", "EXP001", "xnat:mrSessionData"),
+                ]
+            ),
+        ]
+        self._mock_create_subject(dest_client)
+
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
+        orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
+        orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        result = orchestrator.run()
+
+        assert result.subjects_synced == 1
+        assert result.experiments_synced == 1
+        assert result.success is True
+        orchestrator.executor.transfer_scan_dicom.assert_called_once()
+        orchestrator.executor.apply_xml_overlay.assert_called_once()
+
+    def test_max_pending_archives_throttle(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Pipeline throttles when max_pending_archives is reached."""
+        self._setup_fast_poller(orchestrator)
+        orchestrator.config.max_pending_archives = 1
+
+        source_client.get.side_effect = [
+            self._subject_response(),
+            self._experiments_response(
+                [
+                    ("XNAT_E001", "EXP001", "xnat:mrSessionData"),
+                    ("XNAT_E002", "EXP002", "xnat:mrSessionData"),
+                ]
+            ),
+        ]
+        self._mock_create_subject(dest_client)
+
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
+        orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
+        orchestrator.executor.archive_prearchive = MagicMock()
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        # count_dest_scans returns 1 (archived) so poller marks ready
+        orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
+
+        result = orchestrator.run()
+
+        assert result.experiments_synced == 2
+        assert orchestrator.executor.transfer_scan_dicom.call_count == 2
+
+    def test_pipelined_prearchive_resolution(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Main thread resolves a READY prearchive entry."""
+        self._setup_fast_poller(orchestrator)
+
+        source_client.get.side_effect = [
+            self._subject_response(),
+            self._experiments_response(
+                [
+                    ("XNAT_E001", "EXP001", "xnat:mrSessionData"),
+                    ("XNAT_E002", "EXP002", "xnat:mrSessionData"),
+                ]
+            ),
+        ]
+        self._mock_create_subject(dest_client)
+
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        # Prearchive: first calls return READY entry, subsequent calls empty.
+        # The poller sees the READY entry and sets needs_archive_action.
+        prearchive_call_count = 0
+
+        def prearchive_side_effect(project: str) -> list[dict]:
+            nonlocal prearchive_call_count
+            prearchive_call_count += 1
+            if prearchive_call_count <= 2:
+                return [
+                    {
+                        "name": "EXP001",
+                        "folderName": "EXP001",
+                        "status": "READY",
+                        "timestamp": "20260101_100000",
+                        "project": "DST",
+                    }
+                ]
+            return []
+
+        orchestrator.executor.list_prearchive_entries = MagicMock(
+            side_effect=prearchive_side_effect
+        )
+        orchestrator.executor.find_prearchive_entry = MagicMock(
+            return_value={
+                "name": "EXP001",
+                "folderName": "EXP001",
+                "status": "READY",
+                "timestamp": "20260101_100000",
+            }
+        )
+        orchestrator.executor.archive_prearchive = MagicMock()
+        # After archiving, count_dest_scans returns expected count
+        orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+
+        result = orchestrator.run()
+
+        assert result.experiments_synced == 2
+        # archive_prearchive should have been called for the READY entry
+        orchestrator.executor.archive_prearchive.assert_called()
+        # Verify overwrite is None (READY, not CONFLICT)
+        first_call = orchestrator.executor.archive_prearchive.call_args_list[0]
+        assert first_call.kwargs.get("overwrite") is None
+
+    def test_pipelined_conflict_resolution(
+        self,
+        orchestrator: TransferOrchestrator,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Main thread resolves CONFLICT prearchive entry with overwrite=append."""
+        self._setup_fast_poller(orchestrator)
+
+        source_client.get.side_effect = [
+            self._subject_response(),
+            self._experiments_response(
+                [
+                    ("XNAT_E001", "EXP001", "xnat:mrSessionData"),
+                    ("XNAT_E002", "EXP002", "xnat:mrSessionData"),
+                ]
+            ),
+        ]
+        self._mock_create_subject(dest_client)
+
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value=None)
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.transfer_resource = MagicMock()
+
+        # Prearchive returns CONFLICT for first calls, then empty
+        conflict_call_count = 0
+
+        def conflict_prearchive(project: str) -> list[dict]:
+            nonlocal conflict_call_count
+            conflict_call_count += 1
+            if conflict_call_count <= 2:
+                return [
+                    {
+                        "name": "EXP001",
+                        "folderName": "EXP001",
+                        "status": "CONFLICT",
+                        "timestamp": "20260101_100000",
+                        "project": "DST",
+                    }
+                ]
+            return []
+
+        orchestrator.executor.list_prearchive_entries = MagicMock(side_effect=conflict_prearchive)
+        orchestrator.executor.find_prearchive_entry = MagicMock(
+            return_value={
+                "name": "EXP001",
+                "folderName": "EXP001",
+                "status": "CONFLICT",
+                "timestamp": "20260101_100000",
+            }
+        )
+        orchestrator.executor.archive_prearchive = MagicMock()
+        orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
+        orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+
+        result = orchestrator.run()
+
+        assert result.experiments_synced == 2
+        orchestrator.executor.archive_prearchive.assert_called()
+        # Check overwrite="append" was used for CONFLICT resolution
+        archive_calls = orchestrator.executor.archive_prearchive.call_args_list
+        conflict_resolved = any(call.kwargs.get("overwrite") == "append" for call in archive_calls)
+        assert conflict_resolved, (
+            "Expected archive_prearchive called with overwrite='append' for CONFLICT"
+        )

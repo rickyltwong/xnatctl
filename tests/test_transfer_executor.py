@@ -958,3 +958,198 @@ class TestApplyXmlOverlay:
         root = ET.fromstring(put_data)
         # ID not rewritten when check_experiment_exists returns None
         assert root.attrib["ID"] == "XNAT_E001"
+
+
+class TestListPrearchiveEntries:
+    def test_returns_all_entries(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
+        """Returns full list of prearchive entries."""
+        dest_client.get.return_value = _make_response(
+            json_data={
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "name": "EXP001",
+                            "folderName": "EXP001",
+                            "status": "READY",
+                            "timestamp": "ts1",
+                        },
+                        {
+                            "name": "EXP002",
+                            "folderName": "EXP002",
+                            "status": "RECEIVING",
+                            "timestamp": "ts2",
+                        },
+                    ]
+                }
+            }
+        )
+        entries = executor.list_prearchive_entries("DST")
+        assert len(entries) == 2
+        assert entries[0]["name"] == "EXP001"
+        assert entries[1]["status"] == "RECEIVING"
+        dest_client.get.assert_called_once_with(
+            "/data/prearchive/projects/DST",
+            params={"format": "json"},
+        )
+
+    def test_returns_empty_list(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
+        """Returns empty list when no prearchive entries exist."""
+        dest_client.get.return_value = _make_response(json_data={"ResultSet": {"Result": []}})
+        entries = executor.list_prearchive_entries("DST")
+        assert entries == []
+
+
+class TestWaitForArchiveFolderName:
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_uses_folder_name_for_archive(
+        self,
+        mock_sleep: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """archive_prearchive uses folderName, not name, as session_name."""
+        dest_client.get.side_effect = [
+            # find_prearchive_entry -> READY; name matches label but folderName differs
+            _make_response(
+                json_data={
+                    "ResultSet": {
+                        "Result": [
+                            {
+                                "name": "EXP001",
+                                "folderName": "folder_name",
+                                "status": "READY",
+                                "timestamp": "ts",
+                            }
+                        ]
+                    }
+                }
+            ),
+            # After archive: no prearchive entry
+            _make_response(json_data={"ResultSet": {"Result": []}}),
+            # count_dest_scans
+            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
+        ]
+        dest_client.post.return_value = _make_response(text="OK")
+
+        executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
+
+        call_args = dest_client.post.call_args
+        # The session_name in the URL path should use folderName
+        assert "folder_name" in call_args[0][0]
+
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_uses_folder_name_for_conflict_archive(
+        self,
+        mock_sleep: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """CONFLICT branch also uses folderName for session_name."""
+        dest_client.get.side_effect = [
+            # find_prearchive_entry -> CONFLICT; name matches label but folderName differs
+            _make_response(
+                json_data={
+                    "ResultSet": {
+                        "Result": [
+                            {
+                                "name": "EXP001",
+                                "folderName": "folder_name",
+                                "status": "CONFLICT",
+                                "timestamp": "ts",
+                            }
+                        ]
+                    }
+                }
+            ),
+            # After archive: no prearchive entry
+            _make_response(json_data={"ResultSet": {"Result": []}}),
+            # count_dest_scans
+            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
+        ]
+        dest_client.post.return_value = _make_response(text="OK")
+
+        executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
+
+        call_args = dest_client.post.call_args
+        assert "folder_name" in call_args[0][0]
+        assert call_args[1]["params"]["overwrite"] == "append"
+
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_falls_back_to_name_when_no_folder_name(
+        self,
+        mock_sleep: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """Falls back to name when folderName is absent."""
+        dest_client.get.side_effect = [
+            # find_prearchive_entry -> READY; matched by name, no folderName key
+            _make_response(
+                json_data={
+                    "ResultSet": {
+                        "Result": [
+                            {
+                                "name": "EXP001",
+                                "status": "READY",
+                                "timestamp": "ts",
+                            }
+                        ]
+                    }
+                }
+            ),
+            # After archive: no prearchive entry
+            _make_response(json_data={"ResultSet": {"Result": []}}),
+            # count_dest_scans
+            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
+        ]
+        dest_client.post.return_value = _make_response(text="OK")
+
+        executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
+
+        call_args = dest_client.post.call_args
+        assert "EXP001" in call_args[0][0]
+
+
+class TestWaitForArchiveExceptionGuard:
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_poll_cycle_error_retries(
+        self,
+        mock_sleep: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """Transient error in poll cycle is caught and retried."""
+        dest_client.get.side_effect = [
+            # First cycle: find_prearchive_entry raises
+            RuntimeError("network error"),
+            # Second cycle: no prearchive entry
+            _make_response(json_data={"ResultSet": {"Result": []}}),
+            # count_dest_scans
+            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
+        ]
+
+        actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
+        assert actual == 1
+
+    @patch("xnatctl.services.transfer.executor.time.monotonic")
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_timeout_still_works_after_poll_errors(
+        self,
+        mock_sleep: MagicMock,
+        mock_monotonic: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """Timeout check fires even when every poll cycle errors."""
+        # monotonic calls: (1) deadline=0+10=10, (2) check=5<10, (3) check=15>=10
+        mock_monotonic.side_effect = [0.0, 5.0, 15.0]
+
+        dest_client.get.side_effect = [
+            # First cycle: error
+            RuntimeError("network error"),
+            # Timeout branch: count_dest_scans -> 0
+            _make_response(json_data={"ResultSet": {"Result": []}}),
+        ]
+
+        actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5, timeout=10, interval=0.01)
+        assert actual == 0
