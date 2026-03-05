@@ -180,6 +180,105 @@ class TransferOrchestrator:
 
         return reconciled
 
+    def _save_experiment_mapping(
+        self,
+        exp: DiscoveredEntity,
+        dest_project: str,
+    ) -> None:
+        """Save experiment ID mapping after successful transfer.
+
+        Args:
+            exp: Transferred experiment entity.
+            dest_project: Destination project ID.
+        """
+        dest_exp_id = self.executor.check_experiment_exists(dest_project, exp.local_label)
+        if dest_exp_id:
+            self.state_store.save_id_mapping(
+                str(self.source_client.base_url),
+                self.config.source_project,
+                str(self.dest_client.base_url),
+                dest_project,
+                exp.local_id,
+                dest_exp_id,
+                "experiment",
+            )
+
+    def _reconcile_experiments_with_dest(
+        self,
+        current_subjects: list[DiscoveredEntity],
+        src_proj: str,
+        dst_proj: str,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> list[DiscoveredEntity]:
+        """Find subjects whose experiments were deleted from dest.
+
+        Checks experiment ID mappings against dest, finds missing experiments,
+        looks up their parent subjects, and returns parents not already in the
+        transfer list so they get re-processed.
+
+        Args:
+            current_subjects: Subjects already queued for transfer.
+            src_proj: Source project ID.
+            dst_proj: Destination project ID.
+            progress_callback: Optional progress callback.
+
+        Returns:
+            List of parent subjects to re-sync (ChangeType.RETRY).
+        """
+        src_url = str(self.source_client.base_url)
+        dst_url = str(self.dest_client.base_url)
+
+        mappings = self.state_store.get_all_mappings(src_url, src_proj, dst_url, dst_proj)
+        exp_mappings = [m for m in mappings if m["entity_type"] == "experiment"]
+        if not exp_mappings:
+            return []
+
+        try:
+            dest_exp_ids = self.executor.list_dest_experiments(dst_proj)
+        except Exception:
+            logger.warning("Failed to query dest experiments for reconciliation", exc_info=True)
+            return []
+
+        missing = [m for m in exp_mappings if m["remote_id"] not in dest_exp_ids]
+        if not missing:
+            return []
+
+        missing_local_ids = {m["local_id"] for m in missing}
+        parent_subject_ids = self.state_store.get_experiment_parents(missing_local_ids)
+        if not parent_subject_ids:
+            return []
+
+        current_subject_ids = {s.local_id for s in current_subjects}
+        needed_parents = parent_subject_ids - current_subject_ids
+        if not needed_parents:
+            return []
+
+        all_source = self.discovery.discover_subjects(src_proj, last_sync_time=None)
+        source_by_id = {s.local_id: s for s in all_source}
+
+        reconciled: list[DiscoveredEntity] = []
+        for pid in needed_parents:
+            source = source_by_id.get(pid)
+            if source is None:
+                continue
+            reconciled.append(
+                DiscoveredEntity(
+                    local_id=source.local_id,
+                    local_label=source.local_label,
+                    change_type=ChangeType.RETRY,
+                    xsi_type=source.xsi_type,
+                    insert_date=source.insert_date,
+                    last_modified=source.last_modified,
+                )
+            )
+            if progress_callback:
+                progress_callback(
+                    f"  Subject {source.local_label} has experiment(s) missing on dest,"
+                    " will re-sync"
+                )
+
+        return reconciled
+
     def run(
         self,
         dry_run: bool = False,
@@ -231,6 +330,17 @@ class TransferOrchestrator:
                             f"  Reconciliation: {len(reconciled)} subject(s) missing on dest"
                         )
                     subjects.extend(reconciled)
+
+                reconciled_exp = self._reconcile_experiments_with_dest(
+                    subjects, src_proj, dst_proj, progress_callback
+                )
+                if reconciled_exp:
+                    if progress_callback:
+                        progress_callback(
+                            f"  Experiment reconciliation: {len(reconciled_exp)} "
+                            f"subject(s) need experiment re-sync"
+                        )
+                    subjects.extend(reconciled_exp)
 
             consecutive_failures = 0
             for subject in subjects:
@@ -750,6 +860,9 @@ class TransferOrchestrator:
                     parent_local_id=subject.local_id,
                     status=EntityStatus.SYNCED,
                 )
+
+            # Save experiment ID mapping for future reconciliation
+            self._save_experiment_mapping(exp, dest_project)
         finally:
             ctx.work_dir_handle.cleanup()
 
@@ -831,6 +944,9 @@ class TransferOrchestrator:
                 parent_local_id=subject.local_id,
                 status=EntityStatus.SYNCED,
             )
+
+        # Save experiment ID mapping for future reconciliation
+        self._save_experiment_mapping(exp, dest_project)
 
     def _service_prearchive_actions(
         self,
