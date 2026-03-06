@@ -67,17 +67,13 @@ class TestBuildQueryString:
     def test_xsi_slash_preserved(self) -> None:
         from xnatctl.cli.api import _build_query_string
 
-        result = _build_query_string(
-            ("xnat:experimentData/subject_ID=XNAT_S00001",)
-        )
+        result = _build_query_string(("xnat:experimentData/subject_ID=XNAT_S00001",))
         assert "xnat:experimentData/subject_ID=XNAT_S00001" in result
 
     def test_brackets_preserved(self) -> None:
         from xnatctl.cli.api import _build_query_string
 
-        result = _build_query_string(
-            ("xnat:mrSessionData/fields/field[name=type]/field=Research",)
-        )
+        result = _build_query_string(("xnat:mrSessionData/fields/field[name=type]/field=Research",))
         assert "[name=type]" in result
         # Value should be "Research", not "type]/field=Research"
         assert result.endswith("=Research")
@@ -87,9 +83,7 @@ class TestBuildQueryString:
         """Split on first = outside brackets, not inside."""
         from xnatctl.cli.api import _split_param
 
-        result = _split_param(
-            "xnat:mrSessionData/fields/field[name=session_type]/field=Research"
-        )
+        result = _split_param("xnat:mrSessionData/fields/field[name=session_type]/field=Research")
         assert result is not None
         key, value = result
         assert key == "xnat:mrSessionData/fields/field[name=session_type]/field"
@@ -184,7 +178,6 @@ class TestApiGet:
 
         assert result.exit_code == 0
         assert "plain text response" in result.output
-
 
     def test_api_get_xsi_typed_params_not_encoded(self, runner: CliRunner) -> None:
         """XSI-typed param keys like xnat:mrSessionData preserve colons."""
@@ -294,7 +287,6 @@ class TestApiPost:
         call_kwargs = client.post.call_args[1]
         assert call_kwargs["data"] == "plain text body"
         assert call_kwargs["json"] is None
-
 
     def test_api_post_shows_status_code(self, runner: CliRunner) -> None:
         """POST response shows HTTP status code on stderr."""

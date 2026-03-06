@@ -74,24 +74,26 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:mrSessionData"),
-            _scan_results([
-                {
-                    "ID": "1",
-                    "type": "T1w",
-                    "series_description": "T1-weighted",
-                    "quality": "usable",
-                    "frames": "176",
-                    "note": "",
-                },
-                {
-                    "ID": "2",
-                    "type": "T2w",
-                    "series_description": "T2-weighted",
-                    "quality": "usable",
-                    "frames": "32",
-                    "note": "",
-                },
-            ]),
+            _scan_results(
+                [
+                    {
+                        "ID": "1",
+                        "type": "T1w",
+                        "series_description": "T1-weighted",
+                        "quality": "usable",
+                        "frames": "176",
+                        "note": "",
+                    },
+                    {
+                        "ID": "2",
+                        "type": "T2w",
+                        "series_description": "T2-weighted",
+                        "quality": "usable",
+                        "frames": "32",
+                        "note": "",
+                    },
+                ]
+            ),
         ]
 
         with (
@@ -172,16 +174,18 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
-            _scan_results([
-                {
-                    "ID": "1",
-                    "type": "T1w",
-                    "series_description": "T1-weighted",
-                    "quality": "usable",
-                    "frames": "176",
-                    "note": "",
-                }
-            ]),
+            _scan_results(
+                [
+                    {
+                        "ID": "1",
+                        "type": "T1w",
+                        "series_description": "T1-weighted",
+                        "quality": "usable",
+                        "frames": "176",
+                        "note": "",
+                    }
+                ]
+            ),
         ]
 
         with (
@@ -200,16 +204,18 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
-            _scan_results([
-                {
-                    "ID": "1",
-                    "type": "T1w",
-                    "series_description": "T1-weighted",
-                    "quality": "usable",
-                    "frames": "176",
-                    "note": "",
-                }
-            ]),
+            _scan_results(
+                [
+                    {
+                        "ID": "1",
+                        "type": "T1w",
+                        "series_description": "T1-weighted",
+                        "quality": "usable",
+                        "frames": "176",
+                        "note": "",
+                    }
+                ]
+            ),
         ]
 
         with (

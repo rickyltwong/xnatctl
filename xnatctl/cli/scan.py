@@ -51,6 +51,31 @@ def _resolve_scan_params(client: XNATClient, base: str) -> dict[str, Any]:
     return params
 
 
+def _build_experiment_base(project: str | None, subject: str | None, session_id: str) -> str:
+    """Build the XNAT experiment base path.
+
+    Args:
+        project: Project ID (optional).
+        subject: Subject ID/label (optional, requires project).
+        session_id: Experiment ID or label.
+
+    Returns:
+        Base path for the experiment resource.
+
+    Raises:
+        click.ClickException: If subject is given without a resolved project.
+    """
+    if subject and not project:
+        raise click.ClickException(
+            "-S/--subject requires -P/--project (or default_project in profile)"
+        )
+    if project and subject:
+        return f"/data/projects/{project}/subjects/{subject}/experiments/{session_id}"
+    if project:
+        return f"/data/projects/{project}/experiments/{session_id}"
+    return f"/data/experiments/{session_id}"
+
+
 @click.group()
 def scan() -> None:
     """Manage XNAT scans."""
@@ -71,10 +96,15 @@ def scan() -> None:
     "-P",
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
+@click.option(
+    "--subject",
+    "-S",
+    help="Subject ID/label (narrows experiment lookup, requires -P)",
+)
 @global_options
 @require_auth
 @handle_errors
-def scan_list(ctx: Context, session_id: str, project: str | None) -> None:
+def scan_list(ctx: Context, session_id: str, project: str | None, subject: str | None) -> None:
     """List scans in a session.
 
     Example:
@@ -82,6 +112,7 @@ def scan_list(ctx: Context, session_id: str, project: str | None) -> None:
         xnatctl scan list -E XNAT_E00001 -o json
         xnatctl scan list -E XNAT_E00001 -q  # IDs only
         xnatctl scan list -E SESSION_LABEL -P MYPROJ
+        xnatctl scan list -P MYPROJ -S SUB001 -E SESSION_LABEL
     """
     from xnatctl.core.validation import validate_session_id
 
@@ -93,12 +124,7 @@ def scan_list(ctx: Context, session_id: str, project: str | None) -> None:
         profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
         project = profile.default_project if profile else None
 
-    # Get scans
-    base = (
-        f"/data/projects/{project}/experiments/{session_id}"
-        if project
-        else f"/data/experiments/{session_id}"
-    )
+    base = _build_experiment_base(project, subject, session_id)
 
     scan_params = _resolve_scan_params(client, base)
     resp = client.get_json(f"{base}/scans", params=scan_params)
@@ -148,16 +174,24 @@ def scan_list(ctx: Context, session_id: str, project: str | None) -> None:
     "-P",
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
+@click.option(
+    "--subject",
+    "-S",
+    help="Subject ID/label (narrows experiment lookup, requires -P)",
+)
 @click.argument("scan_id")
 @global_options
 @require_auth
 @handle_errors
-def scan_show(ctx: Context, session_id: str, project: str | None, scan_id: str) -> None:
+def scan_show(
+    ctx: Context, session_id: str, project: str | None, subject: str | None, scan_id: str
+) -> None:
     """Show scan details.
 
     Example:
         xnatctl scan show -E XNAT_E00001 1
         xnatctl scan show -E SESSION_LABEL 1 -P MYPROJ
+        xnatctl scan show -P MYPROJ -S SUB001 -E SESSION_LABEL 1
     """
     from xnatctl.core.validation import validate_scan_id, validate_session_id
 
@@ -170,12 +204,7 @@ def scan_show(ctx: Context, session_id: str, project: str | None, scan_id: str) 
         profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
         project = profile.default_project if profile else None
 
-    # Get scan details
-    base = (
-        f"/data/projects/{project}/experiments/{session_id}"
-        if project
-        else f"/data/experiments/{session_id}"
-    )
+    base = _build_experiment_base(project, subject, session_id)
     resp = client.get_json(f"{base}/scans/{scan_id}")
     results = resp.get("ResultSet", {}).get("Result", [])
 
@@ -224,6 +253,11 @@ def scan_show(ctx: Context, session_id: str, project: str | None, scan_id: str) 
     "-P",
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
+@click.option(
+    "--subject",
+    "-S",
+    help="Subject ID/label (narrows experiment lookup, requires -P)",
+)
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
 @confirm_destructive("Delete these scans?")
 @parallel_options
@@ -234,6 +268,7 @@ def scan_delete(
     ctx: Context,
     session_id: str,
     project: str | None,
+    subject: str | None,
     scans: str,
     dry_run: bool,
     parallel: bool,
@@ -260,11 +295,7 @@ def scan_delete(
         profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
         project = profile.default_project if profile else None
 
-    base = (
-        f"/data/projects/{project}/experiments/{session_id}"
-        if project
-        else f"/data/experiments/{session_id}"
-    )
+    base = _build_experiment_base(project, subject, session_id)
 
     # If wildcard, get all scan IDs
     if scan_ids is None:
@@ -335,6 +366,11 @@ def scan_delete(
     "-P",
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
+@click.option(
+    "--subject",
+    "-S",
+    help="Subject ID/label (narrows experiment lookup, requires -P)",
+)
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
 @click.option("--name", help="Output directory name (defaults to experiment value)")
@@ -358,6 +394,7 @@ def scan_download(
     ctx: Context,
     session_id: str,
     project: str | None,
+    subject: str | None,
     scans: str,
     out: str,
     name: str | None,
@@ -442,6 +479,7 @@ def scan_download(
             scan_ids=scan_ids,
             output_dir=session_output,
             project=project,
+            subject=subject,
             resource=resource_filter,
             zip_filename="scans.zip",
             extract=unzip,

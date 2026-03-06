@@ -380,6 +380,7 @@ class DownloadService(BaseService):
         scan_ids: list[str],
         output_dir: Path,
         project: str | None = None,
+        subject: str | None = None,
         resource: str | None = None,
         zip_filename: str | None = None,
         extract: bool = False,
@@ -396,6 +397,7 @@ class DownloadService(BaseService):
             scan_ids: List of scan IDs (or ["ALL"] for all scans)
             output_dir: Output directory
             project: Project ID (required when using session label)
+            subject: Subject ID/label (optional, narrows experiment lookup)
             resource: Resource type (None = all resources, "DICOM" = DICOM only)
             zip_filename: Output ZIP filename (default: scans.zip)
             extract: Extract ZIP after download
@@ -411,9 +413,12 @@ class DownloadService(BaseService):
 
         resolved_session_id = session_id
         if project and not session_id.startswith("XNAT_E"):
+            exp_base = f"/data/projects/{project}"
+            if subject:
+                exp_base += f"/subjects/{subject}"
             try:
                 exp_data = self._get(
-                    f"/data/projects/{project}/experiments/{session_id}",
+                    f"{exp_base}/experiments/{session_id}",
                     params={"format": "json"},
                 )
                 resolved_session_id = self._extract_experiment_id(exp_data) or ""
