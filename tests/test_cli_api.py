@@ -101,6 +101,45 @@ class TestBuildQueryString:
         assert result == ""
 
 
+class TestIsTextContentType:
+    """Tests for _is_text_content_type helper."""
+
+    def test_text_plain(self) -> None:
+        from xnatctl.cli.api import _is_text_content_type
+
+        assert _is_text_content_type("text/plain") is True
+
+    def test_text_html_with_charset(self) -> None:
+        from xnatctl.cli.api import _is_text_content_type
+
+        assert _is_text_content_type("text/html; charset=utf-8") is True
+
+    def test_application_json(self) -> None:
+        from xnatctl.cli.api import _is_text_content_type
+
+        assert _is_text_content_type("application/json") is True
+
+    def test_application_xml(self) -> None:
+        from xnatctl.cli.api import _is_text_content_type
+
+        assert _is_text_content_type("application/xml") is True
+
+    def test_octet_stream_is_binary(self) -> None:
+        from xnatctl.cli.api import _is_text_content_type
+
+        assert _is_text_content_type("application/octet-stream") is False
+
+    def test_matlab_is_binary(self) -> None:
+        from xnatctl.cli.api import _is_text_content_type
+
+        assert _is_text_content_type("application/x-matlab-data") is False
+
+    def test_empty_string(self) -> None:
+        from xnatctl.cli.api import _is_text_content_type
+
+        assert _is_text_content_type("") is False
+
+
 class TestApiGet:
     """Tests for api get command."""
 
@@ -169,6 +208,7 @@ class TestApiGet:
         mock_resp = MagicMock()
         mock_resp.json.side_effect = ValueError("Not JSON")
         mock_resp.text = "plain text response"
+        mock_resp.headers = {"content-type": "text/plain"}
         client.get.return_value = mock_resp
 
         with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
@@ -178,6 +218,42 @@ class TestApiGet:
 
         assert result.exit_code == 0
         assert "plain text response" in result.output
+
+    def test_api_get_binary_response_preserved(self, runner: CliRunner) -> None:
+        """Binary responses are written as raw bytes without text decoding."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        # Bytes 0x80-0xFF are invalid in UTF-8 and would be corrupted by text decoding
+        binary_data = bytes(range(256))
+        mock_resp.json.side_effect = ValueError("Not JSON")
+        mock_resp.content = binary_data
+        mock_resp.headers = {"content-type": "application/octet-stream"}
+        client.get.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["api", "get", "/some/file.mat"])
+
+        assert result.exit_code == 0
+        assert binary_data in result.output_bytes
+
+    def test_api_get_json_format_non_json_errors(self, runner: CliRunner) -> None:
+        """Requesting -o json when response is not JSON produces an error."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.json.side_effect = ValueError("Not JSON")
+        mock_resp.text = "plain text"
+        mock_resp.headers = {"content-type": "text/plain"}
+        client.get.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["api", "get", "/some/endpoint", "-o", "json"])
+
+        assert result.exit_code != 0
+        assert "not JSON" in result.output
 
     def test_api_get_xsi_typed_params_not_encoded(self, runner: CliRunner) -> None:
         """XSI-typed param keys like xnat:mrSessionData preserve colons."""
