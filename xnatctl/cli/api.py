@@ -42,6 +42,26 @@ def _split_param(param: str) -> tuple[str, str] | None:
     return None
 
 
+def _is_text_content_type(content_type: str) -> bool:
+    """Check if a Content-Type header indicates text content.
+
+    Args:
+        content_type: The Content-Type header value.
+
+    Returns:
+        True if the content type is text-based.
+    """
+    ct = content_type.lower().split(";")[0].strip()
+    if ct.startswith("text/"):
+        return True
+    return ct in {
+        "application/json",
+        "application/xml",
+        "application/xhtml+xml",
+        "application/javascript",
+    }
+
+
 def _build_query_string(params: tuple) -> str:
     """Build a raw query string preserving special chars in keys.
 
@@ -139,9 +159,17 @@ def api_get(
                     print_json(data)
             else:
                 print_json(data)
-    except Exception:
-        # Not JSON, print raw text
-        click.echo(resp.text)
+    except Exception as exc:
+        if ctx.output_format == OutputFormat.JSON:
+            raise click.ClickException(
+                "Response is not JSON; cannot format as JSON. "
+                "Omit -o json to get raw response content."
+            ) from exc
+        content_type = resp.headers.get("content-type", "")
+        if _is_text_content_type(content_type):
+            click.echo(resp.text)
+        else:
+            click.echo(resp.content, nl=False)
 
 
 @api.command("post")
