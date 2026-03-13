@@ -70,6 +70,24 @@ class TransferResult:
     dry_run: bool = False
 
 
+@dataclass
+class _DownloadedScan:
+    """Intermediate state for a scan downloaded but not yet uploaded.
+
+    Carries the validated ZIP path and destination metadata between the
+    download and upload phases of :meth:`TransferOrchestrator._transfer_scans`.
+    """
+
+    scan_id: str
+    zip_path: Path
+    is_dicom: bool
+    resource_label: str
+    dest_path: str
+    dest_project: str
+    dest_subject: str
+    dest_experiment: str
+
+
 class TransferOrchestrator:
     """Orchestrates incremental project transfer between XNAT instances.
 
@@ -1175,7 +1193,11 @@ class TransferOrchestrator:
         dicom_only: bool = True,
         scan_resources_cache: dict[str, list[dict[str, Any]]] | None = None,
     ) -> int:
-        """Transfer scans for an experiment, in parallel.
+        """Transfer scans for an experiment using two-phase download-then-upload.
+
+        Phase A downloads and validates all scan resources in parallel.
+        Phase B uploads all successfully downloaded resources in parallel.
+        This ensures all downloads complete before any upload begins.
 
         When dicom_only=True, only DICOM resources are transferred.
         When dicom_only=False, only non-DICOM resources are transferred.
@@ -1206,16 +1228,19 @@ class TransferOrchestrator:
             return 0
 
         workers = min(self.config.scan_workers, len(filtered_scans))
-        processed = 0
 
-        def transfer_single_scan(
+        # -- Phase A: Download all scans in parallel --
+        downloaded: list[_DownloadedScan] = []
+        download_failures: list[tuple[str, str]] = []
+
+        def do_download(
             scan: dict[str, Any],
-        ) -> tuple[str, bool, bool, str]:
-            """Returns (scan_id, success, transferred, error)."""
+        ) -> tuple[str, list[_DownloadedScan] | None, str]:
+            """Returns (scan_id, downloads_or_none, error)."""
             scan_id = scan.get("ID", "")
             scan_work_dir = work_dir / f"scan_{scan_id}"
             try:
-                did_transfer = self._transfer_single_scan(
+                items = self._download_single_scan(
                     scan,
                     exp,
                     dest_project,
@@ -1224,39 +1249,85 @@ class TransferOrchestrator:
                     dicom_only=dicom_only,
                     scan_resources_cache=scan_resources_cache,
                 )
-                return scan_id, True, did_transfer, ""
+                return scan_id, items, ""
             except Exception as e:
-                return scan_id, False, False, str(e)
+                return scan_id, None, str(e)
 
-        def record_result(scan_id: str, success: bool, transferred: bool, error: str) -> int:
-            """Record scan result and return 1 if transferred, 0 otherwise."""
-            if success:
-                if dicom_only:
-                    result.scans_synced += 1
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(do_download, s): s.get("ID", "") for s in filtered_scans}
+                for future in as_completed(futures):
+                    scan_id, items, error = future.result()
+                    if items is not None:
+                        downloaded.extend(items)
+                    else:
+                        download_failures.append((scan_id, error))
+        else:
+            for scan in filtered_scans:
+                scan_id, items, error = do_download(scan)
+                if items is not None:
+                    downloaded.extend(items)
                 else:
-                    result.resources_synced += 1
-                return 1 if transferred else 0
+                    download_failures.append((scan_id, error))
+
+        # Record download failures
+        for scan_id, error in download_failures:
             if dicom_only:
                 result.scans_failed += 1
             else:
                 result.resources_failed += 1
             result.errors.append(f"Scan {scan_id} ({exp.local_label}): {error}")
+
+        if not downloaded:
             return 0
 
+        # -- Phase B: Upload all downloaded scans in parallel --
+        processed = 0
+
+        def do_upload(item: _DownloadedScan) -> tuple[str, bool, str]:
+            """Returns (scan_id, success, error)."""
+            try:
+                self._upload_single_scan(item, exp)
+                return item.scan_id, True, ""
+            except Exception as e:
+                return item.scan_id, False, str(e)
+
         if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    pool.submit(transfer_single_scan, s): s.get("ID", "") for s in filtered_scans
-                }
-                for future in as_completed(futures):
-                    processed += record_result(*future.result())
+            with ThreadPoolExecutor(max_workers=workers) as upload_pool:
+                upload_futures = {upload_pool.submit(do_upload, d): d.scan_id for d in downloaded}
+                for fut in as_completed(upload_futures):
+                    uid, ok, uerr = fut.result()
+                    if ok:
+                        if dicom_only:
+                            result.scans_synced += 1
+                        else:
+                            result.resources_synced += 1
+                        processed += 1
+                    else:
+                        if dicom_only:
+                            result.scans_failed += 1
+                        else:
+                            result.resources_failed += 1
+                        result.errors.append(f"Scan {uid} ({exp.local_label}): {uerr}")
         else:
-            for scan in filtered_scans:
-                processed += record_result(*transfer_single_scan(scan))
+            for item in downloaded:
+                uid, ok, uerr = do_upload(item)
+                if ok:
+                    if dicom_only:
+                        result.scans_synced += 1
+                    else:
+                        result.resources_synced += 1
+                    processed += 1
+                else:
+                    if dicom_only:
+                        result.scans_failed += 1
+                    else:
+                        result.resources_failed += 1
+                    result.errors.append(f"Scan {uid} ({exp.local_label}): {uerr}")
 
         return processed
 
-    def _transfer_single_scan(
+    def _download_single_scan(
         self,
         scan: dict[str, Any],
         exp: DiscoveredEntity,
@@ -1265,8 +1336,8 @@ class TransferOrchestrator:
         work_dir: Path,
         dicom_only: bool = True,
         scan_resources_cache: dict[str, list[dict[str, Any]]] | None = None,
-    ) -> bool:
-        """Transfer a single scan's resources.
+    ) -> list[_DownloadedScan]:
+        """Download and validate resources for a single scan.
 
         Args:
             scan: Scan dict from source.
@@ -1278,11 +1349,11 @@ class TransferOrchestrator:
             scan_resources_cache: Shared cache of scan resources across phases.
 
         Returns:
-            True if at least one resource was actually transferred.
+            List of downloaded scan items ready for upload.
         """
         scan_id = scan.get("ID", "")
         xsi_type = exp.xsi_type or ""
-        transferred = False
+        items: list[_DownloadedScan] = []
 
         # Use cached resources or discover and cache.
         # Thread safety: each scan_id is processed by exactly one thread
@@ -1337,15 +1408,22 @@ class TransferOrchestrator:
                 continue
 
             if is_dicom:
-                self.executor.transfer_scan_dicom(
+                zip_path = self.executor.download_scan_dicom(
                     source_experiment_id=exp.local_id,
                     scan_id=scan_id,
-                    dest_project=dest_project,
-                    dest_subject=subject.local_label,
-                    dest_experiment_label=exp.local_label,
                     work_dir=work_dir,
-                    retry_count=self.config.scan_retry_count,
-                    retry_delay=self.config.scan_retry_delay,
+                )
+                items.append(
+                    _DownloadedScan(
+                        scan_id=scan_id,
+                        zip_path=zip_path,
+                        is_dicom=True,
+                        resource_label=res_label,
+                        dest_path="",
+                        dest_project=dest_project,
+                        dest_subject=subject.local_label,
+                        dest_experiment=exp.local_label,
+                    )
                 )
             else:
                 src_path = (
@@ -1358,15 +1436,51 @@ class TransferOrchestrator:
                     f"/scans/{scan_id}"
                     f"/resources/{res_label}/files"
                 )
-                self.executor.transfer_resource(
+                flat_zip_path, _total = self.executor.download_resource(
                     source_path=src_path,
-                    dest_path=dst_path,
                     resource_label=f"{scan_id}_{res_label}",
                     work_dir=work_dir,
                 )
-            transferred = True
+                items.append(
+                    _DownloadedScan(
+                        scan_id=scan_id,
+                        zip_path=flat_zip_path,
+                        is_dicom=False,
+                        resource_label=res_label,
+                        dest_path=dst_path,
+                        dest_project=dest_project,
+                        dest_subject=subject.local_label,
+                        dest_experiment=exp.local_label,
+                    )
+                )
 
-        return transferred
+        return items
+
+    def _upload_single_scan(
+        self,
+        item: _DownloadedScan,
+        exp: DiscoveredEntity,
+    ) -> None:
+        """Upload a previously downloaded scan resource to the destination.
+
+        Args:
+            item: Downloaded scan item with validated ZIP on disk.
+            exp: Parent experiment entity.
+        """
+        if item.is_dicom:
+            self.executor.upload_scan_dicom(
+                zip_path=item.zip_path,
+                dest_project=item.dest_project,
+                dest_subject=item.dest_subject,
+                dest_experiment_label=item.dest_experiment,
+                retry_count=self.config.scan_retry_count,
+                retry_delay=self.config.scan_retry_delay,
+            )
+        else:
+            self.executor.upload_resource(
+                flat_zip_path=item.zip_path,
+                dest_path=item.dest_path,
+            )
 
     def _wait_for_prearchive_resolution(
         self,

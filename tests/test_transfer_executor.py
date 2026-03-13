@@ -403,6 +403,254 @@ class TestTransferResource:
                 )
 
 
+class TestDownloadScanDicom:
+    """Tests for download_scan_dicom (download + validate only)."""
+
+    def test_returns_zip_path(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+    ) -> None:
+        """Returns path to validated ZIP on disk."""
+        zip_data = _make_valid_zip()
+        _mock_stream_download(source_client, zip_data)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = executor.download_scan_dicom(
+                source_experiment_id="XNAT_E001",
+                scan_id="1",
+                work_dir=Path(tmpdir),
+            )
+            assert result == Path(tmpdir) / "scan_1_DICOM.zip"
+            assert result.exists()
+
+    def test_raises_on_invalid_zip(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+    ) -> None:
+        """Raises ValueError if downloaded data is not a valid ZIP."""
+        _mock_stream_download(source_client, b"not a zip")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with pytest.raises(ValueError, match="ZIP validation failed"):
+                executor.download_scan_dicom(
+                    source_experiment_id="XNAT_E001",
+                    scan_id="1",
+                    work_dir=Path(tmpdir),
+                )
+
+    def test_does_not_upload(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Download step does not contact the destination."""
+        zip_data = _make_valid_zip()
+        _mock_stream_download(source_client, zip_data)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor.download_scan_dicom(
+                source_experiment_id="XNAT_E001",
+                scan_id="1",
+                work_dir=Path(tmpdir),
+            )
+        dest_client.post.assert_not_called()
+        dest_client.put.assert_not_called()
+
+
+class TestUploadScanDicom:
+    """Tests for upload_scan_dicom (import only)."""
+
+    def test_imports_zip_to_dest(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """POSTs the ZIP to /data/services/import and returns response text."""
+        dest_client.post.return_value = _make_response(text="/data/experiments/E999")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            result = executor.upload_scan_dicom(
+                zip_path=zip_path,
+                dest_project="DST",
+                dest_subject="SUB001",
+                dest_experiment_label="EXP001",
+            )
+        assert result == "/data/experiments/E999"
+        dest_client.post.assert_called_once()
+
+    def test_deletes_zip_on_success(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """ZIP is deleted after successful import."""
+        dest_client.post.return_value = _make_response(text="OK")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            executor.upload_scan_dicom(
+                zip_path=zip_path,
+                dest_project="DST",
+                dest_subject="SUB001",
+                dest_experiment_label="EXP001",
+            )
+            assert not zip_path.exists()
+
+    def test_retains_zip_on_failure(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """ZIP is retained for debugging after all retries fail."""
+        dest_client.post.side_effect = RuntimeError("boom")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            with pytest.raises(RuntimeError, match="boom"):
+                executor.upload_scan_dicom(
+                    zip_path=zip_path,
+                    dest_project="DST",
+                    dest_subject="SUB001",
+                    dest_experiment_label="EXP001",
+                    retry_count=1,
+                    retry_delay=0.01,
+                )
+            assert zip_path.exists()
+
+
+class TestDownloadResource:
+    """Tests for download_resource (download + validate + flatten)."""
+
+    def test_returns_flat_zip_and_size(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+    ) -> None:
+        """Returns flattened ZIP path and total bytes downloaded."""
+        zip_data = _make_valid_zip()
+        _mock_stream_download(source_client, zip_data)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flat_path, total = executor.download_resource(
+                source_path="/data/experiments/E001/resources/NII/files",
+                resource_label="NII",
+                work_dir=Path(tmpdir),
+            )
+            assert flat_path == Path(tmpdir) / "NII_flat.zip"
+            assert flat_path.exists()
+            assert total == len(zip_data)
+
+    def test_does_not_upload(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+        dest_client: MagicMock,
+    ) -> None:
+        """Download step does not contact the destination."""
+        zip_data = _make_valid_zip()
+        _mock_stream_download(source_client, zip_data)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor.download_resource(
+                source_path="/src/path",
+                resource_label="NII",
+                work_dir=Path(tmpdir),
+            )
+        dest_client.post.assert_not_called()
+        dest_client.put.assert_not_called()
+
+    def test_cleans_up_source_zip(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+    ) -> None:
+        """Original (unflattened) ZIP is deleted after flattening."""
+        zip_data = _make_valid_zip()
+        _mock_stream_download(source_client, zip_data)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor.download_resource(
+                source_path="/src/path",
+                resource_label="NII",
+                work_dir=Path(tmpdir),
+            )
+            assert not (Path(tmpdir) / "NII.zip").exists()
+            assert (Path(tmpdir) / "NII_flat.zip").exists()
+
+    def test_raises_on_invalid_zip(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+    ) -> None:
+        """Raises ValueError if downloaded data is not a valid ZIP."""
+        _mock_stream_download(source_client, b"not a zip")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with pytest.raises(ValueError, match="ZIP validation failed"):
+                executor.download_resource(
+                    source_path="/src/path",
+                    resource_label="BAD",
+                    work_dir=Path(tmpdir),
+                )
+
+
+class TestUploadResource:
+    """Tests for upload_resource (upload flat ZIP only)."""
+
+    def test_puts_flat_zip(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """PUTs the flat ZIP with extract=true."""
+        dest_client.put.return_value = _make_response(text="OK")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flat_path = Path(tmpdir) / "NII_flat.zip"
+            with zipfile.ZipFile(flat_path, "w") as zf:
+                zf.writestr("brain.nii", "data")
+
+            executor.upload_resource(
+                flat_zip_path=flat_path,
+                dest_path="/data/experiments/E002/resources/NII/files",
+            )
+        dest_client.put.assert_called_once()
+        call_kwargs = dest_client.put.call_args
+        assert call_kwargs[1]["params"] == {"overwrite": "true", "extract": "true"}
+
+    def test_deletes_flat_zip_after_upload(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """Flat ZIP is deleted after successful upload."""
+        dest_client.put.return_value = _make_response(text="OK")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flat_path = Path(tmpdir) / "NII_flat.zip"
+            with zipfile.ZipFile(flat_path, "w") as zf:
+                zf.writestr("brain.nii", "data")
+
+            executor.upload_resource(
+                flat_zip_path=flat_path,
+                dest_path="/dst/path",
+            )
+            assert not flat_path.exists()
+
+
 class TestFlattenZip:
     def test_strips_xnat_prefix(self, tmp_path: Path) -> None:
         """XNAT prefix up to files/ is stripped, leaf filenames preserved."""

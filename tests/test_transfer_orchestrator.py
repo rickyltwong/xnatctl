@@ -323,8 +323,12 @@ class TestTwoPhaseTransferScans:
                 {"label": "SNAPSHOTS", "file_count": "2"},
             ]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
-        orchestrator.executor.transfer_resource = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
 
         result = TransferResult()
 
@@ -333,8 +337,9 @@ class TestTwoPhaseTransferScans:
                 scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=True
             )
 
-        orchestrator.executor.transfer_scan_dicom.assert_called_once()
-        orchestrator.executor.transfer_resource.assert_not_called()
+        orchestrator.executor.download_scan_dicom.assert_called_once()
+        orchestrator.executor.upload_scan_dicom.assert_called_once()
+        orchestrator.executor.download_resource.assert_not_called()
 
     def test_non_dicom_only_skips_dicom(
         self,
@@ -360,8 +365,12 @@ class TestTwoPhaseTransferScans:
                 {"label": "NII", "file_count": "1"},
             ]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
-        orchestrator.executor.transfer_resource = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock()
+        orchestrator.executor.upload_scan_dicom = MagicMock()
+        orchestrator.executor.download_resource = MagicMock(
+            return_value=(Path("/tmp/1_NII_flat.zip"), 100)
+        )
+        orchestrator.executor.upload_resource = MagicMock()
 
         result = TransferResult()
 
@@ -370,8 +379,9 @@ class TestTwoPhaseTransferScans:
                 scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=False
             )
 
-        orchestrator.executor.transfer_scan_dicom.assert_not_called()
-        orchestrator.executor.transfer_resource.assert_called_once()
+        orchestrator.executor.download_scan_dicom.assert_not_called()
+        orchestrator.executor.download_resource.assert_called_once()
+        orchestrator.executor.upload_resource.assert_called_once()
 
     def test_shared_cache_prevents_double_fetch(
         self,
@@ -397,8 +407,14 @@ class TestTwoPhaseTransferScans:
                 {"label": "NII", "file_count": "1"},
             ]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
-        orchestrator.executor.transfer_resource = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
+        orchestrator.executor.download_resource = MagicMock(
+            return_value=(Path("/tmp/1_NII_flat.zip"), 100)
+        )
+        orchestrator.executor.upload_resource = MagicMock()
 
         result = TransferResult()
         cache: dict[str, list[dict[str, str]]] = {}
@@ -427,6 +443,107 @@ class TestTwoPhaseTransferScans:
 
         # discover_scan_resources called once (phase 1), reused in phase 3
         orchestrator.executor.discover_scan_resources.assert_called_once()
+
+    def test_all_downloads_complete_before_any_upload(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """All downloads finish before any upload begins (two-phase ordering)."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+        scans = [{"ID": "1", "type": "T1w"}, {"ID": "2", "type": "T2w"}]
+
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+
+        call_order: list[str] = []
+
+        def track_download(**kwargs: object) -> Path:
+            call_order.append(f"download_{kwargs.get('scan_id', '')}")
+            return Path(f"/tmp/scan_{kwargs.get('scan_id', '')}_DICOM.zip")
+
+        def track_upload(**kwargs: object) -> str:
+            call_order.append("upload")
+            return "/data/imported"
+
+        orchestrator.executor.download_scan_dicom = MagicMock(side_effect=track_download)
+        orchestrator.executor.upload_scan_dicom = MagicMock(side_effect=track_upload)
+
+        result = TransferResult()
+        # Force single-threaded to get deterministic ordering
+        orchestrator.config.scan_workers = 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator._transfer_scans(
+                scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=True
+            )
+
+        # All downloads must appear before any upload
+        download_indices = [i for i, c in enumerate(call_order) if c.startswith("download")]
+        upload_indices = [i for i, c in enumerate(call_order) if c == "upload"]
+        assert download_indices, "Expected at least one download"
+        assert upload_indices, "Expected at least one upload"
+        assert max(download_indices) < min(upload_indices), (
+            f"Downloads must complete before uploads. Order: {call_order}"
+        )
+
+    def test_download_failure_skips_upload_for_that_scan(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Failed download is recorded; upload phase proceeds for other scans."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+        scans = [{"ID": "1", "type": "T1w"}, {"ID": "2", "type": "T2w"}]
+
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "file_count": "100"}]
+        )
+
+        call_count = 0
+
+        def download_side_effect(**kwargs: object) -> Path:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("download failed for scan 1")
+            return Path(f"/tmp/scan_{kwargs.get('scan_id', '')}_DICOM.zip")
+
+        orchestrator.executor.download_scan_dicom = MagicMock(side_effect=download_side_effect)
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
+
+        result = TransferResult()
+        orchestrator.config.scan_workers = 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            processed = orchestrator._transfer_scans(
+                scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=True
+            )
+
+        assert processed == 1  # Only scan 2 succeeded
+        assert result.scans_failed == 1
+        assert result.scans_synced == 1
+        assert len(result.errors) == 1
+        orchestrator.executor.upload_scan_dicom.assert_called_once()
 
 
 class TestXmlMetadataOverlay:
@@ -595,7 +712,10 @@ class TestDeferredExperimentCreation:
         orchestrator.executor.discover_scan_resources = MagicMock(
             return_value=[{"label": "DICOM", "file_count": "100"}]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
         orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
         orchestrator.executor.apply_xml_overlay = MagicMock()
@@ -635,6 +755,10 @@ class TestDeferredExperimentCreation:
         )
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
         orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.download_resource = MagicMock(
+            return_value=(Path("/tmp/flat.zip"), 100)
+        )
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
         orchestrator.executor.create_scan = MagicMock()
 
@@ -675,6 +799,10 @@ class TestDeferredExperimentCreation:
         )
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
         orchestrator.executor.apply_xml_overlay = MagicMock()
+        orchestrator.executor.download_resource = MagicMock(
+            return_value=(Path("/tmp/flat.zip"), 100)
+        )
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
         orchestrator.executor.create_scan = MagicMock()
 
@@ -804,7 +932,10 @@ class TestPipelinedTransfer:
         orchestrator.executor.discover_scan_resources = MagicMock(
             return_value=[{"label": "DICOM", "file_count": "100"}]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
         orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
         orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
         orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
@@ -812,13 +943,16 @@ class TestPipelinedTransfer:
         orchestrator.executor.apply_xml_overlay = MagicMock()
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
         orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
         result = orchestrator.run()
 
         assert result.subjects_synced == 1
         assert result.experiments_synced == 2
-        assert orchestrator.executor.transfer_scan_dicom.call_count == 2
+        assert orchestrator.executor.download_scan_dicom.call_count == 2
+        assert orchestrator.executor.upload_scan_dicom.call_count == 2
         assert orchestrator.executor.apply_xml_overlay.call_count == 2
 
     def test_no_dicom_experiment_finalized_immediately(
@@ -846,11 +980,16 @@ class TestPipelinedTransfer:
             return_value=[{"label": "SNAPSHOTS", "file_count": "2"}]
         )
         orchestrator.executor.create_experiment = MagicMock(return_value="OK")
+        orchestrator.executor.download_resource = MagicMock(
+            return_value=(Path("/tmp/flat.zip"), 100)
+        )
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
         orchestrator.executor.create_scan = MagicMock()
         orchestrator.executor.apply_xml_overlay = MagicMock()
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock()
+        orchestrator.executor.upload_scan_dicom = MagicMock()
         orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
         orchestrator.executor.count_dest_scans = MagicMock(return_value=0)
         orchestrator.executor.wait_for_archive = MagicMock(return_value=0)
@@ -859,7 +998,7 @@ class TestPipelinedTransfer:
 
         assert result.experiments_synced == 1
         orchestrator.executor.create_experiment.assert_called_once()
-        orchestrator.executor.transfer_scan_dicom.assert_not_called()
+        orchestrator.executor.download_scan_dicom.assert_not_called()
 
     def test_deferred_experiment_failure_continues(
         self,
@@ -886,12 +1025,17 @@ class TestPipelinedTransfer:
         orchestrator.executor.discover_scan_resources = MagicMock(
             return_value=[{"label": "DICOM", "file_count": "100"}]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
         orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
         orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
         orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
         orchestrator.executor.archive_prearchive = MagicMock()
         orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
         # First experiment's finalize fails via session resource discovery error.
@@ -914,7 +1058,8 @@ class TestPipelinedTransfer:
 
         # Second experiment should still be synced
         assert result.experiments_synced >= 1
-        assert orchestrator.executor.transfer_scan_dicom.call_count == 2
+        assert orchestrator.executor.download_scan_dicom.call_count == 2
+        assert orchestrator.executor.upload_scan_dicom.call_count == 2
 
     def test_temp_dir_cleanup_on_success(
         self,
@@ -940,13 +1085,18 @@ class TestPipelinedTransfer:
         orchestrator.executor.discover_scan_resources = MagicMock(
             return_value=[{"label": "DICOM", "file_count": "100"}]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
         orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
         orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
         orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
         orchestrator.executor.apply_xml_overlay = MagicMock()
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
         orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
         cleanup_calls: list[str] = []
@@ -993,13 +1143,18 @@ class TestPipelinedTransfer:
         orchestrator.executor.discover_scan_resources = MagicMock(
             return_value=[{"label": "DICOM", "file_count": "100"}]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
         orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
         orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
         orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
         orchestrator.executor.apply_xml_overlay = MagicMock()
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
         orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
         result = orchestrator.run()
@@ -1007,7 +1162,8 @@ class TestPipelinedTransfer:
         assert result.subjects_synced == 1
         assert result.experiments_synced == 1
         assert result.success is True
-        orchestrator.executor.transfer_scan_dicom.assert_called_once()
+        orchestrator.executor.download_scan_dicom.assert_called_once()
+        orchestrator.executor.upload_scan_dicom.assert_called_once()
         orchestrator.executor.apply_xml_overlay.assert_called_once()
 
     def test_max_pending_archives_throttle(
@@ -1036,13 +1192,18 @@ class TestPipelinedTransfer:
         orchestrator.executor.discover_scan_resources = MagicMock(
             return_value=[{"label": "DICOM", "file_count": "100"}]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
         orchestrator.executor.list_prearchive_entries = MagicMock(return_value=[])
         orchestrator.executor.find_prearchive_entry = MagicMock(return_value=None)
         orchestrator.executor.archive_prearchive = MagicMock()
         orchestrator.executor.apply_xml_overlay = MagicMock()
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
         orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
         # count_dest_scans returns 1 (archived) so poller marks ready
@@ -1051,7 +1212,8 @@ class TestPipelinedTransfer:
         result = orchestrator.run()
 
         assert result.experiments_synced == 2
-        assert orchestrator.executor.transfer_scan_dicom.call_count == 2
+        assert orchestrator.executor.download_scan_dicom.call_count == 2
+        assert orchestrator.executor.upload_scan_dicom.call_count == 2
 
     def test_pipelined_prearchive_resolution(
         self,
@@ -1078,9 +1240,14 @@ class TestPipelinedTransfer:
         orchestrator.executor.discover_scan_resources = MagicMock(
             return_value=[{"label": "DICOM", "file_count": "100"}]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
         orchestrator.executor.apply_xml_overlay = MagicMock()
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
         # Prearchive: first calls return READY entry, subsequent calls empty.
@@ -1152,9 +1319,14 @@ class TestPipelinedTransfer:
         orchestrator.executor.discover_scan_resources = MagicMock(
             return_value=[{"label": "DICOM", "file_count": "100"}]
         )
-        orchestrator.executor.transfer_scan_dicom = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_DICOM.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
         orchestrator.executor.apply_xml_overlay = MagicMock()
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
         # Prearchive returns CONFLICT for first calls, then empty
