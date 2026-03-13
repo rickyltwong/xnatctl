@@ -227,35 +227,24 @@ class TransferExecutor:
         results: list[dict[str, Any]] = data.get("ResultSet", {}).get("Result", [])
         return results
 
-    def transfer_scan_dicom(
+    def download_scan_dicom(
         self,
         source_experiment_id: str,
         scan_id: str,
-        dest_project: str,
-        dest_subject: str,
-        dest_experiment_label: str,
         work_dir: Path,
-        retry_count: int = 3,
-        retry_delay: float = 5.0,
-    ) -> str:
-        """Download DICOM ZIP from a source scan and import to destination.
+    ) -> Path:
+        """Download and validate a DICOM ZIP from a source scan.
 
         Args:
             source_experiment_id: Source experiment accession ID.
-            scan_id: Scan ID to transfer.
-            dest_project: Destination project ID.
-            dest_subject: Destination subject label.
-            dest_experiment_label: Destination experiment label.
+            scan_id: Scan ID to download.
             work_dir: Temporary working directory for this scan.
-            retry_count: Number of import retries.
-            retry_delay: Base delay between retries (exponential backoff).
 
         Returns:
-            Response text from import (usually URI of imported data).
+            Path to the validated ZIP file on disk.
 
         Raises:
             ValueError: If ZIP validation fails.
-            Exception: If all retries exhausted.
         """
         work_dir.mkdir(parents=True, exist_ok=True)
         zip_path = work_dir / f"scan_{scan_id}_DICOM.zip"
@@ -272,6 +261,35 @@ class TransferExecutor:
                 f"ZIP validation failed for scan {scan_id}: "
                 f"downloaded {total_bytes} bytes, expected {content_length}"
             )
+
+        return zip_path
+
+    def upload_scan_dicom(
+        self,
+        zip_path: Path,
+        dest_project: str,
+        dest_subject: str,
+        dest_experiment_label: str,
+        retry_count: int = 3,
+        retry_delay: float = 5.0,
+    ) -> str:
+        """Import a validated DICOM ZIP to the destination.
+
+        Args:
+            zip_path: Path to the validated DICOM ZIP file.
+            dest_project: Destination project ID.
+            dest_subject: Destination subject label.
+            dest_experiment_label: Destination experiment label.
+            retry_count: Number of import retries.
+            retry_delay: Base delay between retries (exponential backoff).
+
+        Returns:
+            Response text from import (usually URI of imported data).
+
+        Raises:
+            Exception: If all retries exhausted.
+        """
+        scan_id = zip_path.stem.removeprefix("scan_").removesuffix("_DICOM")
 
         last_error: Exception | None = None
         for attempt in range(retry_count):
@@ -314,27 +332,67 @@ class TransferExecutor:
         )
         raise last_error  # type: ignore[misc]
 
-    def transfer_resource(
+    def transfer_scan_dicom(
+        self,
+        source_experiment_id: str,
+        scan_id: str,
+        dest_project: str,
+        dest_subject: str,
+        dest_experiment_label: str,
+        work_dir: Path,
+        retry_count: int = 3,
+        retry_delay: float = 5.0,
+    ) -> str:
+        """Download DICOM ZIP from a source scan and import to destination.
+
+        Convenience wrapper that calls :meth:`download_scan_dicom` followed
+        by :meth:`upload_scan_dicom`.
+
+        Args:
+            source_experiment_id: Source experiment accession ID.
+            scan_id: Scan ID to transfer.
+            dest_project: Destination project ID.
+            dest_subject: Destination subject label.
+            dest_experiment_label: Destination experiment label.
+            work_dir: Temporary working directory for this scan.
+            retry_count: Number of import retries.
+            retry_delay: Base delay between retries (exponential backoff).
+
+        Returns:
+            Response text from import (usually URI of imported data).
+
+        Raises:
+            ValueError: If ZIP validation fails.
+            Exception: If all retries exhausted.
+        """
+        zip_path = self.download_scan_dicom(source_experiment_id, scan_id, work_dir)
+        return self.upload_scan_dicom(
+            zip_path,
+            dest_project,
+            dest_subject,
+            dest_experiment_label,
+            retry_count,
+            retry_delay,
+        )
+
+    def download_resource(
         self,
         source_path: str,
-        dest_path: str,
         resource_label: str,
         work_dir: Path,
-    ) -> int:
-        """Download a resource from source and upload to destination.
+    ) -> tuple[Path, int]:
+        """Download, validate, and flatten a resource ZIP from source.
 
-        Downloads the resource as a ZIP, flattens the directory hierarchy
-        (XNAT ZIPs include full experiment/scan/resource paths), then
-        uploads the flat ZIP so files appear directly in the resource.
+        Downloads the resource as a ZIP, validates it, then flattens the
+        XNAT directory hierarchy so files appear at the root level.
 
         Args:
             source_path: Source resource files REST path.
-            dest_path: Destination resource files REST path.
             resource_label: Resource label (for temp filename).
             work_dir: Temporary working directory.
 
         Returns:
-            Number of bytes transferred.
+            Tuple of (flat_zip_path, total_bytes_downloaded).
 
         Raises:
             ValueError: If ZIP validation fails.
@@ -355,8 +413,23 @@ class TransferExecutor:
         flat_zip_path = work_dir / f"{resource_label}_flat.zip"
         try:
             self._flatten_zip(zip_path, flat_zip_path)
+        finally:
             zip_path.unlink(missing_ok=True)
 
+        return flat_zip_path, total_bytes
+
+    def upload_resource(
+        self,
+        flat_zip_path: Path,
+        dest_path: str,
+    ) -> None:
+        """Upload a flattened resource ZIP to the destination.
+
+        Args:
+            flat_zip_path: Path to the flattened ZIP file.
+            dest_path: Destination resource files REST path.
+        """
+        try:
             with open(flat_zip_path, "rb") as f:
                 self.dest.put(
                     dest_path,
@@ -366,8 +439,33 @@ class TransferExecutor:
                 )
         finally:
             flat_zip_path.unlink(missing_ok=True)
-            zip_path.unlink(missing_ok=True)
 
+    def transfer_resource(
+        self,
+        source_path: str,
+        dest_path: str,
+        resource_label: str,
+        work_dir: Path,
+    ) -> int:
+        """Download a resource from source and upload to destination.
+
+        Convenience wrapper that calls :meth:`download_resource` followed
+        by :meth:`upload_resource`.
+
+        Args:
+            source_path: Source resource files REST path.
+            dest_path: Destination resource files REST path.
+            resource_label: Resource label (for temp filename).
+            work_dir: Temporary working directory.
+
+        Returns:
+            Number of bytes transferred.
+
+        Raises:
+            ValueError: If ZIP validation fails.
+        """
+        flat_zip_path, total_bytes = self.download_resource(source_path, resource_label, work_dir)
+        self.upload_resource(flat_zip_path, dest_path)
         return total_bytes
 
     @staticmethod
