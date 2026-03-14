@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import defusedxml.ElementTree as DefusedET
+import httpx
 
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
@@ -309,6 +310,22 @@ class TransferExecutor:
                     )
                 zip_path.unlink(missing_ok=True)
                 return resp.text.strip() if isinstance(resp.text, str) else str(resp)
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                body = e.response.text[:500] if e.response else ""
+                if attempt < retry_count - 1:
+                    delay = retry_delay * (2**attempt)
+                    logger.warning(
+                        "Scan %s DICOM import failed (attempt %d/%d), "
+                        "retrying in %.1fs: %s — response: %s",
+                        scan_id,
+                        attempt + 1,
+                        retry_count,
+                        delay,
+                        e,
+                        body,
+                    )
+                    time.sleep(delay)
             except Exception as e:
                 last_error = e
                 if attempt < retry_count - 1:
@@ -324,11 +341,16 @@ class TransferExecutor:
                     time.sleep(delay)
 
         # Retain ZIP on final failure for debugging
+        body = ""
+        if isinstance(last_error, httpx.HTTPStatusError) and last_error.response:
+            body = last_error.response.text[:500]
         logger.error(
-            "Scan %s DICOM import failed after %d attempts. ZIP retained at %s for debugging.",
+            "Scan %s DICOM import failed after %d attempts. "
+            "ZIP retained at %s for debugging. Last response: %s",
             scan_id,
             retry_count,
             zip_path,
+            body or "(no response body)",
         )
         raise last_error  # type: ignore[misc]
 
@@ -749,12 +771,33 @@ class TransferExecutor:
 
         cleaned_xml = self._rewrite_experiment_xml(xml_text, dest_experiment_id, dest_project)
 
-        self.dest.put(
+        dest_path = (
             f"/data/projects/{dest_project}/subjects/{dest_subject}"
-            f"/experiments/{dest_experiment_label}",
-            data=cleaned_xml.encode("utf-8"),
-            headers={"Content-Type": "text/xml"},
+            f"/experiments/{dest_experiment_label}"
         )
+        logger.debug(
+            "XML overlay PUT %s (payload %d bytes):\n%s",
+            dest_path,
+            len(cleaned_xml),
+            cleaned_xml[:2000],
+        )
+
+        try:
+            self.dest.put(
+                dest_path,
+                data=cleaned_xml.encode("utf-8"),
+                headers={"Content-Type": "text/xml"},
+            )
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:500] if e.response else ""
+            logger.error(
+                "XML overlay PUT failed for %s -> %s: %s — response: %s",
+                source_experiment_id,
+                dest_path,
+                e,
+                body,
+            )
+            raise
 
         logger.info(
             "XML metadata overlay applied for %s -> %s/%s",
