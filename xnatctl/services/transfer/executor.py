@@ -652,7 +652,17 @@ class TransferExecutor:
 
         Removes file/catalog elements, subject_ID, prearchivePath,
         image_session_ID, sharing, fields, session-level resources,
-        and schemaLocation. Rewrites experiment ID and project if provided.
+        schemaLocation, and label. Rewrites experiment ID and project
+        if provided.
+
+        The label attribute is always stripped because XNAT rejects PUT
+        requests that include a label differing from the destination
+        experiment's current label (400: "Label must be modified through
+        separate URI."). Since xnatctl currently only supports same-label
+        transfers, stripping it avoids the mismatch entirely.
+
+        .. todo:: Support regex-based label transformation. When implemented,
+           accept a ``dest_label`` parameter and rewrite instead of strip.
 
         Args:
             xml_text: Raw source experiment XML.
@@ -719,6 +729,11 @@ class TransferExecutor:
             root.attrib["ID"] = dest_experiment_id
         if dest_project is not None and "project" in root.attrib:
             root.attrib["project"] = dest_project
+
+        # Strip label to avoid 400 "Label must be modified through separate URI"
+        # TODO: rewrite label instead of stripping when label transformation is supported
+        if "label" in root.attrib:
+            del root.attrib["label"]
 
         # Register namespaces to avoid ns0/ns1 prefixes in output
         for prefix, uri in ns_map.items():
