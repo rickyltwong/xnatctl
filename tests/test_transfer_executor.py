@@ -1145,6 +1145,12 @@ class TestRewriteExperimentXml:
         root = ET.fromstring(cleaned)
         assert root.attrib["project"] == "SRC"
 
+    def test_strips_label_attribute(self, executor: TransferExecutor) -> None:
+        """Label is always stripped to avoid 400 on destination PUT."""
+        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
+        root = ET.fromstring(cleaned)
+        assert "label" not in root.attrib
+
 
 class TestApplyXmlOverlay:
     def test_fetches_rewrites_and_puts(
