@@ -1,6 +1,18 @@
 Changelog
 =========
 
+0.2.3 (2026)
+-------------
+
+**Bug fixes**
+
+- Ignore non-DICOM sidecar files such as ``.txt`` and ``.pdf`` during gradual
+  DICOM uploads from directories, ZIP archives, and explicit file lists
+- Refactor transfer scan sync to use a two-phase download-then-upload flow
+- Strip the session ``label`` attribute from transfer XML overlay uploads to
+  prevent destination-side HTTP 400 errors
+- Add transfer debug logging around DICOM import and XML overlay failures
+
 0.2.2 (2026)
 -------------
 
