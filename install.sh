@@ -116,10 +116,22 @@ if [ "${OS}" = "windows" ]; then
     BINARY="${INSTALL_DIR}/xnatctl.exe"
 fi
 
-if "${BINARY}" --version >/dev/null 2>&1; then
-    info "Installed $("${BINARY}" --version 2>&1 || echo "xnatctl")"
+if version_output="$("${BINARY}" --version 2>&1)"; then
+    info "Installed ${version_output}"
 else
-    warn "Binary extracted but could not run --version"
+    warn "Binary extracted to ${BINARY} but failed to run --version:"
+    printf '%s\n' "${version_output}" >&2
+
+    case "${version_output}" in
+        *GLIBC_*)
+            warn "The downloaded binary is not compatible with this host's glibc."
+            ;;
+        *"Permission denied"*)
+            warn "The install directory may be mounted noexec; try a different install location."
+            ;;
+    esac
+
+    exit 1
 fi
 
 # Check PATH

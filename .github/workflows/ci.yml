@@ -191,6 +191,7 @@ jobs:
         run: |
           tag="v${{ steps.version.outputs.version }}"
           prerelease="false"
+          head_commit="$(git rev-parse HEAD)"
           if [[ "${{ steps.version.outputs.version }}" == *alpha* || "${{ steps.version.outputs.version }}" == *beta* || "${{ steps.version.outputs.version }}" == *rc* ]]; then
             prerelease="true"
           fi
@@ -199,11 +200,20 @@ jobs:
 
           if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "Tag ${tag} already exists."
+            tag_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
           else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git tag -a "${tag}" -m "Release ${tag}"
             git push origin "${tag}"
+            tag_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          fi
+
+          echo "tag_commit=${tag_commit}" >> "$GITHUB_OUTPUT"
+          if [[ "${tag_commit}" == "${head_commit}" ]]; then
+            echo "release_commit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_commit=false" >> "$GITHUB_OUTPUT"
           fi
 
           if gh release view "${tag}" >/dev/null 2>&1; then
@@ -222,6 +232,7 @@ jobs:
           echo "created=true" >> "$GITHUB_OUTPUT"
     outputs:
       created: ${{ steps.tag.outputs.created }}
+      release_commit: ${{ steps.tag.outputs.release_commit }}
       tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
 
@@ -271,7 +282,7 @@ jobs:
 
   binary:
     needs: auto-tag
-    if: needs.auto-tag.outputs.created == 'true'
+    if: needs.auto-tag.result == 'success' && needs.auto-tag.outputs.release_commit == 'true'
     timeout-minutes: 30
     permissions:
       contents: write
@@ -368,6 +379,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [auto-tag, binary]
+    if: needs.auto-tag.result == 'success' && needs.auto-tag.outputs.release_commit == 'true' && needs.binary.result == 'success'
     permissions:
       contents: write
     steps:
@@ -394,9 +406,40 @@ jobs:
             xnatctl-windows-amd64.zip.sha256 \
             --clobber
 
+  install-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [auto-tag, upload-binaries]
+    if: needs.auto-tag.result == 'success' && needs.auto-tag.outputs.release_commit == 'true' && needs.upload-binaries.result == 'success'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Smoke test release installer
+        env:
+          XNATCTL_VERSION: ${{ needs.auto-tag.outputs.tag }}
+          XNATCTL_INSTALL_DIR: ${{ runner.temp }}/xnatctl-bin
+        run: |
+          bash ./install.sh
+          "${XNATCTL_INSTALL_DIR}/xnatctl" --version
+          "${XNATCTL_INSTALL_DIR}/xnatctl" --help > /dev/null
+
   check:
     if: always()
-    needs: [lint, typecheck, test, build]
+    needs:
+      [
+        lint,
+        typecheck,
+        test,
+        build,
+        auto-tag,
+        publish,
+        publish-testpypi,
+        binary,
+        upload-binaries,
+        install-smoke,
+      ]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
