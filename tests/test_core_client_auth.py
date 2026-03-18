@@ -16,6 +16,11 @@ def _make_response(status_code: int) -> httpx.Response:
     return httpx.Response(status_code, request=req, json={"ok": True})
 
 
+def _make_text_response(path: str, text: str, status_code: int = 200) -> httpx.Response:
+    req = httpx.Request("GET", f"https://example.org{path}")
+    return httpx.Response(status_code, request=req, text=text)
+
+
 def test_request_auto_reauth_retries_once_on_401(monkeypatch):
     client = XNATClient(
         base_url="https://example.org",
@@ -110,3 +115,66 @@ def test_request_raises_permission_denied_on_403_without_reauth(monkeypatch):
     assert err.details["status_code"] == 403
     assert err.details["method"] == "GET"
     assert err.details["path"] == "/data/user"
+
+
+def test_whoami_uses_current_username_endpoint_and_preserves_username_hint(monkeypatch):
+    client = XNATClient(
+        base_url="https://example.org",
+        username="Ricky_Wong",
+        session_token="token",
+    )
+
+    def fake_get(path: str, **kwargs):
+        if path == "/xapi/users/username":
+            return _make_text_response(path, "ricky_wong")
+        raise AssertionError(f"unexpected path: {path}")
+
+    def fake_get_json(path: str, **kwargs):
+        if path == "/xapi/users/ricky_wong":
+            return {
+                "username": "ricky_wong",
+                "firstName": "Ricky",
+                "lastName": "Wong",
+                "email": "ricky@example.org",
+                "enabled": True,
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "get", fake_get)
+    monkeypatch.setattr(client, "get_json", fake_get_json)
+
+    result = client.whoami()
+
+    assert result == {
+        "username": "Ricky_Wong",
+        "firstname": "Ricky",
+        "lastname": "Wong",
+        "email": "ricky@example.org",
+        "enabled": True,
+    }
+
+
+def test_whoami_falls_back_to_username_hint_when_current_user_endpoints_unavailable(
+    monkeypatch,
+):
+    client = XNATClient(
+        base_url="https://example.org",
+        username="Ricky_Wong",
+        session_token="token",
+    )
+
+    def fake_get(path: str, **kwargs):
+        raise RuntimeError("current-user endpoints unavailable")
+
+    monkeypatch.setattr(client, "get", fake_get)
+    monkeypatch.setattr(client, "get_json", MagicMock(side_effect=AssertionError("unused")))
+
+    result = client.whoami()
+
+    assert result == {
+        "username": "Ricky_Wong",
+        "firstname": "",
+        "lastname": "",
+        "email": "",
+        "enabled": True,
+    }
