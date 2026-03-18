@@ -87,6 +87,11 @@ curl -fsSL -o "${TMPDIR}/${ASSET}" "${BASE_URL}/${ASSET}"
 CHECKSUM_URL="${BASE_URL}/${ASSET}.sha256"
 if curl -fsSL -o "${TMPDIR}/${ASSET}.sha256" "${CHECKSUM_URL}" 2>/dev/null; then
     info "Verifying checksum..."
+    checksum_hash=$(awk '{print $1}' "${TMPDIR}/${ASSET}.sha256")
+    checksum_name=$(awk '{print $2}' "${TMPDIR}/${ASSET}.sha256")
+    checksum_name="${checksum_name##*/}"
+    printf '%s  %s\n' "${checksum_hash}" "${checksum_name:-${ASSET}}" > "${TMPDIR}/${ASSET}.sha256"
+
     if command -v sha256sum >/dev/null 2>&1; then
         (cd "${TMPDIR}" && sha256sum -c "${ASSET}.sha256") || fail "Checksum verification failed"
     elif command -v shasum >/dev/null 2>&1; then
