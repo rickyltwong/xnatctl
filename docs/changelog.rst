@@ -1,6 +1,15 @@
 Changelog
 =========
 
+0.2.4 (2026)
+-------------
+
+**Bug fixes**
+
+- Fix ``auth login`` and top-level ``whoami`` so they resolve the authenticated
+  user from dedicated current-user endpoints instead of treating ``/data/user``
+  as a whoami endpoint
+
 0.2.3 (2026)
 -------------
 
