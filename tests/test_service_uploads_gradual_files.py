@@ -174,8 +174,10 @@ def test_upload_dicom_gradual_zip_filters_to_dicom_like_files(
     calls: list[str] = []
 
     def fake_upload_one(**kwargs):
-        calls.append(kwargs.get("display_path") or kwargs["file_path"].name)
-        return (kwargs.get("display_path") or kwargs["file_path"].name, True, "")
+        display = kwargs.get("display_path") or kwargs["file_path"].name
+        normalized = Path(display).as_posix()
+        calls.append(normalized)
+        return (normalized, True, "")
 
     monkeypatch.setattr(uploads, "_upload_single_file_gradual", fake_upload_one)
 
