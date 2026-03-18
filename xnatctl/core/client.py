@@ -5,10 +5,12 @@ Provides retry logic, pagination, and session-based authentication.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -32,6 +34,7 @@ DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
 DEFAULT_MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2
 RETRYABLE_STATUS_CODES = {502, 503, 504}
+_AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
 
 
 # =============================================================================
@@ -452,26 +455,24 @@ class XNATClient:
         Raises:
             AuthenticationError: If not authenticated.
         """
-        resp = self.get_json("/data/user")
-        if isinstance(resp, list):
-            result = resp
-        elif isinstance(resp, dict):
-            result = resp.get("ResultSet", {}).get("Result", [])
-        elif isinstance(resp, str):
+        current_username = self._get_current_username()
+        if current_username:
+            display_username = self._apply_username_hint(current_username)
+            details = self._get_user_details(current_username)
+            if details is not None:
+                details["username"] = display_username
+                return details
             return {
-                "username": resp.strip() or "unknown",
+                "username": display_username,
                 "firstname": "",
                 "lastname": "",
                 "email": "",
                 "enabled": True,
             }
-        else:
-            result = []
 
-        user_info = result[0] if result else {}
-        if isinstance(user_info, str):
+        if self.username:
             return {
-                "username": user_info.strip() or "unknown",
+                "username": self.username,
                 "firstname": "",
                 "lastname": "",
                 "email": "",
@@ -479,9 +480,62 @@ class XNATClient:
             }
 
         return {
-            "username": user_info.get("login", "unknown"),
-            "firstname": user_info.get("firstname", ""),
-            "lastname": user_info.get("lastname", ""),
-            "email": user_info.get("email", ""),
-            "enabled": user_info.get("enabled", False),
+            "username": "unknown",
+            "firstname": "",
+            "lastname": "",
+            "email": "",
+            "enabled": False,
         }
+
+    def _get_current_username(self) -> str | None:
+        """Resolve the authenticated username from server endpoints.
+
+        Some XNAT deployments return a full user listing from `/data/user`,
+        which is not a reliable whoami source. Prefer dedicated current-user
+        endpoints when available.
+        """
+        try:
+            resp = self.get("/xapi/users/username")
+            username = resp.text.strip()
+            if username and "<html" not in username.lower():
+                return username
+        except (AuthenticationError, SessionExpiredError, PermissionDeniedError):
+            raise
+        except Exception:
+            pass
+
+        try:
+            resp = self.get("/data/auth")
+            match = _AUTH_LOGGED_IN_RE.search(resp.text)
+            if match:
+                return match.group(1).strip()
+        except (AuthenticationError, SessionExpiredError, PermissionDeniedError):
+            raise
+        except Exception:
+            pass
+
+        return None
+
+    def _get_user_details(self, username: str) -> dict[str, Any] | None:
+        """Fetch user details for a resolved username, if available."""
+        try:
+            data = self.get_json(f"/xapi/users/{quote(username, safe='')}")
+        except Exception:
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        return {
+            "username": data.get("username", username),
+            "firstname": data.get("firstName", ""),
+            "lastname": data.get("lastName", ""),
+            "email": data.get("email", ""),
+            "enabled": data.get("enabled", False),
+        }
+
+    def _apply_username_hint(self, username: str) -> str:
+        """Preserve configured/cached username casing when it matches."""
+        if self.username and self.username.casefold() == username.casefold():
+            return self.username
+        return username
