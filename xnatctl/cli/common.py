@@ -66,13 +66,17 @@ class Context:
                 "Run 'xnatctl config show' to list profiles or 'xnatctl config init' to create one."
             ) from e
 
-        # Get credentials (env vars > profile config)
+        # Get credentials (env vars > profile config). If we are using a cached
+        # session token, keep the cached username as a hint for current-user
+        # lookups on servers where /data/user returns a user listing.
         username, password = get_credentials(profile)
-        token = self.auth_manager.get_session_token(profile.url)
+        session = self.auth_manager.load_session(profile.url)
+        token = self.auth_manager.get_token_from_env() or (session.token if session else None)
+        username_hint = username or (session.username if session else None)
 
         self.client = XNATClient(
             base_url=profile.url,
-            username=username,
+            username=username_hint,
             password=password,
             session_token=token,
             timeout=profile.timeout,

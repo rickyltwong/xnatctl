@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
@@ -94,3 +94,25 @@ def test_require_auth_raises_when_session_expired_and_no_creds(monkeypatch):
     message = str(excinfo.value)
     assert "Session expired" in message
     assert "xnatctl auth login" in message
+
+
+def test_get_client_uses_cached_session_username_as_hint():
+    ctx = Context()
+    ctx.config = Config(
+        default_profile="default",
+        profiles={"default": Profile(url="https://example.org", verify_ssl=False)},
+    )
+
+    mock_session = MagicMock()
+    mock_session.token = "cached-token"
+    mock_session.username = "Ricky_Wong"
+
+    ctx.auth_manager = MagicMock()
+    ctx.auth_manager.load_session.return_value = mock_session
+    ctx.auth_manager.get_token_from_env.return_value = None
+
+    with patch("xnatctl.cli.common.XNATClient") as mock_client_cls:
+        ctx.get_client()
+
+    assert mock_client_cls.call_args.kwargs["username"] == "Ricky_Wong"
+    assert mock_client_cls.call_args.kwargs["session_token"] == "cached-token"
