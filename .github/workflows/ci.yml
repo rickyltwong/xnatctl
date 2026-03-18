@@ -184,29 +184,42 @@ jobs:
               fh.write(f"version={version}\n")
           PY
 
-      - name: Create tag and release if missing
+      - name: Ensure tag and GitHub release exist
         id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           tag="v${{ steps.version.outputs.version }}"
+          prerelease="false"
+          if [[ "${{ steps.version.outputs.version }}" == *alpha* || "${{ steps.version.outputs.version }}" == *beta* || "${{ steps.version.outputs.version }}" == *rc* ]]; then
+            prerelease="true"
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
           if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
-            echo "Tag ${tag} already exists; skipping."
+            echo "Tag ${tag} already exists."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "${tag}" -m "Release ${tag}"
+            git push origin "${tag}"
+          fi
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists."
             echo "created=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${tag}" -m "Release ${tag}"
-          git push origin "${tag}"
-          echo "created=true" >> "$GITHUB_OUTPUT"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub release
-        if: steps.tag.outputs.created == 'true'
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          generate_release_notes: true
-          prerelease: ${{ contains(steps.version.outputs.version, 'alpha') || contains(steps.version.outputs.version, 'beta') || contains(steps.version.outputs.version, 'rc') }}
+          args=(release create "${tag}" --generate-notes)
+          if [[ "${prerelease}" == "true" ]]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+          gh "${args[@]}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
     outputs:
       created: ${{ steps.tag.outputs.created }}
       tag: ${{ steps.tag.outputs.tag }}
