@@ -216,9 +216,6 @@ def collect_dicom_files(
         if not path.is_file():
             continue
 
-        if path.name.startswith("."):
-            continue
-
         if path.is_symlink():
             try:
                 resolved = path.resolve()
@@ -227,13 +224,19 @@ def collect_dicom_files(
             except (OSError, ValueError):
                 continue
 
-        suffix = path.suffix.lower()
-        if suffix in DICOM_EXTENSIONS:
-            files.append(path)
-        elif include_extensionless and suffix == "":
+        if _is_dicom_like_path(path, include_extensionless=include_extensionless):
             files.append(path)
 
     return sorted(files)
+
+
+def _is_dicom_like_path(path: Path, *, include_extensionless: bool = True) -> bool:
+    """Return True when a path looks like a DICOM file we should ingest."""
+    if path.name.startswith("."):
+        return False
+
+    suffix = path.suffix.lower()
+    return suffix in DICOM_EXTENSIONS or (include_extensionless and suffix == "")
 
 
 def split_into_batches(
@@ -999,19 +1002,11 @@ class UploadService(BaseService):
                             with zf.open(member) as src, open(target, "wb") as dst:
                                 shutil.copyfileobj(src, dst)
                     source_path = Path(temp_dir)
-                    dicom_files = list(source_path.rglob("*"))
+                    dicom_files = collect_dicom_files(source_path)
                 else:
-                    dicom_files = [source_path]
+                    dicom_files = [source_path] if _is_dicom_like_path(source_path) else []
             else:
-                dicom_files = [
-                    f for f in source_path.rglob("*") if f.is_file() and not f.name.startswith(".")
-                ]
-
-            dicom_files = [
-                f
-                for f in dicom_files
-                if f.is_file() and f.suffix.lower() in ("", ".dcm", ".dicom", ".ima")
-            ]
+                dicom_files = collect_dicom_files(source_path)
 
             total_files = len(dicom_files)
             if total_files == 0:
@@ -1500,8 +1495,9 @@ class UploadService(BaseService):
         Files are uploaded in parallel using per-thread HTTP clients.
 
         Accepts directories or ZIP archives. ZIP archives are extracted to a
-        temporary directory before upload. All non-hidden files are sent
-        (the gradual-DICOM handler decides what is parsable).
+        temporary directory before upload. Only DICOM-like files are sent:
+        known DICOM extensions plus extensionless files commonly produced by
+        scanners.
 
         Args:
             source_path: Directory or ZIP file containing DICOM files.
@@ -1542,17 +1538,9 @@ class UploadService(BaseService):
                             target.parent.mkdir(parents=True, exist_ok=True)
                             with zf.open(member) as src, open(target, "wb") as dst:
                                 shutil.copyfileobj(src, dst)
-                    files = sorted(
-                        f
-                        for f in temp_path.rglob("*")
-                        if f.is_file() and not f.name.startswith(".")
-                    )
+                    files = collect_dicom_files(temp_path)
                 elif source_path.is_dir():
-                    files = sorted(
-                        f
-                        for f in source_path.rglob("*")
-                        if f.is_file() and not f.name.startswith(".")
-                    )
+                    files = collect_dicom_files(source_path)
                 else:
                     raise ValueError("gradual-DICOM requires a directory or ZIP file")
 
@@ -1563,7 +1551,7 @@ class UploadService(BaseService):
                         succeeded=0,
                         failed=0,
                         duration=time.time() - start_time,
-                        errors=["No files found to upload"],
+                        errors=["No DICOM files found"],
                     )
 
                 # Prefer stable relative paths in logs/errors (especially for ZIP
@@ -1628,9 +1616,26 @@ class UploadService(BaseService):
                     errors=["No files provided"],
                 )
 
+            for p in file_list:
+                if not p.exists():
+                    raise FileNotFoundError(f"File not found: {p}")
+                if not p.is_file():
+                    raise ValueError(f"Not a file: {p}")
+
+            dicom_file_list = [p for p in file_list if _is_dicom_like_path(p)]
+            if not dicom_file_list:
+                return UploadSummary(
+                    success=False,
+                    total=0,
+                    succeeded=0,
+                    failed=0,
+                    duration=0.0,
+                    errors=["No DICOM files found"],
+                )
+
             resolved_to_original: dict[Path, Path] = {}
             duplicate_resolved: set[Path] = set()
-            for p in file_list:
+            for p in dicom_file_list:
                 resolved = p.expanduser().resolve(strict=False)
                 if resolved in resolved_to_original:
                     duplicate_resolved.add(resolved)
@@ -1641,21 +1646,15 @@ class UploadService(BaseService):
                 dup_str = ", ".join(sorted(str(p) for p in duplicate_resolved))
                 raise ValueError(f"Duplicate file paths provided: {dup_str}")
 
-            for p in file_list:
-                if not p.exists():
-                    raise FileNotFoundError(f"File not found: {p}")
-                if not p.is_file():
-                    raise ValueError(f"Not a file: {p}")
-
             # Use a stable common root for relative display paths.
             try:
-                common = Path(os.path.commonpath([str(p.resolve()) for p in file_list]))
+                common = Path(os.path.commonpath([str(p.resolve()) for p in dicom_file_list]))
                 display_root = common if common.is_dir() else common.parent
             except Exception:
-                display_root = file_list[0].parent
+                display_root = dicom_file_list[0].parent
 
             return self._upload_dicom_gradual_from_files(
-                files=file_list,
+                files=dicom_file_list,
                 display_root=display_root,
                 project=project,
                 subject=subject,
