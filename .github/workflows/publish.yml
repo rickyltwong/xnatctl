@@ -1,0 +1,115 @@
+name: Manual Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (skip actual publish)"
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_FROZEN: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Read version
+        id: version
+        run: |
+          python - <<'PY'
+          import os, pathlib, tomllib
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          version = data["project"]["version"].strip()
+          if not version:
+              raise SystemExit("project.version is empty")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"version={version}\n")
+          PY
+
+      - name: Check PyPI for existing version
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          status=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/xnatctl/${version}/json")
+          if [[ "$status" == "200" ]]; then
+            echo "::error::Version ${version} already exists on PyPI"
+            exit 1
+          fi
+          echo "Version ${version} not yet on PyPI — proceeding."
+
+      - name: Lint
+        run: uv run ruff check xnatctl scripts
+
+      - name: Type check
+        run: uv run mypy xnatctl --ignore-missing-imports
+
+      - name: Test
+        run: uv run pytest tests/ -v --tb=short
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: verify
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/xnatctl
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Set reproducible build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify artifacts
+        run: |
+          echo "Built artifacts:"
+          ls -lh dist/
+          echo "Version from pyproject.toml: ${{ needs.verify.outputs.version }}"
+
+      - name: Publish to PyPI
+        if: ${{ !inputs.dry_run }}
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+
+      - name: Dry run — skipped publish
+        if: ${{ inputs.dry_run }}
+        run: echo "Dry run enabled — skipping publish for v${{ needs.verify.outputs.version }}"
