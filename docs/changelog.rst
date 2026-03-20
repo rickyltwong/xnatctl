@@ -1,6 +1,16 @@
 Changelog
 =========
 
+0.2.5 (2026)
+-------------
+
+**Bug fixes**
+
+- Auto-refresh XNAT session token on HTTP 401 during large gradual-DICOM
+  uploads, preventing mass failures when the 15-minute session TTL expires
+- Add manual PyPI publish workflow (``workflow_dispatch``) as fallback
+- Fix CI ``alls-green`` check treating skipped release jobs as failures
+
 0.2.4 (2026)
 -------------
 
