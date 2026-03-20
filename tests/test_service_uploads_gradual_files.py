@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import zipfile
 from collections import Counter
 from pathlib import Path
 from unittest.mock import MagicMock
-import zipfile
 
 import pytest
 
@@ -32,6 +32,8 @@ def test_upload_dicom_gradual_files_uses_explicit_list(
     client = MagicMock()
     client.base_url = "https://example.org"
     client.session_token = "token"
+    client.username = "user"
+    client.password = "pass"
     client.verify_ssl = True
 
     service = UploadService(client)
@@ -66,6 +68,8 @@ def test_upload_dicom_gradual_files_rejects_duplicate_paths(
     client = MagicMock()
     client.base_url = "https://example.org"
     client.session_token = "token"
+    client.username = "user"
+    client.password = "pass"
     client.verify_ssl = True
 
     service = UploadService(client)
@@ -103,6 +107,8 @@ def test_upload_dicom_gradual_files_ignores_non_dicom_entries(
     client = MagicMock()
     client.base_url = "https://example.org"
     client.session_token = "token"
+    client.username = "user"
+    client.password = "pass"
     client.verify_ssl = True
 
     service = UploadService(client)
@@ -142,6 +148,8 @@ def test_upload_dicom_gradual_directory_filters_to_dicom_like_files(
     client = MagicMock()
     client.base_url = "https://example.org"
     client.session_token = "token"
+    client.username = "user"
+    client.password = "pass"
     client.verify_ssl = True
 
     service = UploadService(client)
@@ -184,6 +192,8 @@ def test_upload_dicom_gradual_zip_filters_to_dicom_like_files(
     client = MagicMock()
     client.base_url = "https://example.org"
     client.session_token = "token"
+    client.username = "user"
+    client.password = "pass"
     client.verify_ssl = True
 
     service = UploadService(client)
@@ -221,6 +231,8 @@ def test_upload_dicom_gradual_returns_no_dicom_files_for_non_dicom_directory(
     client = MagicMock()
     client.base_url = "https://example.org"
     client.session_token = "token"
+    client.username = "user"
+    client.password = "pass"
     client.verify_ssl = True
 
     service = UploadService(client)

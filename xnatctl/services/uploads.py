@@ -80,6 +80,85 @@ _gradual_scope_lock = threading.Lock()
 _gradual_scope_refcount = 0
 
 
+class _SessionRefresher:
+    """Thread-safe XNAT session token manager.
+
+    When any worker thread encounters a 401 (expired session), it calls
+    :meth:`refresh`.  Only the first thread to detect a stale token actually
+    re-authenticates; concurrent callers wait on the lock and receive the
+    already-refreshed token.
+
+    Args:
+        base_url: XNAT server URL.
+        verify_ssl: Whether to verify SSL certificates.
+        token: Initial JSESSIONID token.
+        username: Credentials for re-authentication.
+        password: Credentials for re-authentication.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        verify_ssl: bool,
+        token: str | None,
+        username: str | None,
+        password: str | None,
+    ) -> None:
+        self._base_url = base_url
+        self._verify_ssl = verify_ssl
+        self._token = token
+        self._username = username
+        self._password = password
+        self._lock = threading.Lock()
+
+    @property
+    def token(self) -> str | None:
+        """Current session token (may be updated by any thread)."""
+        with self._lock:
+            return self._token
+
+    def refresh(self, stale_token: str | None) -> str | None:
+        """Re-authenticate and return a fresh token.
+
+        Thread-safe: if another thread already refreshed past *stale_token*,
+        the cached fresh token is returned without hitting the server again.
+
+        Args:
+            stale_token: The token that triggered the 401.
+
+        Returns:
+            Fresh session token, or the unchanged token if credentials are
+            unavailable.
+        """
+        with self._lock:
+            if self._token != stale_token:
+                return self._token
+
+            if not self._username or not self._password:
+                logger.warning("Session expired but no credentials available for reauth")
+                return self._token
+
+            try:
+                with httpx.Client(
+                    base_url=self._base_url,
+                    verify=self._verify_ssl,
+                    timeout=30.0,
+                ) as client:
+                    resp = client.post(
+                        "/data/JSESSION",
+                        auth=(self._username, self._password),
+                    )
+                    if resp.status_code == 200 and "<html" not in resp.text.lower():
+                        self._token = resp.text.strip()
+                        logger.info("Session refreshed successfully")
+                    else:
+                        logger.error("Session refresh failed: HTTP %d", resp.status_code)
+            except Exception:
+                logger.exception("Session refresh failed")
+
+            return self._token
+
+
 def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client:
     """Get a thread-local httpx.Client for gradual-DICOM uploads."""
     key = (base_url, verify_ssl)
@@ -311,12 +390,12 @@ def is_retryable_status(status_code: int) -> bool:
 
 
 def upload_with_retry(
-    upload_fn: Callable[[], Any],
+    upload_fn: Callable[[], httpx.Response],
     *,
     max_retries: int = UPLOAD_MAX_RETRIES,
     backoff_base: int = UPLOAD_RETRY_BACKOFF_BASE,
     label: str = "upload",
-) -> Any:
+) -> httpx.Response:
     """Execute an upload function with retry on transient HTTP errors.
 
     Args:
@@ -859,7 +938,7 @@ def _send_dicom_batch(
 def _upload_single_file_gradual(
     *,
     base_url: str,
-    session_token: str | None,
+    session_refresher: _SessionRefresher,
     verify_ssl: bool,
     file_path: Path,
     display_path: str | None = None,
@@ -870,10 +949,11 @@ def _upload_single_file_gradual(
     """Upload a single file via the gradual-DICOM import handler.
 
     Uses a thread-local httpx client to reuse keep-alive connections per worker thread.
+    On HTTP 401, refreshes the session token via *session_refresher* and retries once.
 
     Args:
         base_url: XNAT server base URL.
-        session_token: JSESSIONID token.
+        session_refresher: Thread-safe token manager for reauth on 401.
         verify_ssl: Whether to verify SSL certificates.
         file_path: Path to the DICOM file.
         project: Target project ID.
@@ -887,25 +967,40 @@ def _upload_single_file_gradual(
 
     try:
         client = _get_gradual_http_client(base_url=base_url, verify_ssl=verify_ssl)
-        cookies = {"JSESSIONID": session_token} if session_token else {}
 
-        def _attempt() -> httpx.Response:
-            with open(file_path, "rb") as f:
-                return client.post(
-                    "/data/services/import",
-                    params={
-                        "inbody": "true",
-                        "import-handler": "gradual-DICOM",
-                        "PROJECT_ID": project,
-                        "SUBJECT_ID": subject,
-                        "EXPT_LABEL": session,
-                    },
-                    content=f,
-                    headers={"Content-Type": "application/dicom"},
-                    cookies=cookies,
-                )
+        def _do_upload(token: str | None) -> httpx.Response:
+            cookies = {"JSESSIONID": token} if token else {}
 
-        resp = upload_with_retry(_attempt, label=f"gradual-DICOM {name}")
+            def _attempt() -> httpx.Response:
+                with open(file_path, "rb") as f:
+                    return client.post(
+                        "/data/services/import",
+                        params={
+                            "inbody": "true",
+                            "import-handler": "gradual-DICOM",
+                            "PROJECT_ID": project,
+                            "SUBJECT_ID": subject,
+                            "EXPT_LABEL": session,
+                        },
+                        content=f,
+                        headers={"Content-Type": "application/dicom"},
+                        cookies=cookies,
+                    )
+
+            return upload_with_retry(_attempt, label=f"gradual-DICOM {name}")
+
+        token = session_refresher.token
+        resp = _do_upload(token)
+
+        if resp.status_code == 401:
+            new_token = session_refresher.refresh(token)
+            if new_token != token:
+                resp = _do_upload(new_token)
+                if resp.status_code == 401:
+                    logger.warning("Still 401 after session refresh for %s", name)
+            else:
+                logger.debug("Session refresh returned same token for %s", name)
+
         if 200 <= resp.status_code < 300:
             return name, True, ""
 
@@ -1692,8 +1787,14 @@ class UploadService(BaseService):
             UploadSummary with results.
         """
         base_url = self.client.base_url
-        session_token = self.client.session_token
         verify_ssl = self.client.verify_ssl
+        session_refresher = _SessionRefresher(
+            base_url=base_url,
+            verify_ssl=verify_ssl,
+            token=self.client.session_token,
+            username=self.client.username,
+            password=self.client.password,
+        )
 
         file_list = list(files)
 
@@ -1808,7 +1909,7 @@ class UploadService(BaseService):
         for p in warmup_files:
             _name, ok, err = _upload_single_file_gradual(
                 base_url=base_url,
-                session_token=session_token,
+                session_refresher=session_refresher,
                 verify_ssl=verify_ssl,
                 file_path=p,
                 display_path=display(p),
@@ -1845,7 +1946,7 @@ class UploadService(BaseService):
                 fut: Future[tuple[str, bool, str]] = executor.submit(  # type: ignore[arg-type]
                     _upload_single_file_gradual,
                     base_url=base_url,
-                    session_token=session_token,
+                    session_refresher=session_refresher,
                     verify_ssl=verify_ssl,
                     file_path=path,
                     display_path=display(path),
@@ -1924,7 +2025,7 @@ class UploadService(BaseService):
                     fut: Future[tuple[str, bool, str]] = retry_executor.submit(  # type: ignore[arg-type]
                         _upload_single_file_gradual,
                         base_url=base_url,
-                        session_token=session_token,
+                        session_refresher=session_refresher,
                         verify_ssl=verify_ssl,
                         file_path=path,
                         display_path=display(path),
@@ -1979,7 +2080,7 @@ class UploadService(BaseService):
             for p in sorted(failed_paths, key=display):
                 _name, ok, err = _upload_single_file_gradual(
                     base_url=base_url,
-                    session_token=session_token,
+                    session_refresher=session_refresher,
                     verify_ssl=verify_ssl,
                     file_path=p,
                     display_path=display(p),
