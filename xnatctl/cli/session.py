@@ -1207,17 +1207,25 @@ def session_upload_exam(
         )
 
     if classification.misc_files:
+        import tempfile
+        from zipfile import ZIP_DEFLATED, ZipFile
+
         resource_service.create(
             session_id=resolved_experiment_id,
             resource_label=misc_label,
             project=project,
         )
-        for misc_file in classification.misc_files:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            zip_path = Path(tmp_dir) / f"{misc_label}.zip"
+            with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
+                for misc_file in classification.misc_files:
+                    zf.write(misc_file, arcname=misc_file.name)
             resource_service.upload_file(
                 session_id=resolved_experiment_id,
                 resource_label=misc_label,
-                file_path=misc_file,
+                file_path=zip_path,
                 project=project,
+                extract=True,
             )
 
     attached_resource_dirs = len(classification.resource_dirs)
