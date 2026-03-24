@@ -988,6 +988,11 @@ def session_upload(
     help="Attach resources only (skip DICOM upload)",
 )
 @click.option(
+    "--direct-archive/--prearchive",
+    default=True,
+    help="Direct archive or use prearchive (default: direct)",
+)
+@click.option(
     "--wait-for-archive/--no-wait-for-archive",
     default=True,
     show_default=True,
@@ -1021,6 +1026,7 @@ def session_upload_exam(
     misc_label: str,
     skip_resources: bool,
     attach_only: bool,
+    direct_archive: bool,
     wait_for_archive: bool,
     wait_timeout: int,
     wait_interval: int,
@@ -1077,6 +1083,7 @@ def session_upload_exam(
         click.echo(f"  Subject: {subject}")
         click.echo(f"  Session: {session}")
         click.echo(f"  Workers: {workers}")
+        click.echo(f"  Direct archive: {direct_archive}")
         click.echo(f"  Resource dirs ({len(resource_labels)}):")
         for label in resource_labels:
             click.echo(f"    - {label}")
@@ -1099,6 +1106,7 @@ def session_upload_exam(
             subject=subject,
             session=session,
             workers=workers,
+            direct_archive=direct_archive,
         )
         if not summary.success:
             errors = "; ".join(summary.errors[:3])
