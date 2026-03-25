@@ -213,8 +213,8 @@ number and resource type:
 .. tip::
 
    By default, scans are downloaded as ZIP archives. To automatically extract
-   them into a directory structure, add the ``--unzip`` flag. Use
-   ``--unzip --cleanup`` to remove the ZIP files after successful extraction.
+   them into a directory structure and remove the ZIP files, add the
+   ``--extract`` flag.
 
 
 Step 5: Upload Data (Preview)

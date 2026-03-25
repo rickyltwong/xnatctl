@@ -147,18 +147,18 @@ focused on imaging data.
 Extracting ZIPs automatically
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-By default, downloads are saved as ZIP archives. Add ``--unzip`` to extract
-files into a directory structure immediately, and ``--cleanup`` (the default)
-to remove the ZIP files after successful extraction.
+By default, downloads are saved as ZIP archives. Add ``--extract`` to extract
+files into a directory structure and remove the ZIP files after successful
+extraction.
 
 .. code-block:: console
 
-   $ xnatctl session download -E XNAT_E00001 --out ./data --unzip --cleanup
+   $ xnatctl session download -E XNAT_E00001 --out ./data --extract
 
 .. tip::
 
    To keep the ZIPs as backup copies alongside the extracted files, use
-   ``--unzip --no-cleanup``.
+   ``--extract --keep-zips``.
 
 Preview with dry run
 ~~~~~~~~~~~~~~~~~~~~
@@ -227,7 +227,7 @@ As with session downloads, you can extract and clean up in one step.
 
 .. code-block:: console
 
-   $ xnatctl scan download -E XNAT_E00001 -s 1 --out ./data --unzip --cleanup
+   $ xnatctl scan download -E XNAT_E00001 -s 1 --out ./data --extract
 
 
 Download a Resource
@@ -262,7 +262,7 @@ The output is always a single ZIP file written to the path you specify with
 Understanding the Output Directory Structure
 --------------------------------------------
 
-After downloading and extracting a session with ``--unzip``, your local
+After downloading and extracting a session with ``--extract``, your local
 directory mirrors the XNAT data hierarchy. Understanding this layout helps you
 write scripts that process downloaded data reliably.
 

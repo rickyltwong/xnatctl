@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import click
 
-from xnatctl.cli.common import Context, global_options, handle_errors, require_auth
+from xnatctl.cli.common import (
+    Context,
+    confirm_destructive,
+    global_options,
+    handle_errors,
+    require_auth,
+)
 from xnatctl.core.output import OutputFormat, print_output, print_success
 from xnatctl.services.prearchive import PrearchiveService
 
@@ -91,7 +97,7 @@ def prearchive_archive(
 @click.argument("project")
 @click.argument("timestamp")
 @click.argument("session_name")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@confirm_destructive("Delete session from prearchive? This cannot be undone.")
 @global_options
 @require_auth
 @handle_errors
@@ -100,18 +106,17 @@ def prearchive_delete(
     project: str,
     timestamp: str,
     session_name: str,
-    yes: bool,
+    dry_run: bool,
 ) -> None:
     """Delete a session from prearchive.
 
     Example:
         xnatctl prearchive delete MYPROJ 20240115_120000 Session1 --yes
+        xnatctl prearchive delete MYPROJ 20240115_120000 Session1 --dry-run
     """
-    if not yes:
-        click.confirm(
-            f"Delete {session_name} from prearchive? This cannot be undone.",
-            abort=True,
-        )
+    if dry_run:
+        click.echo(f"[DRY-RUN] Would delete {session_name} from prearchive")
+        return
 
     client = ctx.get_client()
     service = PrearchiveService(client)

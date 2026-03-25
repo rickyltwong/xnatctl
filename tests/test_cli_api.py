@@ -179,7 +179,7 @@ class TestApiGet:
                             "api",
                             "get",
                             "/data/projects",
-                            "-P",
+                            "--params",
                             "columns=ID,name",
                         ],
                     )
@@ -271,9 +271,9 @@ class TestApiGet:
                             "api",
                             "get",
                             "/data/experiments",
-                            "-P",
+                            "--params",
                             "xsiType=xnat:mrSessionData",
-                            "-P",
+                            "--params",
                             "columns=ID,label",
                         ],
                     )
@@ -382,7 +382,7 @@ class TestApiPost:
                             "api",
                             "post",
                             "/data/experiments",
-                            "-P",
+                            "--params",
                             "xnat:mrSessionData/subject_ID=XNAT_S00001",
                         ],
                     )
@@ -408,7 +408,7 @@ class TestApiPost:
                             "api",
                             "post",
                             "/data/experiments",
-                            "-P",
+                            "--params",
                             "xnat:experimentData/subject_ID=XNAT_S00001",
                         ],
                     )
@@ -461,7 +461,7 @@ class TestApiPut:
                             "api",
                             "put",
                             "/data/experiments/XNAT_E00001",
-                            "-P",
+                            "--params",
                             "xnat:mrSessionData/fields/field[name=session_type]/field=Research",
                         ],
                     )
@@ -529,7 +529,7 @@ class TestApiDelete:
                             "api",
                             "delete",
                             "/data/resource",
-                            "-P",
+                            "--params",
                             "removeFiles=true",
                             "--yes",
                         ],

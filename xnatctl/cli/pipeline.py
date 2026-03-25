@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import click
 
-from xnatctl.cli.common import Context, global_options, handle_errors, require_auth
+from xnatctl.cli.common import (
+    Context,
+    confirm_destructive,
+    global_options,
+    handle_errors,
+    require_auth,
+)
 from xnatctl.core.exceptions import OperationError
 from xnatctl.core.output import OutputFormat, print_output, print_success
 from xnatctl.services.pipelines import PipelineService
@@ -47,8 +53,8 @@ def pipeline_list(
 @pipeline.command("run")
 @click.argument("pipeline_name")
 @click.option("--experiment", "-e", required=True, help="Experiment/session ID")
-@click.option("--param", "-P", multiple=True, help="Pipeline parameter (key=value)")
-@click.option("--wait", "-w", is_flag=True, help="Wait for completion")
+@click.option("--param", multiple=True, help="Pipeline parameter (key=value)")
+@click.option("--wait", is_flag=True, help="Wait for completion")
 @click.option("--timeout", type=int, default=3600, help="Wait timeout in seconds")
 @global_options
 @require_auth
@@ -66,7 +72,7 @@ def pipeline_run(
     Example:
         xnatctl pipeline run dcm2niix --experiment XNAT_E00001
         xnatctl pipeline run freesurfer -e XNAT_E00001 --wait
-        xnatctl pipeline run myproc -e XNAT_E00001 -P param1=value1 -P param2=value2
+        xnatctl pipeline run myproc -e XNAT_E00001 --param param1=value1 --param param2=value2
     """
     # Parse parameters
     params = {}
@@ -121,7 +127,7 @@ def pipeline_run(
 
 @pipeline.command("status")
 @click.argument("job_id")
-@click.option("--watch", "-w", is_flag=True, help="Watch status until completion")
+@click.option("--watch", is_flag=True, help="Watch status until completion")
 @click.option("--interval", type=int, default=30, help="Poll interval in seconds")
 @global_options
 @require_auth
@@ -184,22 +190,24 @@ def pipeline_status(
 
 @pipeline.command("cancel")
 @click.argument("job_id")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@confirm_destructive("Cancel pipeline job? This cannot be undone.")
 @global_options
 @require_auth
 @handle_errors
 def pipeline_cancel(
     ctx: Context,
     job_id: str,
-    yes: bool,
+    dry_run: bool,
 ) -> None:
     """Cancel a running pipeline job.
 
     Example:
         xnatctl pipeline cancel JOB123 --yes
+        xnatctl pipeline cancel JOB123 --dry-run
     """
-    if not yes:
-        click.confirm(f"Cancel job {job_id}?", abort=True)
+    if dry_run:
+        click.echo(f"[DRY-RUN] Would cancel job {job_id}")
+        return
 
     client = ctx.get_client()
     service = PipelineService(client)

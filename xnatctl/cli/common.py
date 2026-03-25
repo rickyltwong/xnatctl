@@ -270,19 +270,102 @@ def batch_option(f: F) -> F:
     return wrapper  # type: ignore
 
 
+def _make_alias_cb(
+    old_flag: str,
+    new_flag: str,
+    target_param: str,
+    target_value: Any,
+) -> Callable[[click.Context, click.Parameter, Any], Any]:
+    """Create a Click callback that warns on deprecated flag and sets a fixed value.
+
+    Args:
+        old_flag: The deprecated flag name (e.g., "--unzip").
+        new_flag: The replacement flag name (e.g., "--extract").
+        target_param: The Click parameter name to set on ctx.params.
+        target_value: The fixed value to set (NOT the raw flag value).
+
+    Returns:
+        A Click callback function.
+    """
+
+    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
+        if (
+            param.name
+            and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
+        ):
+            click.echo(
+                f"Warning: {old_flag} is deprecated, use {new_flag} instead",
+                err=True,
+            )
+            ctx.params[target_param] = target_value
+        return value
+
+    return callback
+
+
+def _make_forwarding_alias_cb(
+    old_flag: str,
+    new_flag: str,
+    target_param: str,
+) -> Callable[[click.Context, click.Parameter, Any], Any]:
+    """Create a Click callback that warns and forwards the user's raw value.
+
+    Unlike ``_make_alias_cb`` which sets a fixed value, this forwards whatever
+    the user provided (useful for value-taking options like ``--session LABEL``).
+
+    Args:
+        old_flag: The deprecated flag name.
+        new_flag: The replacement flag name.
+        target_param: The Click parameter name to set on ctx.params.
+
+    Returns:
+        A Click callback function.
+    """
+
+    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
+        if (
+            value is not None
+            and param.name
+            and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
+        ):
+            click.echo(
+                f"Warning: {old_flag} is deprecated, use {new_flag} instead",
+                err=True,
+            )
+            ctx.params[target_param] = value
+        return value
+
+    return callback
+
+
 def parallel_options(f: F) -> F:
-    """Add parallel execution options."""
+    """Add parallel execution options.
+
+    Injects ``--workers`` (default resolved from profile or 4).
+    Hidden ``--no-parallel`` alias sets workers to 1 with a deprecation warning.
+    """
 
     @click.option(
-        "--parallel/--no-parallel",
-        default=True,
-        help="Enable parallel execution",
+        "--workers",
+        "-w",
+        type=int,
+        default=None,
+        show_default="4 (or profile)",
+        help="Parallel workers (1 = sequential)",
     )
     @click.option(
-        "--workers",
-        type=int,
-        default=4,
-        help="Max parallel workers",
+        "--no-parallel",
+        is_flag=True,
+        hidden=True,
+        expose_value=False,
+        callback=_make_alias_cb("--no-parallel", "--workers 1", "workers", 1),
+    )
+    @click.option(
+        "--parallel",
+        is_flag=True,
+        hidden=True,
+        expose_value=False,
+        help="Deprecated: parallel is the default",
     )
     @wraps(f)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -326,9 +409,9 @@ def dest_profile_options(f: F) -> F:
     """Add destination profile options for transfer commands."""
 
     @click.option("--dest-profile", help="Destination config profile name")
-    @click.option("--dest-url", help="Destination XNAT URL (inline)")
-    @click.option("--dest-user", help="Destination username (inline)")
-    @click.option("--dest-pass", help="Destination password (inline)")
+    @click.option("--dest-url", hidden=True, help="Destination XNAT URL (inline)")
+    @click.option("--dest-user", hidden=True, help="Destination username (inline)")
+    @click.option("--dest-pass", hidden=True, help="Destination password (inline)")
     @wraps(f)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         return f(*args, **kwargs)

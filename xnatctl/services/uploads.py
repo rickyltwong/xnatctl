@@ -309,13 +309,27 @@ def collect_dicom_files(
     return sorted(files)
 
 
+def _has_dicom_magic(path: Path) -> bool:
+    """Return True if the file has the DICOM preamble magic bytes (DICM at offset 128)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(128)
+            return f.read(4) == b"DICM"
+    except OSError:
+        return False
+
+
 def _is_dicom_like_path(path: Path, *, include_extensionless: bool = True) -> bool:
     """Return True when a path looks like a DICOM file we should ingest."""
     if path.name.startswith("."):
         return False
 
     suffix = path.suffix.lower()
-    return suffix in DICOM_EXTENSIONS or (include_extensionless and suffix == "")
+    if suffix in DICOM_EXTENSIONS:
+        return True
+    if include_extensionless and suffix == "":
+        return _has_dicom_magic(path)
+    return False
 
 
 def split_into_batches(
@@ -945,6 +959,7 @@ def _upload_single_file_gradual(
     project: str,
     subject: str,
     session: str,
+    direct_archive: bool = True,
 ) -> tuple[str, bool, str]:
     """Upload a single file via the gradual-DICOM import handler.
 
@@ -959,6 +974,7 @@ def _upload_single_file_gradual(
         project: Target project ID.
         subject: Target subject label.
         session: Target session label.
+        direct_archive: Use direct archive vs prearchive (default: True).
 
     Returns:
         Tuple of (filename, success, error_message).
@@ -981,6 +997,7 @@ def _upload_single_file_gradual(
                             "PROJECT_ID": project,
                             "SUBJECT_ID": subject,
                             "EXPT_LABEL": session,
+                            "Direct-Archive": "true" if direct_archive else "false",
                         },
                         content=f,
                         headers={"Content-Type": "application/dicom"},
@@ -1581,6 +1598,7 @@ class UploadService(BaseService):
         session: str,
         *,
         workers: int = DEFAULT_UPLOAD_WORKERS,
+        direct_archive: bool = True,
         progress_callback: Callable[[UploadProgress], None] | None = None,
     ) -> UploadSummary:
         """Upload DICOM files using the gradual-DICOM handler (parallel per-file).
@@ -1600,6 +1618,7 @@ class UploadService(BaseService):
             subject: Target subject label.
             session: Target session label.
             workers: Number of parallel upload workers (default: 4).
+            direct_archive: Use direct archive vs prearchive (default: True).
             progress_callback: Optional callback for progress updates.
 
         Returns:
@@ -1660,6 +1679,7 @@ class UploadService(BaseService):
                     subject=subject,
                     session=session,
                     workers=workers,
+                    direct_archive=direct_archive,
                     progress_callback=progress_callback,
                     start_time=start_time,
                 )
@@ -1676,6 +1696,7 @@ class UploadService(BaseService):
         subject: str,
         session: str,
         workers: int = DEFAULT_UPLOAD_WORKERS,
+        direct_archive: bool = True,
         progress_callback: Callable[[UploadProgress], None] | None = None,
     ) -> UploadSummary:
         """Upload a specific list of DICOM files via the gradual-DICOM handler.
@@ -1688,6 +1709,7 @@ class UploadService(BaseService):
             project: Target project ID.
             subject: Target subject label.
             session: Target session label.
+            direct_archive: Use direct archive vs prearchive (default: True).
             workers: Number of parallel upload workers.
             progress_callback: Optional callback for progress updates.
 
@@ -1755,6 +1777,7 @@ class UploadService(BaseService):
                 subject=subject,
                 session=session,
                 workers=workers,
+                direct_archive=direct_archive,
                 progress_callback=progress_callback,
                 start_time=start_time,
             )
@@ -1768,6 +1791,7 @@ class UploadService(BaseService):
         subject: str,
         session: str,
         workers: int,
+        direct_archive: bool = True,
         progress_callback: Callable[[UploadProgress], None] | None,
         start_time: float,
     ) -> UploadSummary:
@@ -1780,6 +1804,7 @@ class UploadService(BaseService):
             subject: Target subject label.
             session: Target session label.
             workers: Number of parallel upload workers.
+            direct_archive: Use direct archive vs prearchive (default: True).
             progress_callback: Optional callback for progress updates.
             start_time: Start timestamp for duration calculation.
 
@@ -1916,6 +1941,7 @@ class UploadService(BaseService):
                 project=project,
                 subject=subject,
                 session=session,
+                direct_archive=direct_archive,
             )
             completed += 1
             if not ok:
@@ -1953,6 +1979,7 @@ class UploadService(BaseService):
                     project=project,
                     subject=subject,
                     session=session,
+                    direct_archive=direct_archive,
                 )
                 in_flight.add(fut)
                 future_to_path[fut] = path
@@ -2032,6 +2059,7 @@ class UploadService(BaseService):
                         project=project,
                         subject=subject,
                         session=session,
+                        direct_archive=direct_archive,
                     )
                     retry_in_flight.add(fut)
                     retry_future_to_path[fut] = path
@@ -2087,6 +2115,7 @@ class UploadService(BaseService):
                     project=project,
                     subject=subject,
                     session=session,
+                    direct_archive=direct_archive,
                 )
                 if ok:
                     error_by_path.pop(p, None)

@@ -204,8 +204,7 @@ def project_transfer(
     dest_user: str | None,
     dest_pass: str | None,
     dry_run: bool,
-    parallel: bool,
-    workers: int,
+    workers: int | None,
 ) -> None:
     """Transfer project data to another XNAT instance.
 
@@ -220,6 +219,11 @@ def project_transfer(
     from xnatctl.core.state import TransferStateStore
     from xnatctl.models.transfer import TransferConfig
     from xnatctl.services.transfer.orchestrator import TransferOrchestrator
+
+    # Resolve workers from profile
+    if workers is None:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        workers = profile.workers if (profile and profile.workers is not None) else 4
 
     source_client = ctx.get_client()
 

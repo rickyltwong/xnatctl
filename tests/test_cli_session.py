@@ -747,7 +747,7 @@ class TestSessionHelp:
         assert "--out" in result.output
         assert "--dry-run" in result.output
         assert "--workers" in result.output
-        assert "--unzip" in result.output
+        assert "--extract" in result.output
 
     def test_session_upload_help(self, runner: CliRunner) -> None:
         """session upload --help shows expected options."""
@@ -755,7 +755,7 @@ class TestSessionHelp:
         assert result.exit_code == 0
         assert "--project" in result.output
         assert "--subject" in result.output
-        assert "--session" in result.output
+        assert "--experiment" in result.output
         assert "--dry-run" in result.output
 
     def test_session_upload_exam_help(self, runner: CliRunner) -> None:
@@ -763,8 +763,5 @@ class TestSessionHelp:
         assert result.exit_code == 0
         assert "--project" in result.output
         assert "--subject" in result.output
-        assert "--session" in result.output
-        assert "--misc-label" in result.output
-        assert "--attach-only" in result.output
-        assert "--skip-resources" in result.output
+        assert "--experiment" in result.output
         assert "--dry-run" in result.output

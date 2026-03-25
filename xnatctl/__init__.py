@@ -8,7 +8,7 @@ neuroimaging data servers, supporting common workflows like:
 - Administrative operations (catalogs, users, renaming)
 """
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 __author__ = "Ricky Wong"
 
 from xnatctl.core.client import XNATClient

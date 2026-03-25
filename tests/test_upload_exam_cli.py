@@ -102,6 +102,7 @@ def test_session_upload_exam_only_dicoms_does_not_resolve_experiment_id(
             subject: str,
             session: str,
             workers: int,
+            direct_archive: bool = True,
         ) -> UploadSummary:
             UploadServiceSpy.last_files_len = len(files)
             return UploadSummary(
@@ -161,6 +162,7 @@ def test_session_upload_exam_wait_for_archive_default_succeeds(
             subject: str,
             session: str,
             workers: int,
+            direct_archive: bool = True,
         ) -> UploadSummary:
             return UploadSummary(
                 success=True,
@@ -318,6 +320,7 @@ def test_session_upload_exam_wait_for_archive_timeout_click_error(
             subject: str,
             session: str,
             workers: int,
+            direct_archive: bool = True,
         ) -> UploadSummary:
             return UploadSummary(
                 success=True,

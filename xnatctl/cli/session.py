@@ -9,6 +9,8 @@ import click
 
 from xnatctl.cli.common import (
     Context,
+    _make_alias_cb,
+    _make_forwarding_alias_cb,
     global_options,
     handle_errors,
     require_auth,
@@ -539,13 +541,13 @@ def _download_session_fast(
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
-@click.option("--name", help="Output directory name (defaults to session ID)")
+@click.option("--name", hidden=True, help="Output directory name (defaults to session ID)")
 @click.option(
     "--workers",
     "-w",
     type=int,
-    default=1,
-    show_default=True,
+    default=None,
+    show_default="1 (or profile)",
     help="Parallel download workers (1 = sequential single-ZIP, >1 = parallel per-scan)",
 )
 @click.option(
@@ -559,18 +561,48 @@ def _download_session_fast(
     multiple=True,
     help="Resource types to exclude (repeatable). Cannot combine with --resource.",
 )
-@click.option("--session-resources", is_flag=True, help="Include session-level resources")
+@click.option(
+    "--session-resources", is_flag=True, hidden=True, help="Include session-level resources"
+)
 @click.option(
     "--include-resources",
     is_flag=True,
     hidden=True,
     help="[Deprecated] Use --session-resources instead",
 )
-@click.option("--unzip/--no-unzip", default=False, help="Extract downloaded ZIPs")
 @click.option(
-    "--cleanup/--no-cleanup",
-    default=True,
-    help="Remove ZIPs after successful extraction (with --unzip)",
+    "--extract/--no-extract", default=False, help="Extract ZIPs and remove archives after download"
+)
+@click.option(
+    "--keep-zips", is_flag=True, hidden=True, help="With --extract, keep ZIP files after extraction"
+)
+@click.option(
+    "--unzip",
+    is_flag=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_alias_cb("--unzip", "--extract", "extract", True),
+)
+@click.option(
+    "--no-unzip",
+    is_flag=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_alias_cb("--no-unzip", "--no-extract", "extract", False),
+)
+@click.option(
+    "--cleanup",
+    is_flag=True,
+    hidden=True,
+    expose_value=False,
+    help="Deprecated: noop (cleanup is implicit with --extract)",
+)
+@click.option(
+    "--no-cleanup",
+    is_flag=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_alias_cb("--no-cleanup", "--extract --keep-zips", "keep_zips", True),
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
@@ -582,13 +614,13 @@ def session_download(
     project: str | None,
     out: str,
     name: str | None,
-    workers: int,
+    workers: int | None,
     resource: tuple[str, ...],
     exclude_resource: tuple[str, ...],
     session_resources: bool,
     include_resources: bool,
-    unzip: bool,
-    cleanup: bool,
+    extract: bool,
+    keep_zips: bool,
     dry_run: bool,
 ) -> None:
     """Download session data.
@@ -613,6 +645,10 @@ def session_download(
 
     from xnatctl.core.validation import validate_path_writable
 
+    # Map extract/keep_zips to internal unzip/cleanup
+    unzip = extract or keep_zips
+    cleanup = extract and not keep_zips
+
     # Handle deprecated --include-resources
     if include_resources:
         warnings.warn(
@@ -631,10 +667,12 @@ def session_download(
     if name and ("/" in name or "\\" in name):
         raise click.ClickException("--name cannot contain path separators")
 
-    # Resolve project from profile default if not provided
+    # Resolve project and workers from profile defaults
+    profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
     if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
         project = profile.default_project if profile else None
+    if workers is None:
+        workers = profile.workers if (profile and profile.workers is not None) else 1
 
     # Validate output path
     if not out_path.exists():
@@ -802,43 +840,64 @@ def session_download(
 @click.argument("input_path", type=click.Path(exists=True))
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--subject", "-S", required=True, help="Subject ID")
-@click.option("--session", "-E", required=True, help="Session label")
-@click.option("--username", "-u", help="XNAT username (REST upload)")
-@click.option("--password", help="XNAT password (REST upload)")
-@click.option("--gradual", is_flag=True, help="Use per-file upload instead of batch archive")
+@click.option("--experiment", "-E", required=True, help="Session/experiment label")
+@click.option(
+    "--session",
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("--session", "--experiment", "experiment"),
+)
+@click.option("--username", "-u", hidden=True, help="XNAT username (REST upload)")
+@click.option("--password", hidden=True, help="XNAT password (REST upload)")
+@click.option(
+    "--mode",
+    type=click.Choice(["tar", "zip", "gradual"]),
+    default=None,
+    help="Upload mode (default: tar)",
+)
+@click.option(
+    "--gradual",
+    is_flag=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_alias_cb("--gradual", "--mode gradual", "mode", "gradual"),
+)
 @click.option(
     "--archive-format",
     type=click.Choice(["tar", "zip"]),
-    default="tar",
-    help="Archive format for REST upload (default: tar)",
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("--archive-format", "--mode", "mode"),
 )
 @click.option(
     "--zip-to-tar/--no-zip-to-tar",
     default=False,
+    hidden=True,
     help="Convert ZIP archive to TAR before REST upload",
 )
 @click.option(
     "--workers",
     "-w",
     type=int,
-    default=4,
-    show_default=True,
+    default=None,
+    show_default="4 (or profile)",
     help="Parallel workers",
 )
 @click.option(
     "--overwrite",
     type=click.Choice(["none", "append", "delete"]),
-    default="delete",
+    default=None,
     help="Overwrite mode (default: delete)",
 )
 @click.option(
     "--direct-archive/--prearchive",
-    default=True,
+    default=None,
     help="Direct archive or use prearchive (default: direct)",
 )
 @click.option(
     "--ignore-unparsable/--no-ignore-unparsable",
     default=True,
+    hidden=True,
     help="Skip unparsable DICOM files (default: yes)",
 )
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
@@ -850,15 +909,14 @@ def session_upload(
     input_path: str,
     project: str | None,
     subject: str,
-    session: str,
+    experiment: str,
     username: str | None,
     password: str | None,
-    gradual: bool,
-    archive_format: str,
+    mode: str | None,
     zip_to_tar: bool,
-    workers: int,
-    overwrite: str,
-    direct_archive: bool,
+    workers: int | None,
+    overwrite: str | None,
+    direct_archive: bool | None,
     ignore_unparsable: bool,
     dry_run: bool,
 ) -> None:
@@ -873,7 +931,7 @@ def session_upload(
         xnatctl session upload ./archive.zip -P MYPROJ -S SUB001 -E SESS001
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --workers 16
-        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --gradual --workers 40
+        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --mode gradual -w 40
     """
     from xnatctl.core.validation import (
         validate_project_id,
@@ -881,8 +939,9 @@ def session_upload(
         validate_subject_id,
     )
 
+    # Resolve profile defaults
+    profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
     if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
         project = profile.default_project if profile else None
         if not project:
             profile_name = ctx.profile_name or (
@@ -891,7 +950,22 @@ def session_upload(
             raise click.ClickException(
                 f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
             )
+    if mode is None:
+        mode = profile.archive_mode if (profile and profile.archive_mode is not None) else "tar"
+    if workers is None:
+        workers = profile.workers if (profile and profile.workers is not None) else 4
+    if overwrite is None:
+        overwrite = profile.overwrite if (profile and profile.overwrite is not None) else "delete"
+    if direct_archive is None:
+        direct_archive = (
+            profile.direct_archive if (profile and profile.direct_archive is not None) else True
+        )
 
+    # Map mode to internal gradual/archive_format
+    gradual = mode == "gradual"
+    archive_format = mode if mode in ("tar", "zip") else "tar"
+
+    session = experiment
     project = validate_project_id(project)
     subject = validate_subject_id(subject)
     session = validate_session_id(session)
@@ -905,10 +979,9 @@ def session_upload(
         click.echo(f"  Project: {project}")
         click.echo(f"  Subject: {subject}")
         click.echo(f"  Session: {session}")
-        click.echo(f"  Mode: {'gradual' if gradual else 'rest'}")
+        click.echo(f"  Mode: {mode}")
         click.echo(f"  Workers: {workers}")
         if not gradual:
-            click.echo(f"  Archive format: {archive_format}")
             click.echo(f"  Overwrite: {overwrite}")
             click.echo(f"  Direct archive: {direct_archive}")
         return
@@ -962,50 +1035,84 @@ def session_upload(
 @click.argument("exam_root", type=click.Path(exists=True, file_okay=False))
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--subject", "-S", required=True, help="Subject ID")
-@click.option("--session", "-E", required=True, help="Session label")
+@click.option("--experiment", "-E", required=True, help="Session/experiment label")
+@click.option(
+    "--session",
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("--session", "--experiment", "experiment"),
+)
 @click.option(
     "--workers",
     "-w",
     type=int,
-    default=4,
-    show_default=True,
+    default=None,
+    show_default="4 (or profile)",
     help="Parallel workers",
 )
 @click.option(
     "--misc-label",
     default="MISC",
     show_default=True,
+    hidden=True,
     help="Resource label to use for top-level misc files",
 )
 @click.option(
     "--skip-resources",
     is_flag=True,
+    hidden=True,
     help="Skip attaching top-level resource dirs and misc files",
 )
 @click.option(
     "--attach-only",
     is_flag=True,
+    hidden=True,
     help="Attach resources only (skip DICOM upload)",
 )
 @click.option(
-    "--wait-for-archive/--no-wait-for-archive",
-    default=True,
-    show_default=True,
-    help="Wait for the session to be archived before attaching resources",
+    "--direct-archive/--prearchive",
+    default=None,
+    help="Direct archive or use prearchive (default: direct)",
 )
 @click.option(
-    "--wait-timeout",
+    "--wait",
     type=click.IntRange(min=0),
     default=900,
     show_default=True,
-    help="Max seconds to wait for the session to be archived",
+    help="Seconds to wait for archiving (0 = skip)",
 )
 @click.option(
     "--wait-interval",
     type=click.IntRange(min=1),
     default=5,
-    show_default=True,
+    hidden=True,
     help="Seconds between archive checks",
+)
+@click.option(
+    "--wait-timeout",
+    type=click.IntRange(min=0),
+    hidden=True,
+    expose_value=False,
+    callback=lambda ctx, param, value: (
+        ctx.params.update({"wait": value}) or value  # type: ignore[func-returns-value]
+    )
+    if value is not None
+    and param.name
+    and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
+    else value,
+)
+@click.option(
+    "--wait-for-archive/--no-wait-for-archive",
+    default=None,
+    hidden=True,
+    expose_value=False,
+    callback=lambda ctx, param, value: (
+        ctx.params.update({"wait": 900 if value else 0}) or value  # type: ignore[func-returns-value]
+    )
+    if value is not None
+    and param.name
+    and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
+    else value,
 )
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
@@ -1016,13 +1123,13 @@ def session_upload_exam(
     exam_root: str,
     project: str | None,
     subject: str,
-    session: str,
-    workers: int,
+    experiment: str,
+    workers: int | None,
     misc_label: str,
     skip_resources: bool,
     attach_only: bool,
-    wait_for_archive: bool,
-    wait_timeout: int,
+    direct_archive: bool | None,
+    wait: int,
     wait_interval: int,
     dry_run: bool,
 ) -> None:
@@ -1046,8 +1153,9 @@ def session_upload_exam(
     from xnatctl.services.resources import ResourceService
     from xnatctl.services.uploads import UploadService
 
+    # Resolve profile defaults
+    profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
     if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
         project = profile.default_project if profile else None
         if not project:
             profile_name = ctx.profile_name or (
@@ -1056,7 +1164,18 @@ def session_upload_exam(
             raise click.ClickException(
                 f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
             )
+    if workers is None:
+        workers = profile.workers if (profile and profile.workers is not None) else 4
+    if direct_archive is None:
+        direct_archive = (
+            profile.direct_archive if (profile and profile.direct_archive is not None) else True
+        )
 
+    # Map wait to internal wait_for_archive/wait_timeout
+    wait_for_archive = wait > 0
+    wait_timeout = wait
+
+    session = experiment
     project = validate_project_id(project)
     subject = validate_subject_id(subject)
     session = validate_session_id(session)
@@ -1077,6 +1196,7 @@ def session_upload_exam(
         click.echo(f"  Subject: {subject}")
         click.echo(f"  Session: {session}")
         click.echo(f"  Workers: {workers}")
+        click.echo(f"  Direct archive: {direct_archive}")
         click.echo(f"  Resource dirs ({len(resource_labels)}):")
         for label in resource_labels:
             click.echo(f"    - {label}")
@@ -1099,6 +1219,7 @@ def session_upload_exam(
             subject=subject,
             session=session,
             workers=workers,
+            direct_archive=direct_archive,
         )
         if not summary.success:
             errors = "; ".join(summary.errors[:3])
@@ -1207,17 +1328,25 @@ def session_upload_exam(
         )
 
     if classification.misc_files:
+        import tempfile
+        from zipfile import ZIP_DEFLATED, ZipFile
+
         resource_service.create(
             session_id=resolved_experiment_id,
             resource_label=misc_label,
             project=project,
         )
-        for misc_file in classification.misc_files:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            zip_path = Path(tmp_dir) / f"{misc_label}.zip"
+            with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
+                for misc_file in classification.misc_files:
+                    zf.write(misc_file, arcname=misc_file.name)
             resource_service.upload_file(
                 session_id=resolved_experiment_id,
                 resource_label=misc_label,
-                file_path=misc_file,
+                file_path=zip_path,
                 project=project,
+                extract=True,
             )
 
     attached_resource_dirs = len(classification.resource_dirs)
@@ -1728,6 +1857,7 @@ def _upload_dicom_store(
     "--calling-aet",
     default="XNATCTL",
     show_default=True,
+    hidden=True,
     envvar="XNAT_DICOM_CALLING_AET",
     help="Calling AE Title (env: XNAT_DICOM_CALLING_AET)",
 )
@@ -1735,8 +1865,8 @@ def _upload_dicom_store(
     "--workers",
     "-w",
     type=int,
-    default=4,
-    show_default=True,
+    default=None,
+    show_default="4 (or profile)",
     help="Parallel DICOM C-STORE associations",
 )
 @click.option("--dry-run", is_flag=True, help="Preview without sending")
@@ -1750,7 +1880,7 @@ def session_upload_dicom(
     called_aet: str,
     port: int,
     calling_aet: str,
-    workers: int,
+    workers: int | None,
     dry_run: bool,
 ) -> None:
     """Upload DICOM files via C-STORE network protocol.
@@ -1763,6 +1893,11 @@ def session_upload_dicom(
         xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT -w 8
     """
     source_path = Path(input_path)
+
+    # Resolve workers from profile
+    if workers is None:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        workers = profile.workers if (profile and profile.workers is not None) else 4
 
     if dry_run:
         click.echo("[DRY-RUN] Would send DICOM files via C-STORE:")
