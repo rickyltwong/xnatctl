@@ -167,9 +167,9 @@ class TestPipelineRun:
                                 "myproc",
                                 "-e",
                                 "XNAT_E001",
-                                "-P",
+                                "--param",
                                 "param1=val1",
-                                "-P",
+                                "--param",
                                 "param2=val2",
                             ],
                         )
