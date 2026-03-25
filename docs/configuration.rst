@@ -141,6 +141,27 @@ required; the rest have sensible defaults.
        pass experiment labels instead of accession IDs. Without either ``-P`` or
        ``default_project``, the ``-E`` value must be a full accession ID like
        ``XNAT_E00001``.
+   * - ``workers``
+     - *(none)*
+     - Default number of parallel workers for upload, download, and batch
+       operations. When set, commands use this value unless ``--workers`` is
+       passed explicitly on the command line.
+   * - ``overwrite``
+     - *(none)*
+     - Default overwrite mode for uploads (``none``, ``append``, or ``delete``).
+       Overridden by ``--overwrite`` on the command line.
+   * - ``direct_archive``
+     - *(none)*
+     - Whether to use direct archive (``true``) or prearchive (``false``) for
+       uploads. Overridden by ``--direct-archive`` / ``--prearchive``.
+   * - ``archive_mode``
+     - *(none)*
+     - Default upload mode (``tar``, ``zip``, or ``gradual``). Overridden by
+       ``--mode`` on the command line.
+   * - ``extract``
+     - *(none)*
+     - Whether to extract downloaded ZIPs by default (``true`` or ``false``).
+       Overridden by ``--extract`` / ``--no-extract``.
 
 
 Environment Variables
