@@ -8,10 +8,15 @@ import pytest
 
 from xnatctl.core.exceptions import PathValidationError
 
+DICOM_PREAMBLE = b"\x00" * 128 + b"DICM"
+
 
 def _touch(path: Path, payload: str = "x") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload)
+    if path.suffix == "" and payload == "x":
+        path.write_bytes(DICOM_PREAMBLE)
+    else:
+        path.write_text(payload)
 
 
 class _ExamRootClassification(Protocol):
