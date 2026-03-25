@@ -71,7 +71,7 @@ def _build_query_string(params: tuple) -> str:
     characters in keys are preserved verbatim.
 
     Args:
-        params: Tuple of ``key=value`` strings from Click ``-P`` options.
+        params: Tuple of ``key=value`` strings from Click ``--params`` options.
 
     Returns:
         A ``key=value&...`` query string (empty string if no params).
@@ -109,7 +109,6 @@ def api() -> None:
 @click.argument("path")
 @click.option(
     "--params",
-    "-P",
     multiple=True,
     help="Query parameters as key=value (can repeat)",
 )
@@ -176,7 +175,6 @@ def api_get(
 @click.argument("path")
 @click.option(
     "--params",
-    "-P",
     multiple=True,
     help="Query parameters as key=value (can repeat)",
 )
@@ -253,7 +251,6 @@ def api_post(
 @click.argument("path")
 @click.option(
     "--params",
-    "-P",
     multiple=True,
     help="Query parameters as key=value (can repeat)",
 )
@@ -328,7 +325,6 @@ def api_put(
 @click.argument("path")
 @click.option(
     "--params",
-    "-P",
     multiple=True,
     help="Query parameters as key=value (can repeat)",
 )
