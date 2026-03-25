@@ -883,4 +883,4 @@ class TestScanHelp:
         assert "--out" in result.output
         assert "--dry-run" in result.output
         assert "--resource" in result.output
-        assert "--unzip" in result.output
+        assert "--extract" in result.output

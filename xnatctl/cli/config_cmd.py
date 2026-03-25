@@ -6,6 +6,7 @@ from typing import Any
 
 import click
 
+from xnatctl.cli.common import confirm_destructive, handle_errors
 from xnatctl.core.config import CONFIG_FILE, Config
 from xnatctl.core.output import (
     OutputFormat,
@@ -209,12 +210,14 @@ def config_add_profile(
 
 @config.command("remove-profile")
 @click.argument("name")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
-def config_remove_profile(name: str, yes: bool) -> None:
+@confirm_destructive("Remove this profile?")
+@handle_errors
+def config_remove_profile(name: str, dry_run: bool) -> None:
     """Remove a profile.
 
     Example:
         xnatctl config remove-profile dev
+        xnatctl config remove-profile dev --dry-run
     """
     cfg = Config.load()
 
@@ -226,8 +229,9 @@ def config_remove_profile(name: str, yes: bool) -> None:
         print_error("Cannot remove the default profile. Switch to another profile first.")
         raise SystemExit(1)
 
-    if not yes:
-        click.confirm(f"Remove profile '{name}'?", abort=True)
+    if dry_run:
+        click.echo(f"[DRY-RUN] Would remove profile '{name}'")
+        return
 
     cfg.remove_profile(name)
     cfg.save()

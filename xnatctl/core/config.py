@@ -38,6 +38,9 @@ ENV_TIMEOUT = "XNAT_TIMEOUT"
 # =============================================================================
 
 
+_OPERATIONAL_FIELDS = ("workers", "overwrite", "direct_archive", "archive_mode", "extract")
+
+
 @dataclass
 class Profile:
     """Configuration profile for an XNAT server."""
@@ -48,6 +51,12 @@ class Profile:
     default_project: str | None = None
     username: str | None = None
     password: str | None = None
+    # Operational defaults (None = not configured, use command default)
+    workers: int | None = None
+    overwrite: str | None = None
+    direct_archive: bool | None = None
+    archive_mode: str | None = None
+    extract: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -61,6 +70,10 @@ class Profile:
             result["username"] = self.username
         if self.password:
             result["password"] = self.password
+        for field_name in _OPERATIONAL_FIELDS:
+            val = getattr(self, field_name)
+            if val is not None:
+                result[field_name] = val
         return result
 
     @classmethod
@@ -73,6 +86,11 @@ class Profile:
             default_project=data.get("default_project"),
             username=data.get("username"),
             password=data.get("password"),
+            workers=data.get("workers"),
+            overwrite=data.get("overwrite"),
+            direct_archive=data.get("direct_archive"),
+            archive_mode=data.get("archive_mode"),
+            extract=data.get("extract"),
         )
 
 
