@@ -44,8 +44,9 @@ class TestCollectDicomFiles:
         assert files[0].suffix == ".ima"
 
     def test_collects_extensionless_files(self, temp_dir: Path):
-        (temp_dir / "IM00001").write_text("dicom")
-        (temp_dir / "IM00002").write_text("dicom")
+        dicom_preamble = b"\x00" * 128 + b"DICM"
+        (temp_dir / "IM00001").write_bytes(dicom_preamble)
+        (temp_dir / "IM00002").write_bytes(dicom_preamble)
 
         files = collect_dicom_files(temp_dir, include_extensionless=True)
 

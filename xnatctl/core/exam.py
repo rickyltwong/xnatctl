@@ -101,6 +101,20 @@ def classify_exam_root(root: Path) -> ExamRootClassification:
     )
 
 
+def _has_dicom_magic(path: Path) -> bool:
+    """Return True if the file has the DICOM preamble magic bytes (DICM at offset 128)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(128)
+            return f.read(4) == b"DICM"
+    except OSError:
+        return False
+
+
 def _is_dicom_like_file(path: Path) -> bool:
     suffix = path.suffix.lower()
-    return suffix in _DICOM_LIKE_SUFFIXES or suffix == ""
+    if suffix in _DICOM_LIKE_SUFFIXES:
+        return True
+    if suffix == "":
+        return _has_dicom_magic(path)
+    return False
