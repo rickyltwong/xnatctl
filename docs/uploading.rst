@@ -45,11 +45,11 @@ key differences to help you decide.
 
    * - Criteria
      - REST DICOM-zip (default)
-     - REST gradual-DICOM (``--gradual``)
+     - REST gradual-DICOM (``--mode gradual``)
      - DICOM C-STORE (``upload-dicom``)
    * - **Command**
      - ``session upload``
-     - ``session upload --gradual``
+     - ``session upload --mode gradual``
      - ``session upload-dicom``
    * - **Transport**
      - HTTP (REST API)
@@ -141,27 +141,16 @@ batches.
        -P MYPROJECT -S MYSUBJECT -E MYSESSION \
        --workers 8
 
-You can also select the archive format used for batching. The default is ``tar``,
-but ``zip`` is available if your XNAT instance handles it better.
+You can also select the archive format used for batching via ``--mode``. The
+default is ``tar``, but ``zip`` is available if your XNAT instance handles it
+better.
 
 .. code-block:: console
 
    $ xnatctl session upload /path/to/DICOM_ROOT \
        -P MYPROJECT -S MYSUBJECT -E MYSESSION \
        --workers 8 \
-       --archive-format zip
-
-.. tip::
-
-   If you have a pre-existing ZIP archive but your XNAT instance processes TAR
-   archives more reliably, use ``--zip-to-tar`` to convert on the fly before
-   upload:
-
-   .. code-block:: console
-
-      $ xnatctl session upload /path/to/session.zip \
-          -P MYPROJECT -S MYSUBJECT -E MYSESSION \
-          --zip-to-tar
+       --mode zip
 
 
 Direct Archive vs Prearchive
@@ -238,8 +227,8 @@ priority: CLI args > environment variables > profile config > interactive prompt
 REST Import API: gradual-DICOM (File-by-File)
 ----------------------------------------------
 
-The ``--gradual`` flag switches from batch-archive upload to file-by-file upload
-using the ``gradual-DICOM`` import handler. Instead of bundling files into
+The ``--mode gradual`` flag switches from batch-archive upload to file-by-file
+upload using the ``gradual-DICOM`` import handler. Instead of bundling files into
 archives, xnatctl sends one HTTP request per DICOM file to XNAT's Import
 Service.
 
@@ -258,12 +247,12 @@ is small, so more parallelism helps compensate for the per-file latency.
 
    $ xnatctl session upload /path/to/DICOM_ROOT \
        -P MYPROJECT -S MYSUBJECT -E MYSESSION \
-       --gradual \
+       --mode gradual \
        --workers 16
 
 .. note::
 
-   With ``--gradual``, progress output reports every 100 files to avoid flooding
+   With ``--mode gradual``, progress output reports every 100 files to avoid flooding
    your terminal. For full per-file details, use ``--output json``.
 
 
@@ -423,23 +412,22 @@ the top-level non-DICOM items as resources. This makes the attach step more
 reliable on servers where the import request can return before the session is
 fully available in the archive.
 
-You can disable the wait (fail fast) or tune the polling behavior. The defaults
-are ``--wait-timeout 900`` (15 minutes) and ``--wait-interval 5``:
+You can disable the wait (fail fast) or tune the timeout with ``--wait``. The
+default is ``--wait 900`` (15 minutes). Set ``--wait 0`` to skip waiting entirely:
 
 .. code-block:: console
 
    # Do not wait for the session to appear in the archive
    $ xnatctl session upload-exam /path/to/EXAM_ROOT \
        -P MYPROJECT -S MYSUBJECT -E MYSESSION \
-       --no-wait-for-archive
+       --wait 0
 
 .. code-block:: console
 
-   # Wait up to 30 minutes, polling every 10 seconds
+   # Wait up to 30 minutes
    $ xnatctl session upload-exam /path/to/EXAM_ROOT \
        -P MYPROJECT -S MYSUBJECT -E MYSESSION \
-       --wait-timeout 1800 \
-       --wait-interval 10
+       --wait 1800
 
 .. note::
 
@@ -447,7 +435,7 @@ are ``--wait-timeout 900`` (15 minutes) and ``--wait-interval 5``:
    but attaching resources requires the session to be in the permanent archive.
    If the session remains in the prearchive, the default archive wait will time
    out. In that case, upload the DICOM now with ``--skip-resources`` (optionally
-   add ``--no-wait-for-archive`` if you want fail-fast behavior) and later attach
+   add ``--wait 0`` if you want fail-fast behavior) and later attach
    resources with ``--attach-only`` after you archive the session.
 
 

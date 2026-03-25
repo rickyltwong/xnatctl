@@ -141,7 +141,7 @@ def project_list(ctx: Context) -> None: ...
 
 Additional decorators for destructive/batch commands:
 - `@confirm_destructive(message)` -- adds `--yes/-y` and `--dry-run` flags
-- `@parallel_options` -- adds `--parallel/--no-parallel` and `--workers` flags
+- `@parallel_options` -- adds `--workers/-w` flag (profile-aware, default 4)
 - `@batch_option` -- adds `--batch FILE` for bulk operations
 
 ### Service Layer
@@ -211,6 +211,11 @@ Profile fields:
 - `verify_ssl` - SSL verification (default: true)
 - `timeout` - Request timeout in seconds (default: 30)
 - `default_project` - Default project ID (optional)
+- `workers` - Default parallel workers (optional, overridden by `--workers`)
+- `overwrite` - Default overwrite mode: `none|append|delete` (optional)
+- `direct_archive` - Default direct archive: `true|false` (optional)
+- `archive_mode` - Default upload mode: `tar|zip|gradual` (optional)
+- `extract` - Default extract on download: `true|false` (optional)
 
 Environment variables:
 - `XNAT_URL`, `XNAT_USER`, `XNAT_PASS` - Server credentials
@@ -252,7 +257,7 @@ Semantic Versioning (`MAJOR.MINOR.PATCH`). Source of truth: `project.version` in
 | Bump | When | Examples |
 |------|------|----------|
 | `PATCH` | Bug fixes, refactors, docs, deps | Fix retry logic, fix table alignment |
-| `MINOR` | New commands, flags, output fields | Add `scan download`, add `--parallel` flag |
+| `MINOR` | New commands, flags, output fields | Add `scan download`, add `--extract` flag |
 | `MAJOR` | Breaking CLI surface, output schema, or config changes | Rename/remove command, change JSON shape |
 
 Rules:
