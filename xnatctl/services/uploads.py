@@ -309,13 +309,27 @@ def collect_dicom_files(
     return sorted(files)
 
 
+def _has_dicom_magic(path: Path) -> bool:
+    """Return True if the file has the DICOM preamble magic bytes (DICM at offset 128)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(128)
+            return f.read(4) == b"DICM"
+    except OSError:
+        return False
+
+
 def _is_dicom_like_path(path: Path, *, include_extensionless: bool = True) -> bool:
     """Return True when a path looks like a DICOM file we should ingest."""
     if path.name.startswith("."):
         return False
 
     suffix = path.suffix.lower()
-    return suffix in DICOM_EXTENSIONS or (include_extensionless and suffix == "")
+    if suffix in DICOM_EXTENSIONS:
+        return True
+    if include_extensionless and suffix == "":
+        return _has_dicom_magic(path)
+    return False
 
 
 def split_into_batches(
