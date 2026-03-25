@@ -9,6 +9,7 @@ import click
 
 from xnatctl.cli.common import (
     Context,
+    _make_alias_cb,
     confirm_destructive,
     global_options,
     handle_errors,
@@ -271,8 +272,7 @@ def scan_delete(
     subject: str | None,
     scans: str,
     dry_run: bool,
-    parallel: bool,
-    workers: int,
+    workers: int | None,
 ) -> None:
     """Delete scans from a session.
 
@@ -314,6 +314,11 @@ def scan_delete(
             click.echo(f"  - {sid}")
         return
 
+    # Resolve workers from profile
+    if workers is None:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        workers = profile.workers if (profile and profile.workers is not None) else 4
+
     deleted = []
     failed = []
 
@@ -325,7 +330,7 @@ def scan_delete(
         except Exception as e:
             return scan_id, False, str(e)
 
-    if parallel and len(scan_ids) > 1:
+    if workers > 1 and len(scan_ids) > 1:
         with ThreadPoolExecutor(max_workers=min(workers, len(scan_ids))) as executor:
             futures = {executor.submit(delete_scan, sid): sid for sid in scan_ids}
             for future in as_completed(futures):
@@ -373,18 +378,40 @@ def scan_delete(
 )
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
-@click.option("--name", help="Output directory name (defaults to experiment value)")
+@click.option("--name", hidden=True, help="Output directory name (defaults to experiment value)")
 @click.option(
     "--resource",
     "-r",
     multiple=True,
     help="Resource type to download (e.g., DICOM). Omit for all resources.",
 )
-@click.option("--unzip/--no-unzip", default=False, help="Extract downloaded ZIPs")
 @click.option(
-    "--cleanup/--no-cleanup",
-    default=True,
-    help="Remove ZIP after successful extraction (with --unzip)",
+    "--extract/--no-extract", default=False, help="Extract ZIPs and remove archives after download"
+)
+@click.option(
+    "--keep-zips", is_flag=True, hidden=True, help="With --extract, keep ZIP files after extraction"
+)
+@click.option(
+    "--unzip",
+    is_flag=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_alias_cb("--unzip", "--extract", "extract", True),
+)
+@click.option(
+    "--no-unzip",
+    is_flag=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_alias_cb("--no-unzip", "--no-extract", "extract", False),
+)
+@click.option("--cleanup", is_flag=True, hidden=True, expose_value=False, help="Deprecated: noop")
+@click.option(
+    "--no-cleanup",
+    is_flag=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_alias_cb("--no-cleanup", "--extract --keep-zips", "keep_zips", True),
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
@@ -399,8 +426,8 @@ def scan_download(
     out: str,
     name: str | None,
     resource: tuple[str, ...],
-    unzip: bool,
-    cleanup: bool,
+    extract: bool,
+    keep_zips: bool,
     dry_run: bool,
 ) -> None:
     """Download scans from an image session.
@@ -424,6 +451,10 @@ def scan_download(
     from xnatctl.core.validation import validate_scan_ids_input, validate_session_id
     from xnatctl.models.progress import DownloadProgress, OperationPhase
     from xnatctl.services.downloads import DownloadService
+
+    # Map extract/keep_zips to internal unzip/cleanup
+    unzip = extract or keep_zips
+    cleanup = extract and not keep_zips
 
     session_id = validate_session_id(session_id)
     scan_ids_input = validate_scan_ids_input(scans)

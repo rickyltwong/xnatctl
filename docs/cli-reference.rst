@@ -300,7 +300,7 @@ Upload DICOM files via REST (batch or gradual per-file):
 .. code-block:: console
 
    $ xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001
-   $ xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --gradual --workers 40
+   $ xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --mode gradual -w 40
 
 Upload a scanner exam-root directory (DICOM + top-level resources):
 
@@ -318,13 +318,9 @@ attaching resources.
 
    * - Option
      - Description
-   * - ``--no-wait-for-archive``
-     - Do not poll the archive before attaching resources.
-   * - ``--wait-timeout INTEGER``
-     - Maximum seconds to wait for the session to appear in the archive (default:
-       ``900``).
-   * - ``--wait-interval INTEGER``
-     - Seconds between archive checks while waiting (default: ``5``).
+   * - ``--wait SECONDS``
+     - Seconds to wait for the session to appear in the archive (default:
+       ``900``). Set to ``0`` to skip waiting.
 
 Upload via DICOM C-STORE (requires the ``[dicom]`` extra):
 
@@ -368,7 +364,7 @@ Download specific scans or all scans at once:
 
 .. code-block:: console
 
-   $ xnatctl scan download -E XNAT_E00001 -s 1,2 --out ./data --unzip
+   $ xnatctl scan download -E XNAT_E00001 -s 1,2 --out ./data --extract
    $ xnatctl scan download -E XNAT_E00001 -s '*' --out ./data
 
 .. tip::
@@ -463,7 +459,7 @@ List pipelines and run one with parameters:
 
    $ xnatctl pipeline list --project MYPROJ
    $ xnatctl pipeline run dcm2niix --experiment XNAT_E00001 --wait
-   $ xnatctl pipeline run myproc -e XNAT_E00001 -P param1=value1
+   $ xnatctl pipeline run myproc -e XNAT_E00001 --param param1=value1
 
 Check status or watch a job until completion:
 
@@ -500,8 +496,8 @@ Add a user to project groups and view audit entries:
 
 .. note::
 
-   Catalog refresh runs in parallel by default. Use ``--no-parallel`` for sequential
-   execution or ``--workers N`` to control concurrency.
+   Catalog refresh runs in parallel by default (4 workers). Use ``--workers 1``
+   for sequential execution or ``--workers N`` to control concurrency.
 
 For detailed admin workflows, prerequisites, and workarounds for tasks not yet
 exposed as CLI commands, see :doc:`administration`.
@@ -582,9 +578,9 @@ Extract downloaded session ZIPs:
 
 .. tip::
 
-   Use ``local extract`` when you downloaded sessions without ``--unzip`` and want
-   to extract them later. The ``--cleanup`` flag (on by default) removes ZIP files
-   after successful extraction.
+   Use ``local extract`` when you downloaded sessions without ``--extract`` and
+   want to extract them later. The ``--cleanup`` flag (on by default) removes ZIP
+   files after successful extraction.
 
 completion
 ----------

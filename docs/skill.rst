@@ -158,7 +158,7 @@ Uploads
    xnatctl session upload ./archive.tar -P NEURO -S SUB001 -E SESS001
 
    # Gradual per-file upload (parallel)
-   xnatctl session upload ./dicoms -P NEURO -S SUB001 -E SESS001 --gradual --workers 16
+   xnatctl session upload ./dicoms -P NEURO -S SUB001 -E SESS001 --mode gradual -w 16
 
    # Upload exam root (DICOM + resources)
    # Directory structure: top-level dirs become resources, DICOMs found recursively
@@ -242,7 +242,7 @@ Pipelines
    xnatctl pipeline list --project MYPROJ
 
    # Run pipeline and wait for completion
-   xnatctl pipeline run dcm2niix -e XNAT_E00001 -P key1=val1 -P key2=val2 --wait
+   xnatctl pipeline run dcm2niix -e XNAT_E00001 --param key1=val1 --param key2=val2 --wait
 
    # Check job status (with watch mode)
    xnatctl pipeline status JOB_ID --watch
@@ -257,7 +257,7 @@ Admin
 .. code-block:: console
 
    # Refresh catalogs with parallel workers
-   xnatctl admin refresh-catalogs MYPROJ -O checksum -O populateStats --parallel --workers 8
+   xnatctl admin refresh-catalogs MYPROJ -O checksum -O populateStats -w 8
 
    # Add user to project groups
    xnatctl admin user add jsmith Owners --projects MYPROJ
@@ -271,8 +271,8 @@ Raw API (escape hatch)
 
 .. code-block:: console
 
-   # GET with query parameters (use -P key=value, NOT query strings in path)
-   xnatctl api get /data/projects/MYPROJ/subjects -P format=json
+   # GET with query parameters (use --params key=value, NOT query strings in path)
+   xnatctl api get /data/projects/MYPROJ/subjects --params format=json
 
    # POST with data
    xnatctl api post /data/projects -d '{"ID":"NEW_PROJ","name":"New Project"}'
@@ -347,16 +347,18 @@ Gotchas
 #. **Scan IDs use ``-s`` flag**: ``-s 1,3,5`` (comma-separated) or ``-s "*"`` (all). NOT positional
    args.
 #. **Prearchive uses positional args**: ``PROJECT TIMESTAMP SESSION_NAME``. NOT ``-P``/``-E`` flags.
-#. **API params use ``-P key=value``**: NOT query strings appended to path.
-#. **Workers flag varies**: session download uses ``-w``, upload uses ``--workers``. Both control
-   parallelism.
-#. **``-P`` flag is overloaded**: In session/scan commands, ``-P`` means ``--project``. In ``api``
-   and ``pipeline`` commands, ``-P`` means parameter (``key=value``). Context matters.
+#. **API params use ``--params key=value``**: NOT query strings appended to path.
+#. **Workers flag is ``-w``/``--workers``** across all commands: downloads, uploads, deletes, and
+   admin operations.
+#. **``-P`` is always ``--project``**: In every command, ``-P`` means ``--project``. API and pipeline
+   use long-only ``--params`` and ``--param`` respectively.
 #. **Default timeout is 6 hours** (21600s) for large DICOM transfers.
-#. **upload-exam waits for archive**: By default waits for XNAT to finish archiving before
-   attaching resources. Control with ``--wait-for-archive``/``--no-wait-for-archive``.
+#. **upload-exam waits for archive**: By default waits 900 seconds for XNAT to finish archiving
+   before attaching resources. Control with ``--wait SECONDS`` (0 = skip).
 #. **``default_project`` fallback**: If profile has ``default_project``, ``-P`` can be omitted and
    session/scan commands auto-resolve.
+#. **Profile operational defaults**: Set ``workers``, ``overwrite``, ``direct_archive``,
+   ``archive_mode``, and ``extract`` in your profile to avoid repeating them per command.
 
 
 Safety decorators
@@ -365,5 +367,5 @@ Safety decorators
 Destructive commands include ``--yes/-y`` (skip confirmation) and ``--dry-run`` (preview only).
 **Always use ``--dry-run`` first** for delete/rename operations.
 
-Parallel commands include ``--parallel/--no-parallel`` and ``--workers N``.
+Parallel commands use ``--workers N`` (or ``-w N``). Use ``--workers 1`` for sequential execution.
 

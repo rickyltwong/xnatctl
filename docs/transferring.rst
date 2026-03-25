@@ -141,10 +141,8 @@ project transfer
      - Preview what would be transferred without writing data
    * - ``--yes`` / ``-y``
      - Skip confirmation prompt
-   * - ``--parallel`` / ``--no-parallel``
-     - Enable or disable parallel scan transfers (default: parallel)
-   * - ``--workers N``
-     - Number of parallel workers (default: 4)
+   * - ``--workers N`` / ``-w N``
+     - Number of parallel workers (default: 4, use 1 for sequential)
 
 The command outputs a summary with counts of synced, failed, and skipped
 subjects and experiments. It exits with status 1 if any transfers failed.

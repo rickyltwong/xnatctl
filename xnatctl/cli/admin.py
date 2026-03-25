@@ -43,8 +43,7 @@ def admin_refresh_catalogs(
     option: tuple,
     experiment: tuple,
     limit: int | None,
-    parallel: bool,
-    workers: int,
+    workers: int | None,
 ) -> None:
     """Refresh catalog XMLs for project experiments.
 
@@ -101,6 +100,11 @@ def admin_refresh_catalogs(
         click.echo("No experiments matched selection")
         return
 
+    # Resolve workers from profile
+    if workers is None:
+        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
+        workers = profile.workers if (profile and profile.workers is not None) else 4
+
     # Prepare options parameter
     options_param = ",".join(options) if options else None
 
@@ -124,7 +128,7 @@ def admin_refresh_catalogs(
     with create_progress() as progress:
         task = progress.add_task("Refreshing catalogs...", total=len(experiments))
 
-        if parallel and len(experiments) > 1:
+        if workers > 1 and len(experiments) > 1:
             with ThreadPoolExecutor(max_workers=min(workers, len(experiments))) as executor:
                 futures = {executor.submit(refresh_one, exp): exp for exp in experiments}
                 for future in as_completed(futures):

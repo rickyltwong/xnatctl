@@ -134,8 +134,10 @@ def test_upload_dicom_gradual_directory_filters_to_dicom_like_files(
     txt = tmp_path / "notes.txt"
     hidden = tmp_path / ".hidden.dcm"
 
-    for path in (dcm, ima, img, raw, txt, hidden):
+    dicom_preamble = b"\x00" * 128 + b"DICM"
+    for path in (dcm, ima, img, txt, hidden):
         path.write_text("payload")
+    raw.write_bytes(dicom_preamble)
 
     calls: list[Path] = []
 
@@ -170,12 +172,13 @@ def test_upload_dicom_gradual_directory_filters_to_dicom_like_files(
 def test_upload_dicom_gradual_zip_filters_to_dicom_like_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    dicom_preamble = b"\x00" * 128 + b"DICM"
     archive = tmp_path / "dicoms.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("nested/scan1.dcm", "dcm")
         zf.writestr("nested/scan2.ima", "ima")
         zf.writestr("nested/scan3.img", "img")
-        zf.writestr("nested/IM00001", "raw")
+        zf.writestr("nested/IM00001", dicom_preamble)
         zf.writestr("nested/notes.txt", "txt")
         zf.writestr(".hidden.dcm", "hidden")
 

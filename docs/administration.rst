@@ -108,14 +108,13 @@ You can also limit the number of experiments processed with ``--limit``:
 
 **Parallel execution**
 
-Catalog refresh runs in parallel by default. Use ``--no-parallel`` to run
-sequentially, or ``--workers N`` to control the number of concurrent
-requests:
+Catalog refresh runs in parallel by default (4 workers). Use ``--workers N`` to
+control concurrency, or ``--workers 1`` for sequential execution:
 
 .. code-block:: console
 
    $ xnatctl admin refresh-catalogs MYPROJECT --workers 8
-   $ xnatctl admin refresh-catalogs MYPROJECT --no-parallel
+   $ xnatctl admin refresh-catalogs MYPROJECT --workers 1
 
 .. note::
 
