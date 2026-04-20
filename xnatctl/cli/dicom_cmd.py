@@ -428,3 +428,175 @@ def dicom_anonymize(
         click.echo(f"\nWould process {processed} files, skip {skipped} files")
     else:
         print_success(f"Processed {processed} files, skipped {skipped} files")
+
+
+def _parse_tag_pair(raw: str) -> tuple[str, str]:
+    """Parse a KEYWORD=VALUE string into (keyword, value).
+
+    Args:
+        raw: String in the form ``KEYWORD=VALUE``.
+
+    Returns:
+        Tuple of (keyword, value).
+
+    Raises:
+        click.BadParameter: If the string is not in KEYWORD=VALUE form
+            or the keyword part is empty.
+    """
+    if "=" not in raw:
+        raise click.BadParameter(f"Invalid tag pair '{raw}': expected KEYWORD=VALUE format")
+    keyword, value = raw.split("=", 1)
+    keyword = keyword.strip()
+    if not keyword:
+        raise click.BadParameter(f"Empty keyword in tag pair '{raw}'")
+    return keyword, value
+
+
+def _collect_dicom_files(path: Path, recursive: bool) -> list[Path]:
+    """Collect DICOM candidate files from a path.
+
+    Args:
+        path: File or directory path.
+        recursive: Search directories recursively.
+
+    Returns:
+        List of file paths.
+    """
+    if path.is_file():
+        return [path]
+    if recursive:
+        return [f for f in path.rglob("*") if f.is_file()]
+    return [f for f in path.glob("*") if f.is_file()]
+
+
+@dicom.command("modify")
+@click.argument("path", type=click.Path(exists=True))
+@click.option(
+    "--tag",
+    "-t",
+    "tags",
+    multiple=True,
+    required=True,
+    help="Tag to modify as KEYWORD=VALUE (repeatable).",
+)
+@click.option("--recursive", "-r", is_flag=True, help="Search recursively")
+@click.option("--backup", "-b", is_flag=True, help="Create .bak copy before modifying")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Choice(["json", "table"]),
+    default="table",
+)
+@click.option("--dry-run", is_flag=True, help="Preview changes without writing")
+def dicom_modify(
+    path: str,
+    tags: tuple[str, ...],
+    recursive: bool,
+    backup: bool,
+    output: str,
+    dry_run: bool,
+) -> None:
+    """Modify DICOM tags in-place.
+
+    Accepts one or more --tag KEYWORD=VALUE pairs. Keywords use standard
+    pydicom names (e.g. PatientID, StudyDescription).
+
+    Example:
+        xnatctl dicom modify scan.dcm -t PatientID=ANON001
+        xnatctl dicom modify ./dicoms -r -t PatientID=ANON -t StudyDescription=Demo
+        xnatctl dicom modify ./dicoms -r -t PatientID=ANON --backup --dry-run
+    """
+    if not check_pydicom():
+        print_error("pydicom not installed. Install with: pip install xnatctl[dicom]")
+        raise SystemExit(1)
+
+    import os
+    import shutil
+    import tempfile
+
+    import pydicom
+    from pydicom.datadict import tag_for_keyword
+
+    # --- validate all tag keywords upfront --------------------------------
+    parsed_tags: list[tuple[str, str]] = []
+    for raw in tags:
+        keyword, value = _parse_tag_pair(raw)
+        if tag_for_keyword(keyword) is None:
+            raise click.BadParameter(
+                f"Unknown DICOM keyword '{keyword}'. "
+                "Use 'xnatctl dicom list-tags <file>' to see valid keywords."
+            )
+        parsed_tags.append((keyword, value))
+
+    path_obj = Path(path)
+    files = _collect_dicom_files(path_obj, recursive)
+
+    modified = 0
+    skipped = 0
+    failed = 0
+    results: list[dict[str, str | list[str]]] = []
+
+    for file_path in files:
+        try:
+            ds = pydicom.dcmread(str(file_path))
+        except pydicom.errors.InvalidDicomError:
+            skipped += 1
+            results.append({"file": str(file_path), "status": "skipped", "changes": []})
+            continue
+        except OSError as e:
+            failed += 1
+            results.append({"file": str(file_path), "status": "failed", "changes": [str(e)]})
+            continue
+
+        changes: list[str] = []
+        try:
+            for keyword, value in parsed_tags:
+                old = str(getattr(ds, keyword, "(absent)"))
+                setattr(ds, keyword, value)
+                changes.append(f"{keyword}: {old} -> {value}")
+        except (ValueError, TypeError) as e:
+            failed += 1
+            results.append({"file": str(file_path), "status": "failed", "changes": [str(e)]})
+            continue
+
+        if dry_run:
+            results.append({"file": str(file_path), "status": "would modify", "changes": changes})
+            modified += 1
+            continue
+
+        tmp_path_str: str | None = None
+        try:
+            original_mode = file_path.stat().st_mode
+            if backup:
+                shutil.copy2(str(file_path), str(file_path) + ".bak")
+            # Atomic write: save to temp file then replace
+            fd, tmp_path_str = tempfile.mkstemp(dir=str(file_path.parent), suffix=".dcm.tmp")
+            os.close(fd)
+            ds.save_as(tmp_path_str)
+            os.chmod(tmp_path_str, original_mode)
+            os.replace(tmp_path_str, str(file_path))
+            results.append({"file": str(file_path), "status": "modified", "changes": changes})
+            modified += 1
+        except (OSError, ValueError, TypeError) as e:
+            failed += 1
+            if tmp_path_str and Path(tmp_path_str).exists():
+                Path(tmp_path_str).unlink(missing_ok=True)
+            results.append({"file": str(file_path), "status": "failed", "changes": [str(e)]})
+
+    # --- output -----------------------------------------------------------
+    if output == "json":
+        print_json({"modified": modified, "skipped": skipped, "failed": failed, "files": results})
+    else:
+        if dry_run:
+            click.echo(f"Would modify {modified} files, skip {skipped}, failed {failed}")
+        else:
+            print_success(f"Modified {modified} files, skipped {skipped}, failed {failed}")
+
+        for r in results:
+            if r["changes"]:
+                click.echo(f"  {r['file']}:")
+                for c in r["changes"]:
+                    click.echo(f"    {c}")
+
+    if failed > 0:
+        raise SystemExit(1)
