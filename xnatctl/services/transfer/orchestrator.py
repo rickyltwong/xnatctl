@@ -983,15 +983,27 @@ class TransferOrchestrator:
 
             try:
                 entry = self.executor.find_prearchive_entry(ctx.dest_project, ctx.exp.local_label)
-                if entry is None:
-                    ctx.prearchive_cleared = True
-                    ctx.needs_archive_action.clear()
-                else:
-                    timestamp = entry.get("timestamp", "")
-                    status = entry.get("status", "")
-                    if timestamp and status in ("READY", "CONFLICT"):
-                        overwrite = "append" if status == "CONFLICT" else None
-                        folder = entry.get("folderName") or entry.get("name", ctx.exp.local_label)
+            except Exception:
+                ctx.archive_retries += 1
+                logger.warning(
+                    "Prearchive resolution failed for %s (attempt %d), will retry",
+                    ctx.exp.local_label,
+                    ctx.archive_retries,
+                    exc_info=True,
+                )
+                continue
+
+            ctx.archive_retries = 0
+            if entry is None:
+                ctx.prearchive_cleared = True
+                ctx.needs_archive_action.clear()
+            else:
+                timestamp = entry.get("timestamp", "")
+                status = entry.get("status", "")
+                if timestamp and status in ("READY", "CONFLICT"):
+                    overwrite = "append" if status == "CONFLICT" else None
+                    folder = entry.get("folderName") or entry.get("name", ctx.exp.local_label)
+                    try:
                         self.executor.archive_prearchive(
                             dest_project=ctx.dest_project,
                             timestamp=timestamp,
@@ -1000,16 +1012,22 @@ class TransferOrchestrator:
                             experiment_label=ctx.exp.local_label,
                             overwrite=overwrite,
                         )
-                        ctx.prearchive_cleared = True
-                        ctx.needs_archive_action.clear()
+                    except Exception as exc:
+                        ctx.archive_error = (
+                            f"Prearchive archive failed for {ctx.exp.local_label}: {exc}"
+                        )
+                        ctx.archive_ready.set()
+                        logger.error(
+                            "Prearchive archive failed for %s",
+                            ctx.exp.local_label,
+                            exc_info=True,
+                        )
                     else:
+                        ctx.prearchive_cleared = True
+                    finally:
                         ctx.needs_archive_action.clear()
-            except Exception:
-                logger.warning(
-                    "Prearchive resolution failed for %s, will retry",
-                    ctx.exp.local_label,
-                    exc_info=True,
-                )
+                else:
+                    ctx.needs_archive_action.clear()
 
     def _drain_ready(
         self,
@@ -1042,6 +1060,23 @@ class TransferOrchestrator:
         deferred.extend(remaining)
 
         for ctx in ready_items:
+            if ctx.archive_error is not None:
+                result.experiments_failed += 1
+                result.success = False
+                result.errors.append(f"Experiment {ctx.exp.local_label}: {ctx.archive_error}")
+                self.state_store.record_entity(
+                    sync_id=ctx.sync_id,
+                    entity_type="experiment",
+                    local_id=ctx.exp.local_id,
+                    local_label=ctx.exp.local_label,
+                    xsi_type=ctx.exp.xsi_type,
+                    parent_local_id=ctx.subject.local_id,
+                    status=EntityStatus.FAILED,
+                    message=ctx.archive_error,
+                )
+                ctx.work_dir_handle.cleanup()
+                drained = True
+                continue
             try:
                 self._finalize_experiment(ctx, result, progress_callback)
             except Exception as e:
@@ -1095,35 +1130,88 @@ class TransferOrchestrator:
                     elif entry.get("status") in ("READY", "CONFLICT"):
                         overwrite = "append" if entry["status"] == "CONFLICT" else None
                         folder = entry.get("folderName") or entry.get("name", ctx.exp.local_label)
-                        self.executor.archive_prearchive(
-                            dest_project=ctx.dest_project,
-                            timestamp=entry.get("timestamp", ""),
-                            session_name=folder,
-                            subject_label=ctx.subject.local_label,
-                            experiment_label=ctx.exp.local_label,
-                            overwrite=overwrite,
-                        )
-                        ctx.prearchive_cleared = True
+                        try:
+                            self.executor.archive_prearchive(
+                                dest_project=ctx.dest_project,
+                                timestamp=entry.get("timestamp", ""),
+                                session_name=folder,
+                                subject_label=ctx.subject.local_label,
+                                experiment_label=ctx.exp.local_label,
+                                overwrite=overwrite,
+                            )
+                            ctx.prearchive_cleared = True
+                        except Exception as exc:
+                            ctx.archive_error = (
+                                f"Prearchive archive failed for {ctx.exp.local_label}: {exc}"
+                            )
+                            logger.error(
+                                "Prearchive archive failed for %s in blocking drain",
+                                ctx.exp.local_label,
+                                exc_info=True,
+                            )
                 except Exception:
                     logger.warning(
-                        "Prearchive resolution failed for %s in blocking drain",
+                        "Prearchive resolution failed for %s in blocking drain, "
+                        "falling back to wait_for_archive",
                         ctx.exp.local_label,
                         exc_info=True,
                     )
                 ctx.needs_archive_action.clear()
 
+            if ctx.archive_error is not None:
+                result.experiments_failed += 1
+                result.success = False
+                result.errors.append(f"Experiment {ctx.exp.local_label}: {ctx.archive_error}")
+                self.state_store.record_entity(
+                    sync_id=ctx.sync_id,
+                    entity_type="experiment",
+                    local_id=ctx.exp.local_id,
+                    local_label=ctx.exp.local_label,
+                    xsi_type=ctx.exp.xsi_type,
+                    parent_local_id=ctx.subject.local_id,
+                    status=EntityStatus.FAILED,
+                    message=ctx.archive_error,
+                )
+                ctx.work_dir_handle.cleanup()
+                continue
+
             # Block until ready or use wait_for_archive as fallback
             if not ctx.archive_ready.is_set():
                 if progress_callback:
                     progress_callback(f"    Blocking wait for {ctx.exp.local_label}...")
-                self.executor.wait_for_archive(
-                    ctx.dest_project,
-                    ctx.subject.local_label,
-                    ctx.exp.local_label,
-                    ctx.dicom_scan_count,
-                    timeout=self.config.archive_wait_timeout,
-                    interval=self.config.archive_poll_interval,
+                try:
+                    self.executor.wait_for_archive(
+                        ctx.dest_project,
+                        ctx.subject.local_label,
+                        ctx.exp.local_label,
+                        ctx.dicom_scan_count,
+                        timeout=self.config.archive_wait_timeout,
+                        interval=self.config.archive_poll_interval,
+                    )
+                except Exception as exc:
+                    ctx.archive_error = f"Archive wait failed for {ctx.exp.local_label}: {exc}"
+                    logger.error(
+                        "Archive wait failed for %s in blocking drain",
+                        ctx.exp.local_label,
+                        exc_info=True,
+                    )
+
+            if ctx.archive_error is not None:
+                result.experiments_failed += 1
+                result.success = False
+                result.errors.append(f"Experiment {ctx.exp.local_label}: {ctx.archive_error}")
+                self.state_store.record_entity(
+                    sync_id=ctx.sync_id,
+                    entity_type="experiment",
+                    local_id=ctx.exp.local_id,
+                    local_label=ctx.exp.local_label,
+                    xsi_type=ctx.exp.xsi_type,
+                    parent_local_id=ctx.subject.local_id,
+                    status=EntityStatus.FAILED,
+                    message=ctx.archive_error,
                 )
+                ctx.work_dir_handle.cleanup()
+                continue
 
             try:
                 self._finalize_experiment(ctx, result, progress_callback)

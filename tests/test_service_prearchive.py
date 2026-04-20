@@ -97,18 +97,20 @@ class TestPrearchiveArchive:
     """Tests for PrearchiveService.archive."""
 
     def test_archive(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Archive issues POST with commit action."""
+        """Archive uses the archive service with a prearchive src path."""
         mock_client.post.return_value = _resp("/data/experiments/E001", content_type="text/plain")
 
         result = service.archive("PROJ01", "20240115_120000", "session_01")
 
         assert result["success"] is True
         assert result["project"] == "PROJ01"
-        post_params = mock_client.post.call_args[1]["params"]
-        assert post_params["action"] == "commit"
+        assert mock_client.post.call_args[0][0] == "/data/services/archive"
+        post_data = mock_client.post.call_args[1]["data"]
+        assert post_data["src"] == "/prearchive/projects/PROJ01/20240115_120000/session_01"
+        assert "dest" not in post_data
 
     def test_archive_with_options(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Archive passes subject, label, overwrite."""
+        """Archive passes subject, label, overwrite via archive-service form data."""
         mock_client.post.return_value = _resp("", content_type="text/plain")
 
         service.archive(
@@ -120,10 +122,48 @@ class TestPrearchiveArchive:
             overwrite=True,
         )
 
-        post_params = mock_client.post.call_args[1]["params"]
-        assert post_params["subject"] == "SUB01"
-        assert post_params["label"] == "MR001"
-        assert post_params["overwrite"] == "delete"
+        post_data = mock_client.post.call_args[1]["data"]
+        assert post_data["dest"] == "/archive/projects/PROJ01/subjects/SUB01/experiments/MR001"
+        assert post_data["overwrite"] == "delete"
+
+    def test_archive_label_without_subject_uses_prearchive_subject(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        """Archive can infer the subject from prearchive metadata when relabeling."""
+        mock_client.get.return_value = _resp(
+            {"ResultSet": {"Result": [{"subject": "SUB01", **SAMPLE_PREARCHIVE}]}}
+        )
+        mock_client.post.return_value = _resp("", content_type="text/plain")
+
+        service.archive(
+            "PROJ01",
+            "20240115_120000",
+            "session_01",
+            experiment_label="MR001",
+        )
+
+        post_data = mock_client.post.call_args[1]["data"]
+        assert post_data["dest"] == "/archive/projects/PROJ01/subjects/SUB01/experiments/MR001"
+
+    def test_archive_encodes_archive_service_segments(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        """Archive service request should encode dot and slash path segments."""
+        mock_client.post.return_value = _resp("", content_type="text/plain")
+
+        service.archive(
+            "..",
+            "2024.01.15",
+            "session/name",
+            subject="SUB/01",
+            experiment_label="MR.001",
+        )
+
+        post_data = mock_client.post.call_args[1]["data"]
+        assert post_data["src"] == "/prearchive/projects/%2E%2E/2024%2E01%2E15/session%2Fname"
+        assert (
+            post_data["dest"] == "/archive/projects/%2E%2E/subjects/SUB%2F01/experiments/MR%2E001"
+        )
 
 
 class TestPrearchiveDelete:

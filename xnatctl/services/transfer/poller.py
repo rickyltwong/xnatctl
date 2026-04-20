@@ -56,6 +56,8 @@ class DeferredExperiment:
     needs_archive_action: threading.Event = field(default_factory=threading.Event)
     prearchive_cleared: bool = False
     zero_scan_cycles: int = 0
+    archive_retries: int = 0
+    archive_error: str | None = None
     archive_timeout_at: float = 0.0
 
 
