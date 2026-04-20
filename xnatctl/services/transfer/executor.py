@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import defusedxml.ElementTree as DefusedET
 import httpx
@@ -41,6 +42,11 @@ def _strip_xnat_prefix(filename: str) -> str:
     if len(parts) == 2 and parts[1]:
         return parts[1]
     return Path(filename).name
+
+
+def _quote_path_segment(value: str) -> str:
+    """Encode a single REST path segment for XNAT service URIs."""
+    return quote(value, safe="").replace(".", "%2E")
 
 
 class TransferExecutor:
@@ -540,8 +546,9 @@ class TransferExecutor:
         Returns:
             List of prearchive entry dicts with name, folderName, status, timestamp, etc.
         """
+        encoded_project = _quote_path_segment(dest_project)
         resp = self.dest.get(
-            f"/data/prearchive/projects/{dest_project}",
+            f"/data/prearchive/projects/{encoded_project}",
             params={"format": "json"},
         )
         data = resp.json()
@@ -558,8 +565,9 @@ class TransferExecutor:
         Returns:
             Prearchive entry dict with timestamp, status, name, etc., or None.
         """
+        encoded_project = _quote_path_segment(dest_project)
         resp = self.dest.get(
-            f"/data/prearchive/projects/{dest_project}",
+            f"/data/prearchive/projects/{encoded_project}",
             params={"format": "json"},
         )
         data = resp.json()
@@ -589,17 +597,44 @@ class TransferExecutor:
             overwrite: Overwrite mode (``"append"`` or ``"delete"``).
                 Used to resolve prearchive CONFLICT entries.
         """
-        params: dict[str, str] = {
-            "action": "commit",
-            "SOURCE": "prearchive",
-            "subject": subject_label,
-            "label": experiment_label,
+        encoded_project = _quote_path_segment(dest_project)
+        encoded_timestamp = _quote_path_segment(timestamp)
+        encoded_session_name = _quote_path_segment(session_name)
+        encoded_subject = _quote_path_segment(subject_label)
+        encoded_experiment = _quote_path_segment(experiment_label)
+        src = f"/prearchive/projects/{encoded_project}/{encoded_timestamp}/{encoded_session_name}"
+        data: dict[str, str] = {
+            "src": src,
+            "dest": (
+                f"/archive/projects/{encoded_project}/subjects/{encoded_subject}"
+                f"/experiments/{encoded_experiment}"
+            ),
         }
         if overwrite is not None:
-            params["overwrite"] = overwrite
+            data["overwrite"] = overwrite
         self.dest.post(
-            f"/data/prearchive/projects/{dest_project}/{timestamp}/{session_name}",
-            params=params,
+            "/data/services/archive",
+            data=data,
+        )
+
+    def delete_prearchive_entry(
+        self,
+        dest_project: str,
+        timestamp: str,
+        session_name: str,
+    ) -> None:
+        """Delete a prearchive entry on the destination.
+
+        Args:
+            dest_project: Destination project ID.
+            timestamp: Prearchive entry timestamp.
+            session_name: Session folder name in prearchive.
+        """
+        encoded_project = _quote_path_segment(dest_project)
+        encoded_timestamp = _quote_path_segment(timestamp)
+        encoded_session_name = _quote_path_segment(session_name)
+        self.dest.delete(
+            f"/data/prearchive/projects/{encoded_project}/{encoded_timestamp}/{encoded_session_name}",
         )
 
     def count_dest_scans(
@@ -618,9 +653,12 @@ class TransferExecutor:
         Returns:
             Number of scans found.
         """
+        encoded_project = _quote_path_segment(dest_project)
+        encoded_subject = _quote_path_segment(subject_label)
+        encoded_experiment = _quote_path_segment(experiment_label)
         resp = self.dest.get(
-            f"/data/projects/{dest_project}/subjects/{subject_label}"
-            f"/experiments/{experiment_label}/scans",
+            f"/data/projects/{encoded_project}/subjects/{encoded_subject}"
+            f"/experiments/{encoded_experiment}/scans",
             params={"format": "json"},
         )
         data = resp.json()
@@ -879,10 +917,19 @@ class TransferExecutor:
         prearchive_cleared = False
 
         while True:
-            try:
-                if not prearchive_cleared:
+            if not prearchive_cleared:
+                try:
                     entry = self.find_prearchive_entry(dest_project, experiment_label)
-                    if entry is not None:
+                except Exception:
+                    logger.debug(
+                        "Poll cycle error for %s, retrying next cycle",
+                        experiment_label,
+                        exc_info=True,
+                    )
+                else:
+                    if entry is None:
+                        prearchive_cleared = True
+                    else:
                         status = entry.get("status", "")
                         if status == "RECEIVING":
                             logger.debug(
@@ -902,30 +949,64 @@ class TransferExecutor:
                                     "Archiving prearchive entry for %s (status=READY)",
                                     experiment_label,
                                 )
-                                self.archive_prearchive(
-                                    dest_project=dest_project,
-                                    timestamp=timestamp,
-                                    session_name=entry.get("folderName")
-                                    or entry.get("name", experiment_label),
-                                    subject_label=subject_label,
-                                    experiment_label=experiment_label,
-                                )
+                                try:
+                                    self.archive_prearchive(
+                                        dest_project=dest_project,
+                                        timestamp=timestamp,
+                                        session_name=entry.get("folderName")
+                                        or entry.get("name", experiment_label),
+                                        subject_label=subject_label,
+                                        experiment_label=experiment_label,
+                                    )
+                                except httpx.HTTPStatusError as exc:
+                                    body = exc.response.text[:500] if exc.response else ""
+                                    logger.error(
+                                        "Archiving prearchive entry failed for %s: %s — response: %s",
+                                        experiment_label,
+                                        exc,
+                                        body or "(no response body)",
+                                    )
+                                    raise
+                                except Exception:
+                                    logger.error(
+                                        "Archiving prearchive entry failed for %s",
+                                        experiment_label,
+                                        exc_info=True,
+                                    )
+                                    raise
                         elif status == "CONFLICT":
                             timestamp = entry.get("timestamp", "")
+                            folder = entry.get("folderName") or entry.get("name", experiment_label)
                             if timestamp:
                                 logger.info(
                                     "Resolving CONFLICT for %s by archiving with overwrite",
                                     experiment_label,
                                 )
-                                self.archive_prearchive(
-                                    dest_project=dest_project,
-                                    timestamp=timestamp,
-                                    session_name=entry.get("folderName")
-                                    or entry.get("name", experiment_label),
-                                    subject_label=subject_label,
-                                    experiment_label=experiment_label,
-                                    overwrite="append",
-                                )
+                                try:
+                                    self.archive_prearchive(
+                                        dest_project=dest_project,
+                                        timestamp=timestamp,
+                                        session_name=folder,
+                                        subject_label=subject_label,
+                                        experiment_label=experiment_label,
+                                        overwrite="append",
+                                    )
+                                except httpx.HTTPStatusError as exc:
+                                    body = exc.response.text[:500] if exc.response else ""
+                                    logger.error(
+                                        "CONFLICT resolution failed for %s: %s — response: %s",
+                                        experiment_label,
+                                        exc,
+                                        body or "(no response body)",
+                                    )
+                                    raise
+                                except Exception:
+                                    logger.error(
+                                        "CONFLICT resolution failed for %s",
+                                        experiment_label,
+                                        exc_info=True,
+                                    )
+                                    raise
                         elif status == "_BUILDING":
                             logger.debug(
                                 "Prearchive entry for %s is building, waiting...",
@@ -937,27 +1018,19 @@ class TransferExecutor:
                                 experiment_label,
                                 status,
                             )
-                    else:
-                        prearchive_cleared = True
 
-                if prearchive_cleared:
-                    actual = self._safe_count_dest_scans(
-                        dest_project, subject_label, experiment_label, "polling"
-                    )
-                    if actual >= expected_scans:
-                        logger.info(
-                            "Archive has %d/%d scans for %s",
-                            actual,
-                            expected_scans,
-                            experiment_label,
-                        )
-                        return actual
-            except Exception:
-                logger.debug(
-                    "Poll cycle error for %s, retrying next cycle",
-                    experiment_label,
-                    exc_info=True,
+            if prearchive_cleared:
+                actual = self._safe_count_dest_scans(
+                    dest_project, subject_label, experiment_label, "polling"
                 )
+                if actual >= expected_scans:
+                    logger.info(
+                        "Archive has %d/%d scans for %s",
+                        actual,
+                        expected_scans,
+                        experiment_label,
+                    )
+                    return actual
 
             if time.monotonic() >= deadline:
                 actual = self._safe_count_dest_scans(
