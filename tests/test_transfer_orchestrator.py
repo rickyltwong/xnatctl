@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ from xnatctl.services.transfer.orchestrator import (
     TransferOrchestrator,
     TransferResult,
 )
+from xnatctl.services.transfer.poller import DeferredExperiment
 
 
 def _make_response(json_data: dict) -> MagicMock:
@@ -296,6 +298,136 @@ class TestPrearchiveResolution:
         with patch("xnatctl.services.transfer.orchestrator.logger") as mock_logger:
             orchestrator._wait_for_prearchive_resolution(exp, "DST", subject, 5)
             mock_logger.warning.assert_called_once()
+
+
+class TestDeferredArchiveFailures:
+    @staticmethod
+    def _make_ctx(
+        exp_id: str = "XNAT_E001",
+        exp_label: str = "EXP001",
+        subject_id: str = "XNAT_S001",
+        subject_label: str = "SUB001",
+    ) -> DeferredExperiment:
+        exp = DiscoveredEntity(
+            local_id=exp_id,
+            local_label=exp_label,
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id=subject_id,
+            local_label=subject_label,
+            change_type=ChangeType.NEW,
+        )
+        work_dir_handle = tempfile.TemporaryDirectory()
+        return DeferredExperiment(
+            exp=exp,
+            subject=subject,
+            scans=[],
+            scan_resources_cache={},
+            dicom_scan_count=1,
+            sync_id=1,
+            dest_project="DST",
+            work_dir=Path(work_dir_handle.name),
+            work_dir_handle=work_dir_handle,
+        )
+
+    def test_service_prearchive_actions_marks_archive_failure(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        ctx = self._make_ctx()
+        ctx.needs_archive_action.set()
+        deferred: deque[DeferredExperiment] = deque([ctx])
+
+        orchestrator.executor.find_prearchive_entry = MagicMock(
+            return_value={"name": "EXP001", "status": "READY", "timestamp": "ts"}
+        )
+        orchestrator.executor.archive_prearchive = MagicMock(
+            side_effect=RuntimeError("archive failed")
+        )
+
+        try:
+            orchestrator._service_prearchive_actions(deferred)
+            assert ctx.archive_error == "Prearchive archive failed for EXP001: archive failed"
+            assert ctx.archive_ready.is_set()
+            assert ctx.prearchive_cleared is False
+        finally:
+            ctx.work_dir_handle.cleanup()
+
+    def test_service_prearchive_actions_keeps_retrying_lookup_failures(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        ctx = self._make_ctx()
+        ctx.needs_archive_action.set()
+        deferred: deque[DeferredExperiment] = deque([ctx])
+
+        orchestrator.executor.find_prearchive_entry = MagicMock(
+            side_effect=RuntimeError("lookup failed")
+        )
+        orchestrator.executor.archive_prearchive = MagicMock()
+
+        try:
+            for _ in range(3):
+                orchestrator._service_prearchive_actions(deferred)
+
+            assert ctx.archive_error is None
+            assert ctx.archive_ready.is_set() is False
+            assert ctx.archive_retries == 3
+            orchestrator.executor.archive_prearchive.assert_not_called()
+        finally:
+            ctx.work_dir_handle.cleanup()
+
+    def test_drain_ready_records_archive_error(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        ctx = self._make_ctx()
+        ctx.archive_error = "Prearchive archive failed for EXP001: archive failed"
+        ctx.archive_ready.set()
+        deferred: deque[DeferredExperiment] = deque([ctx])
+        result = TransferResult()
+
+        orchestrator._finalize_experiment = MagicMock()
+        drained = orchestrator._drain_ready(deferred, result)
+
+        assert drained is True
+        assert result.success is False
+        assert result.experiments_failed == 1
+        assert result.errors == [
+            "Experiment EXP001: Prearchive archive failed for EXP001: archive failed"
+        ]
+        orchestrator._finalize_experiment.assert_not_called()
+
+    def test_drain_all_blocking_records_wait_failures_and_continues(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        ctx1 = self._make_ctx()
+        ctx2 = self._make_ctx(exp_id="XNAT_E002", exp_label="EXP002")
+        deferred: deque[DeferredExperiment] = deque([ctx1, ctx2])
+        result = TransferResult()
+
+        orchestrator.executor.wait_for_archive = MagicMock(
+            side_effect=[RuntimeError("archive failed"), 1]
+        )
+        orchestrator._finalize_experiment = MagicMock()
+
+        try:
+            orchestrator._drain_all_blocking(deferred, result)
+
+            assert result.success is False
+            assert result.experiments_failed == 1
+            assert (
+                result.errors[0]
+                == "Experiment EXP001: Archive wait failed for EXP001: archive failed"
+            )
+            assert orchestrator._finalize_experiment.call_count == 1
+            assert orchestrator._finalize_experiment.call_args[0][0].exp.local_label == "EXP002"
+        finally:
+            ctx1.work_dir_handle.cleanup()
+            ctx2.work_dir_handle.cleanup()
 
 
 class TestTwoPhaseTransferScans:

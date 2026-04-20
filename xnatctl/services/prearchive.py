@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import builtins
 from typing import Any
+from urllib.parse import quote
 
 from xnatctl.core.exceptions import ResourceNotFoundError
 
 from .base import BaseService
+
+
+def _quote_path_segment(value: str) -> str:
+    """Encode a single REST path segment for XNAT service URIs."""
+    return quote(value, safe="").replace(".", "%2E")
 
 
 class PrearchiveService(BaseService):
@@ -26,7 +32,7 @@ class PrearchiveService(BaseService):
             List of prearchive session dicts
         """
         if project:
-            path = f"/data/prearchive/projects/{project}"
+            path = f"/data/prearchive/projects/{_quote_path_segment(project)}"
         else:
             path = "/data/prearchive"
 
@@ -53,7 +59,10 @@ class PrearchiveService(BaseService):
         Raises:
             ResourceNotFoundError: If session not found
         """
-        path = f"/data/prearchive/projects/{project}/{timestamp}/{session_name}"
+        path = (
+            f"/data/prearchive/projects/{_quote_path_segment(project)}"
+            f"/{_quote_path_segment(timestamp)}/{_quote_path_segment(session_name)}"
+        )
         params = {"format": "json"}
 
         try:
@@ -94,21 +103,31 @@ class PrearchiveService(BaseService):
         Returns:
             Result dict with archived session info
         """
-        path = f"/data/prearchive/projects/{project}/{timestamp}/{session_name}"
+        encoded_project = _quote_path_segment(project)
+        encoded_timestamp = _quote_path_segment(timestamp)
+        encoded_session_name = _quote_path_segment(session_name)
+        src = f"/prearchive/projects/{encoded_project}/{encoded_timestamp}/{encoded_session_name}"
+        data: dict[str, Any] = {"src": src}
 
-        params: dict[str, Any] = {
-            "action": "commit",
-            "SOURCE": "prearchive",
-        }
+        resolved_subject = subject
+        if experiment_label and resolved_subject is None:
+            session = self.get(project, timestamp, session_name)
+            resolved_subject = session.get("subject")
+            if not resolved_subject:
+                raise ValueError("Cannot archive to a specific experiment label without a subject")
 
-        if subject:
-            params["subject"] = subject
-        if experiment_label:
-            params["label"] = experiment_label
+        if resolved_subject:
+            dest = (
+                f"/archive/projects/{encoded_project}"
+                f"/subjects/{_quote_path_segment(resolved_subject)}"
+            )
+            if experiment_label:
+                dest = f"{dest}/experiments/{_quote_path_segment(experiment_label)}"
+            data["dest"] = dest
         if overwrite:
-            params["overwrite"] = "delete"
+            data["overwrite"] = "delete"
 
-        result = self._post(path, params=params)
+        result = self._post("/data/services/archive", data=data)
 
         return {
             "success": True,
@@ -133,7 +152,10 @@ class PrearchiveService(BaseService):
         Returns:
             True if successful
         """
-        path = f"/data/prearchive/projects/{project}/{timestamp}/{session_name}"
+        path = (
+            f"/data/prearchive/projects/{_quote_path_segment(project)}"
+            f"/{_quote_path_segment(timestamp)}/{_quote_path_segment(session_name)}"
+        )
         return self._delete(path)
 
     def rebuild(
@@ -152,7 +174,10 @@ class PrearchiveService(BaseService):
         Returns:
             Result dict
         """
-        path = f"/data/prearchive/projects/{project}/{timestamp}/{session_name}"
+        path = (
+            f"/data/prearchive/projects/{_quote_path_segment(project)}"
+            f"/{_quote_path_segment(timestamp)}/{_quote_path_segment(session_name)}"
+        )
         params = {"action": "rebuild"}
 
         result = self._post(path, params=params)
@@ -182,7 +207,10 @@ class PrearchiveService(BaseService):
         Returns:
             Result dict
         """
-        path = f"/data/prearchive/projects/{project}/{timestamp}/{session_name}"
+        path = (
+            f"/data/prearchive/projects/{_quote_path_segment(project)}"
+            f"/{_quote_path_segment(timestamp)}/{_quote_path_segment(session_name)}"
+        )
         params = {
             "action": "move",
             "newProject": target_project,
@@ -214,7 +242,10 @@ class PrearchiveService(BaseService):
         Returns:
             List of scan dicts
         """
-        path = f"/data/prearchive/projects/{project}/{timestamp}/{session_name}/scans"
+        path = (
+            f"/data/prearchive/projects/{_quote_path_segment(project)}"
+            f"/{_quote_path_segment(timestamp)}/{_quote_path_segment(session_name)}/scans"
+        )
         params = {"format": "json"}
 
         data = self._get(path, params=params)
