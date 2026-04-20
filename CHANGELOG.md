@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.7 - 2026-04-20
+
+**Features**
+
+- Add `xnatctl dicom modify` for batch in-place DICOM tag editing across single
+  files or directories, with repeatable `--tag KEYWORD=VALUE`, recursive search,
+  `--backup`, `--dry-run`, atomic writes, and JSON/table output modes.
+
+**Bug fixes**
+
+- Switch prearchive archiving to XNAT's archive service API
+  (`/data/services/archive`) for both `prearchive archive` and transfer-side
+  prearchive resolution.
+- Surface archive-service failures during transfer instead of letting them
+  degrade into silent archive wait timeouts; blocking fallback paths now record
+  per-experiment archive errors consistently.
+- Encode archive-service path segments for project, timestamp, session, subject,
+  and experiment values to avoid malformed archive and prearchive-delete
+  requests.
+
 ## 0.2.6 - 2026-03-24
 
 **CLI simplification**
