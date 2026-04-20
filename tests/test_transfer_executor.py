@@ -784,7 +784,9 @@ class TestFindPrearchiveEntry:
 
 
 class TestArchivePrearchive:
-    def test_posts_commit_action(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
+    def test_posts_archive_service_request(
+        self, executor: TransferExecutor, dest_client: MagicMock
+    ) -> None:
         dest_client.post.return_value = _make_response(text="OK")
         executor.archive_prearchive(
             dest_project="DST",
@@ -795,10 +797,12 @@ class TestArchivePrearchive:
         )
         dest_client.post.assert_called_once()
         call_args = dest_client.post.call_args
-        assert "20260101_100000" in call_args[0][0]
-        assert call_args[1]["params"]["action"] == "commit"
-        assert call_args[1]["params"]["subject"] == "SUB001"
-        assert call_args[1]["params"]["label"] == "EXP001"
+        assert call_args[0][0] == "/data/services/archive"
+        assert call_args[1]["data"]["src"] == "/prearchive/projects/DST/20260101_100000/EXP001"
+        assert (
+            call_args[1]["data"]["dest"]
+            == "/archive/projects/DST/subjects/SUB001/experiments/EXP001"
+        )
 
     def test_posts_overwrite_when_specified(
         self, executor: TransferExecutor, dest_client: MagicMock
@@ -813,7 +817,30 @@ class TestArchivePrearchive:
             overwrite="append",
         )
         call_args = dest_client.post.call_args
-        assert call_args[1]["params"]["overwrite"] == "append"
+        assert call_args[1]["data"]["overwrite"] == "append"
+
+    def test_encodes_archive_service_path_segments(
+        self, executor: TransferExecutor, dest_client: MagicMock
+    ) -> None:
+        dest_client.post.return_value = _make_response(text="OK")
+
+        executor.archive_prearchive(
+            dest_project="..",
+            timestamp="2026.01.01",
+            session_name="folder/name",
+            subject_label="SUB/001",
+            experiment_label="EXP.001",
+        )
+
+        call_args = dest_client.post.call_args
+        assert (
+            call_args[1]["data"]["src"]
+            == "/prearchive/projects/%2E%2E/2026%2E01%2E01/folder%2Fname"
+        )
+        assert (
+            call_args[1]["data"]["dest"]
+            == "/archive/projects/%2E%2E/subjects/SUB%2F001/experiments/EXP%2E001"
+        )
 
 
 class TestCountDestScans:
@@ -962,7 +989,7 @@ class TestWaitForArchive:
         assert actual == 5
         # Verify archive_prearchive was called with overwrite=append
         call_args = dest_client.post.call_args
-        assert call_args[1]["params"]["overwrite"] == "append"
+        assert call_args[1]["data"]["overwrite"] == "append"
 
 
 # -- Sample XNAT experiment XML for XML overlay tests --
@@ -1288,8 +1315,7 @@ class TestWaitForArchiveFolderName:
         executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
 
         call_args = dest_client.post.call_args
-        # The session_name in the URL path should use folderName
-        assert "folder_name" in call_args[0][0]
+        assert call_args[1]["data"]["src"].endswith("/folder_name")
 
     @patch("xnatctl.services.transfer.executor.time.sleep")
     def test_uses_folder_name_for_conflict_archive(
@@ -1325,8 +1351,8 @@ class TestWaitForArchiveFolderName:
         executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
 
         call_args = dest_client.post.call_args
-        assert "folder_name" in call_args[0][0]
-        assert call_args[1]["params"]["overwrite"] == "append"
+        assert call_args[1]["data"]["src"].endswith("/folder_name")
+        assert call_args[1]["data"]["overwrite"] == "append"
 
     @patch("xnatctl.services.transfer.executor.time.sleep")
     def test_falls_back_to_name_when_no_folder_name(
@@ -1361,10 +1387,28 @@ class TestWaitForArchiveFolderName:
         executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
 
         call_args = dest_client.post.call_args
-        assert "EXP001" in call_args[0][0]
+        assert call_args[1]["data"]["src"].endswith("/EXP001")
 
 
 class TestWaitForArchiveExceptionGuard:
+    @patch("xnatctl.services.transfer.executor.time.sleep")
+    def test_archive_failure_is_raised(
+        self,
+        mock_sleep: MagicMock,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """READY archive failures should surface immediately."""
+        dest_client.get.return_value = _make_response(
+            json_data={
+                "ResultSet": {"Result": [{"name": "EXP001", "status": "READY", "timestamp": "ts"}]}
+            }
+        )
+        dest_client.post.side_effect = RuntimeError("archive failed")
+
+        with pytest.raises(RuntimeError, match="archive failed"):
+            executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
+
     @patch("xnatctl.services.transfer.executor.time.sleep")
     def test_poll_cycle_error_retries(
         self,
