@@ -12,6 +12,7 @@ from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.resource import Resource, ResourceFile
 
 from .base import BaseService
+from .hierarchy import HierarchyService
 
 
 class ResourceService(BaseService):
@@ -120,7 +121,7 @@ class ResourceService(BaseService):
 
         params: dict[str, str] = {"format": "json"}
         data = self._get(path, params=params)
-        results = self._extract_results(data)
+        results = HierarchyService.extract_rows(data)
 
         resources = []
         for r in results:
@@ -193,7 +194,7 @@ class ResourceService(BaseService):
 
         params: dict[str, str] = {"format": "json"}
         data = self._get(path, params=params)
-        results = self._extract_results(data)
+        results = HierarchyService.extract_rows(data)
 
         return [ResourceFile(**r) for r in results]
 

@@ -52,6 +52,15 @@ SAMPLE_PROJECT_ROW = {
 class TestProjectList:
     """Tests for ProjectService.list."""
 
+    def test_list_top_level_array(self, service: ProjectService, mock_client: MagicMock) -> None:
+        """List tolerates top-level JSON arrays."""
+        mock_client.get.return_value = _make_response([SAMPLE_PROJECT_ROW])
+
+        result = service.list()
+
+        assert len(result) == 1
+        assert result[0].id == "PROJ01"
+
     def test_list_returns_projects(self, service: ProjectService, mock_client: MagicMock) -> None:
         """List returns Project objects parsed from ResultSet."""
         mock_client.get.return_value = _make_response(
@@ -97,6 +106,28 @@ class TestProjectList:
 
 class TestProjectGet:
     """Tests for ProjectService.get."""
+
+    def test_get_items_response(self, service: ProjectService, mock_client: MagicMock) -> None:
+        """Get handles `items[]` detail responses."""
+        mock_client.get.return_value = _make_response(
+            {
+                "items": [
+                    {
+                        "data_fields": {
+                            "ID": "PROJ01",
+                            "name": "Test Project",
+                            "secondary_ID": "SEC01",
+                        }
+                    }
+                ]
+            }
+        )
+
+        result = service.get("PROJ01")
+
+        assert isinstance(result, Project)
+        assert result.id == "PROJ01"
+        assert result.secondary_id == "SEC01"
 
     def test_get_returns_project(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Get returns a single Project."""

@@ -9,6 +9,7 @@ from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.project import Project
 
 from .base import BaseService
+from .hierarchy import HierarchyService
 
 
 class ProjectService(BaseService):
@@ -35,7 +36,7 @@ class ProjectService(BaseService):
             params["accessible"] = "true"
 
         data = self._get(path, params=params)
-        results = self._extract_results(data)
+        results = HierarchyService.extract_rows(data)
 
         if limit:
             results = results[:limit]
@@ -59,9 +60,14 @@ class ProjectService(BaseService):
 
         try:
             data = self._get(path, params=params)
-            results = self._extract_results(data)
+            item = HierarchyService.extract_first_item(data) if isinstance(data, dict) else None
+            if item is not None:
+                fields, _meta = item
+                return Project.model_validate(fields)
+
+            results = HierarchyService.extract_rows(data)
             if results:
-                return Project(**results[0])
+                return Project.model_validate(results[0])
             raise ResourceNotFoundError("project", project_id)
         except Exception as e:
             if "404" in str(e):
@@ -151,7 +157,7 @@ class ProjectService(BaseService):
         params = {"format": "json"}
 
         data = self._get(path, params=params)
-        results = self._extract_results(data)
+        results = HierarchyService.extract_rows(data)
 
         if limit:
             results = results[:limit]
@@ -176,7 +182,7 @@ class ProjectService(BaseService):
         params = {"format": "json"}
 
         data = self._get(path, params=params)
-        results = self._extract_results(data)
+        results = HierarchyService.extract_rows(data)
 
         if limit:
             results = results[:limit]

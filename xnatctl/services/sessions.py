@@ -9,6 +9,7 @@ from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.session import Session
 
 from .base import BaseService
+from .hierarchy import HierarchyService
 
 
 class SessionService(BaseService):
@@ -48,7 +49,7 @@ class SessionService(BaseService):
             params["xsiType"] = f"xnat:{modality.lower()}SessionData"
 
         data = self._get(path, params=params)
-        results = self._extract_results(data)
+        results = HierarchyService.extract_rows(data)
 
         if limit:
             results = results[:limit]
@@ -81,9 +82,17 @@ class SessionService(BaseService):
 
         try:
             data = self._get(path, params=params)
-            results = self._extract_results(data)
+            item = HierarchyService.extract_first_item(data) if isinstance(data, dict) else None
+            if item is not None:
+                fields, meta = item
+                normalized = dict(fields)
+                if meta.get("xsi:type") and not normalized.get("xsiType"):
+                    normalized["xsiType"] = meta["xsi:type"]
+                return Session.model_validate(normalized)
+
+            results = HierarchyService.extract_rows(data)
             if results:
-                return Session(**results[0])
+                return Session.model_validate(results[0])
             raise ResourceNotFoundError("session", session_id)
         except Exception as e:
             if "404" in str(e):
@@ -187,7 +196,7 @@ class SessionService(BaseService):
 
         params = {"format": "json"}
         data = self._get(path, params=params)
-        return self._extract_results(data)
+        return HierarchyService.extract_rows(data)
 
     def get_resources(
         self,
@@ -210,7 +219,7 @@ class SessionService(BaseService):
 
         params = {"format": "json"}
         data = self._get(path, params=params)
-        return self._extract_results(data)
+        return HierarchyService.extract_rows(data)
 
     def set_field(
         self,

@@ -110,6 +110,30 @@ class TestSessionList:
 class TestSessionGet:
     """Tests for SessionService.get."""
 
+    def test_get_items_response(self, service: SessionService, mock_client: MagicMock) -> None:
+        """Get session handles `items[]` detail responses."""
+        mock_client.get.return_value = _resp(
+            {
+                "items": [
+                    {
+                        "data_fields": {
+                            "ID": "XNAT_E00001",
+                            "label": "MR001",
+                            "project": "PROJ01",
+                            "subject_ID": "XNAT_S00001",
+                        },
+                        "meta": {"xsi:type": "xnat:mrSessionData"},
+                    }
+                ]
+            }
+        )
+
+        result = service.get("XNAT_E00001")
+
+        assert isinstance(result, Session)
+        assert result.label == "MR001"
+        assert result.xsi_type == "xnat:mrSessionData"
+
     def test_get_by_id(self, service: SessionService, mock_client: MagicMock) -> None:
         """Get session by ID."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_SESSION]}})
