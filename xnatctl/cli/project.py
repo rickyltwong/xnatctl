@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -17,6 +18,8 @@ from xnatctl.cli.common import (
     require_auth,
 )
 from xnatctl.core.output import print_error, print_output, print_success
+from xnatctl.models.hierarchy import ProjectRef
+from xnatctl.services.hierarchy import HierarchyService
 
 
 @click.group()
@@ -40,8 +43,11 @@ def project_list(ctx: Context) -> None:
     client = ctx.get_client()
 
     # Get projects
-    resp = client.get_json("/data/projects", params={"columns": "ID,name,pi_lastname,description"})
-    results = resp.get("ResultSet", {}).get("Result", [])
+    resp = client.get_json(
+        "/data/projects",
+        params={"columns": "ID,name,pi_lastname,description"},
+    )
+    results = HierarchyService.extract_rows(resp)
 
     # Transform for output
     projects = []
@@ -80,27 +86,36 @@ def project_show(ctx: Context, project_id: str) -> None:
 
     project_id = validate_project_id(project_id)
     client = ctx.get_client()
+    hierarchy = HierarchyService(client)
 
     # Get project details
-    resp = client.get_json(f"/data/projects/{project_id}")
-    results = resp.get("ResultSet", {}).get("Result", [])
+    resp = client.get_json(hierarchy.build_project_path(ProjectRef(project_id=project_id)))
+    project_data: dict[str, Any] | None
+    project_item = hierarchy.extract_first_item(resp)
+    if project_item is not None:
+        project_data, _project_meta = project_item
+    else:
+        results = HierarchyService.extract_rows(resp)
+        project_data = results[0] if results else None
 
-    if not results:
+    if not project_data:
         print_error(f"Project not found: {project_id}")
         raise SystemExit(1)
 
-    project_data = results[0]
-
     # Get counts
     try:
-        subjects_resp = client.get_json(f"/data/projects/{project_id}/subjects")
-        subject_count: int | str = len(subjects_resp.get("ResultSet", {}).get("Result", []))
+        subjects_resp = client.get_json(
+            hierarchy.build_project_path(ProjectRef(project_id=project_id), "subjects")
+        )
+        subject_count: int | str = len(HierarchyService.extract_rows(subjects_resp))
     except Exception:
         subject_count = "?"
 
     try:
-        sessions_resp = client.get_json(f"/data/projects/{project_id}/experiments")
-        session_count: int | str = len(sessions_resp.get("ResultSet", {}).get("Result", []))
+        sessions_resp = client.get_json(
+            hierarchy.build_project_path(ProjectRef(project_id=project_id), "experiments")
+        )
+        session_count: int | str = len(HierarchyService.extract_rows(sessions_resp))
     except Exception:
         session_count = "?"
 

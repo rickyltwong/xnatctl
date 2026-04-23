@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import click
 
@@ -11,49 +11,89 @@ from xnatctl.cli.common import (
     Context,
     _make_alias_cb,
     confirm_destructive,
+    default_project_from_context,
     global_options,
     handle_errors,
     parallel_options,
     require_auth,
+    resolve_workers_from_context,
 )
 from xnatctl.core.output import OutputFormat, print_error, print_json, print_output, print_success
+from xnatctl.models.hierarchy import ExperimentRef, ScanRef
+from xnatctl.services.hierarchy import HierarchyService
 
-if TYPE_CHECKING:
-    from xnatctl.core.client import XNATClient
 
+def _inspect_experiment(
+    hierarchy: HierarchyService, experiment_ref: ExperimentRef
+) -> tuple[ExperimentRef, str | None]:
+    """Inspect the parent experiment and derive canonical ID and xsiType.
 
-def _resolve_scan_params(client: XNATClient, base: str) -> dict[str, Any]:
-    """Resolve the scan xsiType from the parent experiment.
-
-    XNAT defaults to ``xnat:imageScanData`` subtypes when listing scans.
-    Non-imaging sessions (e.g. EEG) need an explicit ``xsiType`` parameter
-    so their scans are included in results.
+    Nested scan endpoints are most reliable when addressed with the canonical
+    experiment ID. This helper also extracts the experiment xsiType so scan list
+    queries can request the correct non-imaging scan subtype when needed.
 
     Args:
-        client: Authenticated XNAT client.
-        base: Experiment base path (e.g. ``/data/experiments/{id}``).
+        hierarchy: Hierarchy service.
+        experiment_ref: Parent experiment reference.
 
     Returns:
-        Query params dict with ``xsiType`` set when derivable, empty otherwise.
+        Tuple of (canonical experiment ref, experiment xsiType).
     """
-    params: dict[str, Any] = {}
     try:
-        exp_resp = client.get_json(base)
+        data = hierarchy.client.get_json(hierarchy.build_experiment_path(experiment_ref))
     except Exception:
-        return params
-    exp_results = exp_resp.get("ResultSet", {}).get("Result", [])
-    if exp_results:
-        session_xsi = exp_results[0].get("xsiType", "")
-        if session_xsi and "sessiondata" in session_xsi.lower():
-            scan_xsi = session_xsi.replace("SessionData", "ScanData").replace(
-                "sessionData", "scanData"
+        return experiment_ref, None
+    if not isinstance(data, dict):
+        return experiment_ref, None
+
+    resolved_id: str | None = None
+    session_xsi: str | None = None
+
+    def _looks_like_experiment(fields: dict[str, Any]) -> bool:
+        return any(
+            key in fields
+            for key in (
+                "project",
+                "subject_ID",
+                "subject_label",
+                "date",
+                "xsiType",
             )
-            params["xsiType"] = scan_xsi
-    return params
+        )
+
+    item = hierarchy.extract_first_item(data)
+    if item is not None:
+        fields, meta = item
+        session_xsi = str(fields.get("xsiType") or meta.get("xsi:type") or "") or None
+        if _looks_like_experiment(fields) or "xsi:type" in meta:
+            resolved_id = str(fields.get("ID") or fields.get("id") or "") or None
+    else:
+        rows = hierarchy.extract_rows(data)
+        if rows:
+            session_xsi = str(rows[0].get("xsiType") or "") or None
+            if _looks_like_experiment(rows[0]):
+                resolved_id = str(rows[0].get("ID") or "") or None
+
+    # Carry project/subject scope forward so nested scan/resource calls stay
+    # on project-scoped URLs (respects project ACLs, matches old behavior).
+    # Use the resolved accession ID as the experiment with experiment_is_label=False.
+    if resolved_id:
+        canonical_ref = ExperimentRef(
+            experiment=resolved_id,
+            project_id=experiment_ref.project_id,
+            subject=experiment_ref.subject,
+            experiment_is_label=False,
+            subject_is_label=experiment_ref.subject_is_label,
+        )
+    else:
+        canonical_ref = experiment_ref
+    return canonical_ref, session_xsi
 
 
-def _build_experiment_base(project: str | None, subject: str | None, session_id: str) -> str:
-    """Build the XNAT experiment base path.
+def _build_experiment_ref(
+    project: str | None, subject: str | None, session_id: str
+) -> ExperimentRef:
+    """Build an experiment reference for scan operations.
 
     Args:
         project: Project ID (optional).
@@ -61,7 +101,7 @@ def _build_experiment_base(project: str | None, subject: str | None, session_id:
         session_id: Experiment ID or label.
 
     Returns:
-        Base path for the experiment resource.
+        Experiment reference.
 
     Raises:
         click.ClickException: If subject is given without a resolved project.
@@ -70,11 +110,13 @@ def _build_experiment_base(project: str | None, subject: str | None, session_id:
         raise click.ClickException(
             "-S/--subject requires -P/--project (or default_project in profile)"
         )
-    if project and subject:
-        return f"/data/projects/{project}/subjects/{subject}/experiments/{session_id}"
-    if project:
-        return f"/data/projects/{project}/experiments/{session_id}"
-    return f"/data/experiments/{session_id}"
+    return ExperimentRef(
+        experiment=session_id,
+        project_id=project,
+        subject=subject,
+        experiment_is_label=project is not None,
+        subject_is_label=subject is not None,
+    )
 
 
 @click.group()
@@ -119,17 +161,18 @@ def scan_list(ctx: Context, session_id: str, project: str | None, subject: str |
 
     session_id = validate_session_id(session_id)
     client = ctx.get_client()
+    project = default_project_from_context(ctx) if project is None else project
+    hierarchy = HierarchyService(client)
+    source_ref = _build_experiment_ref(project, subject, session_id)
+    experiment_ref, session_xsi = _inspect_experiment(hierarchy, source_ref)
 
-    # Resolve project from profile default if not provided
-    if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
+    scan_params: dict[str, Any] = {}
+    scan_xsi = hierarchy.resolve_scan_xsi_type(session_xsi)
+    if scan_xsi:
+        scan_params["xsiType"] = scan_xsi
 
-    base = _build_experiment_base(project, subject, session_id)
-
-    scan_params = _resolve_scan_params(client, base)
-    resp = client.get_json(f"{base}/scans", params=scan_params)
-    results = resp.get("ResultSet", {}).get("Result", [])
+    resp = client.get_json(hierarchy.build_scan_collection_path(experiment_ref), params=scan_params)
+    results = HierarchyService.extract_rows(resp)
 
     # Transform for output
     scans = []
@@ -199,26 +242,28 @@ def scan_show(
     session_id = validate_session_id(session_id)
     scan_id = validate_scan_id(scan_id)
     client = ctx.get_client()
+    project = default_project_from_context(ctx) if project is None else project
+    hierarchy = HierarchyService(client)
+    source_ref = _build_experiment_ref(project, subject, session_id)
+    experiment_ref, _session_xsi = _inspect_experiment(hierarchy, source_ref)
+    scan_ref = ScanRef(experiment=experiment_ref, scan_id=scan_id)
+    resp = client.get_json(hierarchy.build_scan_path(scan_ref))
+    scan_data: dict[str, Any] | None
+    scan_item = hierarchy.extract_first_item(resp)
+    if scan_item is not None:
+        scan_data, _scan_meta = scan_item
+    else:
+        results = HierarchyService.extract_rows(resp)
+        scan_data = results[0] if results else None
 
-    # Resolve project from profile default if not provided
-    if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
-
-    base = _build_experiment_base(project, subject, session_id)
-    resp = client.get_json(f"{base}/scans/{scan_id}")
-    results = resp.get("ResultSet", {}).get("Result", [])
-
-    if not results:
+    if not scan_data:
         print_error(f"Scan not found: {scan_id}")
         raise SystemExit(1)
 
-    scan_data = results[0]
-
     # Get resources
     try:
-        res_resp = client.get_json(f"{base}/scans/{scan_id}/resources")
-        resources = res_resp.get("ResultSet", {}).get("Result", [])
+        res_resp = client.get_json(hierarchy.build_resource_collection_path(scan_ref))
+        resources = HierarchyService.extract_rows(res_resp)
     except Exception:
         resources = []
 
@@ -289,19 +334,21 @@ def scan_delete(
     session_id = validate_session_id(session_id)
     scan_ids = validate_scan_ids_input(scans)
     client = ctx.get_client()
-
-    # Resolve project from profile default if not provided
-    if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
-
-    base = _build_experiment_base(project, subject, session_id)
+    project = default_project_from_context(ctx) if project is None else project
+    hierarchy = HierarchyService(client)
+    source_ref = _build_experiment_ref(project, subject, session_id)
+    experiment_ref, session_xsi = _inspect_experiment(hierarchy, source_ref)
 
     # If wildcard, get all scan IDs
     if scan_ids is None:
-        scan_params = _resolve_scan_params(client, base)
-        resp = client.get_json(f"{base}/scans", params=scan_params)
-        results = resp.get("ResultSet", {}).get("Result", [])
+        scan_params: dict[str, Any] = {}
+        scan_xsi = hierarchy.resolve_scan_xsi_type(session_xsi)
+        if scan_xsi:
+            scan_params["xsiType"] = scan_xsi
+        resp = client.get_json(
+            hierarchy.build_scan_collection_path(experiment_ref), params=scan_params
+        )
+        results = HierarchyService.extract_rows(resp)
         scan_ids = [r.get("ID", "") for r in results if r.get("ID")]
 
     if not scan_ids:
@@ -314,10 +361,7 @@ def scan_delete(
             click.echo(f"  - {sid}")
         return
 
-    # Resolve workers from profile
-    if workers is None:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        workers = profile.workers if (profile and profile.workers is not None) else 4
+    workers = resolve_workers_from_context(ctx, workers)
 
     deleted = []
     failed = []
@@ -325,7 +369,9 @@ def scan_delete(
     def delete_scan(scan_id: str) -> tuple[str, bool, str]:
         """Delete a scan and return status and error message."""
         try:
-            resp = client.delete(f"{base}/scans/{scan_id}")
+            resp = client.delete(
+                hierarchy.build_scan_path(ScanRef(experiment=experiment_ref, scan_id=scan_id))
+            )
             return scan_id, resp.status_code in (200, 204), ""
         except Exception as e:
             return scan_id, False, str(e)
@@ -461,9 +507,8 @@ def scan_download(
     output_dir = Path(out)
     client = ctx.get_client()
 
-    if not project and not session_id.startswith("XNAT_E"):
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
+    if not project:
+        project = default_project_from_context(ctx)
 
     if name and ("/" in name or "\\" in name):
         raise click.ClickException("--name cannot contain path separators")
@@ -504,6 +549,8 @@ def scan_download(
                 mb = progress.bytes_received / (1024 * 1024)
                 click.echo(f"\r  Downloading: {pct}% ({mb:.1f} MB)", nl=False)
 
+    from xnatctl.core.exceptions import ResourceNotFoundError
+
     try:
         summary = service.download_scans(
             session_id=session_id,
@@ -517,7 +564,7 @@ def scan_download(
             cleanup=cleanup,
             progress_callback=progress_cb if not ctx.quiet else None,
         )
-    except ValueError as e:
+    except (ValueError, ResourceNotFoundError) as e:
         print_error(str(e))
         raise SystemExit(1) from None
 

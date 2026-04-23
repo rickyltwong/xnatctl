@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import quote
 
 import click
 
 from xnatctl.cli.common import Context, global_options, handle_errors, require_auth
 from xnatctl.core.output import print_error, print_output, print_success
+from xnatctl.models.hierarchy import ExperimentRef, HierarchyParentRef, ResourceRef, ScanRef
+from xnatctl.services.hierarchy import HierarchyService
 
 
 @click.group()
@@ -33,15 +36,18 @@ def resource_list(ctx: Context, session_id: str, scan: str | None) -> None:
 
     session_id = validate_session_id(session_id)
     client = ctx.get_client()
+    hierarchy = HierarchyService(client)
+    experiment_ref = ExperimentRef(experiment=session_id)
 
+    resource_parent: HierarchyParentRef
     if scan:
         scan = validate_scan_id(scan)
-        url = f"/data/experiments/{session_id}/scans/{scan}/resources"
+        resource_parent = ScanRef(experiment=experiment_ref, scan_id=scan)
     else:
-        url = f"/data/experiments/{session_id}/resources"
+        resource_parent = experiment_ref
 
-    resp = client.get_json(url)
-    results = resp.get("ResultSet", {}).get("Result", [])
+    resp = client.get_json(hierarchy.build_resource_collection_path(resource_parent))
+    results = HierarchyService.extract_rows(resp)
 
     resources = []
     for r in results:
@@ -85,8 +91,6 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
         xnatctl resource show XNAT_E00001 DICOM
         xnatctl resource show XNAT_E00001 DICOM --scan 1
     """
-    from urllib.parse import quote
-
     from xnatctl.core.validation import (
         validate_resource_label,
         validate_scan_id,
@@ -96,27 +100,36 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
     session_id = validate_session_id(session_id)
     resource_label = validate_resource_label(resource_label)
     client = ctx.get_client()
+    hierarchy = HierarchyService(client)
+    experiment_ref = ExperimentRef(experiment=session_id)
 
+    resource_parent: HierarchyParentRef
     if scan:
         scan = validate_scan_id(scan)
-        base_url = f"/data/experiments/{session_id}/scans/{scan}/resources/{quote(resource_label)}"
+        resource_parent = ScanRef(experiment=experiment_ref, scan_id=scan)
     else:
-        base_url = f"/data/experiments/{session_id}/resources/{quote(resource_label)}"
+        resource_parent = experiment_ref
+    encoded_label = quote(resource_label)
 
-    # Get resource info
-    resp = client.get_json(base_url)
-    results = resp.get("ResultSet", {}).get("Result", [])
+    # Get resource info from the collection endpoint. The direct
+    # /resources/{label} endpoint often returns XML catalogs instead of JSON.
+    resp = client.get_json(hierarchy.build_resource_collection_path(resource_parent))
+    results = HierarchyService.extract_rows(resp)
+    resource_data = next((row for row in results if row.get("label") == resource_label), None)
 
-    if not results:
+    if resource_data is None:
         print_error(f"Resource not found: {resource_label}")
         raise SystemExit(1)
 
-    resource_data = results[0] if isinstance(results, list) else results
-
     # Get files
     try:
-        files_resp = client.get_json(f"{base_url}/files")
-        files = files_resp.get("ResultSet", {}).get("Result", [])
+        files_resp = client.get_json(
+            hierarchy.build_resource_path(
+                ResourceRef(parent=resource_parent, resource_label=encoded_label),
+                "files",
+            )
+        )
+        files = HierarchyService.extract_rows(files_resp)
     except Exception:
         files = []
 

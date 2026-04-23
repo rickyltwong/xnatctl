@@ -221,7 +221,7 @@ class TestResourceShow:
 
         assert result.exit_code == 0
         call_url = client.get_json.call_args_list[0][0][0]
-        assert "/scans/1/resources/" in call_url
+        assert call_url.endswith("/data/experiments/XNAT_E00001/scans/1/resources")
 
 
 class TestResourceUpload:
