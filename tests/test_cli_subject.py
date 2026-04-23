@@ -157,6 +157,38 @@ class TestSubjectList:
 class TestSubjectShow:
     """Tests for subject show command."""
 
+    def test_subject_show_items_response(self, runner: CliRunner) -> None:
+        """Subject show handles `items[]` detail responses."""
+        client = _mock_client()
+        client.get_json.side_effect = [
+            {
+                "items": [
+                    {
+                        "data_fields": {
+                            "ID": "XNAT_S001",
+                            "label": "SUB001",
+                            "project": "TESTPROJ",
+                        }
+                    }
+                ]
+            },
+            {
+                "ResultSet": {
+                    "Result": [
+                        {"ID": "EXP1", "label": "SESSION1"},
+                    ]
+                }
+            },
+        ]
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["subject", "show", "SUB001", "-P", "TESTPROJ"])
+
+        assert result.exit_code == 0
+        assert "SUB001" in result.output
+
     def test_subject_show(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.side_effect = [

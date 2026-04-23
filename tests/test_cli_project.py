@@ -36,6 +36,29 @@ def _mock_config() -> Config:
 class TestProjectList:
     """Tests for project list command."""
 
+    def test_project_list_top_level_list(self, runner: CliRunner) -> None:
+        """Project list tolerates bare top-level JSON arrays."""
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get_json.return_value = [
+            {
+                "ID": "PROJ1",
+                "name": "Project One",
+                "pi_lastname": "Smith",
+                "description": "Test project",
+            }
+        ]
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "list"])
+
+        assert result.exit_code == 0
+        assert "PROJ1" in result.output
+
     def test_project_list_table(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.is_authenticated = True
@@ -137,6 +160,36 @@ class TestProjectList:
 
 class TestProjectShow:
     """Tests for project show command."""
+
+    def test_project_show_items_response(self, runner: CliRunner) -> None:
+        """Project show handles `items[]` detail responses."""
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get_json.side_effect = [
+            {
+                "items": [
+                    {
+                        "data_fields": {
+                            "ID": "PROJ1",
+                            "name": "Project One",
+                            "secondary_ID": "SEC01",
+                        }
+                    }
+                ]
+            },
+            {"ResultSet": {"Result": [{"ID": "SUB1"}, {"ID": "SUB2"}]}},
+            {"ResultSet": {"Result": [{"ID": "EXP1"}]}},
+        ]
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "show", "PROJ1"])
+
+        assert result.exit_code == 0
+        assert "SEC01" in result.output
 
     def test_project_show(self, runner: CliRunner) -> None:
         mock_client = MagicMock()

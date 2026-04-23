@@ -13,8 +13,12 @@ from xnatctl.cli.common import (
     global_options,
     handle_errors,
     require_auth,
+    require_project_from_context,
 )
+from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.core.output import print_error, print_output, print_success
+from xnatctl.models.hierarchy import SubjectRef
+from xnatctl.services.hierarchy import HierarchyService
 
 
 @dataclass(frozen=True)
@@ -123,26 +127,16 @@ def subject_list(ctx: Context, project: str | None, filter_expr: str | None) -> 
     """
     from xnatctl.core.validation import validate_project_id
 
-    if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
-        if not project:
-            profile_name = ctx.profile_name or (
-                ctx.config.default_profile if ctx.config else "default"
-            )
-            raise click.ClickException(
-                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-            )
-
-    project = validate_project_id(project)
+    project = validate_project_id(require_project_from_context(ctx, project))
     client = ctx.get_client()
+    hierarchy = HierarchyService(client)
 
     # Get subjects
     resp = client.get_json(
-        f"/data/projects/{project}/subjects",
+        hierarchy.build_subject_collection_path(project),
         params={"columns": "ID,label,src"},
     )
-    results = resp.get("ResultSet", {}).get("Result", [])
+    results = HierarchyService.extract_rows(resp)
 
     # Transform for output
     subjects = []
@@ -170,9 +164,9 @@ def subject_list(ctx: Context, project: str | None, filter_expr: str | None) -> 
         for subj in subjects:
             try:
                 sess_resp = client.get_json(
-                    f"/data/projects/{project}/subjects/{subj['id']}/experiments"
+                    hierarchy.build_experiment_collection_path(project, subj["id"])
                 )
-                subj["sessions"] = len(sess_resp.get("ResultSet", {}).get("Result", []))
+                subj["sessions"] = len(HierarchyService.extract_rows(sess_resp))
             except Exception:
                 subj["sessions"] = "?"
 
@@ -200,43 +194,32 @@ def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
     """
     from xnatctl.core.validation import validate_project_id, validate_subject_id
 
-    if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
-        if not project:
-            profile_name = ctx.profile_name or (
-                ctx.config.default_profile if ctx.config else "default"
-            )
-            raise click.ClickException(
-                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-            )
-
-    project = validate_project_id(project)
+    project = validate_project_id(require_project_from_context(ctx, project))
     subject_id = validate_subject_id(subject_id)
     client = ctx.get_client()
+    hierarchy = HierarchyService(client)
 
     # Get subject details
-    resp = client.get_json(f"/data/projects/{project}/subjects/{subject_id}")
-    results = resp.get("ResultSet", {}).get("Result", [])
-
-    if not results:
+    try:
+        resolved = hierarchy.resolve_subject(SubjectRef(subject=subject_id, project_id=project))
+    except ResourceNotFoundError:
         print_error(f"Subject not found: {subject_id}")
-        raise SystemExit(1)
-
-    subject_data = results[0]
+        raise SystemExit(1) from None
 
     # Get sessions
     try:
-        sess_resp = client.get_json(f"/data/projects/{project}/subjects/{subject_id}/experiments")
-        sessions = sess_resp.get("ResultSet", {}).get("Result", [])
+        sess_resp = client.get_json(
+            hierarchy.build_experiment_collection_path(project, resolved.subject_id)
+        )
+        sessions = HierarchyService.extract_rows(sess_resp)
         session_labels = [s.get("label", s.get("ID", "")) for s in sessions]
     except Exception:
         session_labels = []
 
     output = {
-        "id": subject_data.get("ID", ""),
-        "label": subject_data.get("label", ""),
-        "project": project,
+        "id": resolved.subject_id,
+        "label": resolved.subject_label or subject_id,
+        "project": resolved.project_id or project,
         "session_count": len(session_labels),
         "sessions": session_labels[:10],  # Limit to first 10
     }
@@ -268,18 +251,7 @@ def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: 
     """
     from xnatctl.core.validation import validate_project_id, validate_subject_id
 
-    if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
-        if not project:
-            profile_name = ctx.profile_name or (
-                ctx.config.default_profile if ctx.config else "default"
-            )
-            raise click.ClickException(
-                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-            )
-
-    project = validate_project_id(project)
+    project = validate_project_id(require_project_from_context(ctx, project))
     subject_id = validate_subject_id(subject_id)
     client = ctx.get_client()
 
@@ -360,16 +332,11 @@ def subject_rename(
                     "Project required. Pass --project/-P or set default_project in profile "
                     f"'{profile_name}'. Patterns file contains multiple projects: {', '.join(sorted(projects))}"
                 )
-        if not project:
-            profile_name = ctx.profile_name or (
-                ctx.config.default_profile if ctx.config else "default"
-            )
-            raise click.ClickException(
-                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-            )
+        project = require_project_from_context(ctx, project)
 
-    project = validate_project_id(project)
+    project = validate_project_id(require_project_from_context(ctx, project))
     client = ctx.get_client()
+    hierarchy = HierarchyService(client)
 
     if patterns_file:
         if mapping or pattern or to_template:
@@ -380,8 +347,8 @@ def subject_rename(
         raise SystemExit(1)
 
     # Get current subjects
-    resp = client.get_json(f"/data/projects/{project}/subjects")
-    subjects = resp.get("ResultSet", {}).get("Result", [])
+    resp = client.get_json(hierarchy.build_subject_collection_path(project))
+    subjects = HierarchyService.extract_rows(resp)
     current_labels = {s["label"] for s in subjects}
 
     renamed = {}
