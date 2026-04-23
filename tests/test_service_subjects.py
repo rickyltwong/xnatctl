@@ -345,15 +345,18 @@ class TestSubjectMerge:
         mock_client.put.assert_not_called()
         mock_client.delete.assert_not_called()
 
-    def test_merge_uses_internal_subject_id_not_label(
+    def test_merge_uses_scoped_put_to_target_subject(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
         """Regression test for OXD01_CMH PET-session deletion incident.
 
-        The PUT that reassigns an experiment's ``xnat:experimentData/subject_ID``
-        MUST pass the target's internal XNAT subject ID, NOT the target label.
-        Using the label silently fails on some XNAT versions and the subsequent
-        source delete cascades and destroys experiment data.
+        The reassignment MUST use the project+target-subject-scoped PUT
+        (same URI shape as the XNAT web UI), with the target subject's
+        internal XNAT ID in the URL path. An earlier implementation used
+        PUT /data/experiments/{id}?xnat:experimentData/subject_ID=... which
+        was silently destructive on the live XNAT — the experiment was
+        neither left on source nor moved to target, and the source DELETE
+        completed with nothing to cascade. Do not reintroduce that pattern.
         """
         source = {**SAMPLE_SUBJECT, "ID": "XNAT_S00001", "label": "SRC"}
         target = {**SAMPLE_SUBJECT, "ID": "XNAT_S99999", "label": "TGT"}
@@ -363,12 +366,28 @@ class TestSubjectMerge:
         def get_side_effect(path: str, **kwargs: object) -> MagicMock:
             get_calls.append(path)
             if "SRC" in path and "experiments" in path:
-                # First call returns source experiments; post-reassign
+                # First call returns the source experiment; post-reassign
                 # fail-safe call returns empty (all moved successfully).
                 prior_src_exps = sum(1 for p in get_calls if "SRC" in p and "experiments" in p)
                 if prior_src_exps == 1:
                     return _resp({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
                 return _resp({"ResultSet": {"Result": []}})
+            if "/data/experiments/EXP01" in path:
+                # Verification GET after the reassignment PUT.
+                return _resp(
+                    {
+                        "items": [
+                            {
+                                "data_fields": {
+                                    "ID": "EXP01",
+                                    "subject_ID": "XNAT_S99999",
+                                    "project": "PROJ01",
+                                },
+                                "meta": {},
+                            }
+                        ]
+                    }
+                )
             if "SRC" in path:
                 return _resp({"ResultSet": {"Result": [source]}})
             if "TGT" in path:
@@ -381,40 +400,119 @@ class TestSubjectMerge:
 
         service.merge_subjects("PROJ01", "SRC", "TGT")
 
-        # Find the reassignment PUT (path /data/experiments/EXP01)
         reassign_calls = [
-            c for c in mock_client.put.call_args_list if "/data/experiments/EXP01" in c.args[0]
+            c
+            for c in mock_client.put.call_args_list
+            if "/subjects/XNAT_S99999/experiments/EXP01" in c.args[0]
         ]
         assert len(reassign_calls) == 1, (
-            f"Expected exactly one reassignment PUT, got {len(reassign_calls)}"
+            f"Expected one scoped reassignment PUT to target subject; "
+            f"got {len(reassign_calls)}. All PUTs: "
+            f"{[c.args[0] for c in mock_client.put.call_args_list]}"
         )
 
+        put_path = reassign_calls[0].args[0]
+        assert put_path == "/data/projects/PROJ01/subjects/XNAT_S99999/experiments/EXP01", (
+            f"PUT must be scoped to project+target-subject+experiment. Got: {put_path}"
+        )
+
+        # Must NOT use the old (destructive) global endpoint with the
+        # xnat:experimentData/subject_ID XML-path-shortcut querystring.
+        global_calls = [
+            c for c in mock_client.put.call_args_list if c.args[0] == "/data/experiments/EXP01"
+        ]
+        assert not global_calls, (
+            "Must not PUT to /data/experiments/{id} — that shape was silently "
+            "destructive on the live XNAT and caused the OXD01_CMH incident."
+        )
+        for call in mock_client.put.call_args_list:
+            params = call.kwargs.get("params", {})
+            assert "xnat:experimentData/subject_ID" not in params, (
+                "Must not pass xnat:experimentData/subject_ID — target is "
+                "encoded in the URL path, not an XML-path-shortcut param."
+            )
+
+        # Audit metadata matching the web UI.
         params = reassign_calls[0].kwargs.get("params", {})
-        subject_id_value = params.get("xnat:experimentData/subject_ID")
-        assert subject_id_value == "XNAT_S99999", (
-            f"Reassignment must use internal subject ID 'XNAT_S99999', "
-            f"got '{subject_id_value}'. Passing the label ('TGT') here is the "
-            "bug that caused the OXD01_CMH PET-session deletion incident."
-        )
-        assert subject_id_value != "TGT", "Must not pass the target label"
+        assert params.get("event_type") == "WEB_FORM"
+        assert params.get("event_action") == "Modified subject"
 
-    def test_merge_aborts_before_delete_if_experiments_remain(
+    def test_merge_aborts_if_verification_detects_wrong_subject_id(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """If any experiment is still attached to source after the reassignment
-        PUT, raise before deleting the source (which would cascade-delete data).
+        """If the post-PUT verify GET shows the experiment's subject_ID did
+        not change to the target, abort before deleting the source.
+
+        This is the guard that the original OXD01_CMH "use internal ID" fix
+        was missing. Verified absence is not the same as verified presence.
         """
         source = {**SAMPLE_SUBJECT, "ID": "XNAT_S00001", "label": "SRC"}
         target = {**SAMPLE_SUBJECT, "ID": "XNAT_S99999", "label": "TGT"}
 
-        get_calls: list[str] = []
+        def get_side_effect(path: str, **kwargs: object) -> MagicMock:
+            if "SRC" in path and "experiments" in path:
+                return _resp({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
+            if "/data/experiments/EXP01" in path:
+                # Simulate the destructive PUT: subject_ID unchanged (or
+                # pointing elsewhere). The verify step must catch this.
+                return _resp(
+                    {
+                        "items": [
+                            {
+                                "data_fields": {
+                                    "ID": "EXP01",
+                                    "subject_ID": "XNAT_S00001",
+                                    "project": "PROJ01",
+                                },
+                                "meta": {},
+                            }
+                        ]
+                    }
+                )
+            if "SRC" in path:
+                return _resp({"ResultSet": {"Result": [source]}})
+            if "TGT" in path:
+                return _resp({"ResultSet": {"Result": [target]}})
+            return _resp({"ResultSet": {"Result": []}})
+
+        mock_client.get.side_effect = get_side_effect
+        mock_client.put.return_value = _resp("")
+
+        with pytest.raises(RuntimeError, match="did not take effect"):
+            service.merge_subjects("PROJ01", "SRC", "TGT")
+
+        mock_client.delete.assert_not_called()
+
+    def test_merge_aborts_if_source_still_has_experiments_after_loop(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """Defence in depth: even if every per-experiment verify passes,
+        re-list source experiments before deleting. If any remain, abort.
+        """
+        source = {**SAMPLE_SUBJECT, "ID": "XNAT_S00001", "label": "SRC"}
+        target = {**SAMPLE_SUBJECT, "ID": "XNAT_S99999", "label": "TGT"}
 
         def get_side_effect(path: str, **kwargs: object) -> MagicMock:
-            get_calls.append(path)
             if "SRC" in path and "experiments" in path:
-                # Both the initial list AND the fail-safe recheck return the
-                # same experiment, simulating a silent reassignment failure.
+                # Both the initial list AND the post-loop recheck return the
+                # same experiment. Per-experiment verify passes (below), so
+                # this tests the outer defence-in-depth guard only.
                 return _resp({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
+            if "/data/experiments/EXP01" in path:
+                return _resp(
+                    {
+                        "items": [
+                            {
+                                "data_fields": {
+                                    "ID": "EXP01",
+                                    "subject_ID": "XNAT_S99999",
+                                    "project": "PROJ01",
+                                },
+                                "meta": {},
+                            }
+                        ]
+                    }
+                )
             if "SRC" in path:
                 return _resp({"ResultSet": {"Result": [source]}})
             if "TGT" in path:
@@ -427,5 +525,4 @@ class TestSubjectMerge:
         with pytest.raises(RuntimeError, match="still attached to source"):
             service.merge_subjects("PROJ01", "SRC", "TGT")
 
-        # Crucial: source subject DELETE must not have been issued
         mock_client.delete.assert_not_called()
