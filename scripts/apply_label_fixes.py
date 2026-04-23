@@ -155,14 +155,27 @@ def _rename_subject(client: XNATClient, project: str, old_label: str, new_label:
 
 
 def _merge_subject(client: XNATClient, project: str, source: str, target: str) -> None:
-    experiments = _list_subject_experiments(client, project, source)
-    for exp in experiments:
-        exp_id = exp.get("ID")
-        if exp_id:
-            client.put(
-                f"/data/experiments/{exp_id}", params={"xnat:experimentData/subject_ID": target}
-            )
-    client.delete(f"/data/projects/{project}/subjects/{source}")
+    """Safely merge source subject into target subject.
+
+    Delegates to :meth:`SubjectService.merge_subjects`, which resolves the
+    target's internal XNAT subject ID before reassigning experiments and
+    performs a pre-delete fail-safe to prevent experiment data loss on
+    cascade delete.
+
+    A previous inline implementation here passed the target *label* in the
+    ``xnat:experimentData/subject_ID`` PUT; on some XNAT versions that PUT
+    silently fails to reassign, and the source subject delete then cascades
+    and destroys the experiment data. Do not reintroduce that pattern.
+
+    Args:
+        client: Authenticated XNAT client.
+        project: Project ID.
+        source: Source subject label (will be deleted).
+        target: Target subject label (will receive experiments).
+    """
+    from xnatctl.services.subjects import SubjectService
+
+    SubjectService(client).merge_subjects(project=project, source_label=source, target_label=target)
 
 
 def _rename_experiment(client: XNATClient, exp_id: str, new_label: str) -> None:
@@ -266,6 +279,11 @@ def apply_subject_patterns(
                         total_errors += 1
                 else:
                     merged[label] = target
+                    # Mirror the live state mutation so subsequent pattern
+                    # iterations see the same view the execute path would.
+                    # Without this, dry-run can mis-classify downstream
+                    # matches (report rename where live would merge).
+                    subject_labels.pop(label, None)
             else:
                 if execute:
                     try:
@@ -280,6 +298,9 @@ def apply_subject_patterns(
                         total_errors += 1
                 else:
                     renamed[label] = target
+                    # Mirror the live state mutation so subsequent pattern
+                    # iterations see the same view the execute path would.
+                    subject_labels[target] = subject_labels.pop(label, {})
 
         if renamed:
             log.info("Renamed (%s):", len(renamed))
