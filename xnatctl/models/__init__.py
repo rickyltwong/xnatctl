@@ -6,6 +6,19 @@ Provides Pydantic models for XNAT resources and operation progress tracking.
 from __future__ import annotations
 
 from .base import BaseModel, XNATResource
+from .hierarchy import (
+    ExperimentRef,
+    ItemRecord,
+    ItemsEnvelope,
+    ProjectRef,
+    ResolvedExperimentRef,
+    ResolvedSubjectRef,
+    ResourceRef,
+    ResultSetData,
+    ResultSetEnvelope,
+    ScanRef,
+    SubjectRef,
+)
 from .progress import (
     DownloadProgress,
     DownloadSummary,
@@ -25,6 +38,17 @@ __all__ = [
     # Base
     "BaseModel",
     "XNATResource",
+    "ProjectRef",
+    "SubjectRef",
+    "ExperimentRef",
+    "ScanRef",
+    "ResourceRef",
+    "ResultSetData",
+    "ResultSetEnvelope",
+    "ItemRecord",
+    "ItemsEnvelope",
+    "ResolvedSubjectRef",
+    "ResolvedExperimentRef",
     # Resources
     "Project",
     "Subject",

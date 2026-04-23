@@ -8,6 +8,7 @@ from __future__ import annotations
 from .admin import AdminService
 from .base import BaseService
 from .downloads import DownloadService
+from .hierarchy import HierarchyService
 from .pipelines import PipelineService
 from .prearchive import PrearchiveService
 from .projects import ProjectService
@@ -25,6 +26,7 @@ __all__ = [
     "ScanService",
     "ResourceService",
     "DownloadService",
+    "HierarchyService",
     "UploadService",
     "PrearchiveService",
     "PipelineService",
