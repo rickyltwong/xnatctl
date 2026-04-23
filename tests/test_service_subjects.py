@@ -89,6 +89,27 @@ class TestSubjectList:
 class TestSubjectGet:
     """Tests for SubjectService.get."""
 
+    def test_get_items_response(self, service: SubjectService, mock_client: MagicMock) -> None:
+        """Get subject handles `items[]` detail responses."""
+        mock_client.get.return_value = _resp(
+            {
+                "items": [
+                    {
+                        "data_fields": {
+                            "ID": "XNAT_S00001",
+                            "label": "SUB001",
+                            "project": "PROJ01",
+                        }
+                    }
+                ]
+            }
+        )
+
+        result = service.get("XNAT_S00001")
+
+        assert isinstance(result, Subject)
+        assert result.label == "SUB001"
+
     def test_get_by_id(self, service: SubjectService, mock_client: MagicMock) -> None:
         """Get subject by ID."""
         mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
@@ -136,7 +157,9 @@ class TestSubjectDelete:
     """Tests for SubjectService.delete."""
 
     def test_delete_with_project(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Delete uses project-scoped path."""
+        """Delete uses project-scoped path (when subject has no experiments)."""
+        # Empty experiments list so the safety guard allows the delete.
+        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
         mock_client.delete.return_value = _resp("")
 
         assert service.delete("SUB001", project="PROJ01") is True
@@ -144,7 +167,9 @@ class TestSubjectDelete:
         assert "/data/projects/PROJ01/subjects/SUB001" in call_path
 
     def test_delete_without_project(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Delete without project uses global path."""
+        """Delete without project uses global path (safety guard skipped)."""
+        # Safety check is skipped when no project is supplied because
+        # get_sessions requires a project scope.
         mock_client.delete.return_value = _resp("")
 
         service.delete("XNAT_S00001")
@@ -156,12 +181,40 @@ class TestSubjectDelete:
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
         """Delete passes removeFiles param."""
+        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
         mock_client.delete.return_value = _resp("")
 
         service.delete("SUB001", project="PROJ01", remove_files=True)
 
         params = mock_client.delete.call_args[1]["params"]
         assert params["removeFiles"] == "true"
+
+    def test_delete_refuses_when_subject_has_experiments(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """Refuse to delete a subject that still has attached experiments.
+
+        XNAT would cascade-delete the experiments — the exact failure mode
+        of the OXD01_CMH PET-session deletion incident.
+        """
+        mock_client.get.return_value = _resp(
+            {"ResultSet": {"Result": [{"ID": "EXP01"}, {"ID": "EXP02"}]}}
+        )
+
+        with pytest.raises(RuntimeError, match="still attached"):
+            service.delete("SUB001", project="PROJ01")
+
+        mock_client.delete.assert_not_called()
+
+    def test_delete_force_overrides_guard(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """force=True skips the experiment-attached safety check."""
+        mock_client.get.return_value = _resp({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
+        mock_client.delete.return_value = _resp("")
+
+        assert service.delete("SUB001", project="PROJ01", force=True) is True
+        mock_client.delete.assert_called_once()
 
 
 class TestSubjectRename:
@@ -290,4 +343,89 @@ class TestSubjectMerge:
         assert result["source_deleted"] is True
         assert result["dry_run"] is True
         mock_client.put.assert_not_called()
+        mock_client.delete.assert_not_called()
+
+    def test_merge_uses_internal_subject_id_not_label(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """Regression test for OXD01_CMH PET-session deletion incident.
+
+        The PUT that reassigns an experiment's ``xnat:experimentData/subject_ID``
+        MUST pass the target's internal XNAT subject ID, NOT the target label.
+        Using the label silently fails on some XNAT versions and the subsequent
+        source delete cascades and destroys experiment data.
+        """
+        source = {**SAMPLE_SUBJECT, "ID": "XNAT_S00001", "label": "SRC"}
+        target = {**SAMPLE_SUBJECT, "ID": "XNAT_S99999", "label": "TGT"}
+
+        get_calls: list[str] = []
+
+        def get_side_effect(path: str, **kwargs: object) -> MagicMock:
+            get_calls.append(path)
+            if "SRC" in path and "experiments" in path:
+                # First call returns source experiments; post-reassign
+                # fail-safe call returns empty (all moved successfully).
+                prior_src_exps = sum(1 for p in get_calls if "SRC" in p and "experiments" in p)
+                if prior_src_exps == 1:
+                    return _resp({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
+                return _resp({"ResultSet": {"Result": []}})
+            if "SRC" in path:
+                return _resp({"ResultSet": {"Result": [source]}})
+            if "TGT" in path:
+                return _resp({"ResultSet": {"Result": [target]}})
+            return _resp({"ResultSet": {"Result": []}})
+
+        mock_client.get.side_effect = get_side_effect
+        mock_client.put.return_value = _resp("")
+        mock_client.delete.return_value = _resp("")
+
+        service.merge_subjects("PROJ01", "SRC", "TGT")
+
+        # Find the reassignment PUT (path /data/experiments/EXP01)
+        reassign_calls = [
+            c for c in mock_client.put.call_args_list if "/data/experiments/EXP01" in c.args[0]
+        ]
+        assert len(reassign_calls) == 1, (
+            f"Expected exactly one reassignment PUT, got {len(reassign_calls)}"
+        )
+
+        params = reassign_calls[0].kwargs.get("params", {})
+        subject_id_value = params.get("xnat:experimentData/subject_ID")
+        assert subject_id_value == "XNAT_S99999", (
+            f"Reassignment must use internal subject ID 'XNAT_S99999', "
+            f"got '{subject_id_value}'. Passing the label ('TGT') here is the "
+            "bug that caused the OXD01_CMH PET-session deletion incident."
+        )
+        assert subject_id_value != "TGT", "Must not pass the target label"
+
+    def test_merge_aborts_before_delete_if_experiments_remain(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """If any experiment is still attached to source after the reassignment
+        PUT, raise before deleting the source (which would cascade-delete data).
+        """
+        source = {**SAMPLE_SUBJECT, "ID": "XNAT_S00001", "label": "SRC"}
+        target = {**SAMPLE_SUBJECT, "ID": "XNAT_S99999", "label": "TGT"}
+
+        get_calls: list[str] = []
+
+        def get_side_effect(path: str, **kwargs: object) -> MagicMock:
+            get_calls.append(path)
+            if "SRC" in path and "experiments" in path:
+                # Both the initial list AND the fail-safe recheck return the
+                # same experiment, simulating a silent reassignment failure.
+                return _resp({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
+            if "SRC" in path:
+                return _resp({"ResultSet": {"Result": [source]}})
+            if "TGT" in path:
+                return _resp({"ResultSet": {"Result": [target]}})
+            return _resp({"ResultSet": {"Result": []}})
+
+        mock_client.get.side_effect = get_side_effect
+        mock_client.put.return_value = _resp("")
+
+        with pytest.raises(RuntimeError, match="still attached to source"):
+            service.merge_subjects("PROJ01", "SRC", "TGT")
+
+        # Crucial: source subject DELETE must not have been issued
         mock_client.delete.assert_not_called()
