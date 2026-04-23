@@ -12,7 +12,7 @@ import click
 
 from xnatctl.core.auth import AuthManager
 from xnatctl.core.client import XNATClient
-from xnatctl.core.config import Config, get_credentials
+from xnatctl.core.config import Config, Profile, get_credentials
 from xnatctl.core.exceptions import (
     AuthenticationError,
     ConfigurationError,
@@ -87,6 +87,51 @@ class Context:
 
 
 pass_context = click.make_pass_decorator(Context, ensure=True)
+
+
+def get_profile(ctx: Context) -> Profile | None:
+    """Return the active profile, if configured and resolvable."""
+
+    if ctx.config is None:
+        return None
+
+    try:
+        return ctx.config.get_profile(ctx.profile_name)
+    except ProfileNotFoundError:
+        return None
+
+
+def default_project_from_context(ctx: Context) -> str | None:
+    """Return the profile default project if available."""
+
+    profile = get_profile(ctx)
+    return profile.default_project if profile else None
+
+
+def require_project_from_context(ctx: Context, project: str | None) -> str:
+    """Return an explicit or default project, or raise a Click error."""
+
+    resolved_project = project or default_project_from_context(ctx)
+    if resolved_project:
+        return resolved_project
+
+    profile_name = ctx.profile_name or (ctx.config.default_profile if ctx.config else "default")
+    raise click.ClickException(
+        f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
+    )
+
+
+def resolve_workers_from_context(ctx: Context, workers: int | None, default: int = 4) -> int:
+    """Resolve worker count from explicit option, profile, or a default."""
+
+    if workers is not None:
+        return workers
+
+    profile = get_profile(ctx)
+    if profile and profile.workers is not None:
+        return profile.workers
+
+    return default
 
 
 # =============================================================================

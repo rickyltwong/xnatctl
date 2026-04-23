@@ -11,12 +11,18 @@ from xnatctl.cli.common import (
     Context,
     _make_alias_cb,
     _make_forwarding_alias_cb,
+    default_project_from_context,
     global_options,
     handle_errors,
     require_auth,
+    require_project_from_context,
+    resolve_workers_from_context,
 )
+from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
+from xnatctl.models.hierarchy import ExperimentRef
+from xnatctl.services.hierarchy import HierarchyService
 
 
 @click.group()
@@ -49,18 +55,7 @@ def session_list(
     """
     from xnatctl.core.validation import validate_project_id
 
-    if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
-        if not project:
-            profile_name = ctx.profile_name or (
-                ctx.config.default_profile if ctx.config else "default"
-            )
-            raise click.ClickException(
-                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-            )
-
-    project = validate_project_id(project)
+    project = validate_project_id(require_project_from_context(ctx, project))
     client = ctx.get_client()
 
     # Build query
@@ -155,68 +150,68 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
 
     session_id = validate_session_id(session_id)
     client = ctx.get_client()
-
-    # Resolve project from profile default if not provided
-    if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
-
-    # Get session details
-    base = (
-        f"/data/projects/{project}/experiments/{session_id}"
-        if project
-        else f"/data/experiments/{session_id}"
+    project = default_project_from_context(ctx) if project is None else project
+    hierarchy = HierarchyService(client)
+    session_ref = ExperimentRef(
+        experiment=session_id,
+        project_id=project,
+        experiment_is_label=project is not None,
     )
-    resp = client.get_json(base)
-    results = resp.get("ResultSet", {}).get("Result", [])
 
-    if not results:
+    try:
+        resolved = hierarchy.resolve_experiment(session_ref)
+    except ResourceNotFoundError:
         print_error(f"Session not found: {session_id}")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
-    session_data = results[0]
+    # Keep project scope (and subject scope if known) so nested calls respect
+    # project ACLs and match pre-refactor URLs.
+    nested_ref = ExperimentRef(
+        experiment=resolved.experiment_id,
+        project_id=resolved.project_id or project,
+        subject=resolved.subject_id or resolved.subject_label,
+    )
 
     # Get scans — resolve xsiType so non-imaging sessions return results
     try:
         scan_params: dict[str, str] = {}
-        session_xsi = session_data.get("xsiType", "")
-        if session_xsi and "sessiondata" in session_xsi.lower():
-            scan_xsi = session_xsi.replace("SessionData", "ScanData").replace(
-                "sessionData", "scanData"
-            )
+        scan_xsi = hierarchy.resolve_scan_xsi_type(resolved.xsi_type)
+        if scan_xsi:
             scan_params["xsiType"] = scan_xsi
-        scans_resp = client.get_json(f"{base}/scans", params=scan_params)
-        scans = scans_resp.get("ResultSet", {}).get("Result", [])
+        scans_resp = client.get_json(
+            hierarchy.build_experiment_path(nested_ref, "scans"), params=scan_params
+        )
+        scans = HierarchyService.extract_rows(scans_resp)
     except Exception:
         scans = []
 
     # Get resources
     try:
-        res_resp = client.get_json(f"{base}/resources")
-        resources = res_resp.get("ResultSet", {}).get("Result", [])
+        res_resp = client.get_json(hierarchy.build_experiment_path(nested_ref, "resources"))
+        resources = HierarchyService.extract_rows(res_resp)
     except Exception:
         resources = []
 
     if ctx.output_format == OutputFormat.JSON:
         output = {
-            "id": session_data.get("ID", ""),
-            "label": session_data.get("label", ""),
-            "subject": session_data.get("subject_label", ""),
-            "project": session_data.get("project", ""),
-            "date": session_data.get("date", ""),
-            "xsi_type": session_data.get("xsiType", ""),
+            "id": resolved.experiment_id,
+            "label": resolved.experiment_label or "",
+            "subject": resolved.subject_label or resolved.subject_id or "",
+            "project": resolved.project_id or "",
+            "date": resolved.session_date or "",
+            "xsi_type": resolved.xsi_type or "",
             "scans": scans,
             "resources": resources,
         }
         print_output(output, format=OutputFormat.JSON)
     else:
         # Print session info
-        click.echo(f"\n[Session: {session_data.get('label', session_id)}]")
-        click.echo(f"  ID:      {session_data.get('ID', '')}")
-        click.echo(f"  Subject: {session_data.get('subject_label', '')}")
-        click.echo(f"  Project: {session_data.get('project', '')}")
-        click.echo(f"  Date:    {session_data.get('date', '')}")
-        click.echo(f"  Type:    {session_data.get('xsiType', '')}")
+        click.echo(f"\n[Session: {resolved.experiment_label or session_id}]")
+        click.echo(f"  ID:      {resolved.experiment_id}")
+        click.echo(f"  Subject: {resolved.subject_label or resolved.subject_id or ''}")
+        click.echo(f"  Project: {resolved.project_id or ''}")
+        click.echo(f"  Date:    {resolved.session_date or ''}")
+        click.echo(f"  Type:    {resolved.xsi_type or ''}")
 
         # Print scans table
         if scans:
@@ -668,11 +663,9 @@ def session_download(
         raise click.ClickException("--name cannot contain path separators")
 
     # Resolve project and workers from profile defaults
-    profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
     if not project:
-        project = profile.default_project if profile else None
-    if workers is None:
-        workers = profile.workers if (profile and profile.workers is not None) else 1
+        project = default_project_from_context(ctx)
+    workers = resolve_workers_from_context(ctx, workers, default=1)
 
     # Validate output path
     if not out_path.exists():
@@ -681,48 +674,25 @@ def session_download(
 
     client = ctx.get_client()
 
-    # Resolve session and get session info
-    resolved_session_id = session_id
-    session_project = project
-    subject = None
+    hierarchy = HierarchyService(client)
+    session_ref = ExperimentRef(
+        experiment=session_id,
+        project_id=project,
+        experiment_is_label=project is not None,
+    )
 
-    if project:
-        # Use project-scoped endpoint (works with labels)
-        resp = client.get_json(f"/data/projects/{project}/experiments/{session_id}")
-        results = resp.get("ResultSet", {}).get("Result", [])
-        if results:
-            resolved_session_id = results[0].get("ID", session_id)
-            session_project = results[0].get("project", project)
-            subject = results[0].get("subject_ID", "") or results[0].get("subject_label", "")
+    try:
+        resolved = hierarchy.resolve_experiment(session_ref)
+    except ResourceNotFoundError:
+        if project:
+            print_error(f"Session '{session_id}' not found in project '{project}'")
         else:
-            # Try items format (XNAT returns this for single experiment lookups)
-            items = resp.get("items", [])
-            if items:
-                data_fields = items[0].get("data_fields", {})
-                resolved_session_id = data_fields.get("ID", session_id)
-                session_project = data_fields.get("project", project)
-                subject = data_fields.get("subject_ID", "")
-            else:
-                print_error(f"Session '{session_id}' not found in project '{project}'")
-                raise SystemExit(1)
-    else:
-        # Direct experiment lookup (requires XNAT ID)
-        resp = client.get_json(f"/data/experiments/{session_id}")
-        results = resp.get("ResultSet", {}).get("Result", [])
-        if results:
-            resolved_session_id = results[0].get("ID", session_id)
-            session_project = results[0].get("project", "")
-            subject = results[0].get("subject_ID", "") or results[0].get("subject_label", "")
-        else:
-            items = resp.get("items", [])
-            if items:
-                data_fields = items[0].get("data_fields", {})
-                resolved_session_id = data_fields.get("ID", session_id)
-                session_project = data_fields.get("project", "")
-                subject = data_fields.get("subject_ID", "")
-            else:
-                print_error(f"Session not found: {session_id}")
-                raise SystemExit(1)
+            print_error(f"Session not found: {session_id}")
+        raise SystemExit(1) from None
+
+    resolved_session_id = resolved.experiment_id
+    session_project = resolved.project_id or project or ""
+    subject = resolved.subject_id or resolved.subject_label
 
     if not subject:
         print_error(f"Could not determine subject for session: {session_id}")
@@ -1273,19 +1243,17 @@ def session_upload_exam(
 
     def _resolve_experiment_id() -> str | None:
         try:
-            resp = client.get_json(f"/data/projects/{project}/experiments/{session}")
+            hierarchy = HierarchyService(client)
+            resolved = hierarchy.resolve_experiment(
+                ExperimentRef(
+                    experiment=session,
+                    project_id=project,
+                    experiment_is_label=True,
+                )
+            )
         except ResourceNotFoundError:
             return None
-        results = resp.get("ResultSet", {}).get("Result", [])
-        if results:
-            return results[0].get("ID") or session
-
-        items = resp.get("items", [])
-        if items:
-            data_fields = items[0].get("data_fields", {})
-            return data_fields.get("ID") or session
-
-        return None
+        return resolved.experiment_id or session
 
     resolved_experiment_id = _resolve_experiment_id()
     if not resolved_experiment_id:
