@@ -332,6 +332,32 @@ def _is_dicom_like_path(path: Path, *, include_extensionless: bool = True) -> bo
     return False
 
 
+def archive_destination_params(project: str, direct_archive: bool) -> dict[str, str]:
+    """Return the querystring keys that route a POST /data/services/import.
+
+    * Direct-archive path: ``Direct-Archive=true`` — handled by the
+      ``DICOM-zip`` and ``gradual-DICOM`` import handlers; bypasses the
+      prearchive and writes straight to the project archive.
+    * Prearchive path: ``dest=/prearchive/projects/{project}`` — the
+      documented destination form. ``Direct-Archive=false`` alone is
+      equivalent to "use standard upload mechanism"; we prefer the
+      explicit ``dest`` because it is self-describing and matches the
+      ``PrearchiveService`` pattern used elsewhere in this repo.
+
+    Caveat: neither form can prevent a *project-configured* auto-archive.
+    XNAT's ``prearchive_code`` on the project (0=manual, 4/5=auto) is the
+    authoritative switch. When a project has auto-archive enabled, a
+    session uploaded via either of these paths will land in prearchive
+    momentarily then be auto-archived by the server. To force
+    prearchive-only behaviour, the project's prearchive setting must be
+    changed to "Leave in prearchive" (prearchive_code=0). There is no
+    per-upload import-service override for this on XNAT 1.8+.
+    """
+    if direct_archive:
+        return {"Direct-Archive": "true"}
+    return {"dest": f"/prearchive/projects/{project}"}
+
+
 def split_into_batches(
     files: Sequence[Path],
     batch_size: int,
@@ -582,8 +608,8 @@ def _upload_single_archive(
         "quarantine": "false",
         "triggerPipelines": "true",
         "rename": "false",
-        "Direct-Archive": "true" if direct_archive else "false",
         "inbody": "true",
+        **archive_destination_params(project, direct_archive),
     }
 
     with httpx.Client(
@@ -997,7 +1023,7 @@ def _upload_single_file_gradual(
                             "PROJECT_ID": project,
                             "SUBJECT_ID": subject,
                             "EXPT_LABEL": session,
-                            "Direct-Archive": "true" if direct_archive else "false",
+                            **archive_destination_params(project, direct_archive),
                         },
                         content=f,
                         headers={"Content-Type": "application/dicom"},
