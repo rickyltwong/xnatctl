@@ -862,7 +862,7 @@ def session_download(
 @click.option(
     "--direct-archive/--prearchive",
     default=None,
-    help="Direct archive or use prearchive (default: direct)",
+    help="Direct archive or route to prearchive (default: direct). Note: --prearchive is best-effort; projects with auto-archive enabled will still auto-archive after receive.",
 )
 @click.option(
     "--ignore-unparsable/--no-ignore-unparsable",
@@ -965,6 +965,7 @@ def session_upload(
             subject=subject,
             session=session,
             workers=workers,
+            direct_archive=direct_archive,
         )
         return
 
@@ -1042,7 +1043,7 @@ def session_upload(
 @click.option(
     "--direct-archive/--prearchive",
     default=None,
-    help="Direct archive or use prearchive (default: direct)",
+    help="Direct archive or route to prearchive (default: direct). Note: --prearchive is best-effort; projects with auto-archive enabled will still auto-archive after receive.",
 )
 @click.option(
     "--wait",
@@ -1358,6 +1359,7 @@ def _upload_gradual_dicom(
     subject: str,
     session: str,
     workers: int = 4,
+    direct_archive: bool = True,
 ) -> None:
     """Upload DICOM files using gradual-DICOM handler (parallel per-file)."""
     from xnatctl.models.progress import UploadProgress
@@ -1382,6 +1384,7 @@ def _upload_gradual_dicom(
             subject=subject,
             session=session,
             workers=workers,
+            direct_archive=direct_archive,
             progress_callback=progress_callback if not ctx.quiet else None,
         )
     except (ValueError, FileNotFoundError) as e:
@@ -1485,7 +1488,7 @@ def _do_single_upload(
     zip_to_tar: bool,
 ) -> None:
     """Execute the actual upload with retry on transient errors."""
-    from xnatctl.services.uploads import upload_with_retry
+    from xnatctl.services.uploads import archive_destination_params, upload_with_retry
 
     params = {
         "import-handler": "DICOM-zip",
@@ -1497,9 +1500,9 @@ def _do_single_upload(
         "quarantine": "false",
         "triggerPipelines": "true",
         "rename": "false",
-        "Direct-Archive": "true" if direct_archive else "false",
         "Ignore-Unparsable": "true" if ignore_unparsable else "false",
         "inbody": "true",
+        **archive_destination_params(project, direct_archive),
     }
 
     with _maybe_zip_to_tar(archive_path, zip_to_tar) as (upload_path, content_type):
