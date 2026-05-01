@@ -9,7 +9,13 @@ import click
 
 from xnatctl.cli.common import Context, global_options, handle_errors, require_auth
 from xnatctl.core.output import print_error, print_output, print_success
-from xnatctl.models.hierarchy import ExperimentRef, HierarchyParentRef, ResourceRef, ScanRef
+from xnatctl.models.hierarchy import (
+    ExperimentRef,
+    HierarchyParentRef,
+    ProjectRef,
+    ResourceRef,
+    ScanRef,
+)
 from xnatctl.services.hierarchy import HierarchyService
 
 
@@ -19,32 +25,65 @@ def resource() -> None:
     pass
 
 
+def _validate_resource_list_scope(
+    ctx: click.Context,
+    param: click.Parameter,
+    session_id: str | None,
+) -> str | None:
+    """Validate resource-list scope during Click parsing, before auth runs."""
+
+    del param
+    project_id = ctx.params.get("project_id")
+    scan = ctx.params.get("scan")
+    if project_id and session_id:
+        raise click.UsageError("Use either SESSION_ID or --project, not both")
+    if project_id and scan:
+        raise click.UsageError("--scan can only be used with SESSION_ID")
+    if not project_id and not session_id:
+        raise click.UsageError("Provide SESSION_ID or --project PROJECT_ID")
+    return session_id
+
+
 @resource.command("list")
-@click.argument("session_id")
+@click.option("--project", "-P", "project_id", help="List resources at project scope")
 @click.option("--scan", help="Scope to specific scan")
+@click.argument("session_id", required=False, callback=_validate_resource_list_scope)
 @global_options
 @require_auth
 @handle_errors
-def resource_list(ctx: Context, session_id: str, scan: str | None) -> None:
-    """List resources at session or scan level.
+def resource_list(
+    ctx: Context,
+    session_id: str | None,
+    project_id: str | None,
+    scan: str | None,
+) -> None:
+    """List resources at project, session, or scan level.
 
     Example:
+        xnatctl resource list --project MYPROJ
         xnatctl resource list XNAT_E00001
         xnatctl resource list XNAT_E00001 --scan 1
     """
-    from xnatctl.core.validation import validate_scan_id, validate_session_id
+    from xnatctl.core.validation import validate_project_id, validate_scan_id, validate_session_id
 
-    session_id = validate_session_id(session_id)
     client = ctx.get_client()
     hierarchy = HierarchyService(client)
-    experiment_ref = ExperimentRef(experiment=session_id)
 
     resource_parent: HierarchyParentRef
-    if scan:
-        scan = validate_scan_id(scan)
-        resource_parent = ScanRef(experiment=experiment_ref, scan_id=scan)
+    if project_id:
+        project_id = validate_project_id(project_id)
+        resource_parent = ProjectRef(project_id=project_id)
+    elif session_id is not None:
+        session_id = validate_session_id(session_id)
+        experiment_ref = ExperimentRef(experiment=session_id)
+        if scan:
+            scan = validate_scan_id(scan)
+            resource_parent = ScanRef(experiment=experiment_ref, scan_id=scan)
+        else:
+            resource_parent = experiment_ref
     else:
-        resource_parent = experiment_ref
+        # Guarded by UsageError above; keeps type checkers exhaustive.
+        raise click.UsageError("Provide SESSION_ID or --project PROJECT_ID")
 
     resp = client.get_json(hierarchy.build_resource_collection_path(resource_parent))
     results = HierarchyService.extract_rows(resp)

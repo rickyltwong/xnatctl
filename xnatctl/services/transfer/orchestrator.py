@@ -33,6 +33,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_dicom_resource(resource: dict[str, Any]) -> bool:
+    """Return True when a scan resource contains DICOM data."""
+
+    label = str(resource.get("label") or "")
+    resource_format = str(resource.get("format") or "")
+    return label == "DICOM" or resource_format.upper() == "DICOM"
+
+
 @dataclass
 class TransferResult:
     """Summary of a transfer run.
@@ -620,7 +628,14 @@ class TransferOrchestrator:
             # auto-archives and creates the experiment itself; pre-creating
             # causes a prearchive CONFLICT).
             existing_id = self.executor.check_experiment_exists(dest_project, exp.local_label)
-            if not existing_id:
+            skip_dicom_upload = existing_id is not None
+            if skip_dicom_upload:
+                logger.info(
+                    "Experiment %s already exists on destination as %s; skipping DICOM upload",
+                    exp.local_label,
+                    existing_id,
+                )
+            else:
                 has_any_dicom = self._scans_have_transferable_dicom(
                     scans, exp, scan_resources_cache
                 )
@@ -633,17 +648,19 @@ class TransferOrchestrator:
                     )
 
             # Phase 1: Transfer DICOM resources only (parallel)
-            dicom_scan_count = self._transfer_scans(
-                scans,
-                exp,
-                dest_project,
-                subject,
-                work_dir,
-                result,
-                progress_callback,
-                dicom_only=True,
-                scan_resources_cache=scan_resources_cache,
-            )
+            dicom_scan_count = 0
+            if not skip_dicom_upload:
+                dicom_scan_count = self._transfer_scans(
+                    scans,
+                    exp,
+                    dest_project,
+                    subject,
+                    work_dir,
+                    result,
+                    progress_callback,
+                    dicom_only=True,
+                    scan_resources_cache=scan_resources_cache,
+                )
 
             # Phase 2: Wait for prearchive resolution
             if dicom_scan_count > 0:
@@ -684,6 +701,7 @@ class TransferOrchestrator:
                 progress_callback,
                 dicom_only=False,
                 scan_resources_cache=scan_resources_cache,
+                create_missing_scans=skip_dicom_upload,
             )
 
             # Phase 4: Transfer session-level resources
@@ -753,6 +771,15 @@ class TransferOrchestrator:
             scan_resources_cache: dict[str, list[dict[str, Any]]] = {}
 
             existing_id = self.executor.check_experiment_exists(dest_project, exp.local_label)
+            if existing_id:
+                logger.info(
+                    "Experiment %s already exists on destination as %s; skipping DICOM upload",
+                    exp.local_label,
+                    existing_id,
+                )
+                work_dir_handle.cleanup()
+                return None
+
             if not existing_id:
                 has_any_dicom = self._scans_have_transferable_dicom(
                     scans, exp, scan_resources_cache
@@ -941,6 +968,7 @@ class TransferOrchestrator:
                 progress_callback,
                 dicom_only=False,
                 scan_resources_cache=scan_resources_cache,
+                create_missing_scans=True,
             )
 
             # Session-level resources
@@ -1262,11 +1290,28 @@ class TransferOrchestrator:
             resources = self.executor.discover_scan_resources(exp.local_id, scan_id)
             scan_resources_cache[scan_id] = resources
             for r in resources:
-                label = r.get("label", "")
-                if label == "DICOM" and self.filter_engine.should_include_scan_resource(
-                    xsi_type, label
+                if _is_dicom_resource(r) and self._should_include_scan_resource(
+                    xsi_type,
+                    r,
                 ):
                     return True
+        return False
+
+    def _should_include_scan_resource(
+        self,
+        session_xsi_type: str,
+        resource: dict[str, Any],
+    ) -> bool:
+        """Check scan-resource filters, mapping DICOM-format aliases to DICOM."""
+
+        label = str(resource.get("label") or "")
+        if _is_dicom_resource(resource):
+            return self.filter_engine.should_include_scan_resource(
+                session_xsi_type,
+                "DICOM",
+            )
+        if self.filter_engine.should_include_scan_resource(session_xsi_type, label):
+            return True
         return False
 
     def _transfer_scans(
@@ -1280,6 +1325,7 @@ class TransferOrchestrator:
         progress_callback: Callable[[str], None] | None = None,
         dicom_only: bool = True,
         scan_resources_cache: dict[str, list[dict[str, Any]]] | None = None,
+        create_missing_scans: bool = False,
     ) -> int:
         """Transfer scans for an experiment using two-phase download-then-upload.
 
@@ -1300,6 +1346,8 @@ class TransferOrchestrator:
             progress_callback: Optional progress callback.
             dicom_only: Phase selector (True=DICOM, False=non-DICOM).
             scan_resources_cache: Shared cache of scan resources across phases.
+            create_missing_scans: Create/tolerate scan shells before generic
+                resource upload when DICOM import is not expected to create them.
 
         Returns:
             Number of scans processed in this phase.
@@ -1336,6 +1384,7 @@ class TransferOrchestrator:
                     scan_work_dir,
                     dicom_only=dicom_only,
                     scan_resources_cache=scan_resources_cache,
+                    create_missing_scan=create_missing_scans,
                 )
                 return scan_id, items, ""
             except Exception as e:
@@ -1424,6 +1473,7 @@ class TransferOrchestrator:
         work_dir: Path,
         dicom_only: bool = True,
         scan_resources_cache: dict[str, list[dict[str, Any]]] | None = None,
+        create_missing_scan: bool = False,
     ) -> list[_DownloadedScan]:
         """Download and validate resources for a single scan.
 
@@ -1435,6 +1485,8 @@ class TransferOrchestrator:
             work_dir: Temporary working directory for this scan.
             dicom_only: Phase selector (True=DICOM, False=non-DICOM).
             scan_resources_cache: Shared cache of scan resources across phases.
+            create_missing_scan: Create/tolerate a destination scan shell before
+                uploading generic resources.
 
         Returns:
             List of downloaded scan items ready for upload.
@@ -1454,12 +1506,16 @@ class TransferOrchestrator:
             if scan_resources_cache is not None:
                 scan_resources_cache[scan_id] = resources
 
-        has_dicom = any(r.get("label") == "DICOM" for r in resources)
+        has_dicom = any(_is_dicom_resource(r) for r in resources)
+        will_upload_generic_resource = not dicom_only and any(
+            self._should_include_scan_resource(xsi_type, r) and not _is_dicom_resource(r)
+            for r in resources
+        )
 
         # Scans without DICOM won't be created by DICOM import;
         # create them explicitly before uploading non-DICOM resources.
         # 409 is tolerated: auto-archive may have already created the scan.
-        if not has_dicom and not dicom_only:
+        if will_upload_generic_resource and (create_missing_scan or not has_dicom):
             scan_type = scan.get("type", "")
             scan_xsi = (
                 xsi_type.replace("SessionData", "ScanData").replace("sessionData", "scanData")
@@ -1486,10 +1542,10 @@ class TransferOrchestrator:
 
         for res in resources:
             res_label = res.get("label", "")
-            if not self.filter_engine.should_include_scan_resource(xsi_type, res_label):
+            if not self._should_include_scan_resource(xsi_type, res):
                 continue
 
-            is_dicom = res_label == "DICOM"
+            is_dicom = _is_dicom_resource(res)
 
             # Phase filtering: skip resources not matching current phase
             if is_dicom != dicom_only:
@@ -1500,6 +1556,7 @@ class TransferOrchestrator:
                     source_experiment_id=exp.local_id,
                     scan_id=scan_id,
                     work_dir=work_dir,
+                    resource_label=res_label,
                 )
                 items.append(
                     _DownloadedScan(
