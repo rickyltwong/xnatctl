@@ -102,6 +102,76 @@ class TestResourceList:
         call_url = client.get_json.call_args[0][0]
         assert "/scans/1/resources" in call_url
 
+    def test_resource_list_with_project(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    {
+                        "label": "PROTOCOL",
+                        "format": "PDF",
+                        "file_count": "1",
+                        "file_size": "12345",
+                        "content": "DOC",
+                    },
+                ]
+            }
+        }
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["resource", "list", "--project", "PROJ1"])
+
+        assert result.exit_code == 0
+        call_url = client.get_json.call_args[0][0]
+        assert call_url == "/data/projects/PROJ1/resources"
+
+    def test_resource_list_rejects_project_and_session(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client) as mock_xnat:
+                    result = runner.invoke(
+                        cli,
+                        ["resource", "list", "XNAT_E00001", "--project", "PROJ1"],
+                    )
+
+        assert result.exit_code != 0
+        assert "Use either SESSION_ID or --project" in result.output
+        mock_xnat.assert_not_called()
+        client.get_json.assert_not_called()
+
+    def test_resource_list_requires_scope(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client) as mock_xnat:
+                    result = runner.invoke(cli, ["resource", "list"])
+
+        assert result.exit_code != 0
+        assert "Provide SESSION_ID or --project" in result.output
+        mock_xnat.assert_not_called()
+        client.get_json.assert_not_called()
+
+    def test_resource_list_rejects_project_with_scan(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client) as mock_xnat:
+                    result = runner.invoke(
+                        cli,
+                        ["resource", "list", "--project", "PROJ1", "--scan", "1"],
+                    )
+
+        assert result.exit_code != 0
+        assert "--scan can only be used with SESSION_ID" in result.output
+        mock_xnat.assert_not_called()
+        client.get_json.assert_not_called()
+
     def test_resource_list_quiet(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.return_value = {

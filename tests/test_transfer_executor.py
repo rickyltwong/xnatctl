@@ -424,6 +424,28 @@ class TestDownloadScanDicom:
             assert result == Path(tmpdir) / "scan_1_DICOM.zip"
             assert result.exists()
 
+    def test_downloads_dicom_from_non_default_resource_label(
+        self,
+        executor: TransferExecutor,
+        source_client: MagicMock,
+    ) -> None:
+        """DICOM data may be stored under a non-DICOM resource label."""
+        zip_data = _make_valid_zip()
+        _mock_stream_download(source_client, zip_data)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = executor.download_scan_dicom(
+                source_experiment_id="XNAT_E001",
+                scan_id="1",
+                work_dir=Path(tmpdir),
+                resource_label="secondary",
+            )
+
+        assert result == Path(tmpdir) / "scan_1_secondary.zip"
+        inner_client = source_client._get_client.return_value
+        call_path = inner_client.stream.call_args[0][1]
+        assert call_path == "/data/experiments/XNAT_E001/scans/1/resources/secondary/files"
+
     def test_raises_on_invalid_zip(
         self,
         executor: TransferExecutor,
