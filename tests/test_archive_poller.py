@@ -193,8 +193,11 @@ class TestArchivePoller:
         poller.enqueue(item)
         poller.start()
         try:
+            # Wait for at least one zero-return cycle to be processed, not just
+            # for the mock to be called. Main-thread observation of call_count
+            # is racy against the poller updating item.zero_scan_cycles.
             deadline = time.monotonic() + WAIT_TIMEOUT
-            while call_count < 4 and time.monotonic() < deadline:
+            while item.zero_scan_cycles < 1 and time.monotonic() < deadline:
                 time.sleep(FAST_POLL)
             assert item.zero_scan_cycles >= 1
             assert item.zero_scan_cycles <= 2

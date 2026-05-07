@@ -336,7 +336,7 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           pip install pyinstaller
-          pip install .
+          pip install ".[dicom]"
 
       - name: Build binary
         run: pyinstaller xnatctl.spec --noconfirm --clean
@@ -346,12 +346,14 @@ jobs:
         run: |
           ./dist/xnatctl --version
           ./dist/xnatctl --help
+          ./dist/xnatctl dicom --help
 
       - name: Smoke test (Windows)
         if: matrix.platform == 'windows'
         run: |
           dist\xnatctl.exe --version
           dist\xnatctl.exe --help
+          dist\xnatctl.exe dicom --help
         shell: cmd
 
       - name: Package (Linux/macOS)

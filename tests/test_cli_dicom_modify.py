@@ -289,14 +289,12 @@ class TestModifyFailedFiles:
 
     def test_write_error_reports_failed(self, runner: CliRunner, tmp_path: Path) -> None:
         """A write error during save is reported as 'failed' with non-zero exit."""
-        pydicom_mod = pytest.importorskip("pydicom")
+        pytest.importorskip("pydicom")
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
         with patch("pydicom.FileDataset.save_as", side_effect=OSError("disk full")):
-            result = runner.invoke(
-                cli, ["dicom", "modify", str(dcm), "-t", "PatientID=X"]
-            )
+            result = runner.invoke(cli, ["dicom", "modify", str(dcm), "-t", "PatientID=X"])
         assert result.exit_code == 1
         assert "failed 1" in result.output.lower()
 

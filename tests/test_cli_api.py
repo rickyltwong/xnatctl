@@ -474,6 +474,134 @@ class TestApiPut:
         assert "%3A" not in url.split("?")[1]
 
 
+class TestApiBinaryFileBody:
+    """Tests for binary-safe ``--file/-f`` bodies in api put/post."""
+
+    def test_api_put_binary_file(self, runner: CliRunner, tmp_path) -> None:
+        """A non-UTF-8 file (DICOM-like) is sent as raw bytes via ``data=``."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.put.return_value = mock_resp
+
+        # 0xBE is the byte that triggered UnicodeDecodeError in the wild.
+        binary_path = tmp_path / "blob.dcm"
+        binary_path.write_bytes(b"\xbe\x00\x01\x02fake-dicom\xff")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/data/foo/files/blob.dcm",
+                            "--file",
+                            str(binary_path),
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.put.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] == b"\xbe\x00\x01\x02fake-dicom\xff"
+        assert isinstance(call_kwargs["data"], bytes)
+
+    def test_api_post_binary_file(self, runner: CliRunner, tmp_path) -> None:
+        """A non-UTF-8 file is sent via POST as raw bytes via ``data=``."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.post.return_value = mock_resp
+
+        binary_path = tmp_path / "blob.bin"
+        binary_path.write_bytes(b"\xbe\xbf\xc0\xc1")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/data/services/import",
+                            "--file",
+                            str(binary_path),
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] == b"\xbe\xbf\xc0\xc1"
+        assert isinstance(call_kwargs["data"], bytes)
+
+    def test_api_put_json_file_still_uses_json_kwarg(self, runner: CliRunner, tmp_path) -> None:
+        """JSON-decodable UTF-8 files preserve the existing ``json=`` ergonomics."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.put.return_value = mock_resp
+
+        json_path = tmp_path / "payload.json"
+        json_path.write_text(json.dumps({"description": "Updated"}))
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/data/projects/MYPROJ",
+                            "--file",
+                            str(json_path),
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.put.call_args[1]
+        assert call_kwargs["json"] == {"description": "Updated"}
+        assert call_kwargs["data"] is None
+
+    def test_api_put_text_non_json_file_uses_data_kwarg(self, runner: CliRunner, tmp_path) -> None:
+        """Plain UTF-8 text that is not JSON is sent as a string via ``data=``."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.put.return_value = mock_resp
+
+        text_path = tmp_path / "note.txt"
+        text_path.write_text("plain non-json text body")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/data/foo",
+                            "--file",
+                            str(text_path),
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.put.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] == "plain non-json text body"
+        assert isinstance(call_kwargs["data"], str)
+
+
 class TestApiDelete:
     """Tests for api delete command."""
 

@@ -10,6 +10,7 @@ from xnatctl.core.exceptions import ResourceNotFoundError, ValidationError
 from xnatctl.models.subject import Subject
 
 from .base import BaseService
+from .hierarchy import HierarchyService
 
 
 class SubjectService(BaseService):
@@ -41,7 +42,7 @@ class SubjectService(BaseService):
             params["columns"] = ",".join(columns)
 
         data = self._get(path, params=params)
-        results = self._extract_results(data)
+        results = HierarchyService.extract_rows(data)
 
         if limit:
             results = results[:limit]
@@ -74,9 +75,14 @@ class SubjectService(BaseService):
 
         try:
             data = self._get(path, params=params)
-            results = self._extract_results(data)
+            item = HierarchyService.extract_first_item(data) if isinstance(data, dict) else None
+            if item is not None:
+                fields, _meta = item
+                return Subject.model_validate(fields)
+
+            results = HierarchyService.extract_rows(data)
             if results:
-                return Subject(**results[0])
+                return Subject.model_validate(results[0])
             raise ResourceNotFoundError("subject", subject_id)
         except Exception as e:
             if "404" in str(e):
@@ -121,17 +127,43 @@ class SubjectService(BaseService):
         subject_id: str,
         project: str | None = None,
         remove_files: bool = False,
+        force: bool = False,
     ) -> bool:
         """Delete a subject.
 
+        By default, refuses to delete a subject that still has experiments
+        attached (XNAT would cascade-delete the experiments). Pass
+        ``force=True`` to override this safety check — but only do so after
+        explicitly reassigning or archiving the experiments yourself.
+
         Args:
-            subject_id: Subject ID
-            project: Project ID
-            remove_files: Also remove files from filesystem
+            subject_id: Subject ID or label.
+            project: Project ID (required when using a label).
+            remove_files: Also remove files from filesystem.
+            force: Skip the "subject has experiments" safety check. Use with
+                extreme caution; cascade-deletes all attached experiments.
 
         Returns:
-            True if successful
+            True if successful.
+
+        Raises:
+            RuntimeError: If the subject has attached experiments and
+                ``force=False``.
         """
+        if not force and project:
+            try:
+                sessions = self.get_sessions(subject_id, project=project)
+            except Exception:
+                sessions = []
+            if sessions:
+                raise RuntimeError(
+                    f"Refusing to delete subject '{subject_id}' in project "
+                    f"'{project}': {len(sessions)} experiment(s) still attached "
+                    f"(IDs: {[e.get('ID') for e in sessions]}). "
+                    "Reassign or archive experiments first, or pass force=True "
+                    "to cascade-delete them."
+                )
+
         if project:
             path = f"/data/projects/{project}/subjects/{subject_id}"
         else:
@@ -374,7 +406,7 @@ class SubjectService(BaseService):
 
         params = {"format": "json"}
         data = self._get(path, params=params)
-        return self._extract_results(data)
+        return HierarchyService.extract_rows(data)
 
     def merge_subjects(
         self,
@@ -428,17 +460,75 @@ class SubjectService(BaseService):
             result["source_deleted"] = True
             return result
 
-        # Move each experiment to target
-        target_id = target.id or target_label
+        # Move each experiment to target using the same scoped PUT shape that
+        # the XNAT web UI issues for "Change parent subject":
+        #
+        #   PUT /data/projects/{p}/subjects/{TARGET_SUBJECT_ID}/experiments/{EXP_ID}
+        #
+        # The target subject is encoded in the URL *path* (internal XNAT ID),
+        # not in an XML-path-shortcut querystring. A prior implementation
+        # used PUT /data/experiments/{EXP_ID}?xnat:experimentData/subject_ID=...
+        # which was silently destructive on this XNAT version — it neither
+        # moved the experiment to the target nor left it on the source, and
+        # the subsequent source DELETE had nothing to cascade. Do not
+        # reintroduce that pattern. Verified on the dev XNAT on 2026-04-23.
+        target_id = target.id
+        if not target_id:
+            raise ValidationError(
+                f"Could not resolve internal subject ID for target '{target_label}'. "
+                "Refusing to merge without a resolved target subject ID."
+            )
         for exp in experiments:
             exp_id = exp.get("ID")
-            if exp_id:
-                # Update experiment's subject_ID to point to target
-                path = f"/data/experiments/{exp_id}"
-                params = {"xnat:experimentData/subject_ID": target_id}
-                self._put(path, params=params)
-                result["experiments"].append(exp_id)
-                result["experiments_moved"] += 1
+            if not exp_id:
+                continue
+
+            path = f"/data/projects/{project}/subjects/{target_id}/experiments/{exp_id}"
+            self._put(
+                path,
+                params={
+                    "format": "json",
+                    "event_type": "WEB_FORM",
+                    "event_action": "Modified subject",
+                },
+            )
+
+            # Verify the reassignment before proceeding. GET the experiment
+            # and confirm its subject_ID is now the target. If the PUT failed
+            # silently or destructively, this guard aborts before we touch
+            # the source subject.
+            verify = self._get(f"/data/experiments/{exp_id}", params={"format": "json"})
+            item = HierarchyService.extract_first_item(verify) if isinstance(verify, dict) else None
+            if item is None:
+                raise RuntimeError(
+                    f"Reassignment of experiment '{exp_id}' could not be verified: "
+                    "experiment not returned by GET. Aborting merge before source delete."
+                )
+            fields, _meta = item
+            actual_subject = fields.get("subject_ID")
+            if actual_subject != target_id:
+                raise RuntimeError(
+                    f"Reassignment of experiment '{exp_id}' did not take effect: "
+                    f"subject_ID is '{actual_subject}', expected '{target_id}'. "
+                    "Aborting merge before source delete to prevent data loss."
+                )
+
+            result["experiments"].append(exp_id)
+            result["experiments_moved"] += 1
+
+        # Fail-safe: re-list source experiments before delete. With the
+        # per-experiment verify loop above this should always be empty, but
+        # the check stays as defence in depth — the subsequent DELETE is
+        # cascade-capable, so any residual experiment here would be
+        # destroyed.
+        remaining = self.get_sessions(source_label, project=project)
+        if remaining:
+            raise RuntimeError(
+                f"Merge of '{source_label}' -> '{target_label}' left "
+                f"{len(remaining)} experiment(s) still attached to source "
+                f"(IDs: {[e.get('ID') for e in remaining]}). "
+                "Refusing to delete source subject to prevent data loss."
+            )
 
         # Delete the now-empty source subject
         self.delete(source_label, project=project)

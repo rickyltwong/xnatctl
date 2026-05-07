@@ -241,6 +241,13 @@ def test_session_upload_exam_wait_for_archive_default_succeeds(
     resolved_experiment_id = "EXPT_123"
 
     def fake_get_json(path: str, *, params: dict[str, object] | None = None) -> object:
+        # The hierarchy fallback added in B01 issues a project listing query
+        # when the direct experiment GET fails to resolve. Return an empty
+        # ResultSet so the fallback miss path raises ResourceNotFoundError
+        # again, preserving the legacy "no resolved id yet" signal.
+        if path == "/data/projects/P/experiments":
+            return {"ResultSet": {"Result": []}}
+
         if path != "/data/projects/P/experiments/E":
             raise AssertionError(f"Unexpected get_json path: {path}")
 
@@ -343,6 +350,11 @@ def test_session_upload_exam_wait_for_archive_timeout_click_error(
     monkeypatch.setattr("xnatctl.cli.session.time.monotonic", fake_monotonic)
 
     def fake_get_json(path: str, *, params: dict[str, object] | None = None) -> object:
+        # The hierarchy fallback (B01) issues a project listing when the
+        # direct experiment GET fails. Return an empty ResultSet so the
+        # fallback miss path re-raises ResourceNotFoundError as before.
+        if path == "/data/projects/P/experiments":
+            return {"ResultSet": {"Result": []}}
         if path != "/data/projects/P/experiments/E":
             raise AssertionError(f"Unexpected get_json path: {path}")
         raise ResourceNotFoundError("resource", path)

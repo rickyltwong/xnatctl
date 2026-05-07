@@ -473,6 +473,51 @@ class TestTwoPhaseTransferScans:
         orchestrator.executor.upload_scan_dicom.assert_called_once()
         orchestrator.executor.download_resource.assert_not_called()
 
+    def test_dicom_only_includes_dicom_format_secondary_resource(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """DICOM import uses the discovered label when format is DICOM."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+        scans = [{"ID": "1", "type": "DTI"}]
+
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "secondary", "format": "DICOM", "file_count": "72"}]
+        )
+        orchestrator.executor.download_scan_dicom = MagicMock(
+            return_value=Path("/tmp/scan_1_secondary.zip")
+        )
+        orchestrator.executor.upload_scan_dicom = MagicMock(return_value="/data/imported")
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
+
+        result = TransferResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            expected_work_dir = Path(tmpdir) / "scan_1"
+            orchestrator._transfer_scans(
+                scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=True
+            )
+
+        orchestrator.executor.download_scan_dicom.assert_called_once_with(
+            source_experiment_id="XNAT_E001",
+            scan_id="1",
+            work_dir=expected_work_dir,
+            resource_label="secondary",
+        )
+        orchestrator.executor.upload_scan_dicom.assert_called_once()
+        orchestrator.executor.download_resource.assert_not_called()
+
     def test_non_dicom_only_skips_dicom(
         self,
         orchestrator: TransferOrchestrator,
@@ -514,6 +559,115 @@ class TestTwoPhaseTransferScans:
         orchestrator.executor.download_scan_dicom.assert_not_called()
         orchestrator.executor.download_resource.assert_called_once()
         orchestrator.executor.upload_resource.assert_called_once()
+
+    def test_non_dicom_existing_sync_creates_scan_shell_when_dicom_upload_skipped(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Existing-session sync creates scans before generic resource upload."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+        scans = [{"ID": "1", "type": "T1w"}]
+
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[
+                {"label": "DICOM", "format": "DICOM", "file_count": "100"},
+                {"label": "NII", "format": "NIFTI", "file_count": "1"},
+            ]
+        )
+        orchestrator.executor.create_scan = MagicMock()
+        orchestrator.executor.download_resource = MagicMock(
+            return_value=(Path("/tmp/1_NII_flat.zip"), 100)
+        )
+        orchestrator.executor.upload_resource = MagicMock()
+
+        result = TransferResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator._transfer_scans(
+                scans,
+                exp,
+                "DST",
+                subject,
+                Path(tmpdir),
+                result,
+                dicom_only=False,
+                create_missing_scans=True,
+            )
+
+        orchestrator.executor.create_scan.assert_called_once_with(
+            dest_project="DST",
+            dest_subject="SUB001",
+            dest_experiment="EXP001",
+            scan_id="1",
+            scan_type="T1w",
+            xsi_type="xnat:mrScanData",
+        )
+        orchestrator.executor.download_resource.assert_called_once()
+        orchestrator.executor.upload_resource.assert_called_once()
+
+    def test_non_dicom_only_skips_dicom_format_secondary_resource(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """DICOM-format resources are not uploaded as generic resources."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+        scans = [{"ID": "1", "type": "DTI"}]
+
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "secondary", "format": "DICOM", "file_count": "72"}]
+        )
+        orchestrator.executor.download_scan_dicom = MagicMock()
+        orchestrator.executor.upload_scan_dicom = MagicMock()
+        orchestrator.executor.download_resource = MagicMock()
+        orchestrator.executor.upload_resource = MagicMock()
+
+        result = TransferResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator._transfer_scans(
+                scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=False
+            )
+
+        orchestrator.executor.download_scan_dicom.assert_not_called()
+        orchestrator.executor.download_resource.assert_not_called()
+        orchestrator.executor.upload_resource.assert_not_called()
+
+    def test_dicom_format_secondary_uses_dicom_filter_alias(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """A DICOM-format alias obeys filters configured for DICOM."""
+        orchestrator.filter_engine.should_include_scan_resource = MagicMock(
+            side_effect=lambda _xsi, label: label != "DICOM"
+        )
+
+        assert (
+            orchestrator._should_include_scan_resource(
+                "xnat:mrSessionData",
+                {"label": "secondary", "format": "DICOM"},
+            )
+            is False
+        )
 
     def test_shared_cache_prevents_double_fetch(
         self,
@@ -949,7 +1103,7 @@ class TestDeferredExperimentCreation:
         self,
         orchestrator: TransferOrchestrator,
     ) -> None:
-        """Experiment is not created when it already exists on destination."""
+        """Existing destination sessions skip DICOM upload and prearchive."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
@@ -964,7 +1118,13 @@ class TestDeferredExperimentCreation:
 
         orchestrator.executor.check_experiment_exists = MagicMock(return_value="XNAT_E999")
         orchestrator.executor.create_experiment = MagicMock(return_value="OK")
-        orchestrator.executor.discover_scans = MagicMock(return_value=[])
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.discover_scan_resources = MagicMock(
+            return_value=[{"label": "DICOM", "format": "DICOM", "file_count": "100"}]
+        )
+        orchestrator.executor.download_scan_dicom = MagicMock()
+        orchestrator.executor.upload_scan_dicom = MagicMock()
+        orchestrator.executor.wait_for_archive = MagicMock()
         orchestrator.executor.discover_session_resources = MagicMock(return_value=[])
         orchestrator.executor.apply_xml_overlay = MagicMock()
 
@@ -974,6 +1134,9 @@ class TestDeferredExperimentCreation:
         orchestrator._transfer_experiment(exp, 1, "DST", subject, result)
 
         orchestrator.executor.create_experiment.assert_not_called()
+        orchestrator.executor.download_scan_dicom.assert_not_called()
+        orchestrator.executor.upload_scan_dicom.assert_not_called()
+        orchestrator.executor.wait_for_archive.assert_not_called()
 
 
 class TestPipelinedTransfer:
@@ -1038,6 +1201,40 @@ class TestPipelinedTransfer:
         subject_resp = MagicMock()
         subject_resp.text = "/data/subjects/XNAT_S999"
         dest_client.put.return_value = subject_resp
+
+    def test_upload_dicom_phase_skips_existing_experiment(
+        self,
+        orchestrator: TransferOrchestrator,
+    ) -> None:
+        """Pipelined phase skips DICOM when the destination session exists."""
+        exp = DiscoveredEntity(
+            local_id="XNAT_E001",
+            local_label="EXP001",
+            change_type=ChangeType.NEW,
+            xsi_type="xnat:mrSessionData",
+        )
+        subject = DiscoveredEntity(
+            local_id="XNAT_S001",
+            local_label="SUB001",
+            change_type=ChangeType.NEW,
+        )
+
+        orchestrator.executor.discover_scans = MagicMock(return_value=[{"ID": "1", "type": "T1w"}])
+        orchestrator.executor.check_experiment_exists = MagicMock(return_value="XNAT_E999")
+        orchestrator.executor.create_experiment = MagicMock()
+        orchestrator.executor.discover_scan_resources = MagicMock()
+        orchestrator.executor.download_scan_dicom = MagicMock()
+        orchestrator.executor.upload_scan_dicom = MagicMock()
+
+        result = TransferResult()
+
+        ctx = orchestrator._upload_dicom_phase(exp, 1, "DST", subject, result)
+
+        assert ctx is None
+        orchestrator.executor.create_experiment.assert_not_called()
+        orchestrator.executor.discover_scan_resources.assert_not_called()
+        orchestrator.executor.download_scan_dicom.assert_not_called()
+        orchestrator.executor.upload_scan_dicom.assert_not_called()
 
     def test_pipelined_transfer_two_experiments(
         self,

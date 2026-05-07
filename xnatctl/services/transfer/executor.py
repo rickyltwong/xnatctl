@@ -239,6 +239,7 @@ class TransferExecutor:
         source_experiment_id: str,
         scan_id: str,
         work_dir: Path,
+        resource_label: str = "DICOM",
     ) -> Path:
         """Download and validate a DICOM ZIP from a source scan.
 
@@ -246,6 +247,7 @@ class TransferExecutor:
             source_experiment_id: Source experiment accession ID.
             scan_id: Scan ID to download.
             work_dir: Temporary working directory for this scan.
+            resource_label: Scan resource label containing DICOM data.
 
         Returns:
             Path to the validated ZIP file on disk.
@@ -254,18 +256,21 @@ class TransferExecutor:
             ValueError: If ZIP validation fails.
         """
         work_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = work_dir / f"scan_{scan_id}_DICOM.zip"
+        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", resource_label)
+        zip_path = work_dir / f"scan_{scan_id}_{safe_label}.zip"
+        encoded_label = _quote_path_segment(resource_label)
 
         total_bytes, content_length = self._stream_download(
             self.source,
-            f"/data/experiments/{source_experiment_id}/scans/{scan_id}/resources/DICOM/files",
+            f"/data/experiments/{source_experiment_id}"
+            f"/scans/{scan_id}/resources/{encoded_label}/files",
             {"format": "zip"},
             zip_path,
         )
 
         if not self.validate_zip(zip_path, content_length):
             raise ValueError(
-                f"ZIP validation failed for scan {scan_id}: "
+                f"ZIP validation failed for scan {scan_id}/{resource_label}: "
                 f"downloaded {total_bytes} bytes, expected {content_length}"
             )
 
