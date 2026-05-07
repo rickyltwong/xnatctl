@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from xnatctl.core.exceptions import AuthenticationError
+from xnatctl.models.hierarchy import ExperimentRef, ResourceRef, ScanRef
 from xnatctl.models.progress import (
     DownloadProgress,
     DownloadSummary,
@@ -18,6 +19,7 @@ from xnatctl.models.progress import (
 )
 
 from .base import BaseService
+from .hierarchy import HierarchyService
 
 
 def _md5_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -47,27 +49,33 @@ def _safe_extract_zip(zip_path: Path, extract_dir: Path) -> None:
 class DownloadService(BaseService):
     """Service for XNAT download operations."""
 
-    def _extract_experiment_id(self, exp_data: dict[str, Any]) -> str | None:
-        """Extract internal experiment ID from response data."""
-        if "items" in exp_data:
-            items = exp_data.get("items") or []
-            if items:
-                data_fields = items[0].get("data_fields") or {}
-                exp_id = data_fields.get("ID")
-                if isinstance(exp_id, str) and exp_id:
-                    return exp_id
-                if isinstance(exp_id, int):
-                    return str(exp_id)
+    def _resolve_zip_experiment_ref(
+        self,
+        session_id: str,
+        *,
+        project: str | None = None,
+        subject: str | None = None,
+    ) -> ExperimentRef:
+        """Resolve label-based experiment references to a canonical experiment ID."""
 
-        results = exp_data.get("ResultSet", {}).get("Result", [])
-        if results:
-            exp_id = results[0].get("ID")
-            if isinstance(exp_id, str) and exp_id:
-                return exp_id
-            if isinstance(exp_id, int):
-                return str(exp_id)
+        if project and not session_id.startswith("XNAT_E"):
+            source_ref = ExperimentRef(
+                experiment=session_id,
+                project_id=project,
+                subject=subject,
+                experiment_is_label=True,
+                subject_is_label=subject is not None,
+            )
+            resolved = HierarchyService.parse_resolved_experiment(
+                source_ref,
+                self._get(
+                    HierarchyService.build_experiment_path(source_ref),
+                    params={"format": "json"},
+                ),
+            )
+            return ExperimentRef(experiment=resolved.experiment_id)
 
-        return None
+        return ExperimentRef(experiment=session_id)
 
     def download_session(
         self,
@@ -249,31 +257,32 @@ class DownloadService(BaseService):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Resolve session label to internal ID if using project path
-        # The /data/projects/.../experiments/{label}/... path doesn't work for ZIP downloads
-        # but /data/experiments/{id}/... does
-        resolved_session_id = session_id
-        if project and not session_id.startswith("XNAT_E"):
-            try:
-                exp_data = self._get(
-                    f"/data/projects/{project}/experiments/{session_id}",
-                    params={"format": "json"},
-                )
-                resolved_session_id = self._extract_experiment_id(exp_data) or ""
-                if not resolved_session_id:
-                    raise ValueError(f"Session '{session_id}' not found in project '{project}'")
-            except AuthenticationError:
+        try:
+            resolved_experiment_ref = self._resolve_zip_experiment_ref(
+                session_id,
+                project=project,
+            )
+        except AuthenticationError:
+            raise
+        except Exception as e:
+            if "not found" in str(e).lower() or isinstance(e, ValueError):
                 raise
-            except Exception as e:
-                if "not found" in str(e).lower() or isinstance(e, ValueError):
-                    raise
-                resolved_session_id = session_id
+            resolved_experiment_ref = ExperimentRef(experiment=session_id)
 
         # Build path - always use /data/experiments/{id}/... for reliable ZIP downloads
         if scan_id:
-            path = f"/data/experiments/{resolved_session_id}/scans/{scan_id}/resources/{resource_label}/files"
+            path = HierarchyService.build_resource_path(
+                ResourceRef(
+                    parent=ScanRef(experiment=resolved_experiment_ref, scan_id=scan_id),
+                    resource_label=resource_label,
+                ),
+                "files",
+            )
         else:
-            path = f"/data/experiments/{resolved_session_id}/resources/{resource_label}/files"
+            path = HierarchyService.build_resource_path(
+                ResourceRef(parent=resolved_experiment_ref, resource_label=resource_label),
+                "files",
+            )
 
         params = {"format": "zip"}
 
@@ -411,32 +420,34 @@ class DownloadService(BaseService):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        resolved_session_id = session_id
-        if project and not session_id.startswith("XNAT_E"):
-            exp_base = f"/data/projects/{project}"
-            if subject:
-                exp_base += f"/subjects/{subject}"
-            try:
-                exp_data = self._get(
-                    f"{exp_base}/experiments/{session_id}",
-                    params={"format": "json"},
-                )
-                resolved_session_id = self._extract_experiment_id(exp_data) or ""
-                if not resolved_session_id:
-                    raise ValueError(f"Session '{session_id}' not found in project '{project}'")
-            except AuthenticationError:
+        try:
+            resolved_experiment_ref = self._resolve_zip_experiment_ref(
+                session_id,
+                project=project,
+                subject=subject,
+            )
+        except AuthenticationError:
+            raise
+        except Exception as e:
+            if "not found" in str(e).lower() or isinstance(e, ValueError):
                 raise
-            except Exception as e:
-                if "not found" in str(e).lower() or isinstance(e, ValueError):
-                    raise
-                resolved_session_id = session_id
+            resolved_experiment_ref = ExperimentRef(experiment=session_id)
 
         scan_spec = ",".join(scan_ids) if len(scan_ids) > 1 else scan_ids[0]
 
         if resource:
-            path = f"/data/experiments/{resolved_session_id}/scans/{scan_spec}/resources/{resource}/files"
+            path = HierarchyService.build_resource_path(
+                ResourceRef(
+                    parent=ScanRef(experiment=resolved_experiment_ref, scan_id=scan_spec),
+                    resource_label=resource,
+                ),
+                "files",
+            )
         else:
-            path = f"/data/experiments/{resolved_session_id}/scans/{scan_spec}/files"
+            path = HierarchyService.build_scan_path(
+                ScanRef(experiment=resolved_experiment_ref, scan_id=scan_spec),
+                "files",
+            )
 
         params = {"format": "zip"}
         zip_path = output_dir / (zip_filename or "scans.zip")

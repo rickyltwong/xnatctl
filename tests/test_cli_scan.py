@@ -149,6 +149,51 @@ class TestScanList:
         scan_call_url = mock_client.get_json.call_args_list[1][0][0]
         assert "/data/experiments/XNAT_E00001/scans" in scan_call_url
 
+    def test_scan_list_inspect_swallows_only_404(self, runner: CliRunner) -> None:
+        """Non-404 errors from the experiment inspect probe propagate to the user.
+
+        The legacy ``except Exception`` in ``_inspect_experiment`` masked every
+        failure as "no experiment metadata", which produced a misleading "No
+        results" downstream. Only ``ResourceNotFoundError`` should be swallowed.
+        """
+        from xnatctl.core.exceptions import NetworkError, ResourceNotFoundError
+
+        # Case A: ResourceNotFoundError on the inspect probe is swallowed; the
+        # scan list call still runs and returns the same output as before.
+        ctx, mock_client = _make_authenticated_context(default_project=None)
+        mock_client.get_json.side_effect = [
+            ResourceNotFoundError("session", "XNAT_E00001"),
+            _scan_results(),
+        ]
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx.auth_manager
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result.exit_code == 0
+        # The scan list call still ran after the swallowed 404.
+        assert mock_client.get_json.call_count == 2
+
+        # Case B: a non-404 (network) error must propagate, not be swallowed.
+        ctx2, mock_client2 = _make_authenticated_context(default_project=None)
+        mock_client2.get_json.side_effect = NetworkError("upstream timeout")
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx2.config),
+            patch.object(Context, "get_client", return_value=mock_client2),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx2.auth_manager
+            result2 = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result2.exit_code != 0
+        # Only the inspect probe ran; the scan list call was never issued.
+        assert mock_client2.get_json.call_count == 1
+
     def test_scan_list_default_project_fallback(self, runner: CliRunner) -> None:
         """Falls back to profile default_project for label resolution."""
         ctx, mock_client = _make_authenticated_context(default_project="FALLBACK")
@@ -332,23 +377,86 @@ class TestScanShow:
 
         assert result.exit_code == 0
 
-    def test_scan_show_with_project(self, runner: CliRunner) -> None:
-        """Show scan with -P scopes to project endpoint."""
+    def test_scan_show_items_response(self, runner: CliRunner) -> None:
+        """Show scan details from an `items[]` response shape."""
         ctx, mock_client = _make_authenticated_context()
-        mock_client.get_json.return_value = {
-            "ResultSet": {
-                "Result": [
+        mock_client.get_json.side_effect = [
+            {
+                "items": [
                     {
-                        "ID": "1",
-                        "type": "T1w",
-                        "series_description": "T1-weighted",
-                        "quality": "usable",
-                        "frames": "176",
-                        "note": "",
+                        "data_fields": {
+                            "ID": "XNAT_E00001",
+                            "label": "SESS001",
+                            "project": "PROJ",
+                            "subject_ID": "XNAT_S00001",
+                        },
+                        "meta": {"xsi:type": "xnat:petSessionData"},
+                        "children": [],
                     }
                 ]
-            }
-        }
+            },
+            {
+                "items": [
+                    {
+                        "data_fields": {
+                            "ID": "12",
+                            "type": "PET",
+                            "series_description": "Series",
+                            "quality": "usable",
+                            "frames": 712,
+                            "note": "",
+                        },
+                        "meta": {"xsi:type": "xnat:petScanData"},
+                        "children": [],
+                    }
+                ]
+            },
+            {"ResultSet": {"Result": [{"label": "DICOM"}]}},
+        ]
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx.auth_manager
+            result = runner.invoke(cli, ["scan", "show", "-E", "XNAT_E00001", "12", "-o", "json"])
+
+        assert result.exit_code == 0
+        assert '"id": "12"' in result.output
+
+    def test_scan_show_with_project(self, runner: CliRunner) -> None:
+        """Show scan with -P resolves to the canonical experiment ID for nested calls."""
+        ctx, mock_client = _make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_E00001",
+                            "label": "SESS001",
+                            "project": "TESTPROJ",
+                            "xsiType": "xnat:mrSessionData",
+                        }
+                    ]
+                }
+            },
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "1",
+                            "type": "T1w",
+                            "series_description": "T1-weighted",
+                            "quality": "usable",
+                            "frames": "176",
+                            "note": "",
+                        }
+                    ]
+                }
+            },
+            {"ResultSet": {"Result": []}},
+        ]
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -359,8 +467,11 @@ class TestScanShow:
             result = runner.invoke(cli, ["scan", "show", "-E", "SESS001", "-P", "TESTPROJ", "1"])
 
         assert result.exit_code == 0
-        call_url = mock_client.get_json.call_args_list[0][0][0]
-        assert "/data/projects/TESTPROJ/experiments/SESS001/scans/1" in call_url
+        resolve_url = mock_client.get_json.call_args_list[0][0][0]
+        assert "/data/projects/TESTPROJ/experiments/SESS001" in resolve_url
+        # After inspection, nested calls preserve project scope so ACLs apply.
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/data/projects/TESTPROJ/experiments/XNAT_E00001/scans/1" in scan_url
 
     def test_scan_show_not_found(self, runner: CliRunner) -> None:
         """Non-existent scan prints error and exits 1."""

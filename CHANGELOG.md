@@ -2,6 +2,83 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.8 - 2026-05-07
+
+**Features**
+
+- Add `xnatctl resource refresh URI [--options ...]` for targeted catalog
+  refresh against `/data/services/refresh/catalog`. Options accept any of
+  `checksum`, `delete`, `append`, `populateStats`. Replaces the need to drop
+  to `api post` for single scan/resource catalog refreshes.
+- Add `--project/-P` to `xnatctl resource upload` so label-based session
+  resolution works for scan-level and session-level resource uploads.
+  Default falls back to the active profile's `default_project`.
+- Allow `xnatctl config show -p NAME` to filter the output to a single
+  profile (and its details). Unknown profile names error with the available
+  list. Unfiltered behavior is unchanged.
+- Add `HierarchyService` for shared path building, response-envelope
+  parsing (`ResultSet.Result` and `items[]`), and resolution of
+  `ProjectRef` / `SubjectRef` / `ExperimentRef` / `ScanRef` / `ResourceRef`.
+  Services and CLI commands now route through it instead of open-coding
+  paths and parsing.
+- Bundle `pydicom` and `pynetdicom` in the standalone PyInstaller binary
+  so `xnatctl dicom` utilities work out of the box after `install.sh`.
+
+**Bug fixes**
+
+- Fix `session show` and `scan list` returning "Session not found" or
+  "No results" for sessions reachable via subject-scoped paths.
+  `HierarchyService.resolve_experiment` now falls back to listing
+  `/data/projects/{P}/experiments?columns=ID,label,subject_ID,xsiType`
+  with client-side label/ID match when the direct project-experiment
+  endpoint fails, and tries `/data/experiments/{ID}` for accession-ID-shaped
+  references that don't resolve in the active project.
+- Narrow `_inspect_experiment` exception swallowing in `cli/scan.py` to
+  `ResourceNotFoundError` only; transient network and auth errors now
+  surface to the user instead of silently producing "No results".
+- Fix `xnatctl api put -f FILE` and `api post -f FILE` corrupting binary
+  files with `UnicodeDecodeError`. The body is now read in binary, with a
+  UTF-8 + JSON probe before falling back to raw bytes. JSON and plain-text
+  paths are unchanged on the wire.
+- Fix `session upload --mode gradual --prearchive` silently uploading to
+  direct-archive: the CLI wrapper now threads `direct_archive` through to
+  the gradual-DICOM service. Consolidate prearchive routing through a
+  single `archive_destination_params()` helper that uses
+  `dest=/prearchive/projects/{p}` instead of `Direct-Archive=false`. Help
+  text now warns that `--prearchive` is best-effort against projects with
+  auto-archive enabled.
+- Fix `subject merge` silently destroying experiments. Replace the global
+  `PUT /data/experiments/{id}?xnat:experimentData/subject_ID=...` shortcut
+  with the scoped `PUT /data/projects/{p}/subjects/{target_id}/experiments/{id}`
+  that the XNAT web UI uses, plus per-experiment post-PUT verification
+  before the source-subject delete. `SubjectService.delete()` now refuses
+  to delete subjects with experiments still attached unless `force=True`.
+- De-flake `tests/test_archive_poller_zero_vs_error` on slower CI runners
+  by waiting on the actual observable (`zero_scan_cycles >= 1`) rather
+  than the racy proxy.
+- Various resource-listing and transfer edge-case fixes carried into the
+  HierarchyService refactor.
+
+**Documentation**
+
+- Document that `xnatctl resource upload` PUTs files directly to the
+  resource catalog and **bypasses XNAT project-level DICOM anonymization
+  scripts and pipelines**. Use `xnatctl session upload` /
+  `xnatctl session upload-exam` when anonymization is required. Disclosure
+  appears in `--help` and `docs/uploading.rst`.
+
+**Refactors**
+
+- Extract `cli/common.py` context helpers (`get_profile`,
+  `default_project_from_context`, `require_project_from_context`,
+  `resolve_workers_from_context`) and adopt them across CLI commands.
+- Migrate services and CLI from open-coded `ResultSet.Result` / `items[]`
+  parsing to `HierarchyService.extract_rows` / `extract_first_item`.
+  `Session.get()` now merges `meta["xsi:type"]` into the model when the
+  field-level value is missing (fixes non-imaging session xsiType).
+  Behavior note: a session label that cannot be resolved in a project
+  now raises `ResourceNotFoundError` (was `ValueError`).
+
 ## 0.2.7 - 2026-04-20
 
 **Features**

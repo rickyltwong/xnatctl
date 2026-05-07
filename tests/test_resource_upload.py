@@ -44,6 +44,7 @@ class ResourceServiceSpy:
         scan_id: str | None,
         format: str | None,
         content: str | None,
+        project: str | None = None,
     ) -> None:
         self.create_calls.append(
             {
@@ -52,6 +53,7 @@ class ResourceServiceSpy:
                 "scan_id": scan_id,
                 "format": format,
                 "content": content,
+                "project": project,
             }
         )
 
@@ -63,6 +65,7 @@ class ResourceServiceSpy:
         scan_id: str | None,
         extract: bool,
         overwrite: bool,
+        project: str | None = None,
     ) -> None:
         if ResourceServiceSpy.raise_on_upload == "file":
             raise RuntimeError("kaboom")
@@ -74,6 +77,7 @@ class ResourceServiceSpy:
                 "scan_id": scan_id,
                 "extract": extract,
                 "overwrite": overwrite,
+                "project": project,
             }
         )
 
@@ -84,6 +88,7 @@ class ResourceServiceSpy:
         directory_path: Path,
         scan_id: str | None,
         overwrite: bool,
+        project: str | None = None,
     ) -> None:
         if ResourceServiceSpy.raise_on_upload == "directory":
             raise RuntimeError("kaboom")
@@ -94,6 +99,7 @@ class ResourceServiceSpy:
                 "directory_path": directory_path,
                 "scan_id": scan_id,
                 "overwrite": overwrite,
+                "project": project,
             }
         )
 
@@ -159,6 +165,7 @@ def test_resource_upload_file_routes_through_service(
                 "scan_id": "1",
                 "format": "NIFTI",
                 "content": "raw",
+                "project": None,
             }
         ]
         assert service.upload_directory_calls == []

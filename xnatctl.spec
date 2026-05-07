@@ -3,7 +3,7 @@
 
 import sys
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 is_windows = sys.platform == "win32"
 
@@ -13,19 +13,25 @@ hiddenimports = (
     + collect_submodules("rich")
 )
 
+binaries: list = []
+datas: list = []
+for pkg in ("pydicom", "pynetdicom"):
+    pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
+    datas += pkg_datas
+    binaries += pkg_binaries
+    hiddenimports += pkg_hiddenimports
+
 a = Analysis(
     ["xnatctl/__main__.py"],
     pathex=[],
-    binaries=[],
-    datas=[],
+    binaries=binaries,
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
         "keyring",
-        "pydicom",
-        "pynetdicom",
         "tkinter",
         "pytest",
         "setuptools",

@@ -120,9 +120,54 @@ class TestConfigShow:
         cfg = Config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            result = runner.invoke(cli, ["config", "show"])
+            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+                result = runner.invoke(cli, ["config", "show"])
 
         assert result.exit_code != 0
+
+    def test_config_show_filter_by_profile(self, runner: CliRunner) -> None:
+        """``-p NAME`` restricts profile-detail sections to that single profile."""
+        cfg = _mock_config()
+
+        with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
+            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+                result = runner.invoke(cli, ["config", "show", "-p", "dev"])
+
+        assert result.exit_code == 0
+        # The selected profile name appears in the per-profile section.
+        assert "dev" in result.output
+        # The non-selected profile's URL does NOT appear in the output.
+        assert "xnat.example.org" not in result.output
+        assert "xnat-dev.example.org" in result.output
+
+    def test_config_show_filter_by_profile_json(self, runner: CliRunner) -> None:
+        """``-p NAME -o json`` narrows ``profiles`` and ``profile_details``."""
+        cfg = _mock_config()
+
+        with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
+            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+                result = runner.invoke(cli, ["config", "show", "-p", "dev", "-o", "json"])
+
+        assert result.exit_code == 0
+        import json as _json
+
+        payload = _json.loads(result.output)
+        assert payload["profiles"] == ["dev"]
+        assert list(payload["profile_details"].keys()) == ["dev"]
+
+    def test_config_show_unknown_profile_errors(self, runner: CliRunner) -> None:
+        """Unknown ``-p NAME`` exits non-zero and lists available profiles."""
+        cfg = _mock_config()
+
+        with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
+            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+                result = runner.invoke(cli, ["config", "show", "-p", "nonexist"])
+
+        assert result.exit_code != 0
+        assert "nonexist" in result.output
+        # Available profiles are listed.
+        assert "default" in result.output
+        assert "dev" in result.output
 
 
 class TestConfigUseContext:
