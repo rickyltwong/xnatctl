@@ -18,6 +18,7 @@ from xnatctl.cli.common import (
     require_auth,
     resolve_workers_from_context,
 )
+from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.core.output import OutputFormat, print_error, print_json, print_output, print_success
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 from xnatctl.services.hierarchy import HierarchyService
@@ -41,7 +42,7 @@ def _inspect_experiment(
     """
     try:
         data = hierarchy.client.get_json(hierarchy.build_experiment_path(experiment_ref))
-    except Exception:
+    except ResourceNotFoundError:
         return experiment_ref, None
     if not isinstance(data, dict):
         return experiment_ref, None
