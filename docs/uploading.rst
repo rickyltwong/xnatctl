@@ -384,6 +384,13 @@ scans. Use ``xnatctl resource upload`` for these cases. When you upload a
 directory, xnatctl zips it locally and extracts it server-side; single files are
 uploaded directly.
 
+.. note::
+
+   ``xnatctl resource upload`` PUTs files directly to the resource catalog and
+   **bypasses XNAT project-level DICOM anonymization scripts and pipelines**.
+   Use ``xnatctl session upload`` or ``xnatctl session upload-exam`` when
+   anonymization is required.
+
 
 Upload a Scanner Exam-Root Directory
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -7,7 +7,13 @@ from urllib.parse import quote
 
 import click
 
-from xnatctl.cli.common import Context, global_options, handle_errors, require_auth
+from xnatctl.cli.common import (
+    Context,
+    default_project_from_context,
+    global_options,
+    handle_errors,
+    require_auth,
+)
 from xnatctl.core.output import print_error, print_output, print_success
 from xnatctl.models.hierarchy import (
     ExperimentRef,
@@ -194,6 +200,14 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
 
 
 @resource.command("upload")
+@click.option(
+    "--project",
+    "-P",
+    help=(
+        "Project ID for label-based session resolution; "
+        "defaults to active profile's default_project"
+    ),
+)
 @click.argument("session_id")
 @click.argument("resource_label")
 @click.argument("path", type=click.Path(exists=True))
@@ -205,6 +219,7 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
 @handle_errors
 def resource_upload(
     ctx: Context,
+    project: str | None,
     session_id: str,
     resource_label: str,
     path: str,
@@ -214,12 +229,18 @@ def resource_upload(
 ) -> None:
     """Upload file or directory to a resource.
 
+    NOTE: This command PUTs files directly to the resource catalog and BYPASSES
+    XNAT project-level DICOM anonymization scripts and pipelines. Use
+    ``xnatctl session upload`` or ``xnatctl session upload-exam`` when
+    anonymization is required.
+
     Directories are zipped and extracted server-side.
 
     Example:
         xnatctl resource upload XNAT_E00001 BIDS ./bids_data
         xnatctl resource upload XNAT_E00001 NIFTI ./file.nii.gz
         xnatctl resource upload XNAT_E00001 DICOM ./dicoms --scan 1
+        xnatctl resource upload --project CLM01_UCA_4 SESSION_LABEL DICOM ./file.dcm --scan 1
     """
     from xnatctl.core.output import create_progress
     from xnatctl.core.validation import (
@@ -237,12 +258,15 @@ def resource_upload(
     if scan:
         scan = validate_scan_id(scan)
 
+    project = project or default_project_from_context(ctx)
+
     # Create resource if it doesn't exist
     try:
         service.create(
             session_id=session_id,
             resource_label=resource_label,
             scan_id=scan,
+            project=project,
             format=file_format,
             content=content,
         )
@@ -259,6 +283,7 @@ def resource_upload(
                     resource_label=resource_label,
                     directory_path=input_path,
                     scan_id=scan,
+                    project=project,
                     overwrite=False,
                 )
                 progress.update(task, description="Done")
@@ -269,6 +294,7 @@ def resource_upload(
                     resource_label=resource_label,
                     file_path=input_path,
                     scan_id=scan,
+                    project=project,
                     extract=False,
                     overwrite=False,
                 )
@@ -277,6 +303,41 @@ def resource_upload(
         raise click.ClickException(f"Upload failed: {exc}") from exc
 
     print_success(f"Uploaded to {resource_label}")
+
+
+@resource.command("refresh")
+@click.argument("uri")
+@click.option(
+    "--options",
+    multiple=True,
+    type=click.Choice(["checksum", "delete", "append", "populateStats"]),
+    help="Refresh options (can repeat).",
+)
+@global_options
+@require_auth
+@handle_errors
+def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
+    """Refresh a single XNAT resource catalog by archive URI.
+
+    Example:
+        xnatctl resource refresh \\
+          /archive/projects/MYPROJ/subjects/SUBJ/experiments/EXP/scans/1/resources/DICOM \\
+          --options append --options populateStats
+    """
+    client = ctx.get_client()
+    params: dict[str, str] = {"resource": uri}
+    if options:
+        params["options"] = ",".join(options)
+    resp = client.post("/data/services/refresh/catalog", params=params)
+    if resp.status_code != 200:
+        raise click.ClickException(f"Refresh failed [{resp.status_code}]: {resp.text}")
+    payload = {"resource": uri, "options": list(options), "status": "ok"}
+    print_output(
+        payload,
+        format=ctx.output_format,
+        quiet=ctx.quiet,
+        id_field="resource",
+    )
 
 
 @resource.command("download")
