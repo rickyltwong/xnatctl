@@ -6,7 +6,7 @@ from typing import Any
 
 import click
 
-from xnatctl.cli.common import confirm_destructive, handle_errors
+from xnatctl.cli.common import Context, confirm_destructive, global_options, handle_errors
 from xnatctl.core.config import CONFIG_FILE, Config
 from xnatctl.core.output import (
     OutputFormat,
@@ -77,9 +77,15 @@ def config_init(url: str, profile: str, project: str | None, force: bool) -> Non
 
 
 @config.command("show")
-@click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
-def config_show(output: str) -> None:
-    """Show current configuration."""
+@global_options
+def config_show(ctx: Context) -> None:
+    """Show current configuration.
+
+    Without ``--profile/-p``, lists all profiles. With ``--profile/-p NAME``,
+    restricts the per-profile sections (and the ``profiles`` / ``profile_details``
+    fields in JSON mode) to that single profile. Unknown names exit non-zero
+    and list the available profiles.
+    """
     try:
         cfg = Config.load()
     except Exception as e:
@@ -90,23 +96,32 @@ def config_show(output: str) -> None:
         print_error("No configuration found. Run 'xnatctl config init' first.")
         raise SystemExit(1)
 
+    selected_profile: str | None = ctx.profile_name or None
+    if selected_profile and selected_profile not in cfg.profiles:
+        available = ", ".join(cfg.profiles.keys())
+        print_error(f"Profile '{selected_profile}' not found. Available profiles: {available}")
+        raise SystemExit(1)
+
+    profile_names = [selected_profile] if selected_profile else list(cfg.profiles.keys())
+
     data: dict[str, Any] = {
         "config_file": str(CONFIG_FILE),
         "default_profile": cfg.default_profile,
         "output_format": cfg.output_format,
-        "profiles": list(cfg.profiles.keys()),
+        "profiles": profile_names,
     }
 
-    if output == "json":
+    if ctx.output_format == OutputFormat.JSON:
         # Include full profile details in JSON
-        data["profile_details"] = {name: p.to_dict() for name, p in cfg.profiles.items()}
+        data["profile_details"] = {name: cfg.profiles[name].to_dict() for name in profile_names}
         print_output(data, format=OutputFormat.JSON)
     else:
         print_key_value(data, title="Configuration")
 
         # Show profile details
         click.echo()
-        for name, profile in cfg.profiles.items():
+        for name in profile_names:
+            profile = cfg.profiles[name]
             marker = " (default)" if name == cfg.default_profile else ""
             click.echo(f"Profile: {name}{marker}")
             print_key_value(
