@@ -202,11 +202,17 @@ def api_post(
 ) -> None:
     """POST request to any XNAT endpoint.
 
+    Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
+    ``--file/-f``: payloads that are not valid UTF-8 are sent as raw bytes
+    without text decoding.
+
     Examples:
 
         xnatctl api post /data/projects --data '{"ID": "NEWPROJ"}'
 
         xnatctl api post /data/services/import --file payload.json
+
+        xnatctl api post /data/.../files/foo.dcm -f ./foo.dcm
     """
     import json as json_module
 
@@ -216,16 +222,21 @@ def api_post(
     url = f"{path}?{qs}" if qs else path
 
     # Get body
-    body = None
+    body: bytes | str | None = None
     json_body = None
 
     if file_path:
-        with open(file_path) as f:
-            content = f.read()
+        with open(file_path, "rb") as f:
+            raw = f.read()
         try:
-            json_body = json_module.loads(content)
-        except json_module.JSONDecodeError:
-            body = content
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            body = raw
+        else:
+            try:
+                json_body = json_module.loads(text)
+            except json_module.JSONDecodeError:
+                body = text
     elif data:
         try:
             json_body = json_module.loads(data)
@@ -278,9 +289,15 @@ def api_put(
 ) -> None:
     """PUT request to any XNAT endpoint.
 
+    Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
+    ``--file/-f``: payloads that are not valid UTF-8 are sent as raw bytes
+    without text decoding.
+
     Examples:
 
         xnatctl api put /data/projects/MYPROJ --data '{"description": "Updated"}'
+
+        xnatctl api put /data/.../files/foo.dcm -f ./foo.dcm
     """
     import json as json_module
 
@@ -290,16 +307,21 @@ def api_put(
     url = f"{path}?{qs}" if qs else path
 
     # Get body
-    body = None
+    body: bytes | str | None = None
     json_body = None
 
     if file_path:
-        with open(file_path) as f:
-            content = f.read()
+        with open(file_path, "rb") as f:
+            raw = f.read()
         try:
-            json_body = json_module.loads(content)
-        except json_module.JSONDecodeError:
-            body = content
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            body = raw
+        else:
+            try:
+                json_body = json_module.loads(text)
+            except json_module.JSONDecodeError:
+                body = text
     elif data:
         try:
             json_body = json_module.loads(data)
