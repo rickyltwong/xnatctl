@@ -149,6 +149,51 @@ class TestScanList:
         scan_call_url = mock_client.get_json.call_args_list[1][0][0]
         assert "/data/experiments/XNAT_E00001/scans" in scan_call_url
 
+    def test_scan_list_inspect_swallows_only_404(self, runner: CliRunner) -> None:
+        """Non-404 errors from the experiment inspect probe propagate to the user.
+
+        The legacy ``except Exception`` in ``_inspect_experiment`` masked every
+        failure as "no experiment metadata", which produced a misleading "No
+        results" downstream. Only ``ResourceNotFoundError`` should be swallowed.
+        """
+        from xnatctl.core.exceptions import NetworkError, ResourceNotFoundError
+
+        # Case A: ResourceNotFoundError on the inspect probe is swallowed; the
+        # scan list call still runs and returns the same output as before.
+        ctx, mock_client = _make_authenticated_context(default_project=None)
+        mock_client.get_json.side_effect = [
+            ResourceNotFoundError("session", "XNAT_E00001"),
+            _scan_results(),
+        ]
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx.auth_manager
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result.exit_code == 0
+        # The scan list call still ran after the swallowed 404.
+        assert mock_client.get_json.call_count == 2
+
+        # Case B: a non-404 (network) error must propagate, not be swallowed.
+        ctx2, mock_client2 = _make_authenticated_context(default_project=None)
+        mock_client2.get_json.side_effect = NetworkError("upstream timeout")
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx2.config),
+            patch.object(Context, "get_client", return_value=mock_client2),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx2.auth_manager
+            result2 = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result2.exit_code != 0
+        # Only the inspect probe ran; the scan list call was never issued.
+        assert mock_client2.get_json.call_count == 1
+
     def test_scan_list_default_project_fallback(self, runner: CliRunner) -> None:
         """Falls back to profile default_project for label resolution."""
         ctx, mock_client = _make_authenticated_context(default_project="FALLBACK")

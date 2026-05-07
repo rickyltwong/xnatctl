@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from xnatctl.core.exceptions import ResourceNotFoundError
@@ -21,6 +22,9 @@ from xnatctl.models.session import Session
 from xnatctl.models.subject import Subject
 
 from .base import BaseService
+
+# Accession-ID-shaped tokens such as ``XNAT_E00001`` or ``CLM01_E12``.
+_ACCESSION_ID_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9]*_E\d+$")
 
 
 def join_api_path(*parts: str | None) -> str:
@@ -237,7 +241,86 @@ class HierarchyService(BaseService):
         return self.parse_resolved_subject(ref, data)
 
     def resolve_experiment(self, ref: ExperimentRef) -> ResolvedExperimentRef:
-        """Resolve an experiment reference to canonical IDs."""
+        """Resolve an experiment reference to canonical IDs.
 
-        data = self.client.get_json(self.build_experiment_path(ref))
-        return self.parse_resolved_experiment(ref, data)
+        When the direct GET against ``build_experiment_path(ref)`` either raises
+        ``ResourceNotFoundError`` (HTTP 404) or returns a payload that
+        ``parse_resolved_experiment`` cannot resolve (empty ``ResultSet``), the
+        method falls back to:
+
+        1. Listing project experiments via
+           ``GET /data/projects/{project_id}/experiments?columns=ID,label,subject_ID,xsiType``
+           and matching ``ref.experiment`` client-side against ``label`` OR ``ID``
+           (exact, case-sensitive). Requires ``ref.experiment_is_label`` and a
+           ``project_id``.
+        2. If ``ref.experiment`` is accession-ID-shaped (matches
+           ``^[A-Z][A-Za-z0-9]*_E\\d+$``), trying ``GET /data/experiments/{ID}``
+           as a final cross-project fallback.
+
+        If neither fallback resolves, the original
+        ``ResourceNotFoundError("session", ref.experiment)`` is raised.
+        """
+
+        try:
+            data = self.client.get_json(self.build_experiment_path(ref))
+        except ResourceNotFoundError:
+            return self._resolve_experiment_fallback(ref)
+
+        try:
+            return self.parse_resolved_experiment(ref, data)
+        except ResourceNotFoundError:
+            return self._resolve_experiment_fallback(ref)
+
+    def _resolve_experiment_fallback(self, ref: ExperimentRef) -> ResolvedExperimentRef:
+        """Apply project-listing and accession-ID fallbacks for label resolution."""
+
+        if ref.experiment_is_label and ref.project_id:
+            canonical_id = self._lookup_experiment_in_project_listing(
+                ref.project_id, ref.experiment
+            )
+            if canonical_id is not None:
+                canonical_ref = ExperimentRef(
+                    experiment=canonical_id,
+                    project_id=ref.project_id,
+                    subject=ref.subject,
+                    experiment_is_label=False,
+                    subject_is_label=ref.subject_is_label,
+                )
+                return self.resolve_experiment(canonical_ref)
+
+        if _ACCESSION_ID_PATTERN.match(ref.experiment):
+            try:
+                data = self.client.get_json(join_api_path("data", "experiments", ref.experiment))
+            except ResourceNotFoundError:
+                pass
+            else:
+                try:
+                    return self.parse_resolved_experiment(ref, data)
+                except ResourceNotFoundError:
+                    pass
+
+        raise ResourceNotFoundError("session", ref.experiment)
+
+    def _lookup_experiment_in_project_listing(self, project_id: str, token: str) -> str | None:
+        """Return canonical accession ID for ``token`` within ``project_id``.
+
+        Issues a single
+        ``GET /data/projects/{project_id}/experiments?columns=ID,label,subject_ID,xsiType``
+        call and matches ``token`` against ``label`` or ``ID`` exactly
+        (case-sensitive). Returns ``None`` when no row matches.
+        """
+
+        try:
+            data = self.client.get_json(
+                join_api_path("data", "projects", project_id, "experiments"),
+                params={"columns": "ID,label,subject_ID,xsiType"},
+            )
+        except ResourceNotFoundError:
+            return None
+
+        for row in self.extract_rows(data):
+            row_id = str(row.get("ID") or "")
+            row_label = str(row.get("label") or "")
+            if token == row_id or token == row_label:
+                return row_id or None
+        return None

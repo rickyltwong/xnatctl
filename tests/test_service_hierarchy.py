@@ -179,3 +179,116 @@ class TestResolution:
         """Session xsiTypes map cleanly onto scan xsiTypes."""
 
         assert service.resolve_scan_xsi_type("xnat:eegSessionData") == "xnat:eegScanData"
+
+    def test_hierarchy_resolve_experiment_label_fallback(
+        self, service: HierarchyService, mock_client: MagicMock
+    ) -> None:
+        """When the direct GET returns empty ResultSet, fall back to project listing."""
+
+        # 1) direct path returns empty ResultSet (label probe miss);
+        # 2) project listing returns the canonical row;
+        # 3) retry with canonical accession ID resolves.
+        mock_client.get_json.side_effect = [
+            {"ResultSet": {"Result": []}},
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_E00001",
+                            "label": "SESS_LABEL",
+                            "subject_ID": "XNAT_S00001",
+                            "xsiType": "xnat:mrSessionData",
+                        },
+                        {
+                            "ID": "XNAT_E00002",
+                            "label": "OTHER_LABEL",
+                            "subject_ID": "XNAT_S00002",
+                            "xsiType": "xnat:mrSessionData",
+                        },
+                    ]
+                }
+            },
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_E00001",
+                            "label": "SESS_LABEL",
+                            "project": "PROJ",
+                        }
+                    ]
+                }
+            },
+        ]
+
+        resolved = service.resolve_experiment(
+            ExperimentRef(
+                experiment="SESS_LABEL",
+                project_id="PROJ",
+                experiment_is_label=True,
+            )
+        )
+
+        assert resolved.experiment_id == "XNAT_E00001"
+        assert mock_client.get_json.call_count == 3
+        listing_call = mock_client.get_json.call_args_list[1]
+        assert listing_call[0][0] == "/data/projects/PROJ/experiments"
+        assert listing_call[1]["params"] == {"columns": "ID,label,subject_ID,xsiType"}
+        retry_call = mock_client.get_json.call_args_list[2]
+        assert retry_call[0][0] == "/data/projects/PROJ/experiments/XNAT_E00001"
+
+    def test_hierarchy_resolve_experiment_accession_id_cross_project_fallback(
+        self, service: HierarchyService, mock_client: MagicMock
+    ) -> None:
+        """Accession-ID-shaped tokens fall back to /data/experiments/{ID} cross-project."""
+
+        # 1) direct project-scoped GET 404s (ID not owned by default_project);
+        # 2) project listing returns no match;
+        # 3) cross-project /data/experiments/{ID} resolves.
+        mock_client.get_json.side_effect = [
+            ResourceNotFoundError("session", "XNAT_E00001"),
+            {"ResultSet": {"Result": []}},
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_E00001",
+                            "label": "OTHER_LABEL",
+                            "project": "OTHER_PROJ",
+                        }
+                    ]
+                }
+            },
+        ]
+
+        resolved = service.resolve_experiment(
+            ExperimentRef(
+                experiment="XNAT_E00001",
+                project_id="DEFAULT_PROJ",
+                experiment_is_label=True,
+            )
+        )
+
+        assert resolved.experiment_id == "XNAT_E00001"
+        assert resolved.project_id == "OTHER_PROJ"
+        cross_project_call = mock_client.get_json.call_args_list[-1]
+        assert cross_project_call[0][0] == "/data/experiments/XNAT_E00001"
+
+    def test_hierarchy_resolve_experiment_label_fallback_misses_raises(
+        self, service: HierarchyService, mock_client: MagicMock
+    ) -> None:
+        """When no fallback resolves, raise ResourceNotFoundError with the original token."""
+
+        mock_client.get_json.side_effect = [
+            ResourceNotFoundError("session", "MISSING_LABEL"),
+            {"ResultSet": {"Result": []}},
+        ]
+
+        with pytest.raises(ResourceNotFoundError):
+            service.resolve_experiment(
+                ExperimentRef(
+                    experiment="MISSING_LABEL",
+                    project_id="PROJ",
+                    experiment_is_label=True,
+                )
+            )
