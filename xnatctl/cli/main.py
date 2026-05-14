@@ -20,6 +20,7 @@ from xnatctl.cli.resource import resource
 from xnatctl.cli.scan import scan
 from xnatctl.cli.session import local, session
 from xnatctl.cli.subject import subject
+from xnatctl.cli.xsync import xsync
 from xnatctl.core.logging import setup_logging
 from xnatctl.core.output import OutputFormat
 
@@ -127,6 +128,7 @@ cli.add_command(admin)
 cli.add_command(api)
 cli.add_command(dicom)
 cli.add_command(local)
+cli.add_command(xsync)
 
 
 # =============================================================================
