@@ -239,8 +239,15 @@ class TestApiGet:
         assert result.exit_code == 0
         assert binary_data in result.output_bytes
 
-    def test_api_get_json_format_non_json_errors(self, runner: CliRunner) -> None:
-        """Requesting -o json when response is not JSON produces an error."""
+    def test_api_get_json_format_non_json_falls_back_to_passthrough(
+        self, runner: CliRunner
+    ) -> None:
+        """Requesting -o json when response is not JSON warns and passes the body through.
+
+        Issue #13: the previous hard-error branch was user-hostile (it
+        discarded the body); the CLI now emits a one-line stderr warning
+        and writes the raw body to stdout, exiting 0.
+        """
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.json.side_effect = ValueError("Not JSON")
@@ -253,7 +260,8 @@ class TestApiGet:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["api", "get", "/some/endpoint", "-o", "json"])
 
-        assert result.exit_code != 0
+        assert result.exit_code == 0
+        assert "plain text" in result.output
         assert "not JSON" in result.output
 
     def test_api_get_xsi_typed_params_not_encoded(self, runner: CliRunner) -> None:
