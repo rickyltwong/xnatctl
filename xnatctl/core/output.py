@@ -14,6 +14,8 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
+from xnatctl.core.redact import redact_url_query
+
 # =============================================================================
 # Console Instances
 # =============================================================================
@@ -208,13 +210,21 @@ def print_output(
 
 
 def print_error(message: str) -> None:
-    """Print error message to stderr."""
-    err_console.print(f"[red]Error:[/red] {message}")
+    """Print error message to stderr.
+
+    The message is routed through :func:`redact_url_query` so that URLs
+    embedded in the error never leak secret-shaped query values.
+    """
+    err_console.print(f"[red]Error:[/red] {redact_url_query(message)}")
 
 
 def print_warning(message: str) -> None:
-    """Print warning message to stderr."""
-    err_console.print(f"[yellow]Warning:[/yellow] {message}")
+    """Print warning message to stderr.
+
+    The message is routed through :func:`redact_url_query` so that URLs
+    embedded in the warning never leak secret-shaped query values.
+    """
+    err_console.print(f"[yellow]Warning:[/yellow] {redact_url_query(message)}")
 
 
 def print_success(message: str) -> None:

@@ -5,7 +5,10 @@ Provides direct access to XNAT REST endpoints as an escape hatch.
 
 from __future__ import annotations
 
+import json as json_module
 import os
+import re
+import sys
 from pathlib import Path
 from urllib.parse import quote
 
@@ -17,7 +20,134 @@ from xnatctl.cli.common import (
     handle_errors,
     require_auth,
 )
-from xnatctl.core.output import OutputFormat, print_json, print_output
+from xnatctl.core.output import OutputFormat, print_json, print_output, print_warning
+
+_PARAMS_HELP = (
+    "Query parameters as key=value (can repeat). "
+    "Values appear in the URL query string and may be logged by the XNAT "
+    "server's access log. Do not use for secrets; pass credentials via "
+    "-d / -f JSON body instead."
+)
+
+_STDIN_SENTINEL = "-"
+
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _expand_env(raw: str) -> str:
+    """Expand ``$VAR`` and ``${VAR}`` references in ``raw``.
+
+    Any referenced variable name that is not set in ``os.environ`` is
+    surfaced via :func:`print_warning` so silent empty-string substitution
+    is observable. Uses :func:`os.path.expandvars`, which leaves unset
+    references as their literal ``$VAR`` text on POSIX. The warning is
+    sufficient to flag the leak; we do not raise.
+
+    Args:
+        raw: The unexpanded string from ``-d``.
+
+    Returns:
+        The expanded string (same text if no references were present).
+    """
+    referenced: set[str] = set()
+    for braced, bare in _ENV_VAR_RE.findall(raw):
+        name = braced or bare
+        if name:
+            referenced.add(name)
+    if referenced:
+        missing = sorted(name for name in referenced if name not in os.environ)
+        if missing:
+            print_warning(f"Environment variable(s) not set: {', '.join(missing)}")
+    return os.path.expandvars(raw)
+
+
+def _read_body(
+    data: str | None,
+    file_path: str | None,
+) -> tuple[bytes | str | None, object, bytes | None, str | None]:
+    """Resolve the request body from ``-d``, ``-f``, or stdin.
+
+    Handles three input shapes:
+
+    * ``-d <string>``: env-vars are expanded, then the JSON-or-raw decision
+      tree is applied. JSON-decodable input becomes ``json_body``; anything
+      else becomes the raw string ``body``.
+    * ``-f <path>``: file contents are read as bytes. UTF-8 decoded input
+      passes through the same JSON-or-raw branch. Non-UTF-8 bytes are sent
+      as raw bytes (binary-safe). Env-var expansion is NOT applied to file
+      contents.
+    * ``-d -`` or ``-f -``: stdin is read once as bytes and follows the
+      same UTF-8 / JSON-or-raw branch as ``-f``. Env-var expansion is NOT
+      applied to stdin bytes. Specifying both ``-d -`` and ``-f -`` is a
+      usage error.
+
+    Args:
+        data: Value of the ``-d`` / ``--data`` option (may be the literal
+            ``-`` sentinel for stdin).
+        file_path: Value of the ``-f`` / ``--file`` option (may be the
+            literal ``-`` sentinel for stdin).
+
+    Returns:
+        ``(body, json_body, raw_bytes, decoded_text)``. ``body`` /
+        ``json_body`` are the values passed to the HTTP client; at most
+        one is non-None. ``raw_bytes`` and ``decoded_text`` carry the
+        underlying bytes and UTF-8 decode (when available) for callers
+        that need to drive content-type detection or send the body
+        verbatim under an explicit ``Content-Type``. ``(None, None,
+        None, None)`` indicates no body was given.
+
+    Raises:
+        click.UsageError: If both ``-d -`` and ``-f -`` are passed.
+    """
+    data_is_stdin = data == _STDIN_SENTINEL
+    file_is_stdin = file_path == _STDIN_SENTINEL
+
+    if data_is_stdin and file_is_stdin:
+        raise click.UsageError("cannot combine -d - and -f -")
+
+    body: bytes | str | None = None
+    json_body: object = None
+    raw_bytes: bytes | None = None
+    decoded_text: str | None = None
+
+    if data_is_stdin or file_is_stdin:
+        raw_bytes = sys.stdin.buffer.read()
+        try:
+            decoded_text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            body = raw_bytes
+        else:
+            try:
+                json_body = json_module.loads(decoded_text)
+            except json_module.JSONDecodeError:
+                body = decoded_text
+        return body, json_body, raw_bytes, decoded_text
+
+    if file_path:
+        with open(file_path, "rb") as f:
+            raw_bytes = f.read()
+        try:
+            decoded_text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            body = raw_bytes
+        else:
+            try:
+                json_body = json_module.loads(decoded_text)
+            except json_module.JSONDecodeError:
+                body = decoded_text
+        return body, json_body, raw_bytes, decoded_text
+
+    if data:
+        expanded = _expand_env(data)
+        decoded_text = expanded
+        try:
+            json_body = json_module.loads(expanded)
+        except json_module.JSONDecodeError:
+            body = expanded
+        return body, json_body, raw_bytes, decoded_text
+
+    return None, None, None, None
+
 
 # Mapping of lowercased file extensions to MIME types used by
 # ``_detect_content_type``.  Kept module-level so the table is allocated once.
@@ -152,7 +282,7 @@ def api() -> None:
 @click.option(
     "--params",
     multiple=True,
-    help="Query parameters as key=value (can repeat)",
+    help=_PARAMS_HELP,
 )
 @global_options
 @require_auth
@@ -218,19 +348,21 @@ def api_get(
 @click.option(
     "--params",
     multiple=True,
-    help="Query parameters as key=value (can repeat)",
+    help=_PARAMS_HELP,
 )
 @click.option(
     "--data",
     "-d",
-    help="Request body (JSON string)",
+    help=(
+        "Request body (JSON string). Use '-' to read the body from stdin. "
+        "Supports ${VAR} / $VAR expansion from the environment."
+    ),
 )
 @click.option(
     "--file",
     "-f",
     "file_path",
-    type=click.Path(exists=True),
-    help="Read body from file",
+    help="Read body from file. Use '-' to read from stdin.",
 )
 @click.option(
     "--content-type",
@@ -260,7 +392,8 @@ def api_post(
 
     Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
     ``--file/-f``: payloads that are not valid UTF-8 are sent as raw bytes
-    without text decoding.
+    without text decoding. Pass ``-d -`` or ``-f -`` to read the body from
+    stdin (keeps secrets out of argv and shell history).
 
     Use ``--content-type/-t`` to send a non-JSON body.  This is required for
     XNAT XSync endpoints (e.g. ``/xapi/xsync/credentials/...``) which
@@ -273,63 +406,39 @@ def api_post(
 
         xnatctl api post /data/services/import --file payload.json
 
+        echo '{"k":"v"}' | xnatctl api post /data/endpoint -d -
+
         xnatctl api post /data/.../files/foo.dcm -f ./foo.dcm
 
         xnatctl api post /xapi/xsync/credentials/check/projects/PROJ \\
             -d 'user:pass' -t text/plain
     """
-    import json as json_module
-
     client = ctx.get_client()
 
     qs = _build_query_string(params)
     url = f"{path}?{qs}" if qs else path
 
-    # Read body and try the existing UTF-8 -> JSON -> raw text/bytes ladder.
-    # Preserve the original ``raw`` bytes and ``text`` decode so the
-    # explicit-content-type branch can send the body verbatim via data=
-    # without re-serializing through json.dumps.
-    body: bytes | str | None = None
-    json_body = None
-    raw_bytes: bytes | None = None
-    decoded_text: str | None = None
+    body, json_body, raw_bytes, decoded_text = _read_body(data, file_path)
 
-    if file_path:
-        with open(file_path, "rb") as f:
-            raw_bytes = f.read()
-        try:
-            decoded_text = raw_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            body = raw_bytes
-        else:
-            try:
-                json_body = json_module.loads(decoded_text)
-            except json_module.JSONDecodeError:
-                body = decoded_text
-    elif data is not None:
-        try:
-            json_body = json_module.loads(data)
-        except json_module.JSONDecodeError:
-            body = data
-
-    effective_type = content_type or _detect_content_type(file_path, raw_bytes, decoded_text)
+    # Stdin sentinel (-f -) has no extension to detect from; treat as no file.
+    detect_file = None if file_path == _STDIN_SENTINEL else file_path
+    effective_type = content_type or _detect_content_type(detect_file, raw_bytes, decoded_text)
     headers: dict[str, str] | None = None
 
     # Route body via data= when an explicit/non-JSON content type is in
     # effect; httpx would otherwise force application/json on json=.
     if content_type is not None:
         if json_body is not None and body is None:
-            # User passed -t with -d '{...}' or a JSON file; send the
-            # original text/bytes verbatim, do not re-serialize through
-            # json= or json.dumps.
-            body = decoded_text if file_path is not None else data
+            # User passed -t with text input that JSON-parsed; send the
+            # original text verbatim instead of re-serializing.
+            body = decoded_text
             json_body = None
         headers = {"Content-Type": content_type}
     elif effective_type is not None and effective_type != "application/json":
         # Auto-detected non-JSON file (.txt, .xml, octet-stream).  Drop
         # any speculative json_body and send the original bytes/text.
         if json_body is not None and body is None:
-            body = decoded_text if file_path is not None else data
+            body = decoded_text
             json_body = None
         headers = {"Content-Type": effective_type}
 
@@ -354,19 +463,21 @@ def api_post(
 @click.option(
     "--params",
     multiple=True,
-    help="Query parameters as key=value (can repeat)",
+    help=_PARAMS_HELP,
 )
 @click.option(
     "--data",
     "-d",
-    help="Request body (JSON string)",
+    help=(
+        "Request body (JSON string). Use '-' to read the body from stdin. "
+        "Supports ${VAR} / $VAR expansion from the environment."
+    ),
 )
 @click.option(
     "--file",
     "-f",
     "file_path",
-    type=click.Path(exists=True),
-    help="Read body from file",
+    help="Read body from file. Use '-' to read from stdin.",
 )
 @click.option(
     "--content-type",
@@ -396,7 +507,8 @@ def api_put(
 
     Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
     ``--file/-f``: payloads that are not valid UTF-8 are sent as raw bytes
-    without text decoding.
+    without text decoding. Pass ``-d -`` or ``-f -`` to read the body from
+    stdin (keeps secrets out of argv and shell history).
 
     Use ``--content-type/-t`` to send a non-JSON body.  This is required
     for XNAT XSync endpoints (e.g.
@@ -408,6 +520,8 @@ def api_put(
 
         xnatctl api put /data/projects/MYPROJ --data '{"description": "Updated"}'
 
+        echo '{"description": "x"}' | xnatctl api put /data/projects/MYPROJ -d -
+
         xnatctl api put /data/.../files/foo.dcm -f ./foo.dcm
 
         xnatctl api put /data/projects/PROJ -f project.xml
@@ -415,53 +529,27 @@ def api_put(
         xnatctl api put /xapi/xsync/credentials/save/projects/PROJ \\
             -f ./creds.txt -t text/plain
     """
-    import json as json_module
-
     client = ctx.get_client()
 
     qs = _build_query_string(params)
     url = f"{path}?{qs}" if qs else path
 
-    # Read body and try the existing UTF-8 -> JSON -> raw text/bytes ladder.
-    # Preserve the original ``raw`` bytes and ``text`` decode so the
-    # explicit-content-type branch can send the body verbatim via data=
-    # without re-serializing through json.dumps.
-    body: bytes | str | None = None
-    json_body = None
-    raw_bytes: bytes | None = None
-    decoded_text: str | None = None
+    body, json_body, raw_bytes, decoded_text = _read_body(data, file_path)
 
-    if file_path:
-        with open(file_path, "rb") as f:
-            raw_bytes = f.read()
-        try:
-            decoded_text = raw_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            body = raw_bytes
-        else:
-            try:
-                json_body = json_module.loads(decoded_text)
-            except json_module.JSONDecodeError:
-                body = decoded_text
-    elif data is not None:
-        try:
-            json_body = json_module.loads(data)
-        except json_module.JSONDecodeError:
-            body = data
-
-    effective_type = content_type or _detect_content_type(file_path, raw_bytes, decoded_text)
+    detect_file = None if file_path == _STDIN_SENTINEL else file_path
+    effective_type = content_type or _detect_content_type(detect_file, raw_bytes, decoded_text)
     headers: dict[str, str] | None = None
 
     # Route body via data= when an explicit/non-JSON content type is in
     # effect; httpx would otherwise force application/json on json=.
     if content_type is not None:
         if json_body is not None and body is None:
-            body = decoded_text if file_path is not None else data
+            body = decoded_text
             json_body = None
         headers = {"Content-Type": content_type}
     elif effective_type is not None and effective_type != "application/json":
         if json_body is not None and body is None:
-            body = decoded_text if file_path is not None else data
+            body = decoded_text
             json_body = None
         headers = {"Content-Type": effective_type}
 
@@ -486,7 +574,7 @@ def api_put(
 @click.option(
     "--params",
     multiple=True,
-    help="Query parameters as key=value (can repeat)",
+    help=_PARAMS_HELP,
 )
 @click.option(
     "--yes",
