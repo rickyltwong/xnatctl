@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.9 - 2026-05-14
+
+**Features**
+
+- Add `xnatctl xsync` subcommand group for XSync plugin operations:
+  `refresh-credentials`, `list`, `setup`, `status`, `history`, `progress`,
+  `sync`, and `sync-subject`. The `refresh-credentials` orchestrator
+  composes the three-step XSync token-rotation flow
+  (`remoteREST` -> `credentials/save` -> `credentials/check`) entirely
+  inside `xnatctl`, removing the need to drop to raw `curl`. Remote
+  passwords are sourced from `--remote-pass-stdin`, the
+  `XNAT_XSYNC_REMOTE_PASS` env var, or interactive prompt; passing
+  `--remote-pass <secret>` on argv is rejected at parse time as a
+  `click.UsageError` so secrets never reach process memory or
+  `~/.bash_history`. (closes #15)
+- Promote `--verbose/-v`, `--profile/-p`, `--output/-o`, and `--quiet/-q`
+  to root-group options on the `xnatctl` command. They now work as
+  `xnatctl --verbose api get ...`; the existing per-subcommand variants
+  still work and win when both are set explicitly. `--version` remains
+  eager and is not shadowed by `-v`. (closes #14)
+- `xnatctl api get -o json` no longer hard-errors on non-JSON response
+  bodies. Instead it emits a single-line stderr warning and writes the
+  raw body to stdout (text-decoded when UTF-8-safe, raw bytes
+  otherwise). Exit code stays 0 when the underlying HTTP call
+  succeeded. Useful against `/xapi/xsync/progress/{projectId}` and
+  similar text/plain endpoints. (closes #13)
+
 ## 0.2.8 - 2026-05-07
 
 **Features**
