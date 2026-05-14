@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -1117,3 +1118,236 @@ class TestApiDelete:
         call_args = client.delete.call_args
         url = call_args[0][0]
         assert "removeFiles=true" in url
+
+
+# =============================================================================
+# B01 — secret-leak fixes (D1, D2, D3, D4)
+# =============================================================================
+
+
+# Click wraps help text; assert on tokens that survive line-wrapping.
+_PARAMS_WARNING_TOKENS = ("Do not use for", "JSON body")
+
+
+class TestApiParamsHelpWarning:
+    """D1 — ``--params`` help text warns about secret leakage on all 4 cmds."""
+
+    @pytest.mark.parametrize("verb", ["get", "post", "put", "delete"])
+    def test_api_params_help_warns_on_secrets(self, runner: CliRunner, verb: str) -> None:
+        """Every ``api {verb} --help`` documents the secret-leak warning."""
+        result = runner.invoke(cli, ["api", verb, "--help"])
+        assert result.exit_code == 0
+        for token in _PARAMS_WARNING_TOKENS:
+            assert token in result.output, f"missing warning token {token!r} in --help for {verb}"
+        # Points users at the safer body-passing options.
+        assert "-d" in result.output
+        assert "-f" in result.output
+
+
+class TestApiStdinBody:
+    """D2 — ``-d -`` and ``-f -`` read the body once from stdin."""
+
+    def test_api_post_reads_body_from_stdin(self, runner: CliRunner) -> None:
+        """``api post -d -`` reads JSON body from stdin and POSTs it."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.post.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        ["api", "post", "/data/endpoint", "-d", "-"],
+                        input='{"k":"v"}',
+                    )
+
+        assert result.exit_code == 0, result.output
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] == {"k": "v"}
+        assert call_kwargs["data"] is None
+
+    def test_api_put_reads_body_from_stdin(self, runner: CliRunner) -> None:
+        """``api put -d -`` reads JSON body from stdin and PUTs it."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.put.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        ["api", "put", "/data/projects/MYPROJ", "-d", "-"],
+                        input='{"description":"x"}',
+                    )
+
+        assert result.exit_code == 0, result.output
+        call_kwargs = client.put.call_args[1]
+        assert call_kwargs["json"] == {"description": "x"}
+        assert call_kwargs["data"] is None
+
+    def test_api_post_stdin_sentinel_for_file_flag(self, runner: CliRunner) -> None:
+        """``api post -f -`` is symmetric with ``-d -`` and also reads stdin."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.post.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        ["api", "post", "/data/endpoint", "-f", "-"],
+                        input='{"from":"stdin"}',
+                    )
+
+        assert result.exit_code == 0, result.output
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] == {"from": "stdin"}
+        assert call_kwargs["data"] is None
+
+    def test_api_post_rejects_double_stdin(self, runner: CliRunner) -> None:
+        """Passing both ``-d -`` and ``-f -`` is a usage error."""
+        client = _mock_client()
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        ["api", "post", "/data/endpoint", "-d", "-", "-f", "-"],
+                        input='{"k":"v"}',
+                    )
+
+        assert result.exit_code != 0
+        assert "cannot combine -d - and -f -" in result.output
+        client.post.assert_not_called()
+
+
+class TestApiEnvVarExpansion:
+    """D3 — ``${VAR}`` / ``$VAR`` expansion inside the ``-d`` value."""
+
+    def test_api_post_expands_env_vars_in_data(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Set env vars are substituted before JSON parse."""
+        monkeypatch.setenv("CNMDP_PASS", "hunter2")
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.post.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/data/endpoint",
+                            "-d",
+                            '{"p":"$CNMDP_PASS"}',
+                        ],
+                    )
+
+        assert result.exit_code == 0, result.output
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] == {"p": "hunter2"}
+
+    def test_api_post_warns_on_unset_env_var(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unset ``${VAR}`` references produce a warning listing the names."""
+        monkeypatch.delenv("XNATCTL_NOPE", raising=False)
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.post.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/data/endpoint",
+                            "-d",
+                            '{"p":"${XNATCTL_NOPE}"}',
+                        ],
+                    )
+
+        # Warning + non-zero JSON parse failure are both acceptable; the
+        # warning is the load-bearing assertion here.
+        assert "XNATCTL_NOPE" in result.output
+        assert "not set" in result.output
+
+    def test_api_post_envvar_inside_json_string_value(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``${VAR}`` inside a JSON string value is substituted in place."""
+        monkeypatch.setenv("XNATCTL_TOKEN", "abc123")
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.post.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/data/endpoint",
+                            "-d",
+                            '{"auth":"Bearer ${XNATCTL_TOKEN}"}',
+                        ],
+                    )
+
+        assert result.exit_code == 0, result.output
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] == {"auth": "Bearer abc123"}
+
+
+class TestHandleErrorsRedaction:
+    """D4 — ``handle_errors`` strips secrets from URLs before printing."""
+
+    def test_handle_errors_redacts_url_password(self, runner: CliRunner) -> None:
+        """An exception whose str includes ``?password=hunter2`` is scrubbed."""
+        import re as _re
+
+        from xnatctl.cli.common import handle_errors
+        from xnatctl.core.exceptions import XNATCtlError
+
+        @click.command()
+        @handle_errors
+        def boom() -> None:
+            """Raise an XNATCtlError that mentions a secret-bearing URL."""
+            raise XNATCtlError(
+                "Request failed: https://xnat.example.org/xapi/x?username=admin&password=hunter2"
+            )
+
+        result = runner.invoke(boom, [])
+        assert result.exit_code == 1
+        # Strip ANSI escapes and Rich's soft line wrapping before asserting,
+        # since the err_console formatter colors and wraps URLs.
+        plain = _re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        plain = plain.replace("\n", "")
+        assert "hunter2" not in plain
+        assert "password=***" in plain
+        # Non-secret keys are kept for debuggability.
+        assert "username=admin" in plain

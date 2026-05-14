@@ -21,6 +21,7 @@ from xnatctl.core.exceptions import (
 )
 from xnatctl.core.logging import setup_logging
 from xnatctl.core.output import OutputFormat, print_error
+from xnatctl.core.redact import redact_url_query
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -434,12 +435,15 @@ def handle_errors(f: F) -> F:
         try:
             return f(*args, **kwargs)
         except XNATCtlError as e:
-            print_error(str(e))
+            # Defensive: print_error already redacts, but we redact here too
+            # so future direct callers cannot bypass the invariant.
+            print_error(redact_url_query(str(e)))
             sys.exit(1)
         except click.ClickException:
             raise
         except Exception as e:
-            print_error(f"Unexpected error: {e}")
+            # Defensive: same rationale as the XNATCtlError branch above.
+            print_error(redact_url_query(f"Unexpected error: {e}"))
             sys.exit(1)
 
     return wrapper  # type: ignore
