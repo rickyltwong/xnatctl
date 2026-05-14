@@ -8,6 +8,7 @@ from xnatctl import __version__
 from xnatctl.cli.admin import admin
 from xnatctl.cli.api import api
 from xnatctl.cli.auth import auth
+from xnatctl.cli.common import Context
 
 # Import command groups
 from xnatctl.cli.config_cmd import config
@@ -19,6 +20,9 @@ from xnatctl.cli.resource import resource
 from xnatctl.cli.scan import scan
 from xnatctl.cli.session import local, session
 from xnatctl.cli.subject import subject
+from xnatctl.cli.xsync import xsync
+from xnatctl.core.logging import setup_logging
+from xnatctl.core.output import OutputFormat
 
 # =============================================================================
 # Main CLI Group
@@ -27,7 +31,43 @@ from xnatctl.cli.subject import subject
 
 @click.group()
 @click.version_option(version=__version__, prog_name="xnatctl")
-def cli() -> None:
+@click.option(
+    "--profile",
+    "-p",
+    envvar="XNAT_PROFILE",
+    default=None,
+    help="Config profile to use (inherited by subcommands when not overridden).",
+)
+@click.option(
+    "--output",
+    "-o",
+    "output_format",
+    type=click.Choice(["json", "table"]),
+    default=None,
+    help="Output format (inherited by subcommands when not overridden).",
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Minimal output (inherited by subcommands when not overridden).",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Enable verbose output (inherited by subcommands when not overridden).",
+)
+@click.pass_context
+def cli(
+    ctx: click.Context,
+    profile: str | None,
+    output_format: str | None,
+    quiet: bool,
+    verbose: bool,
+) -> None:
     """xnatctl - A CLI for standardized XNAT REST workflows.
 
     Manage XNAT projects, subjects, sessions, scans, and resources.
@@ -43,7 +83,32 @@ def cli() -> None:
 
     Use --help on any command for more information.
     """
-    pass
+    cli_ctx = ctx.ensure_object(Context)
+
+    # Stash root-group values on the shared Context so the per-subcommand
+    # ``@global_options`` decorator can inherit them when the subcommand
+    # received the Click default for the same flag.
+    cli_ctx.root_profile_name = profile
+    cli_ctx.root_output_format = (
+        OutputFormat.from_string(output_format) if output_format is not None else None
+    )
+    cli_ctx.root_quiet = quiet
+    cli_ctx.root_verbose = verbose
+
+    # Seed the effective context with root values so commands that don't carry
+    # the ``@global_options`` decorator (e.g. ``whoami``) still see verbose/
+    # quiet/profile from the root group.
+    if profile is not None:
+        cli_ctx.profile_name = profile
+    if output_format is not None:
+        cli_ctx.output_format = OutputFormat.from_string(output_format)
+    if quiet:
+        cli_ctx.quiet = True
+    if verbose:
+        cli_ctx.verbose = True
+
+    if quiet or verbose:
+        setup_logging(quiet=quiet, verbose=verbose)
 
 
 # =============================================================================
@@ -63,6 +128,7 @@ cli.add_command(admin)
 cli.add_command(api)
 cli.add_command(dicom)
 cli.add_command(local)
+cli.add_command(xsync)
 
 
 # =============================================================================
