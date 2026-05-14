@@ -42,6 +42,14 @@ class Context:
         self.quiet: bool = False
         self.verbose: bool = False
         self.auth_manager: AuthManager = AuthManager()
+        # Root-group values populated by ``xnatctl/cli/main.py``. Used by
+        # the per-subcommand ``@global_options`` decorator to fall back to
+        # the root-group value when the subcommand received Click's default
+        # for the same flag. ``None`` means "no root value was supplied".
+        self.root_profile_name: str | None = None
+        self.root_output_format: OutputFormat | None = None
+        self.root_quiet: bool = False
+        self.root_verbose: bool = False
 
     def get_client(self) -> XNATClient:
         """Get or create authenticated client.
@@ -141,12 +149,21 @@ def resolve_workers_from_context(ctx: Context, workers: int | None, default: int
 
 
 def global_options(f: F) -> F:
-    """Add global options to a command."""
+    """Add global options to a command.
+
+    The four shared flags (``--profile``, ``--output``, ``--quiet``,
+    ``--verbose``) are also declared on the root ``cli`` group. When the
+    subcommand received Click's default value for one of these flags AND a
+    root-group value is set on the shared :class:`Context`, the root-group
+    value wins. Explicit subcommand-level values always beat inherited root
+    values.
+    """
 
     @click.option(
         "--profile",
         "-p",
         envvar="XNAT_PROFILE",
+        default=None,
         help="Config profile to use",
     )
     @click.option(
@@ -154,19 +171,21 @@ def global_options(f: F) -> F:
         "-o",
         "output_format",
         type=click.Choice(["json", "table"]),
-        default="table",
+        default=None,
         help="Output format",
     )
     @click.option(
         "--quiet",
         "-q",
         is_flag=True,
+        default=False,
         help="Minimal output (IDs only)",
     )
     @click.option(
         "--verbose",
         "-v",
         is_flag=True,
+        default=False,
         help="Enable verbose output",
     )
     @pass_context
@@ -174,20 +193,51 @@ def global_options(f: F) -> F:
     def wrapper(
         ctx: Context,
         profile: str | None,
-        output_format: str,
+        output_format: str | None,
         quiet: bool,
         verbose: bool,
         *args: Any,
         **kwargs: Any,
     ) -> Any:
         """Populate context from global options and invoke the command."""
-        ctx.profile_name = profile
-        ctx.output_format = OutputFormat.from_string(output_format)
-        ctx.quiet = quiet
-        ctx.verbose = verbose
+        click_ctx = click.get_current_context()
+
+        def _was_explicit(param_name: str) -> bool:
+            """Return True only if the user (or env var) set the option."""
+            source = click_ctx.get_parameter_source(param_name)
+            return source is not None and source != click.core.ParameterSource.DEFAULT
+
+        # Profile: subcommand explicit > root > None.
+        if _was_explicit("profile"):
+            effective_profile = profile
+        elif ctx.root_profile_name is not None:
+            effective_profile = ctx.root_profile_name
+        else:
+            effective_profile = profile
+
+        # Output format: subcommand explicit > root > table default.
+        if _was_explicit("output_format") and output_format is not None:
+            effective_format = OutputFormat.from_string(output_format)
+        elif ctx.root_output_format is not None:
+            effective_format = ctx.root_output_format
+        elif output_format is not None:
+            effective_format = OutputFormat.from_string(output_format)
+        else:
+            effective_format = OutputFormat.TABLE
+
+        # Quiet / verbose are booleans: an explicit subcommand-level flip
+        # (the only way to leave the False default) wins; otherwise inherit
+        # the root-group value.
+        effective_quiet = quiet if _was_explicit("quiet") else (quiet or ctx.root_quiet)
+        effective_verbose = verbose if _was_explicit("verbose") else (verbose or ctx.root_verbose)
+
+        ctx.profile_name = effective_profile
+        ctx.output_format = effective_format
+        ctx.quiet = effective_quiet
+        ctx.verbose = effective_verbose
 
         # Setup logging
-        setup_logging(quiet=quiet, verbose=verbose)
+        setup_logging(quiet=effective_quiet, verbose=effective_verbose)
 
         # Load config
         ctx.config = Config.load()
