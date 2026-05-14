@@ -19,7 +19,14 @@ from xnatctl.cli.common import (
     resolve_workers_from_context,
 )
 from xnatctl.core.exceptions import ResourceNotFoundError
-from xnatctl.core.output import OutputFormat, print_error, print_json, print_output, print_success
+from xnatctl.core.output import (
+    OutputFormat,
+    console,
+    print_error,
+    print_json,
+    print_output,
+    print_success,
+)
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 from xnatctl.services.hierarchy import HierarchyService
 
@@ -395,10 +402,14 @@ def scan_delete(
                 failed.append((scan_id, error))
 
     if deleted:
-        print_success(f"Deleted {len(deleted)} scans")
+        noun = "scan" if len(deleted) == 1 else "scans"
+        # Use highlight=False so Rich does not turn the integer into a
+        # styled token; tests assert on the raw "Deleted N scan(s)" text.
+        console.print(f"[green]✓[/green] Deleted {len(deleted)} {noun}", highlight=False)
 
     if failed:
-        print_error(f"Failed to delete {len(failed)} scans:")
+        noun = "scan" if len(failed) == 1 else "scans"
+        print_error(f"Failed to delete {len(failed)} {noun}:")
         for scan_id, error in failed:
             click.echo(f"  - {scan_id}: {error}")
         raise SystemExit(1)
