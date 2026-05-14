@@ -311,36 +311,43 @@ def api_get(
 
     try:
         data = resp.json()
+    except Exception:
+        # Non-JSON body. Under ``-o json`` we warn once on stderr and
+        # passthrough the raw body to stdout (text-decoded when possible,
+        # raw bytes otherwise). Exit code stays 0 because the HTTP call
+        # itself succeeded (non-2xx responses raise before we get here).
         if ctx.output_format == OutputFormat.JSON:
-            print_json(data)
-        else:
-            # Try to extract ResultSet.Result for table display
-            if isinstance(data, dict) and "ResultSet" in data:
-                results = data.get("ResultSet", {}).get("Result", [])
-                if results and isinstance(results, list):
-                    columns = list(results[0].keys()) if results else []
-                    print_output(results, format=ctx.output_format, columns=columns)
-                else:
-                    print_json(data)
-            elif isinstance(data, list):
-                if data and isinstance(data[0], dict):
-                    columns = list(data[0].keys())
-                    print_output(data, format=ctx.output_format, columns=columns)
-                else:
-                    print_json(data)
-            else:
-                print_json(data)
-    except Exception as exc:
-        if ctx.output_format == OutputFormat.JSON:
-            raise click.ClickException(
-                "Response is not JSON; cannot format as JSON. "
-                "Omit -o json to get raw response content."
-            ) from exc
+            print_warning(
+                f"Response from {path} is not JSON; emitting raw body. "
+                "Pipe through `jq -e` if you need strict-JSON validation."
+            )
         content_type = resp.headers.get("content-type", "")
         if _is_text_content_type(content_type):
             click.echo(resp.text)
         else:
             click.echo(resp.content, nl=False)
+        return
+
+    if ctx.output_format == OutputFormat.JSON:
+        print_json(data)
+        return
+
+    # Table format: try to extract ResultSet.Result for tabular display.
+    if isinstance(data, dict) and "ResultSet" in data:
+        results = data.get("ResultSet", {}).get("Result", [])
+        if results and isinstance(results, list):
+            columns = list(results[0].keys()) if results else []
+            print_output(results, format=ctx.output_format, columns=columns)
+        else:
+            print_json(data)
+    elif isinstance(data, list):
+        if data and isinstance(data[0], dict):
+            columns = list(data[0].keys())
+            print_output(data, format=ctx.output_format, columns=columns)
+        else:
+            print_json(data)
+    else:
+        print_json(data)
 
 
 @api.command("post")
