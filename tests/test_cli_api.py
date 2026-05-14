@@ -602,6 +602,456 @@ class TestApiBinaryFileBody:
         assert isinstance(call_kwargs["data"], str)
 
 
+class TestApiContentType:
+    """Tests for the ``--content-type/-t`` flag on api post and api put."""
+
+    def test_explicit_content_type_with_inline_data(self, runner: CliRunner) -> None:
+        """``-d 'user:pass' -t text/plain`` -> data=user:pass, header set."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.post.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/xapi/xsync/credentials/check/projects/PROJ",
+                            "-d",
+                            "user:pass",
+                            "-t",
+                            "text/plain",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["data"] == "user:pass"
+        assert call_kwargs["json"] is None
+        assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
+
+    def test_explicit_content_type_overrides_extension(self, runner: CliRunner, tmp_path) -> None:
+        """``-f payload.json -t text/plain`` -> explicit flag wins, body verbatim."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.post.return_value = mock_resp
+
+        # Write a JSON file with no whitespace inside the object; the
+        # explicit-content-type path must send these bytes verbatim, not
+        # re-serialize through json.dumps (which would inject a space).
+        payload = tmp_path / "payload.json"
+        payload.write_text('{"k":"v"}')
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/xapi/some/endpoint",
+                            "-f",
+                            str(payload),
+                            "-t",
+                            "text/plain",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
+        # Body sent byte-for-byte verbatim, not normalized JSON.
+        assert call_kwargs["data"] == '{"k":"v"}'
+
+    def test_explicit_text_plain_preserves_json_file_bytes_verbatim(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """``-f creds.json -t text/plain`` with whitespace-sensitive contents."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.post.return_value = mock_resp
+
+        # Compact, ordering-sensitive JSON literal. If the body is round-
+        # tripped through json.loads / json.dumps the wire bytes will differ.
+        original = '{"k":"v","n":1}'
+        payload = tmp_path / "creds.json"
+        payload.write_text(original)
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/xapi/xsync/credentials/check/projects/PROJ",
+                            "-f",
+                            str(payload),
+                            "-t",
+                            "text/plain",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
+        assert call_kwargs["data"] == original
+
+    def test_put_explicit_content_type_preserves_file_bytes_verbatim(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """``api put -f creds.json -t text/plain`` parity with POST verbatim."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.put.return_value = mock_resp
+
+        original = '{"k":"v","n":1}'
+        payload = tmp_path / "creds.json"
+        payload.write_text(original)
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/xapi/xsync/credentials/save/projects/PROJ",
+                            "-f",
+                            str(payload),
+                            "-t",
+                            "text/plain",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.put.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
+        assert call_kwargs["data"] == original
+
+    def test_auto_detect_json_extension(self, runner: CliRunner, tmp_path) -> None:
+        """``-f payload.json`` without -t keeps the json= path."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.post.return_value = mock_resp
+
+        payload = tmp_path / "payload.json"
+        payload.write_text(json.dumps({"k": "v"}))
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "post",
+                            "/data/services/import",
+                            "-f",
+                            str(payload),
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] == {"k": "v"}
+        assert call_kwargs["data"] is None
+        # httpx sets application/json automatically, so we leave headers unset.
+        assert call_kwargs.get("headers") is None
+
+    def test_auto_detect_txt_extension(self, runner: CliRunner, tmp_path) -> None:
+        """``-f notes.txt`` -> data=<text>, Content-Type: text/plain."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.post.return_value = mock_resp
+
+        notes = tmp_path / "notes.txt"
+        notes.write_text("hello world")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        ["api", "post", "/data/foo", "-f", str(notes)],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] == "hello world"
+        assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
+
+    def test_auto_detect_xml_extension(self, runner: CliRunner, tmp_path) -> None:
+        """``-f project.xml`` -> data=<text>, Content-Type: application/xml."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.put.return_value = mock_resp
+
+        proj = tmp_path / "project.xml"
+        proj.write_text("<project><ID>PROJ</ID></project>")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        ["api", "put", "/data/projects/PROJ", "-f", str(proj)],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.put.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] == "<project><ID>PROJ</ID></project>"
+        assert call_kwargs["headers"] == {"Content-Type": "application/xml"}
+
+    def test_unknown_extension_falls_back_to_octet_stream(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """``-f payload.bin`` (valid UTF-8 inside) -> octet-stream."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.post.return_value = mock_resp
+
+        blob = tmp_path / "payload.bin"
+        blob.write_text("printable bytes")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        ["api", "post", "/data/foo", "-f", str(blob)],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] == "printable bytes"
+        assert call_kwargs["headers"] == {"Content-Type": "application/octet-stream"}
+
+    def test_binary_file_forces_octet_stream(self, runner: CliRunner, tmp_path) -> None:
+        """A non-UTF-8 .dcm file -> octet-stream, body sent as raw bytes."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.put.return_value = mock_resp
+
+        blob = tmp_path / "foo.dcm"
+        blob.write_bytes(b"\xbe\x00\x01\x02DICM\xff")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/data/foo/files/foo.dcm",
+                            "-f",
+                            str(blob),
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.put.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] == b"\xbe\x00\x01\x02DICM\xff"
+        assert call_kwargs["headers"] == {"Content-Type": "application/octet-stream"}
+
+    def test_non_utf8_json_extension_still_octet_stream(self, runner: CliRunner, tmp_path) -> None:
+        """Decode failure wins over .json extension."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.post.return_value = mock_resp
+
+        # Misleading extension but invalid UTF-8 content.
+        bad = tmp_path / "weird.json"
+        bad.write_bytes(b"\xbe\xbf\xc0")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        ["api", "post", "/data/foo", "-f", str(bad)],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] == b"\xbe\xbf\xc0"
+        assert call_kwargs["headers"] == {"Content-Type": "application/octet-stream"}
+
+    def test_default_inline_data_still_json(self, runner: CliRunner) -> None:
+        """Regression: ``-d '{"k":"v"}'`` without -t still uses json=."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.post.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        ["api", "post", "/data/projects", "-d", '{"k":"v"}'],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.post.call_args[1]
+        assert call_kwargs["json"] == {"k": "v"}
+        assert call_kwargs["data"] is None
+        # No explicit Content-Type header; httpx sets application/json itself.
+        assert call_kwargs.get("headers") is None
+
+    def test_put_explicit_content_type(self, runner: CliRunner) -> None:
+        """``api put -d 'user:pass' -t text/plain`` -> parity with POST."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "ok"
+        client.put.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/xapi/xsync/credentials/save/projects/PROJ",
+                            "-d",
+                            "user:pass",
+                            "-t",
+                            "text/plain",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        call_kwargs = client.put.call_args[1]
+        assert call_kwargs["data"] == "user:pass"
+        assert call_kwargs["json"] is None
+        assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
+
+    def test_help_lists_content_type_flag(self, runner: CliRunner) -> None:
+        """Help text for both verbs exposes -t/--content-type."""
+        result_post = runner.invoke(cli, ["api", "post", "--help"])
+        assert result_post.exit_code == 0
+        assert "--content-type" in result_post.output
+        assert "-t" in result_post.output
+
+        result_put = runner.invoke(cli, ["api", "put", "--help"])
+        assert result_put.exit_code == 0
+        assert "--content-type" in result_put.output
+        assert "-t" in result_put.output
+
+
+class TestDetectContentType:
+    """Direct unit tests for the ``_detect_content_type`` helper."""
+
+    def test_none_file_path_returns_none(self) -> None:
+        from xnatctl.cli.api import _detect_content_type
+
+        assert _detect_content_type(None, raw_bytes=None, decoded_text=None) is None
+
+    def test_decode_failure_always_octet_stream(self) -> None:
+        from xnatctl.cli.api import _detect_content_type
+
+        # decoded_text=None signals UTF-8 decode failure; overrides .json ext.
+        assert (
+            _detect_content_type("foo.json", raw_bytes=b"\xbe\xbf", decoded_text=None)
+            == "application/octet-stream"
+        )
+
+    def test_json_extension(self) -> None:
+        from xnatctl.cli.api import _detect_content_type
+
+        assert (
+            _detect_content_type("payload.json", raw_bytes=b'{"k":"v"}', decoded_text='{"k":"v"}')
+            == "application/json"
+        )
+
+    def test_txt_extension(self) -> None:
+        from xnatctl.cli.api import _detect_content_type
+
+        assert _detect_content_type("notes.txt", raw_bytes=b"hi", decoded_text="hi") == "text/plain"
+
+    def test_xml_extension(self) -> None:
+        from xnatctl.cli.api import _detect_content_type
+
+        assert (
+            _detect_content_type("project.xml", raw_bytes=b"<x/>", decoded_text="<x/>")
+            == "application/xml"
+        )
+
+    def test_unknown_extension(self) -> None:
+        from xnatctl.cli.api import _detect_content_type
+
+        assert (
+            _detect_content_type("foo.bin", raw_bytes=b"hi", decoded_text="hi")
+            == "application/octet-stream"
+        )
+
+    def test_no_extension(self) -> None:
+        from xnatctl.cli.api import _detect_content_type
+
+        assert (
+            _detect_content_type("foo", raw_bytes=b"hi", decoded_text="hi")
+            == "application/octet-stream"
+        )
+
+    def test_extension_case_insensitive(self) -> None:
+        from xnatctl.cli.api import _detect_content_type
+
+        assert (
+            _detect_content_type("payload.JSON", raw_bytes=b'{"k":"v"}', decoded_text='{"k":"v"}')
+            == "application/json"
+        )
+
+    def test_pathlib_path_accepted(self) -> None:
+        """The helper accepts ``pathlib.Path`` as well as ``str``."""
+        from pathlib import Path
+
+        from xnatctl.cli.api import _detect_content_type
+
+        assert (
+            _detect_content_type(Path("notes.txt"), raw_bytes=b"hi", decoded_text="hi")
+            == "text/plain"
+        )
+
+
 class TestApiDelete:
     """Tests for api delete command."""
 

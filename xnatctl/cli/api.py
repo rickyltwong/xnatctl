@@ -5,6 +5,8 @@ Provides direct access to XNAT REST endpoints as an escape hatch.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from urllib.parse import quote
 
 import click
@@ -16,6 +18,14 @@ from xnatctl.cli.common import (
     require_auth,
 )
 from xnatctl.core.output import OutputFormat, print_json, print_output
+
+# Mapping of lowercased file extensions to MIME types used by
+# ``_detect_content_type``.  Kept module-level so the table is allocated once.
+_EXTENSION_CONTENT_TYPES: dict[str, str] = {
+    ".json": "application/json",
+    ".txt": "text/plain",
+    ".xml": "application/xml",
+}
 
 
 def _split_param(param: str) -> tuple[str, str] | None:
@@ -60,6 +70,38 @@ def _is_text_content_type(content_type: str) -> bool:
         "application/xhtml+xml",
         "application/javascript",
     }
+
+
+def _detect_content_type(
+    file_path: Path | str | None,
+    raw_bytes: bytes | None,
+    decoded_text: str | None,
+) -> str | None:
+    """Auto-detect a request ``Content-Type`` from a file body.
+
+    Args:
+        file_path: Path supplied via ``-f/--file``, or ``None`` when no
+            file is in use.
+        raw_bytes: The file's bytes as read from disk, or ``None`` when
+            no file is in use.  Reserved for future content-sniffing
+            extensions; not inspected by the current rule set.
+        decoded_text: The file's UTF-8 decoded text, or ``None`` when
+            decoding failed.  ``None`` always maps to
+            ``application/octet-stream`` regardless of extension.
+
+    Returns:
+        A MIME type string when detection succeeds, or ``None`` when the
+        caller should fall back to the existing behavior.
+    """
+    del raw_bytes  # accepted for parity with the contract; not used yet
+    if file_path is None:
+        return None
+    if decoded_text is None:
+        return "application/octet-stream"
+    ext = os.path.splitext(os.fspath(file_path))[1].lower()
+    if ext in _EXTENSION_CONTENT_TYPES:
+        return _EXTENSION_CONTENT_TYPES[ext]
+    return "application/octet-stream"
 
 
 def _build_query_string(params: tuple) -> str:
@@ -190,6 +232,19 @@ def api_get(
     type=click.Path(exists=True),
     help="Read body from file",
 )
+@click.option(
+    "--content-type",
+    "-t",
+    "content_type",
+    default=None,
+    help=(
+        "Override request Content-Type (e.g. text/plain for XNAT XSync "
+        "endpoints that return 415 on application/json). Auto-detected "
+        "from file extension when -f is used (.json, .txt, .xml; other "
+        "extensions or non-UTF-8 content fall back to "
+        "application/octet-stream)."
+    ),
+)
 @global_options
 @require_auth
 @handle_errors
@@ -199,12 +254,18 @@ def api_post(
     params: tuple,
     data: str | None,
     file_path: str | None,
+    content_type: str | None,
 ) -> None:
     """POST request to any XNAT endpoint.
 
     Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
     ``--file/-f``: payloads that are not valid UTF-8 are sent as raw bytes
     without text decoding.
+
+    Use ``--content-type/-t`` to send a non-JSON body.  This is required for
+    XNAT XSync endpoints (e.g. ``/xapi/xsync/credentials/...``) which
+    respond with ``415 Unsupported Media Type`` unless the request is sent
+    as ``text/plain``.
 
     Examples:
 
@@ -213,6 +274,9 @@ def api_post(
         xnatctl api post /data/services/import --file payload.json
 
         xnatctl api post /data/.../files/foo.dcm -f ./foo.dcm
+
+        xnatctl api post /xapi/xsync/credentials/check/projects/PROJ \\
+            -d 'user:pass' -t text/plain
     """
     import json as json_module
 
@@ -221,32 +285,59 @@ def api_post(
     qs = _build_query_string(params)
     url = f"{path}?{qs}" if qs else path
 
-    # Get body
+    # Read body and try the existing UTF-8 -> JSON -> raw text/bytes ladder.
+    # Preserve the original ``raw`` bytes and ``text`` decode so the
+    # explicit-content-type branch can send the body verbatim via data=
+    # without re-serializing through json.dumps.
     body: bytes | str | None = None
     json_body = None
+    raw_bytes: bytes | None = None
+    decoded_text: str | None = None
 
     if file_path:
         with open(file_path, "rb") as f:
-            raw = f.read()
+            raw_bytes = f.read()
         try:
-            text = raw.decode("utf-8")
+            decoded_text = raw_bytes.decode("utf-8")
         except UnicodeDecodeError:
-            body = raw
+            body = raw_bytes
         else:
             try:
-                json_body = json_module.loads(text)
+                json_body = json_module.loads(decoded_text)
             except json_module.JSONDecodeError:
-                body = text
-    elif data:
+                body = decoded_text
+    elif data is not None:
         try:
             json_body = json_module.loads(data)
         except json_module.JSONDecodeError:
             body = data
 
+    effective_type = content_type or _detect_content_type(file_path, raw_bytes, decoded_text)
+    headers: dict[str, str] | None = None
+
+    # Route body via data= when an explicit/non-JSON content type is in
+    # effect; httpx would otherwise force application/json on json=.
+    if content_type is not None:
+        if json_body is not None and body is None:
+            # User passed -t with -d '{...}' or a JSON file; send the
+            # original text/bytes verbatim, do not re-serialize through
+            # json= or json.dumps.
+            body = decoded_text if file_path is not None else data
+            json_body = None
+        headers = {"Content-Type": content_type}
+    elif effective_type is not None and effective_type != "application/json":
+        # Auto-detected non-JSON file (.txt, .xml, octet-stream).  Drop
+        # any speculative json_body and send the original bytes/text.
+        if json_body is not None and body is None:
+            body = decoded_text if file_path is not None else data
+            json_body = None
+        headers = {"Content-Type": effective_type}
+
     resp = client.post(
         url,
         json=json_body,
         data=body,
+        headers=headers,
     )
 
     click.echo(f"[{resp.status_code}] POST {path}", err=True)
@@ -277,6 +368,19 @@ def api_post(
     type=click.Path(exists=True),
     help="Read body from file",
 )
+@click.option(
+    "--content-type",
+    "-t",
+    "content_type",
+    default=None,
+    help=(
+        "Override request Content-Type (e.g. text/plain for XNAT XSync "
+        "endpoints that return 415 on application/json). Auto-detected "
+        "from file extension when -f is used (.json, .txt, .xml; other "
+        "extensions or non-UTF-8 content fall back to "
+        "application/octet-stream)."
+    ),
+)
 @global_options
 @require_auth
 @handle_errors
@@ -286,6 +390,7 @@ def api_put(
     params: tuple,
     data: str | None,
     file_path: str | None,
+    content_type: str | None,
 ) -> None:
     """PUT request to any XNAT endpoint.
 
@@ -293,11 +398,22 @@ def api_put(
     ``--file/-f``: payloads that are not valid UTF-8 are sent as raw bytes
     without text decoding.
 
+    Use ``--content-type/-t`` to send a non-JSON body.  This is required
+    for XNAT XSync endpoints (e.g.
+    ``/xapi/xsync/credentials/save/projects/PROJ``) which respond with
+    ``415 Unsupported Media Type`` unless the request is sent as
+    ``text/plain``.
+
     Examples:
 
         xnatctl api put /data/projects/MYPROJ --data '{"description": "Updated"}'
 
         xnatctl api put /data/.../files/foo.dcm -f ./foo.dcm
+
+        xnatctl api put /data/projects/PROJ -f project.xml
+
+        xnatctl api put /xapi/xsync/credentials/save/projects/PROJ \\
+            -f ./creds.txt -t text/plain
     """
     import json as json_module
 
@@ -306,32 +422,54 @@ def api_put(
     qs = _build_query_string(params)
     url = f"{path}?{qs}" if qs else path
 
-    # Get body
+    # Read body and try the existing UTF-8 -> JSON -> raw text/bytes ladder.
+    # Preserve the original ``raw`` bytes and ``text`` decode so the
+    # explicit-content-type branch can send the body verbatim via data=
+    # without re-serializing through json.dumps.
     body: bytes | str | None = None
     json_body = None
+    raw_bytes: bytes | None = None
+    decoded_text: str | None = None
 
     if file_path:
         with open(file_path, "rb") as f:
-            raw = f.read()
+            raw_bytes = f.read()
         try:
-            text = raw.decode("utf-8")
+            decoded_text = raw_bytes.decode("utf-8")
         except UnicodeDecodeError:
-            body = raw
+            body = raw_bytes
         else:
             try:
-                json_body = json_module.loads(text)
+                json_body = json_module.loads(decoded_text)
             except json_module.JSONDecodeError:
-                body = text
-    elif data:
+                body = decoded_text
+    elif data is not None:
         try:
             json_body = json_module.loads(data)
         except json_module.JSONDecodeError:
             body = data
 
+    effective_type = content_type or _detect_content_type(file_path, raw_bytes, decoded_text)
+    headers: dict[str, str] | None = None
+
+    # Route body via data= when an explicit/non-JSON content type is in
+    # effect; httpx would otherwise force application/json on json=.
+    if content_type is not None:
+        if json_body is not None and body is None:
+            body = decoded_text if file_path is not None else data
+            json_body = None
+        headers = {"Content-Type": content_type}
+    elif effective_type is not None and effective_type != "application/json":
+        if json_body is not None and body is None:
+            body = decoded_text if file_path is not None else data
+            json_body = None
+        headers = {"Content-Type": effective_type}
+
     resp = client.put(
         url,
         json=json_body,
         data=body,
+        headers=headers,
     )
 
     click.echo(f"[{resp.status_code}] PUT {path}", err=True)
