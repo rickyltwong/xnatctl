@@ -98,3 +98,4 @@ AGENTS.md
 # Git worktrees
 .worktrees/
 worktrees/
+.harness/
