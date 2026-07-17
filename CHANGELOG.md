@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.10 - 2026-07-08
+
+**Fixes**
+
+- `session upload-exam`: raise the default `--wait` (seconds to wait for
+  archiving before attaching resources) from 900s to 4 hours via the new
+  `DEFAULT_ARCHIVE_WAIT_SECONDS` constant. Large sessions (100k+ files) can
+  take well over 15 minutes to archive; the old default let the wait expire
+  before resource attachment.
+- `session upload-exam`: on archive-wait timeout, no longer hard-aborts and
+  discards the successful DICOM upload. It now keeps the DICOM result, reports
+  the unattached resources, and prints the exact `--attach-only` command to
+  re-run once archiving completes, so session resources/misc files are never
+  silently dropped. Under `-o json` the `resources` object gains
+  `attached`, `pending`, `reason`, and `rerun` fields.
+
 ## 0.2.9 - 2026-05-14
 
 **Features**
