@@ -308,7 +308,7 @@ def test_session_upload_exam_wait_for_archive_default_succeeds(
         ]
 
 
-def test_session_upload_exam_wait_for_archive_timeout_click_error(
+def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
     runner: CliRunner,
     auth_client: FakeClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -384,6 +384,8 @@ def test_session_upload_exam_wait_for_archive_timeout_click_error(
                 "S",
                 "-E",
                 "E",
+                "-o",
+                "json",
                 "--wait-timeout",
                 "1",
                 "--wait-interval",
@@ -392,6 +394,12 @@ def test_session_upload_exam_wait_for_archive_timeout_click_error(
         )
 
         assert "No such option" not in result.output
-        assert result.exit_code == 1
+        # Wait-timeout no longer hard-aborts: the successful DICOM upload is kept
+        # and the unattached resources are reported with an actionable
+        # --attach-only re-run command instead of being silently dropped.
+        assert result.exit_code == 0
         assert "ResourceNotFoundError" not in result.output
-        assert "Timed out waiting for archived experiment ID for session 'E'" in result.output
+        assert "Timed out waiting for archived experiment ID" not in result.output
+        assert '"attached": false' in result.output
+        assert '"pending": 1' in result.output
+        assert "--attach-only" in result.output

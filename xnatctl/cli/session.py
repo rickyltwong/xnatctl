@@ -19,8 +19,14 @@ from xnatctl.cli.common import (
     resolve_workers_from_context,
 )
 from xnatctl.core.exceptions import ResourceNotFoundError
-from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
-from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
+from xnatctl.core.output import (
+    OutputFormat,
+    print_error,
+    print_output,
+    print_success,
+    print_warning,
+)
+from xnatctl.core.timeouts import DEFAULT_ARCHIVE_WAIT_SECONDS, DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.hierarchy import ExperimentRef
 from xnatctl.services.hierarchy import HierarchyService
 
@@ -1048,9 +1054,9 @@ def session_upload(
 @click.option(
     "--wait",
     type=click.IntRange(min=0),
-    default=900,
+    default=DEFAULT_ARCHIVE_WAIT_SECONDS,
     show_default=True,
-    help="Seconds to wait for archiving (0 = skip)",
+    help="Seconds to wait for archiving before attaching resources (0 = skip)",
 )
 @click.option(
     "--wait-interval",
@@ -1078,7 +1084,7 @@ def session_upload(
     hidden=True,
     expose_value=False,
     callback=lambda ctx, param, value: (
-        ctx.params.update({"wait": 900 if value else 0}) or value  # type: ignore[func-returns-value]
+        ctx.params.update({"wait": DEFAULT_ARCHIVE_WAIT_SECONDS if value else 0}) or value  # type: ignore[func-returns-value]
     )
     if value is not None
     and param.name
@@ -1235,13 +1241,6 @@ def session_upload_exam(
             print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
         return
 
-    not_archived_guidance = (
-        "Could not resolve archived experiment ID for session "
-        f"'{session}' in project '{project}'. If the DICOM import is still in "
-        "prearchive (not yet archived): rerun with --skip-resources to upload DICOM now, "
-        "or archive it and re-run with --attach-only to attach resources."
-    )
-
     def _resolve_experiment_id() -> str | None:
         try:
             hierarchy = HierarchyService(client)
@@ -1257,28 +1256,62 @@ def session_upload_exam(
         return resolved.experiment_id or session
 
     resolved_experiment_id = _resolve_experiment_id()
-    if not resolved_experiment_id:
-        if not wait_for_archive:
-            raise click.ClickException(not_archived_guidance)
-
-        start = time.monotonic()
-        deadline = start + wait_timeout
+    if not resolved_experiment_id and wait_for_archive:
+        deadline = time.monotonic() + wait_timeout
         while True:
-            now = time.monotonic()
-            remaining = deadline - now
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-
             time.sleep(min(wait_interval, remaining))
-
             resolved_experiment_id = _resolve_experiment_id()
             if resolved_experiment_id:
                 break
 
-        if not resolved_experiment_id:
-            raise click.ClickException(
-                f"Timed out waiting for archived experiment ID for session '{session}'"
+    if not resolved_experiment_id:
+        # Archiving outlived the wait window (or --wait 0 on a not-yet-archived
+        # session). Don't discard the successful DICOM upload or silently drop
+        # resources: report an actionable partial result so the caller can attach
+        # resources with --attach-only once archiving completes.
+        pending = len(classification.resource_dirs) + len(classification.misc_files)
+        rerun = (
+            f"xnatctl session upload-exam '{exam_root_path}' "
+            f"-P {project} -S {subject} -E {session} --attach-only"
+        )
+        if ctx.output_format == OutputFormat.JSON:
+            print_output(
+                {
+                    "project": project,
+                    "subject": subject,
+                    "session": session,
+                    "exam_root": str(exam_root_path),
+                    "dicom": {
+                        "skipped": attach_only,
+                        "total": dicom_total,
+                        "uploaded": dicom_uploaded,
+                    },
+                    "resources": {
+                        "skipped": False,
+                        "attached": False,
+                        "pending": pending,
+                        "resource_dirs": 0,
+                        "misc_files": 0,
+                        "misc_label": misc_label,
+                        "reason": "session not archived before wait timeout",
+                        "rerun": rerun,
+                    },
+                },
+                format=OutputFormat.JSON,
             )
+        else:
+            dicom_msg = (
+                "DICOM skipped" if attach_only else f"DICOM uploaded {dicom_uploaded}/{dicom_total}"
+            )
+            waited = f" after waiting {wait_timeout}s" if wait_for_archive else ""
+            print_warning(
+                f"{dicom_msg}; session '{session}' not archived yet{waited}. "
+                f"{pending} resource item(s) not attached -- re-run once archived:\n  {rerun}"
+            )
+        return
 
     resource_service = ResourceService(client)
 
