@@ -1,6 +1,79 @@
 Changelog
 =========
 
+0.2.11 (2026-07-21)
+-------------------
+
+**Bug fixes**
+
+- ``scan list`` / wildcard ``scan delete``: list scans of sessions whose scans are
+  ``xnat:otherDicomScanData`` (e.g. ``xnat:optSessionData`` / OCT). The scans
+  endpoint is now queried unfiltered first; a guessed ``xsiType`` filter (which a
+  session's type cannot reliably derive) is only used as a fallback when the
+  unfiltered listing is empty. (#16)
+- ``api put``: writing a file to a resource endpoint
+  (``/resources/<label>/files/<name>``) now auto-sets ``?inbody=true`` for a raw
+  body, so the obvious command works instead of failing with an opaque
+  400/500. An explicit ``inbody`` is never overridden, and ``inbody=true`` with no
+  body is now an actionable error instead of a silent empty PUT. (#18)
+- ``resource upload`` (``ResourceService.upload_file``): set ``inbody=true`` and
+  stream the body via httpx ``content=`` for resource file writes, matching the
+  gradual-DICOM upload path. Adds a ``content=`` passthrough to ``XNATClient``. (#21)
+- ``prearchive archive``: transparently re-authenticate on a mid-command session
+  expiry (a slow archive that outlasts the ~15-min JSESSIONID no longer reports
+  a successful archive as a 401 failure), and map the archive 404 to an
+  idempotency-aware error that names the session and explains it may already be
+  archived. The CLI client now enables ``auto_reauth`` when a password is
+  available. (#20)
+- ``prearchive move``: add a regression test locking in that XNAT's ``301`` move
+  redirect is treated as success (the client has followed redirects since the
+  initial commit). (#19)
+
+0.2.10 (2026-07-08)
+-------------------
+
+**Bug fixes**
+
+- ``session upload-exam``: raise the default ``--wait`` (seconds to wait for
+  archiving before attaching resources) from 900s to 4 hours via the new
+  ``DEFAULT_ARCHIVE_WAIT_SECONDS`` constant. Large sessions (100k+ files) can
+  take well over 15 minutes to archive; the old default let the wait expire
+  before resource attachment.
+- ``session upload-exam``: on archive-wait timeout, no longer hard-aborts and
+  discards the successful DICOM upload. It now keeps the DICOM result, reports
+  the unattached resources, and prints the exact ``--attach-only`` command to
+  re-run once archiving completes, so session resources/misc files are never
+  silently dropped. Under ``-o json`` the ``resources`` object gains
+  ``attached``, ``pending``, ``reason``, and ``rerun`` fields.
+
+0.2.9 (2026-05-14)
+------------------
+
+**Features**
+
+- Add ``xnatctl xsync`` subcommand group for XSync plugin operations:
+  ``refresh-credentials``, ``list``, ``setup``, ``status``, ``history``, ``progress``,
+  ``sync``, and ``sync-subject``. The ``refresh-credentials`` orchestrator
+  composes the three-step XSync token-rotation flow
+  (``remoteREST`` -> ``credentials/save`` -> ``credentials/check``) entirely
+  inside ``xnatctl``, removing the need to drop to raw ``curl``. Remote
+  passwords are sourced from ``--remote-pass-stdin``, the
+  ``XNAT_XSYNC_REMOTE_PASS`` env var, or interactive prompt; passing
+  ``--remote-pass <secret>`` on argv is rejected at parse time as a
+  ``click.UsageError`` so secrets never reach process memory or
+  ``~/.bash_history``. (closes #15)
+- Promote ``--verbose/-v``, ``--profile/-p``, ``--output/-o``, and ``--quiet/-q``
+  to root-group options on the ``xnatctl`` command. They now work as
+  ``xnatctl --verbose api get ...``; the existing per-subcommand variants
+  still work and win when both are set explicitly. ``--version`` remains
+  eager and is not shadowed by ``-v``. (closes #14)
+- ``xnatctl api get -o json`` no longer hard-errors on non-JSON response
+  bodies. Instead it emits a single-line stderr warning and writes the
+  raw body to stdout (text-decoded when UTF-8-safe, raw bytes
+  otherwise). Exit code stays 0 when the underlying HTTP call
+  succeeded. Useful against ``/xapi/xsync/progress/{projectId}`` and
+  similar text/plain endpoints. (closes #13)
+
 0.2.8 (2026-05-07)
 ------------------
 
