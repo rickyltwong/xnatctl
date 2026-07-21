@@ -260,6 +260,75 @@ def _build_query_string(params: tuple) -> str:
     return "&".join(parts)
 
 
+# Matches a write to a *named* file under a resource, e.g.
+# ``/data/projects/P/resources/BIDS/files/params.json``. XNAT rejects a
+# raw-body write to this endpoint with 400/500 unless ``?inbody=true`` is
+# set (or the body is sent as multipart, which ``api`` never does). The
+# bare collection endpoint (``.../files`` with no trailing name) is used
+# for zip/bulk uploads and is intentionally not matched here.
+_RESOURCE_FILE_RE = re.compile(r"/resources/[^/?]+/files/[^/?]+")
+
+
+def _param_value(params: tuple, key: str) -> str | None:
+    """Return the value of ``key`` in ``params`` (case-insensitive), or None."""
+    for param in params:
+        result = _split_param(param)
+        if result is not None and result[0].lower() == key.lower():
+            return result[1]
+    return None
+
+
+def _is_resource_file_path(path: str) -> bool:
+    """True if ``path`` targets a named file under a resource.
+
+    Such writes require ``?inbody=true`` for a raw request body. Only the
+    path portion (before any literal ``?``) is inspected.
+    """
+    return _RESOURCE_FILE_RE.search(path.split("?", 1)[0]) is not None
+
+
+def _maybe_add_inbody(path: str, params: tuple, *, has_body: bool) -> tuple:
+    """Add ``inbody=true`` for resource-file writes that need it.
+
+    XNAT's ``/resources/<label>/files/<name>`` endpoint drops a raw request
+    body unless ``inbody=true`` is present, failing with an opaque 400/500.
+    When the target is such an endpoint and a body was supplied, inject the
+    parameter (unless the caller already set ``inbody``) and emit a note so
+    the rewrite of this escape-hatch request stays observable.
+
+    Also guards the inverse footgun: an explicit ``inbody=true`` with no
+    body silently PUTs nothing, so raise an actionable error instead.
+
+    Args:
+        path: The request path (query string, if any, is ignored).
+        params: The ``--params`` tuple as given by the user.
+        has_body: Whether a request body was resolved from ``-d``/``-f``.
+
+    Returns:
+        The (possibly extended) params tuple.
+
+    Raises:
+        click.UsageError: If ``inbody=true`` is set but no body was supplied.
+    """
+    inbody_value = _param_value(params, "inbody")
+
+    if inbody_value is not None and inbody_value.lower() == "true" and not has_body:
+        raise click.UsageError(
+            "inbody=true set but no request body supplied; "
+            "pass -f <file> or -d <data> (use '-' for stdin)"
+        )
+
+    if inbody_value is None and has_body and _is_resource_file_path(path):
+        click.echo(
+            "note: added inbody=true for resource file write "
+            "(pass --params inbody=... to override)",
+            err=True,
+        )
+        return (*params, "inbody=true")
+
+    return params
+
+
 @click.group()
 def api() -> None:
     """Raw API access (escape hatch).
@@ -415,8 +484,6 @@ def api_post(
 
         echo '{"k":"v"}' | xnatctl api post /data/endpoint -d -
 
-        xnatctl api post /data/.../files/foo.dcm -f ./foo.dcm
-
         xnatctl api post /xapi/xsync/credentials/check/projects/PROJ \\
             -d 'user:pass' -t text/plain
     """
@@ -523,13 +590,18 @@ def api_put(
     ``415 Unsupported Media Type`` unless the request is sent as
     ``text/plain``.
 
+    Writing a file to a resource endpoint
+    (``/resources/<label>/files/<name>``) requires ``?inbody=true`` for a
+    raw body; xnatctl adds it automatically when a body is supplied (a note
+    is printed to stderr). Pass ``--params inbody=false`` to opt out.
+
     Examples:
 
         xnatctl api put /data/projects/MYPROJ --data '{"description": "Updated"}'
 
         echo '{"description": "x"}' | xnatctl api put /data/projects/MYPROJ -d -
 
-        xnatctl api put /data/.../files/foo.dcm -f ./foo.dcm
+        xnatctl api put /data/projects/PROJ/resources/BIDS/files/params.json -f params.json
 
         xnatctl api put /data/projects/PROJ -f project.xml
 
@@ -538,10 +610,16 @@ def api_put(
     """
     client = ctx.get_client()
 
+    body, json_body, raw_bytes, decoded_text = _read_body(data, file_path)
+    has_body = body is not None or json_body is not None
+
+    # Resource file writes (/resources/<label>/files/<name>) need
+    # ?inbody=true for a raw body; XNAT otherwise fails with an opaque
+    # 400/500. Inject it (observably) so the obvious command works.
+    params = _maybe_add_inbody(path, params, has_body=has_body)
+
     qs = _build_query_string(params)
     url = f"{path}?{qs}" if qs else path
-
-    body, json_body, raw_bytes, decoded_text = _read_body(data, file_path)
 
     detect_file = None if file_path == _STDIN_SENTINEL else file_path
     effective_type = content_type or _detect_content_type(detect_file, raw_bytes, decoded_text)

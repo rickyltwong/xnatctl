@@ -116,3 +116,20 @@ def test_get_client_uses_cached_session_username_as_hint():
 
     assert mock_client_cls.call_args.kwargs["username"] == "Ricky_Wong"
     assert mock_client_cls.call_args.kwargs["session_token"] == "cached-token"
+
+
+def test_get_client_enables_auto_reauth():
+    """The client re-authenticates on a mid-command 401 (issue #20)."""
+    ctx = Context()
+    ctx.config = Config(
+        default_profile="default",
+        profiles={"default": Profile(url="https://example.org", verify_ssl=False)},
+    )
+    ctx.auth_manager = MagicMock()
+    ctx.auth_manager.load_session.return_value = None
+    ctx.auth_manager.get_token_from_env.return_value = None
+
+    with patch("xnatctl.cli.common.XNATClient") as mock_client_cls:
+        ctx.get_client()
+
+    assert mock_client_cls.call_args.kwargs["auto_reauth"] is True

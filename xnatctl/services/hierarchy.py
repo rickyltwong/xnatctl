@@ -116,6 +116,41 @@ class HierarchyService(BaseService):
 
         return cls.build_experiment_path(ref.experiment, "scans", ref.scan_id, *parts)
 
+    def list_scan_rows(
+        self, ref: ExperimentRef, session_xsi_type: str | None
+    ) -> list[dict[str, Any]]:
+        """List the raw scan rows for an experiment.
+
+        The scans endpoint returns every scan of a session regardless of its
+        ``xsiType``, so the reliable query is an unfiltered listing. Some
+        non-imaging session types (e.g. ``xnat:eegSessionData``) can return an
+        empty ResultSet unless the request narrows to the matching scan
+        ``xsiType``; for those, fall back to a filtered query.
+
+        Filtering must never be the primary query: a scan ``xsiType`` cannot be
+        derived from the session ``xsiType`` in general (an
+        ``xnat:optSessionData`` session holds ``xnat:otherDicomScanData`` scans,
+        not ``xnat:optScanData``), so a guessed filter would silently drop every
+        scan whose type does not match the guess. See issue #16.
+
+        Args:
+            ref: Parent experiment reference.
+            session_xsi_type: Experiment ``xsiType``, used only for the fallback.
+
+        Returns:
+            List of scan row dicts (possibly empty).
+        """
+        path = self.build_scan_collection_path(ref)
+        rows = self.extract_rows(self.client.get_json(path))
+        if rows:
+            return rows
+
+        scan_xsi = self.resolve_scan_xsi_type(session_xsi_type)
+        if not scan_xsi:
+            return rows
+        fallback = self.client.get_json(path, params={"xsiType": scan_xsi})
+        return self.extract_rows(fallback)
+
     @classmethod
     def build_resource_collection_path(cls, parent: HierarchyParentRef) -> str:
         """Build a resource collection path for any supported parent level."""

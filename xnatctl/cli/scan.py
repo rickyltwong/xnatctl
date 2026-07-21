@@ -174,13 +174,7 @@ def scan_list(ctx: Context, session_id: str, project: str | None, subject: str |
     source_ref = _build_experiment_ref(project, subject, session_id)
     experiment_ref, session_xsi = _inspect_experiment(hierarchy, source_ref)
 
-    scan_params: dict[str, Any] = {}
-    scan_xsi = hierarchy.resolve_scan_xsi_type(session_xsi)
-    if scan_xsi:
-        scan_params["xsiType"] = scan_xsi
-
-    resp = client.get_json(hierarchy.build_scan_collection_path(experiment_ref), params=scan_params)
-    results = HierarchyService.extract_rows(resp)
+    results = hierarchy.list_scan_rows(experiment_ref, session_xsi)
 
     # Transform for output
     scans = []
@@ -349,14 +343,7 @@ def scan_delete(
 
     # If wildcard, get all scan IDs
     if scan_ids is None:
-        scan_params: dict[str, Any] = {}
-        scan_xsi = hierarchy.resolve_scan_xsi_type(session_xsi)
-        if scan_xsi:
-            scan_params["xsiType"] = scan_xsi
-        resp = client.get_json(
-            hierarchy.build_scan_collection_path(experiment_ref), params=scan_params
-        )
-        results = HierarchyService.extract_rows(resp)
+        results = hierarchy.list_scan_rows(experiment_ref, session_xsi)
         scan_ids = [r.get("ID", "") for r in results if r.get("ID")]
 
     if not scan_ids:

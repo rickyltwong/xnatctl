@@ -315,3 +315,30 @@ class TestResourceUploadFile:
         assert result["extracted"] is True
         params = mock_client.put.call_args[1]["params"]
         assert params["extract"] == "true"
+
+    def test_upload_file_sets_inbody(
+        self, service: ResourceService, mock_client: MagicMock, tmp_path: Path
+    ) -> None:
+        """Raw-body file writes must carry inbody=true (regression, issue #21)."""
+        test_file = tmp_path / "params.json"
+        test_file.write_text('{"k": "v"}')
+        mock_client.put.return_value = _resp("", content_type="text/plain")
+
+        service.upload_file("E001", "BIDS", test_file, project="PROJ")
+
+        params = mock_client.put.call_args[1]["params"]
+        assert params["inbody"] == "true"
+
+    def test_upload_file_streams_via_content_not_data(
+        self, service: ResourceService, mock_client: MagicMock, tmp_path: Path
+    ) -> None:
+        """Body is sent through content= (raw stream), not the form data= param."""
+        test_file = tmp_path / "blob.bin"
+        test_file.write_bytes(b"\x00\x01\x02payload")
+        mock_client.put.return_value = _resp("", content_type="text/plain")
+
+        service.upload_file("E001", "DATA", test_file)
+
+        kwargs = mock_client.put.call_args.kwargs
+        assert "content" in kwargs and kwargs["content"] is not None
+        assert kwargs.get("data") is None
