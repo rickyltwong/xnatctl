@@ -482,6 +482,170 @@ class TestApiPut:
         assert "xnat:mrSessionData" in url
         assert "%3A" not in url.split("?")[1]
 
+    def test_api_put_resource_file_auto_inbody(self, runner: CliRunner, tmp_path) -> None:
+        """PUT of a file to a resource endpoint auto-adds inbody=true (issue #18)."""
+        payload = tmp_path / "params.json"
+        payload.write_text('{"k": "v"}')
+
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.put.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/data/projects/PROJ/resources/BIDS/files/params.json",
+                            "-f",
+                            str(payload),
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        url = client.put.call_args[0][0]
+        assert "inbody=true" in url
+        assert "note: added inbody=true" in result.output
+
+    def test_api_put_resource_file_inbody_not_overridden(self, runner: CliRunner, tmp_path) -> None:
+        """An explicit inbody param is preserved; nothing auto-injected."""
+        payload = tmp_path / "params.json"
+        payload.write_text('{"k": "v"}')
+
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.put.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/data/projects/PROJ/resources/BIDS/files/params.json",
+                            "--params",
+                            "inbody=false",
+                            "-f",
+                            str(payload),
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        url = client.put.call_args[0][0]
+        assert "inbody=false" in url
+        assert "inbody=true" not in url
+        assert "note: added inbody=true" not in result.output
+
+    def test_api_put_non_file_path_no_inbody(self, runner: CliRunner) -> None:
+        """A non-resource-file PUT is left untouched (no over-eager injection)."""
+        client = _mock_client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        client.put.return_value = mock_resp
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/data/projects/PROJ1",
+                            "--data",
+                            '{"description": "Updated"}',
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        url = client.put.call_args[0][0]
+        assert "inbody" not in url
+
+    def test_api_put_inbody_without_body_errors(self, runner: CliRunner) -> None:
+        """inbody=true with no body is an actionable error, not a silent empty PUT."""
+        client = _mock_client()
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "api",
+                            "put",
+                            "/data/projects/PROJ/resources/BIDS/files/params.json",
+                            "--params",
+                            "inbody=true",
+                        ],
+                    )
+
+        assert result.exit_code != 0
+        assert "no request body" in result.output
+        client.put.assert_not_called()
+
+
+class TestInbodyHelpers:
+    """Unit tests for the resource-file inbody helpers."""
+
+    def test_named_file_matches(self) -> None:
+        from xnatctl.cli.api import _is_resource_file_path
+
+        assert _is_resource_file_path("/data/projects/P/resources/BIDS/files/params.json")
+        assert _is_resource_file_path("/data/experiments/E/scans/1/resources/DICOM/files/a.dcm")
+
+    def test_collection_endpoint_not_matched(self) -> None:
+        from xnatctl.cli.api import _is_resource_file_path
+
+        # Bare .../files collection (zip/bulk upload) must not match.
+        assert not _is_resource_file_path("/data/projects/P/resources/BIDS/files")
+
+    def test_non_resource_path_not_matched(self) -> None:
+        from xnatctl.cli.api import _is_resource_file_path
+
+        assert not _is_resource_file_path("/data/projects/P")
+
+    def test_inject_when_body_present(self) -> None:
+        from xnatctl.cli.api import _maybe_add_inbody
+
+        out = _maybe_add_inbody("/data/projects/P/resources/R/files/f.json", (), has_body=True)
+        assert out == ("inbody=true",)
+
+    def test_existing_inbody_respected(self) -> None:
+        from xnatctl.cli.api import _maybe_add_inbody
+
+        out = _maybe_add_inbody(
+            "/data/projects/P/resources/R/files/f.json",
+            ("inbody=false",),
+            has_body=True,
+        )
+        assert out == ("inbody=false",)
+
+    def test_no_inject_without_body(self) -> None:
+        from xnatctl.cli.api import _maybe_add_inbody
+
+        out = _maybe_add_inbody("/data/projects/P/resources/R/files/f.json", (), has_body=False)
+        assert out == ()
+
+    def test_empty_body_with_inbody_raises(self) -> None:
+        from xnatctl.cli.api import _maybe_add_inbody
+
+        with pytest.raises(click.UsageError):
+            _maybe_add_inbody(
+                "/data/projects/P/resources/R/files/f.json",
+                ("inbody=true",),
+                has_body=False,
+            )
+
 
 class TestApiBinaryFileBody:
     """Tests for binary-safe ``--file/-f`` bodies in api put/post."""
