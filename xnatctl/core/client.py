@@ -168,6 +168,7 @@ class XNATClient:
         params: dict[str, Any] | None = None,
         json: Any | None = None,
         data: Any | None = None,
+        content: Any | None = None,
         files: Any | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
@@ -181,6 +182,8 @@ class XNATClient:
             params: Query parameters.
             json: JSON body.
             data: Form data or raw body.
+            content: Raw request body (bytes, str, iterator, or file object).
+                Use this for streaming raw file uploads instead of ``data``.
             files: Files to upload.
             headers: Additional headers.
             timeout: Request timeout override.
@@ -211,6 +214,7 @@ class XNATClient:
                     params=params,
                     json=json,
                     data=data if data is not None else None,
+                    content=content,
                     files=files,
                     headers=headers,
                     cookies=cookies,
@@ -302,6 +306,7 @@ class XNATClient:
         params: dict[str, Any] | None = None,
         json: Any | None = None,
         data: Any | None = None,
+        content: Any | None = None,
         files: Any | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
@@ -313,6 +318,7 @@ class XNATClient:
             params=params,
             json=json,
             data=data,
+            content=content,
             files=files,
             headers=headers,
             timeout=timeout,
@@ -325,6 +331,7 @@ class XNATClient:
         params: dict[str, Any] | None = None,
         json: Any | None = None,
         data: Any | None = None,
+        content: Any | None = None,
         files: Any | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
@@ -336,6 +343,7 @@ class XNATClient:
             params=params,
             json=json,
             data=data,
+            content=content,
             files=files,
             headers=headers,
             timeout=timeout,
