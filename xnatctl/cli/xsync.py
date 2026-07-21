@@ -114,8 +114,8 @@ def xsync() -> None:
 
 @xsync.command("list")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_list(ctx: Context) -> None:
     """List XSync-bound projects on the local XNAT."""
     client = ctx.get_client()
@@ -151,8 +151,8 @@ def xsync_list(ctx: Context) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_setup(ctx: Context, project_id: str | None) -> None:
     """Show the XSync setup record for a project."""
     resolved = require_project_from_context(ctx, project_id)
@@ -170,8 +170,8 @@ def xsync_setup(ctx: Context, project_id: str | None) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_status(ctx: Context, project_id: str | None) -> None:
     """Show the XSync status record for a project."""
     resolved = require_project_from_context(ctx, project_id)
@@ -189,8 +189,8 @@ def xsync_status(ctx: Context, project_id: str | None) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_history(ctx: Context, project_id: str | None) -> None:
     """Show the XSync run history for a project."""
     resolved = require_project_from_context(ctx, project_id)
@@ -208,8 +208,8 @@ def xsync_history(ctx: Context, project_id: str | None) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_progress(ctx: Context, project_id: str | None) -> None:
     """Stream the current XSync progress log (plain text) to stdout."""
     resolved = require_project_from_context(ctx, project_id)
@@ -231,8 +231,8 @@ def xsync_progress(ctx: Context, project_id: str | None) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 @confirm_destructive("Trigger an XSync run for this project?")
 def xsync_sync(ctx: Context, project_id: str | None, dry_run: bool) -> None:
     """Trigger an XSync run for the given project."""
@@ -261,8 +261,8 @@ def xsync_sync(ctx: Context, project_id: str | None, dry_run: bool) -> None:
     help="Local project id (informational; falls back to profile default).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 @confirm_destructive("Trigger an XSync run for this subject/experiment?")
 def xsync_sync_subject(
     ctx: Context,
@@ -444,8 +444,8 @@ def _enumerate_bound_projects(service: XsyncService, remote_url: str) -> list[st
     help="Rotate every XSync-bound project that matches --remote-url.",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 @confirm_destructive("Rotate XSync credentials for this project?")
 def xsync_refresh_credentials(
     ctx: Context,

@@ -354,8 +354,8 @@ def api() -> None:
     help=_PARAMS_HELP,
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def api_get(
     ctx: Context,
     path: str,
@@ -454,8 +454,8 @@ def api_get(
     ),
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def api_post(
     ctx: Context,
     path: str,
@@ -567,8 +567,8 @@ def api_post(
     ),
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def api_put(
     ctx: Context,
     path: str,
@@ -668,8 +668,8 @@ def api_put(
     help="Skip confirmation",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def api_delete(
     ctx: Context,
     path: str,

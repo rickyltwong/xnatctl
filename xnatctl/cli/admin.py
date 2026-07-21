@@ -35,8 +35,8 @@ def admin() -> None:
 @click.option("--limit", type=int, help="Limit number of experiments")
 @parallel_options
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def admin_refresh_catalogs(
     ctx: Context,
     project: str,
@@ -178,8 +178,8 @@ def user() -> None:
 @click.option("--projects", help="Comma-separated project IDs to generate group names")
 @click.option("--role", default="member", help="Role for project groups (default: member)")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def user_add(
     ctx: Context,
     username: str,
@@ -252,8 +252,8 @@ def user_add(
 @click.option("--since", help="Time range (e.g., '7d', '2024-01-01')")
 @click.option("--limit", type=int, default=50, help="Max results")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def admin_audit(
     ctx: Context,
     project: str | None,

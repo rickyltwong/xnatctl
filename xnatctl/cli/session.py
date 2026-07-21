@@ -44,8 +44,8 @@ def session() -> None:
     "--modality", type=click.Choice(["MR", "PET", "CT", "EEG"]), help="Filter by modality"
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_list(
     ctx: Context,
     project: str | None,
@@ -142,8 +142,8 @@ def session_list(
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     """Show session details including scans and resources.
 
@@ -607,8 +607,8 @@ def _download_session_fast(
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_download(
     ctx: Context,
     session_id: str,
@@ -878,8 +878,8 @@ def session_download(
 )
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_upload(
     ctx: Context,
     input_path: str,
@@ -1093,8 +1093,8 @@ def session_upload(
 )
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_upload_exam(
     ctx: Context,
     exam_root: str,
@@ -1875,8 +1875,8 @@ def _upload_dicom_store(
 )
 @click.option("--dry-run", is_flag=True, help="Preview without sending")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_upload_dicom(
     ctx: Context,
     input_path: str,

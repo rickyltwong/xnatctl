@@ -30,8 +30,8 @@ def project() -> None:
 
 @project.command("list")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_list(ctx: Context) -> None:
     """List accessible projects.
 
@@ -74,8 +74,8 @@ def project_list(ctx: Context) -> None:
 @project.command("show")
 @click.argument("project_id")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_show(ctx: Context, project_id: str) -> None:
     """Show project details.
 
@@ -147,8 +147,8 @@ def project_show(ctx: Context, project_id: str) -> None:
     "--accessibility", type=click.Choice(["public", "protected", "private"]), default="private"
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_create(
     ctx: Context,
     project_id: str,
@@ -205,8 +205,8 @@ def project_create(
 @click.option("--config", "config_path", type=click.Path(exists=True), help="Transfer config YAML")
 @dest_profile_options
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 @confirm_destructive("Transfer data to destination XNAT?")
 @parallel_options
 def project_transfer(
@@ -312,8 +312,8 @@ def project_transfer(
 @project.command("transfer-status")
 @click.option("-P", "--project", "source_project", required=True, help="Source project ID")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_transfer_status(ctx: Context, source_project: str) -> None:
     """Show status of the last transfer run.
 
@@ -361,8 +361,8 @@ def project_transfer_status(ctx: Context, source_project: str) -> None:
 @project.command("transfer-history")
 @click.option("-P", "--project", "source_project", required=True, help="Source project ID")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_transfer_history(ctx: Context, source_project: str) -> None:
     """Show transfer history for a project.
 
@@ -424,8 +424,8 @@ def project_transfer_history(ctx: Context, source_project: str) -> None:
 @click.option("--dest-project", required=True, help="Destination project ID")
 @dest_profile_options
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_transfer_check(
     ctx: Context,
     source_project: str,
