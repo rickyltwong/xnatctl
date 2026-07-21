@@ -292,3 +292,63 @@ class TestResolution:
                     experiment_is_label=True,
                 )
             )
+
+
+class TestListScanRows:
+    """Tests for scan-row enumeration (unfiltered-first with xsiType fallback)."""
+
+    def _ref(self) -> ExperimentRef:
+        return ExperimentRef(experiment="XNAT_E00001", experiment_is_label=False)
+
+    def test_unfiltered_listing_returns_all_scans(
+        self, service: HierarchyService, mock_client: MagicMock
+    ) -> None:
+        """Regression for issue #16: otherDicomScanData scans list without a filter.
+
+        A guessed scan xsiType would drop every scan, so the unfiltered query is
+        primary and no fallback call is made when it returns rows.
+        """
+        mock_client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    {"ID": "1", "type": "Angiography", "xsiType": "xnat:otherDicomScanData"},
+                    {"ID": "2", "type": "Macular Cube", "xsiType": "xnat:otherDicomScanData"},
+                ]
+            }
+        }
+
+        rows = service.list_scan_rows(self._ref(), "xnat:optSessionData")
+
+        assert [r["ID"] for r in rows] == ["1", "2"]
+        # Exactly one (unfiltered) scans request; no fallback.
+        assert mock_client.get_json.call_count == 1
+        assert mock_client.get_json.call_args_list[0][0][0] == "/data/experiments/XNAT_E00001/scans"
+        assert "params" not in mock_client.get_json.call_args_list[0][1]
+
+    def test_empty_unfiltered_listing_falls_back_to_scan_xsi_type(
+        self, service: HierarchyService, mock_client: MagicMock
+    ) -> None:
+        """An empty unfiltered listing retries with the resolved scan xsiType."""
+        mock_client.get_json.side_effect = [
+            {"ResultSet": {"Result": []}},
+            {"ResultSet": {"Result": [{"ID": "1", "type": "EEG"}]}},
+        ]
+
+        rows = service.list_scan_rows(self._ref(), "xnat:eegSessionData")
+
+        assert [r["ID"] for r in rows] == ["1"]
+        assert mock_client.get_json.call_count == 2
+        assert mock_client.get_json.call_args_list[1][1]["params"] == {
+            "xsiType": "xnat:eegScanData"
+        }
+
+    def test_empty_unfiltered_listing_without_resolvable_xsi_type_returns_empty(
+        self, service: HierarchyService, mock_client: MagicMock
+    ) -> None:
+        """No fallback is attempted when the session xsiType does not resolve."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        rows = service.list_scan_rows(self._ref(), None)
+
+        assert rows == []
+        assert mock_client.get_json.call_count == 1
