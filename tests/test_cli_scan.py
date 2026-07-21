@@ -113,7 +113,7 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
-            _scan_results(),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
         ]
 
         with (
@@ -134,7 +134,7 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context(default_project=None)
         mock_client.get_json.side_effect = [
             _exp_metadata(),
-            _scan_results(),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
         ]
 
         with (
@@ -199,7 +199,7 @@ class TestScanList:
         ctx, mock_client = _make_authenticated_context(default_project="FALLBACK")
         mock_client.get_json.side_effect = [
             _exp_metadata(),
-            _scan_results(),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
         ]
 
         with (
@@ -275,11 +275,12 @@ class TestScanList:
         assert "1" in result.output
 
     def test_scan_list_empty(self, runner: CliRunner) -> None:
-        """Empty result set does not error."""
+        """A session with genuinely no scans does not error (fallback also empty)."""
         ctx, mock_client = _make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
-            _scan_results(),
+            _scan_results(),  # unfiltered listing empty
+            _scan_results(),  # xsiType fallback also empty
         ]
 
         with (
@@ -292,11 +293,80 @@ class TestScanList:
 
         assert result.exit_code == 0
 
-    def test_scan_list_eeg_session_passes_correct_xsi_type(self, runner: CliRunner) -> None:
-        """EEG sessions pass xsiType=xnat:eegScanData to the scans endpoint."""
+    def test_scan_list_opt_session_lists_other_dicom_scans(self, runner: CliRunner) -> None:
+        """Regression for issue #16: xnat:otherDicomScanData scans are listed.
+
+        An ``xnat:optSessionData`` session holds ``xnat:otherDicomScanData``
+        scans, which cannot be derived from the session xsiType. ``scan list``
+        must therefore query unfiltered rather than filtering on a guessed scan
+        xsiType (which would drop every scan). The unfiltered listing returns
+        all three scans and no fallback call is needed.
+        """
+        ctx, mock_client = _make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata("xnat:optSessionData"),
+            _scan_results(
+                [
+                    {"ID": "1", "type": "Angiography", "series_description": "", "quality": ""},
+                    {"ID": "2", "type": "Macular Cube", "series_description": "", "quality": ""},
+                    {"ID": "3", "type": "Optic Disc Cube", "series_description": "", "quality": ""},
+                ]
+            ),
+        ]
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx.auth_manager
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result.exit_code == 0
+        assert "Angiography" in result.output
+        assert "Macular Cube" in result.output
+        assert "Optic Disc Cube" in result.output
+        # Experiment metadata + exactly one unfiltered scans call (no fallback).
+        assert mock_client.get_json.call_count == 2
+        scan_call_kwargs = mock_client.get_json.call_args_list[1][1]
+        assert "xsiType" not in scan_call_kwargs.get("params", {})
+
+    def test_scan_list_mr_session_lists_unfiltered(self, runner: CliRunner) -> None:
+        """Imaging (MR) sessions list scans without a guessed xsiType filter."""
+        ctx, mock_client = _make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata("xnat:mrSessionData"),
+            _scan_results(
+                [{"ID": "1", "type": "T1", "series_description": "MPRAGE", "quality": "usable"}]
+            ),
+        ]
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+        ):
+            mock_auth_cls.return_value = ctx.auth_manager
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result.exit_code == 0
+        assert "MPRAGE" in result.output
+        # Exactly two calls: experiment metadata + one unfiltered scan listing.
+        assert mock_client.get_json.call_count == 2
+        scan_call_kwargs = mock_client.get_json.call_args_list[1][1]
+        assert "xsiType" not in scan_call_kwargs.get("params", {})
+
+    def test_scan_list_eeg_session_falls_back_to_xsi_type(self, runner: CliRunner) -> None:
+        """Non-imaging (EEG) sessions that list empty unfiltered fall back to the scan xsiType.
+
+        Some non-imaging session types return an empty ResultSet on an unfiltered
+        ``/scans`` request; for those, ``scan list`` retries with the matching
+        scan xsiType (``xnat:eegScanData``) rather than reporting no scans.
+        """
         ctx, mock_client = _make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:eegSessionData"),
+            _scan_results(),  # unfiltered listing returns nothing
             _scan_results([{"ID": "1", "type": "EEG", "series_description": "", "quality": ""}]),
         ]
 
@@ -310,29 +380,11 @@ class TestScanList:
 
         assert result.exit_code == 0
         assert "EEG" in result.output
-        # Verify xsiType was passed to the scans call
-        scan_call_kwargs = mock_client.get_json.call_args_list[1][1]
-        assert scan_call_kwargs["params"]["xsiType"] == "xnat:eegScanData"
-
-    def test_scan_list_mr_session_passes_mr_xsi_type(self, runner: CliRunner) -> None:
-        """MR sessions pass xsiType=xnat:mrScanData to the scans endpoint."""
-        ctx, mock_client = _make_authenticated_context()
-        mock_client.get_json.side_effect = [
-            _exp_metadata("xnat:mrSessionData"),
-            _scan_results(),
-        ]
-
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
-            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
-
-        assert result.exit_code == 0
-        scan_call_kwargs = mock_client.get_json.call_args_list[1][1]
-        assert scan_call_kwargs["params"]["xsiType"] == "xnat:mrScanData"
+        # Primary scans call is unfiltered; the fallback carries the eeg scan xsiType.
+        primary_call_kwargs = mock_client.get_json.call_args_list[1][1]
+        assert "xsiType" not in primary_call_kwargs.get("params", {})
+        fallback_call_kwargs = mock_client.get_json.call_args_list[2][1]
+        assert fallback_call_kwargs["params"]["xsiType"] == "xnat:eegScanData"
 
 
 # =============================================================================
