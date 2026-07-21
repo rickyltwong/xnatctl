@@ -597,4 +597,7 @@ def scan_download(
             print_error(
                 f"Download failed: {summary.errors[0] if summary.errors else 'Unknown error'}"
             )
-            raise SystemExit(1)
+
+    # Format-independent failure exit (ROB-01): -o json must also return nonzero.
+    if not summary.success:
+        raise SystemExit(1)

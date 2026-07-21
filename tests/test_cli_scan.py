@@ -962,6 +962,49 @@ class TestScanDownload:
 
         assert result.exit_code == 1
 
+    def test_scan_download_failure_json_exits_nonzero(self, runner: CliRunner, tmp_path) -> None:
+        """ROB-01: a failed download must exit 1 under -o json, not just table."""
+        ctx, mock_client = _make_authenticated_context()
+        mock_summary = DownloadSummary(
+            success=False,
+            total=1,
+            succeeded=0,
+            failed=1,
+            duration=1.0,
+            total_files=0,
+            total_size_mb=0.0,
+            output_path=str(tmp_path / "XNAT_E00001"),
+            session_id="XNAT_E00001",
+            errors=["Connection timed out"],
+        )
+
+        with (
+            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
+            patch.object(Context, "get_client", return_value=mock_client),
+            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
+            mock_auth_cls.return_value = ctx.auth_manager
+            mock_dl_cls.return_value.download_scans.return_value = mock_summary
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "-o",
+                    "json",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert '"success"' in result.output  # JSON summary still emitted
+
     def test_scan_download_json_output(self, runner: CliRunner, tmp_path) -> None:
         """JSON output includes structured download summary."""
         ctx, mock_client = _make_authenticated_context()
