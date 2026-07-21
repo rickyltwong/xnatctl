@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.11 - 2026-07-21
+
+**Fixes**
+
+- `scan list` / wildcard `scan delete`: list scans of sessions whose scans are
+  `xnat:otherDicomScanData` (e.g. `xnat:optSessionData` / OCT). The scans
+  endpoint is now queried unfiltered first; a guessed `xsiType` filter (which a
+  session's type cannot reliably derive) is only used as a fallback when the
+  unfiltered listing is empty. (#16)
+- `api put`: writing a file to a resource endpoint
+  (`/resources/<label>/files/<name>`) now auto-sets `?inbody=true` for a raw
+  body, so the obvious command works instead of failing with an opaque
+  400/500. An explicit `inbody` is never overridden, and `inbody=true` with no
+  body is now an actionable error instead of a silent empty PUT. (#18)
+- `resource upload` (`ResourceService.upload_file`): set `inbody=true` and
+  stream the body via httpx `content=` for resource file writes, matching the
+  gradual-DICOM upload path. Adds a `content=` passthrough to `XNATClient`. (#21)
+- `prearchive archive`: transparently re-authenticate on a mid-command session
+  expiry (a slow archive that outlasts the ~15-min JSESSIONID no longer reports
+  a successful archive as a 401 failure), and map the archive 404 to an
+  idempotency-aware error that names the session and explains it may already be
+  archived. The CLI client now enables `auto_reauth` when a password is
+  available. (#20)
+- `prearchive move`: add a regression test locking in that XNAT's `301` move
+  redirect is treated as success (the client has followed redirects since the
+  initial commit). (#19)
+
 ## 0.2.10 - 2026-07-08
 
 **Fixes**
