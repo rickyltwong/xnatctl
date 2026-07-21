@@ -93,6 +93,11 @@ class DownloadService(BaseService):
     ) -> DownloadSummary:
         """Download session data.
 
+        TODO(ARCH-02): currently has no CLI caller -- ``session download`` runs
+        the inline fast path in ``cli/session.py``. ARCH-02 folds that engine
+        into this method (routed through the client for retry/auth) rather than
+        deleting it; kept intentionally per the M1 dead-code carve-out.
+
         Args:
             session_id: Session ID
             output_dir: Output directory path

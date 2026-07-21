@@ -344,14 +344,13 @@ xnatctl supports two DICOM upload strategies:
 
    service = UploadService(client)
 
-   # Upload DICOM files with 8 workers
-   service.upload_dicom(
+   # Upload a directory of DICOM files with parallel REST batching
+   service.upload_dicom_parallel(
+       source_dir="/path/to/dicom",
        project="MYPROJECT",
        subject="SUB001",
        session="SESSION01",
-       files=["scan001.dcm", "scan002.dcm", ...],
-       workers=8,
-       show_progress=True
+       upload_workers=8,
    )
 
 **Error Handling:**
