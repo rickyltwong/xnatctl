@@ -324,7 +324,10 @@ class ResourceService(BaseService):
             else:
                 path = f"/data/experiments/{session_id}/resources/{resource_label}/files/{file_path.name}"
 
-        params: dict[str, str] = {}
+        # XNAT requires ?inbody=true for a raw-body write to a
+        # /resources/<label>/files/<name> endpoint; without it the file
+        # API rejects the request with an opaque 400/500 (see issue #21).
+        params: dict[str, str] = {"inbody": "true"}
         if extract:
             params["extract"] = "true"
         if overwrite:
@@ -350,7 +353,7 @@ class ResourceService(BaseService):
             self.client.put(
                 path,
                 params=params,
-                data=f,
+                content=f,
                 headers={"Content-Type": content_type},
             )
 

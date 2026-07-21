@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import OperationError, ResourceNotFoundError
 from xnatctl.services.prearchive import PrearchiveService
 
 
@@ -164,6 +164,68 @@ class TestPrearchiveArchive:
         assert (
             post_data["dest"] == "/archive/projects/%2E%2E/subjects/SUB%2F01/experiments/MR%2E001"
         )
+
+    def test_archive_not_in_prearchive_raises_actionable_error(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        """A 404 from the archive service becomes an idempotency-aware error (issue #20).
+
+        When the prearchive path is gone (typically because the session was
+        already archived), the bare ``resource not found: /data/services/archive``
+        is misleading. The archive must raise an actionable OperationError that
+        names the session and points at how to verify it landed.
+        """
+        mock_client.post.side_effect = ResourceNotFoundError("resource", "/data/services/archive")
+
+        with pytest.raises(OperationError) as excinfo:
+            service.archive("COG01_ROM", "20260717_110001982", "COG01_ROM_00005034_01_SE01_MR")
+
+        message = str(excinfo.value)
+        assert "COG01_ROM_00005034_01_SE01_MR" in message
+        assert "already be archived" in message
+        assert "session show -P COG01_ROM -E COG01_ROM_00005034_01_SE01_MR" in message
+
+
+class TestPrearchiveRedirectHandling:
+    """Regression tests: XNAT answers move/archive with a 301 to the new location.
+
+    The HTTP client follows redirects (``follow_redirects=True``), so these
+    operations must be reported as success rather than surfacing an httpx
+    'Redirect response 301' error (see issue #19). Uses a real XNATClient over
+    a MockTransport so the redirect is actually exercised end to end.
+    """
+
+    def _client(self, handler: object) -> PrearchiveService:
+        from xnatctl.core.client import XNATClient
+
+        client = XNATClient(base_url="https://xnat.example.org", username="u", password="p")
+        client.session_token = "tok"
+        client._client = httpx.Client(
+            base_url=client.base_url,
+            verify=False,
+            follow_redirects=True,
+            transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+        )
+        return PrearchiveService(client)
+
+    def test_move_301_redirect_is_success(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST" and "action=move" in str(request.url):
+                return httpx.Response(
+                    301,
+                    headers={"Location": "/data/prearchive/projects/PROJ02/ts/session_01"},
+                )
+            return httpx.Response(
+                200,
+                json={"ResultSet": {"Result": [{"project": "PROJ02"}]}},
+                headers={"content-type": "application/json"},
+            )
+
+        service = self._client(handler)
+        result = service.move("PROJ01", "20240115_120000", "session_01", "PROJ02")
+
+        assert result["success"] is True
+        assert result["target_project"] == "PROJ02"
 
 
 class TestPrearchiveDelete:

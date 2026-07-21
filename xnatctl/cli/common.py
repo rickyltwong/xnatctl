@@ -90,6 +90,13 @@ class Context:
             session_token=token,
             timeout=profile.timeout,
             verify_ssl=profile.verify_ssl,
+            # Transparently re-authenticate on a mid-command 401 so a session
+            # that expires during a slow mutating operation (e.g. a large
+            # prearchive archive that outlasts the ~15-min JSESSIONID) does not
+            # surface a successful operation as a failure (see issue #20). This
+            # only engages when a password is available; token-only clients fall
+            # back to raising SessionExpiredError as before.
+            auto_reauth=True,
         )
 
         return self.client
