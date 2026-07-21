@@ -6,7 +6,7 @@ import builtins
 from typing import Any
 from urllib.parse import quote
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import OperationError, ResourceNotFoundError
 
 from .base import BaseService
 
@@ -127,7 +127,23 @@ class PrearchiveService(BaseService):
         if overwrite:
             data["overwrite"] = "delete"
 
-        result = self._post("/data/services/archive", data=data)
+        try:
+            result = self._post("/data/services/archive", data=data)
+        except ResourceNotFoundError as exc:
+            # XNAT returns 404 when the prearchive path no longer exists. The
+            # most common cause is that the session was already archived (a
+            # successful archive removes it from the prearchive), so a bare
+            # "resource not found: /data/services/archive" is misleading. Raise
+            # an idempotency-aware, actionable error instead (see issue #20).
+            raise OperationError(
+                "archive",
+                f"Prearchive session '{session_name}' was not found under "
+                f"{project}/{timestamp}. It may already be archived (a successful "
+                f"archive removes the session from the prearchive), or the "
+                f"project/timestamp/session identifiers are incorrect. Verify with: "
+                f"xnatctl session show -P {project} -E {session_name}",
+                {"project": project, "timestamp": timestamp, "session": session_name},
+            ) from exc
 
         return {
             "success": True,
