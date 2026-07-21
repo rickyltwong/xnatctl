@@ -26,7 +26,6 @@ def _mock_config() -> Config:
                 url="https://xnat.example.org",
                 username="testuser",
                 password="testpass",
-                verify_ssl=False,
             )
         },
     )

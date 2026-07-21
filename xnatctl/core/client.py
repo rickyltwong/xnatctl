@@ -5,7 +5,9 @@ Provides retry logic, pagination, and session-based authentication.
 
 from __future__ import annotations
 
+import logging
 import re
+import ssl
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -23,6 +25,7 @@ from xnatctl.core.exceptions import (
     ServerUnreachableError,
     SessionExpiredError,
 )
+from xnatctl.core.redact import redact_url_query
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.core.validation import validate_server_url
 
@@ -35,6 +38,8 @@ DEFAULT_MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2
 RETRYABLE_STATUS_CODES = {502, 503, 504}
 _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -53,6 +58,7 @@ class XNATClient:
     timeout: int = DEFAULT_TIMEOUT
     max_retries: int = DEFAULT_MAX_RETRIES
     verify_ssl: bool = True
+    ca_bundle: str | None = None
     auto_reauth: bool = False
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
 
@@ -67,10 +73,23 @@ class XNATClient:
     def _get_client(self) -> httpx.Client:
         """Get or create HTTP client."""
         if self._client is None:
+            # A custom CA bundle is a secure alternative to disabling
+            # verification for self-signed sites. Build an SSLContext from it
+            # (httpx 0.28 deprecates passing a bare path as ``verify``).
+            verify: ssl.SSLContext | bool
+            if self.ca_bundle:
+                verify = ssl.create_default_context(cafile=self.ca_bundle)
+            else:
+                verify = self.verify_ssl
+                if not self.verify_ssl:
+                    logger.warning(
+                        "TLS certificate verification is DISABLED for %s",
+                        redact_url_query(self.base_url),
+                    )
             self._client = httpx.Client(
                 base_url=self.base_url,
                 timeout=self.timeout,
-                verify=self.verify_ssl,
+                verify=verify,
                 follow_redirects=True,
             )
         return self._client

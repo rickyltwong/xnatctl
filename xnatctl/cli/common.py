@@ -20,7 +20,7 @@ from xnatctl.core.exceptions import (
     XNATCtlError,
 )
 from xnatctl.core.logging import setup_logging
-from xnatctl.core.output import OutputFormat, print_error
+from xnatctl.core.output import OutputFormat, print_error, print_warning
 from xnatctl.core.redact import redact_url_query
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -83,6 +83,16 @@ class Context:
         token = self.auth_manager.get_token_from_env() or (session.token if session else None)
         username_hint = username or (session.username if session else None)
 
+        # Make a disabled-TLS profile impossible to miss for interactive users
+        # (the client-layer logger.warning only shows under --verbose).
+        if not profile.verify_ssl and not profile.ca_bundle:
+            print_warning(
+                redact_url_query(
+                    f"TLS certificate verification is DISABLED for {profile.url}. "
+                    "Prefer 'ca_bundle' in the profile for self-signed certs."
+                )
+            )
+
         self.client = XNATClient(
             base_url=profile.url,
             username=username_hint,
@@ -90,6 +100,7 @@ class Context:
             session_token=token,
             timeout=profile.timeout,
             verify_ssl=profile.verify_ssl,
+            ca_bundle=profile.ca_bundle,
             # Transparently re-authenticate on a mid-command 401 so a session
             # that expires during a slow mutating operation (e.g. a large
             # prearchive archive that outlasts the ~15-min JSESSIONID) does not
