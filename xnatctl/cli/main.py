@@ -8,7 +8,7 @@ from xnatctl import __version__
 from xnatctl.cli.admin import admin
 from xnatctl.cli.api import api
 from xnatctl.cli.auth import auth
-from xnatctl.cli.common import Context
+from xnatctl.cli.common import Context, global_options, handle_errors
 
 # Import command groups
 from xnatctl.cli.config_cmd import config
@@ -144,61 +144,58 @@ cli.add_command(xsync)
 
 
 @cli.command()
-@click.pass_context
-def whoami(ctx: click.Context) -> None:
-    """Show current user and authentication context."""
-    from xnatctl.cli.common import Context, ExitCode, exit_code_for
-    from xnatctl.core.output import OutputFormat, print_error, print_output
+@global_options
+@handle_errors
+def whoami(ctx: Context) -> None:
+    """Show current user and authentication context.
 
-    # Create context manually since we're not using decorators
-    cli_ctx = Context()
-    cli_ctx.config = (
-        cli_ctx.config or __import__("xnatctl.core.config", fromlist=["Config"]).Config.load()
-    )
-    cfg = cli_ctx.config
+    Honors the global --profile/-o/-q flags, so `xnatctl -p prod whoami`
+    reports prod's server and user (not the default profile's).
+    """
+    from xnatctl.cli.common import ExitCode
+    from xnatctl.core.output import print_error, print_output
+
+    cfg = ctx.config
     assert cfg is not None
 
-    try:
-        client = cli_ctx.get_client()
+    client = ctx.get_client()
 
-        # Try to get user info
-        if client.is_authenticated or (client.username and client.password):
-            if not client.is_authenticated:
-                client.authenticate()
+    if client.is_authenticated or (client.username and client.password):
+        if not client.is_authenticated:
+            client.authenticate()
 
-            user_info = client.whoami()
-            profile = cfg.get_profile(cli_ctx.profile_name)
+        user_info = client.whoami()
+        profile = cfg.get_profile(ctx.profile_name)
 
-            output = {
-                "username": user_info.get("username", "unknown"),
-                "server": client.base_url,
-                "profile": cli_ctx.profile_name or cfg.default_profile,
-                "default_project": profile.default_project or "-",
-                "auth_mode": "session" if client.session_token else "basic",
-            }
+        output = {
+            "username": user_info.get("username", "unknown"),
+            "server": client.base_url,
+            "profile": ctx.profile_name or cfg.default_profile,
+            "default_project": profile.default_project or "-",
+            "auth_mode": "session" if client.session_token else "basic",
+        }
 
-            print_output(
-                output,
-                format=OutputFormat.TABLE,
-                column_labels={
-                    "username": "User",
-                    "server": "Server",
-                    "profile": "Profile",
-                    "default_project": "Default Project",
-                    "auth_mode": "Auth Mode",
-                },
-            )
-        else:
-            print_error(
-                "Not authenticated. Run 'xnatctl auth login', set XNAT_USER/XNAT_PASS, "
-                "or set username/password in the profile config."
-            )
-            # AUTH_ERROR (not Click's usage-error code 2).
-            ctx.exit(ExitCode.AUTH_ERROR)
-
-    except Exception as e:
-        print_error(str(e))
-        ctx.exit(exit_code_for(e))
+        print_output(
+            output,
+            format=ctx.output_format,
+            column_labels={
+                "username": "User",
+                "server": "Server",
+                "profile": "Profile",
+                "default_project": "Default Project",
+                "auth_mode": "Auth Mode",
+            },
+            quiet=ctx.quiet,
+            id_field="username",
+        )
+    else:
+        print_error(
+            "Not authenticated. Run 'xnatctl auth login', set XNAT_USER/XNAT_PASS, "
+            "or set username/password in the profile config."
+        )
+        # AUTH_ERROR (not Click's usage-error code 2). SystemExit is a
+        # BaseException, so @handle_errors (except Exception) passes it through.
+        raise SystemExit(ExitCode.AUTH_ERROR)
 
 
 @cli.group()
@@ -208,43 +205,37 @@ def health() -> None:
 
 
 @health.command("ping")
-@click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
-@click.pass_context
-def health_ping(ctx: click.Context, output: str) -> None:
-    """Check server connectivity and authentication."""
-    from xnatctl.cli.common import Context, exit_code_for
-    from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
+@global_options
+@handle_errors
+def health_ping(ctx: Context) -> None:
+    """Check server connectivity and authentication.
 
-    cli_ctx = Context()
-    cli_ctx.config = (
-        cli_ctx.config or __import__("xnatctl.core.config", fromlist=["Config"]).Config.load()
-    )
+    Honors the global --profile/-o flags; unauthenticated pings still report
+    reachability (auth status is a field, not a precondition).
+    """
+    from xnatctl.core.output import print_output, print_success
 
-    try:
-        client = cli_ctx.get_client()
-        result = client.ping()
+    client = ctx.get_client()
+    result = client.ping()
 
-        result["authenticated"] = client.is_authenticated or bool(
-            client.username and client.password
+    result["authenticated"] = client.is_authenticated or bool(client.username and client.password)
+
+    if ctx.output_format == OutputFormat.JSON:
+        print_output(result, format=OutputFormat.JSON)
+    elif ctx.quiet:
+        # Minimal: just the reachable URL on stdout; the exit code carries health.
+        print_output(result, format=OutputFormat.TABLE, quiet=True, id_field="url")
+    else:
+        print_success(f"Server reachable: {result['url']}")
+        print_output(
+            {
+                "status": result["status"],
+                "version": result["version"],
+                "latency": f"{result['latency_ms']}ms",
+                "authenticated": result["authenticated"],
+            },
+            format=OutputFormat.TABLE,
         )
-
-        if output == "json":
-            print_output(result, format=OutputFormat.JSON)
-        else:
-            print_success(f"Server reachable: {result['url']}")
-            print_output(
-                {
-                    "status": result["status"],
-                    "version": result["version"],
-                    "latency": f"{result['latency_ms']}ms",
-                    "authenticated": result["authenticated"],
-                },
-                format=OutputFormat.TABLE,
-            )
-
-    except Exception as e:
-        print_error(str(e))
-        ctx.exit(exit_code_for(e))
 
 
 @cli.group()
