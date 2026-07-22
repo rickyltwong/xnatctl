@@ -82,6 +82,13 @@ def cli(
       xnatctl project list       # List projects
 
     Use --help on any command for more information.
+
+    \b
+    Exit codes:
+      0  success             4  network error
+      1  general error       5  not found
+      2  usage error (Click) 6  permission denied
+      3  auth error          7  user cancelled
     """
     cli_ctx = ctx.ensure_object(Context)
 
@@ -140,7 +147,7 @@ cli.add_command(xsync)
 @click.pass_context
 def whoami(ctx: click.Context) -> None:
     """Show current user and authentication context."""
-    from xnatctl.cli.common import Context
+    from xnatctl.cli.common import Context, ExitCode, exit_code_for
     from xnatctl.core.output import OutputFormat, print_error, print_output
 
     # Create context manually since we're not using decorators
@@ -186,11 +193,12 @@ def whoami(ctx: click.Context) -> None:
                 "Not authenticated. Run 'xnatctl auth login', set XNAT_USER/XNAT_PASS, "
                 "or set username/password in the profile config."
             )
-            ctx.exit(2)
+            # AUTH_ERROR (not Click's usage-error code 2).
+            ctx.exit(ExitCode.AUTH_ERROR)
 
     except Exception as e:
         print_error(str(e))
-        ctx.exit(1)
+        ctx.exit(exit_code_for(e))
 
 
 @cli.group()
@@ -204,7 +212,7 @@ def health() -> None:
 @click.pass_context
 def health_ping(ctx: click.Context, output: str) -> None:
     """Check server connectivity and authentication."""
-    from xnatctl.cli.common import Context
+    from xnatctl.cli.common import Context, exit_code_for
     from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
 
     cli_ctx = Context()
@@ -236,7 +244,7 @@ def health_ping(ctx: click.Context, output: str) -> None:
 
     except Exception as e:
         print_error(str(e))
-        ctx.exit(1)
+        ctx.exit(exit_code_for(e))
 
 
 @cli.group()
@@ -357,6 +365,7 @@ def main() -> None:
     """
     import sys
 
+    from xnatctl.cli.common import exit_code_for
     from xnatctl.core.exceptions import XNATCtlError
     from xnatctl.core.output import print_error
     from xnatctl.core.redact import redact_url_query
@@ -365,7 +374,7 @@ def main() -> None:
         cli()
     except XNATCtlError as e:
         print_error(redact_url_query(str(e)))
-        sys.exit(1)
+        sys.exit(exit_code_for(e))
 
 
 if __name__ == "__main__":
