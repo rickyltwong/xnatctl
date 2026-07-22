@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import json
 import sys
 from collections.abc import Callable
@@ -16,8 +17,13 @@ from xnatctl.core.config import Config, Profile, get_credentials
 from xnatctl.core.exceptions import (
     AuthenticationError,
     ConfigurationError,
+    PermissionDeniedError,
     ProfileNotFoundError,
+    ResourceNotFoundError,
     XNATCtlError,
+)
+from xnatctl.core.exceptions import (
+    ConnectionError as XNATConnectionError,
 )
 from xnatctl.core.logging import setup_logging
 from xnatctl.core.output import OutputFormat, print_error, print_warning
@@ -506,13 +512,17 @@ def handle_errors(f: F) -> F:
             # Defensive: print_error already redacts, but we redact here too
             # so future direct callers cannot bypass the invariant.
             print_error(redact_url_query(str(e)))
-            sys.exit(1)
+            sys.exit(exit_code_for(e))
+        except click.Abort:
+            # User declined a destructive-op confirmation (Ctrl+C / "n").
+            click.echo("Aborted!", err=True)
+            sys.exit(ExitCode.USER_CANCELLED)
         except click.ClickException:
             raise
         except Exception as e:
             # Defensive: same rationale as the XNATCtlError branch above.
             print_error(redact_url_query(f"Unexpected error: {e}"))
-            sys.exit(1)
+            sys.exit(exit_code_for(e))
 
     return wrapper  # type: ignore
 
@@ -584,12 +594,41 @@ def create_dest_client(
 # =============================================================================
 
 
-class ExitCode:
-    """Standard exit codes."""
+class ExitCode(enum.IntEnum):
+    """Documented, differentiated CLI exit codes.
+
+    Code 2 is intentionally skipped: Click reserves it for usage errors, so
+    reusing it would make "wrong flags" indistinguishable from an auth failure.
+    Codes only ever become MORE specific than the old blanket 1, so scripts that
+    test ``!= 0`` keep working.
+    """
 
     SUCCESS = 0
     GENERAL_ERROR = 1
-    AUTH_ERROR = 2
-    NETWORK_ERROR = 3
-    PERMISSION_ERROR = 4
-    USER_CANCELLED = 5
+    # 2 is reserved for Click usage errors (do not assign it here).
+    AUTH_ERROR = 3
+    NETWORK_ERROR = 4
+    NOT_FOUND = 5
+    PERMISSION_ERROR = 6
+    USER_CANCELLED = 7
+
+
+def exit_code_for(exc: BaseException) -> int:
+    """Map an exception to its documented CLI exit code (see :class:`ExitCode`).
+
+    Order matters: ``PermissionDeniedError`` and ``SessionExpiredError`` subclass
+    ``AuthenticationError``, so the most specific classes are checked first.
+    """
+    if isinstance(exc, click.Abort):
+        return ExitCode.USER_CANCELLED
+    if isinstance(exc, PermissionDeniedError):
+        return ExitCode.PERMISSION_ERROR
+    if isinstance(exc, AuthenticationError):  # incl. SessionExpiredError
+        return ExitCode.AUTH_ERROR
+    if isinstance(exc, ResourceNotFoundError):
+        return ExitCode.NOT_FOUND
+    if isinstance(exc, XNATConnectionError):
+        # NetworkError, TimeoutError, RetryExhaustedError, ServerUnreachableError
+        return ExitCode.NETWORK_ERROR
+    # ClientRequestError/ServerError ("server said no") and everything else.
+    return ExitCode.GENERAL_ERROR
