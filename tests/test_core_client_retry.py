@@ -18,8 +18,10 @@ import pytest
 
 from xnatctl.core.client import RETRY_BACKOFF_BASE, XNATClient
 from xnatctl.core.exceptions import (
+    ClientRequestError,
     ResourceNotFoundError,
     RetryExhaustedError,
+    ServerError,
     ServerUnreachableError,
 )
 
@@ -74,30 +76,72 @@ def test_502_502_then_200_succeeds_after_two_retries(sleeps: list[float]) -> Non
     assert sleeps == [RETRY_BACKOFF_BASE**1, RETRY_BACKOFF_BASE**2]  # [2, 4]
 
 
-def test_502_exhaustion_raises_raw_httpstatuserror(sleeps: list[float]) -> None:
+def test_502_exhaustion_raises_retry_exhausted(sleeps: list[float]) -> None:
     client, calls = _client(_status_sequence(502, 502), max_retries=1)
 
-    with pytest.raises(httpx.HTTPStatusError) as exc:
-        # current behavior: status exhaustion falls through to raise_for_status()
-        # and leaks a raw httpx error. ROB-03 will make this RetryExhaustedError.
+    with pytest.raises(RetryExhaustedError) as exc:
+        # ROB-03: status exhaustion now raises a typed RetryExhaustedError
+        # wrapping a ServerError, never a raw httpx.HTTPStatusError.
         client._request("GET", "/data/projects")
 
-    assert exc.value.response.status_code == 502
+    assert isinstance(exc.value.last_error, ServerError)
+    assert exc.value.last_error.status_code == 502
     assert len(calls) == 2  # initial + 1 retry
     assert sleeps == [RETRY_BACKOFF_BASE**1]  # [2]
 
 
-def test_409_is_not_retried_and_leaks_raw_httpstatuserror(sleeps: list[float]) -> None:
+def test_409_is_not_retried_and_raises_client_request_error(sleeps: list[float]) -> None:
     client, calls = _client(_status_sequence(409), max_retries=3)
 
-    with pytest.raises(httpx.HTTPStatusError) as exc:
-        # current behavior: non-retryable 4xx reaches raise_for_status() raw.
-        # ROB-03 will map it to a typed ClientRequestError.
+    with pytest.raises(ClientRequestError) as exc:
+        # ROB-03: a non-retryable 4xx is a typed ClientRequestError, not raw httpx.
         client._request("POST", "/data/services/import")
 
-    assert exc.value.response.status_code == 409
+    assert exc.value.status_code == 409
+    assert exc.value.method == "POST"
+    assert exc.value.path == "/data/services/import"
     assert len(calls) == 1  # no retry
     assert sleeps == []
+
+
+def test_500_is_retried_then_typed_on_exhaustion(sleeps: list[float]) -> None:
+    """ROB-03 adds 500 to the retryable set (was non-retryable)."""
+    client, calls = _client(_status_sequence(500, 500, 500, 500), max_retries=3)
+
+    with pytest.raises(RetryExhaustedError) as exc:
+        client._request("GET", "/data/projects")
+
+    assert isinstance(exc.value.last_error, ServerError)
+    assert exc.value.last_error.status_code == 500
+    assert len(calls) == 4  # attempts 0..3
+    assert sleeps == [RETRY_BACKOFF_BASE**1, RETRY_BACKOFF_BASE**2, RETRY_BACKOFF_BASE**3]
+
+
+def test_500_then_200_recovers(sleeps: list[float]) -> None:
+    client, calls = _client(_status_sequence(500, 200), max_retries=3)
+
+    resp = client._request("GET", "/data/projects")
+
+    assert resp.status_code == 200
+    assert len(calls) == 2
+
+
+def test_429_honors_retry_after_header(sleeps: list[float]) -> None:
+    """ROB-03: 429 is retryable and a bounded integer Retry-After overrides backoff."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if len(seen) == 0:
+            seen.append(1)
+            return httpx.Response(429, headers={"Retry-After": "7"}, json={})
+        return httpx.Response(200, json={"ok": True})
+
+    seen: list[int] = []
+    client, calls = _client(handler, max_retries=3)
+
+    resp = client._request("GET", "/data/projects")
+
+    assert resp.status_code == 200
+    assert sleeps == [7.0]  # Retry-After, not the exponential step (which would be 2)
 
 
 def test_connect_error_exhausts_to_retry_exhausted(sleeps: list[float]) -> None:

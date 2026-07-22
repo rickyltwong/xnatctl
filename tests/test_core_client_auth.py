@@ -47,10 +47,14 @@ def test_request_auto_reauth_retries_once_on_401(monkeypatch):
     client.authenticate.assert_called_once()
     assert mock_httpx.request.call_count == 2
 
-    first_call = mock_httpx.request.call_args_list[0].kwargs
-    second_call = mock_httpx.request.call_args_list[1].kwargs
-    assert first_call["cookies"] == {"JSESSIONID": "old-token"}
-    assert second_call["cookies"] == {"JSESSIONID": "new-token"}
+    # The session cookie is now set on the client instance each iteration
+    # (httpx 0.28 deprecates per-request cookies=), so the reauth token is
+    # picked up on the retry. Assert the cookie was refreshed old -> new.
+    cookie_sets = [
+        c.args for c in mock_httpx.cookies.set.call_args_list if c.args[:1] == ("JSESSIONID",)
+    ]
+    assert cookie_sets[0] == ("JSESSIONID", "old-token")
+    assert cookie_sets[1] == ("JSESSIONID", "new-token")
 
 
 def test_request_raises_session_expired_when_auto_reauth_disabled(monkeypatch):

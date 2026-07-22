@@ -178,6 +178,49 @@ class RetryExhaustedError(ConnectionError):
 
 
 # =============================================================================
+# HTTP Status Errors
+# =============================================================================
+
+
+class HTTPResponseError(XNATCtlError):
+    """Base for an HTTP error status with no more specific typed handler.
+
+    Carries ``status_code``, ``method``, ``path``, and a redacted body snippet
+    in ``details`` so callers and ``handle_errors`` never see a raw
+    ``httpx.HTTPStatusError``.
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        method: str,
+        path: str,
+        body: str = "",
+    ):
+        msg = f"HTTP {status_code} on {method} {path}"
+        details: dict[str, Any] = {
+            "status_code": status_code,
+            "method": method,
+            "path": path,
+        }
+        if body:
+            details["body"] = body
+        super().__init__(msg, details)
+        self.status_code = status_code
+        self.method = method
+        self.path = path
+        self.body = body
+
+
+class ClientRequestError(HTTPResponseError):
+    """A 4xx response not covered by auth/permission/not-found (e.g. 400, 409, 422)."""
+
+
+class ServerError(HTTPResponseError):
+    """A 5xx response (500, 502, 503, 504)."""
+
+
+# =============================================================================
 # Authentication Errors
 # =============================================================================
 

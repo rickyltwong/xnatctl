@@ -16,13 +16,16 @@ import httpx
 
 from xnatctl.core.exceptions import (
     AuthenticationError,
+    ClientRequestError,
     NetworkError,
     PermissionDeniedError,
     ResourceNotFoundError,
     RetryExhaustedError,
+    ServerError,
     ServerUnreachableError,
     SessionExpiredError,
 )
+from xnatctl.core.redact import redact_url_query
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.core.validation import validate_server_url
 
@@ -33,8 +36,38 @@ from xnatctl.core.validation import validate_server_url
 DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
 DEFAULT_MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2
-RETRYABLE_STATUS_CODES = {502, 503, 504}
+# Statuses safe to retry on the core client path. 429/500 join the original
+# 502/503/504 (ROB-03); 400 stays upload-only (it encodes a transient XNAT
+# import-race quirk handled in services/uploads.py), so it is NOT listed here.
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_RETRY_AFTER_STATUS_CODES = {429, 503}
+_MAX_RETRY_AFTER_SECONDS = 300
+_BODY_SNIPPET_CHARS = 200
 _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
+
+
+def _body_snippet(resp: httpx.Response) -> str:
+    """Return a short, redacted snippet of a response body for error details."""
+    try:
+        return redact_url_query(resp.text[:_BODY_SNIPPET_CHARS])
+    except Exception:
+        return ""
+
+
+def _retry_after_seconds(resp: httpx.Response) -> float | None:
+    """Return a bounded Retry-After delay (seconds) if the header is a usable int."""
+    if resp.status_code not in _RETRY_AFTER_STATUS_CODES:
+        return None
+    raw = resp.headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        seconds = int(raw.strip())
+    except (ValueError, AttributeError):
+        return None
+    if 0 <= seconds <= _MAX_RETRY_AFTER_SECONDS:
+        return float(seconds)
+    return None
 
 
 # =============================================================================
@@ -172,7 +205,6 @@ class XNATClient:
         files: Any | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
-        stream: bool = False,
     ) -> httpx.Response:
         """Execute HTTP request with retry logic.
 
@@ -187,15 +219,18 @@ class XNATClient:
             files: Files to upload.
             headers: Additional headers.
             timeout: Request timeout override.
-            stream: Whether to stream response.
 
         Returns:
-            HTTP response.
+            HTTP response (2xx only; error statuses raise typed exceptions).
 
         Raises:
-            AuthenticationError: If authentication fails.
-            NetworkError: If network error occurs.
-            RetryExhaustedError: If all retries fail.
+            SessionExpiredError: On 401 when reauth is unavailable/exhausted.
+            PermissionDeniedError: On 403.
+            ResourceNotFoundError: On 404.
+            ClientRequestError: On any other 4xx.
+            ServerError: On a 5xx that is not retryable or after retries drain.
+            RetryExhaustedError: When retryable statuses or connect/timeout
+                failures exhaust ``max_retries``.
         """
         client = self._get_client()
 
@@ -205,7 +240,14 @@ class XNATClient:
 
         attempt = 0
         while attempt <= self.max_retries:
-            cookies = self._get_cookies()
+            # Set the session cookie on the client instance rather than passing
+            # ``cookies=`` per request (httpx 0.28 deprecates per-request
+            # cookies). Refreshed each iteration so a mid-loop reauth is picked
+            # up on the retry.
+            if self.session_token:
+                client.cookies.set("JSESSIONID", self.session_token)
+            else:
+                client.cookies.delete("JSESSIONID")
             auth = self._get_auth()
             try:
                 resp = client.request(
@@ -217,7 +259,6 @@ class XNATClient:
                     content=content,
                     files=files,
                     headers=headers,
-                    cookies=cookies,
                     auth=auth,
                     timeout=request_timeout,
                 )
@@ -250,19 +291,31 @@ class XNATClient:
                 if resp.status_code == 404:
                     raise ResourceNotFoundError("resource", path)
 
-                # Retry on server errors
+                # Retry on retryable statuses; on exhaustion raise a typed
+                # RetryExhaustedError rather than leaking httpx.HTTPStatusError.
                 if resp.status_code in RETRYABLE_STATUS_CODES:
-                    last_error = NetworkError(
-                        self.base_url,
-                        f"HTTP {resp.status_code}",
-                    )
+                    last_error = ServerError(resp.status_code, method, path, _body_snippet(resp))
                     if attempt < self.max_retries:
-                        time.sleep(RETRY_BACKOFF_BASE ** (attempt + 1))
+                        retry_after = _retry_after_seconds(resp)
+                        delay = (
+                            retry_after
+                            if retry_after is not None
+                            else RETRY_BACKOFF_BASE ** (attempt + 1)
+                        )
+                        time.sleep(delay)
                         attempt += 1
                         continue
+                    raise RetryExhaustedError("request", self.max_retries + 1, last_error)
 
-                # Success or non-retryable error
-                resp.raise_for_status()
+                # Non-retryable error status: surface a typed error, never a raw
+                # httpx.HTTPStatusError (401/403/404 are already handled above).
+                if resp.status_code >= 400:
+                    if resp.status_code < 500:
+                        raise ClientRequestError(
+                            resp.status_code, method, path, _body_snippet(resp)
+                        )
+                    raise ServerError(resp.status_code, method, path, _body_snippet(resp))
+
                 return resp
 
             except httpx.ConnectError:
@@ -287,7 +340,6 @@ class XNATClient:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
-        stream: bool = False,
     ) -> httpx.Response:
         """GET request."""
         return self._request(
@@ -296,7 +348,6 @@ class XNATClient:
             params=params,
             headers=headers,
             timeout=timeout,
-            stream=stream,
         )
 
     def post(
