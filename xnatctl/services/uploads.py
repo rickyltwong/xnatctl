@@ -30,7 +30,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
 
-from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
 from xnatctl.models.progress import (
     OperationPhase,
     UploadProgress,
@@ -142,7 +142,7 @@ class _SessionRefresher:
                 with httpx.Client(
                     base_url=self._base_url,
                     verify=self._verify_ssl,
-                    timeout=30.0,
+                    timeout=build_httpx_timeout(30.0),  # connect fails fast (ROB-02)
                 ) as client:
                     resp = client.post(
                         "/data/JSESSION",
@@ -174,7 +174,9 @@ def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client
 
         client = httpx.Client(
             base_url=base_url,
-            timeout=_GRADUAL_HTTP_TIMEOUT_SECONDS,
+            timeout=build_httpx_timeout(
+                _GRADUAL_HTTP_TIMEOUT_SECONDS
+            ),  # connect fails fast (ROB-02)
             verify=verify_ssl,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
         )
@@ -490,6 +492,15 @@ def upload_with_retry(
                     delay,
                 )
                 time.sleep(delay)
+        except httpx.ConnectTimeout:
+            # Fail fast (ROB-02): a connect-phase timeout means the host is
+            # unreachable and will not recover within the backoff window -- unlike
+            # the transient ConnectError bursts XNAT throws during cold start,
+            # which stay retryable below. Re-raise immediately instead of burning
+            # ~120s of retries. (Typed-error conversion on the upload path is
+            # ROB-03/ROB-08.)
+            logger.warning("%s: connect timed out; not retrying", label)
+            raise
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             last_exc = e
             last_resp = None
@@ -614,7 +625,7 @@ def _upload_single_archive(
 
     with httpx.Client(
         base_url=base_url,
-        timeout=timeout,
+        timeout=build_httpx_timeout(timeout),  # connect fails fast (ROB-02)
         verify=verify_ssl,
     ) as client:
         try:
@@ -2049,7 +2060,7 @@ class UploadService(BaseService):
 
             with httpx.Client(
                 base_url=base_url,
-                timeout=res_timeout,
+                timeout=build_httpx_timeout(res_timeout),  # connect fails fast (ROB-02)
                 verify=verify_ssl,
             ) as http:
 

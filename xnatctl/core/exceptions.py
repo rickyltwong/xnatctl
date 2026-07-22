@@ -157,10 +157,16 @@ class ServerUnreachableError(ConnectionError):
 
 
 class TimeoutError(ConnectionError):
-    """Request timed out."""
+    """Request timed out.
+
+    Raised by ``XNATClient`` when the CONNECT phase times out (host blackholed /
+    firewall-DROPped), so ``timeout`` is the connect timeout in seconds. This
+    fails fast and is not retried (ROB-02); read-phase timeouts remain the
+    generic ``NetworkError`` bucket.
+    """
 
     def __init__(self, url: str, timeout: int):
-        super().__init__(f"Request timed out after {timeout}s: {url}", url)
+        super().__init__(f"Could not connect to {url} within {timeout}s", url)
         self.timeout = timeout
 
 
