@@ -33,6 +33,7 @@ def config() -> None:
 def config_init(url: str, profile: str, project: str | None, force: bool) -> None:
     """Create configuration file with a new profile.
 
+    \b
     Example:
         xnatctl config init --url https://xnat.example.org
     """
@@ -140,6 +141,7 @@ def config_show(ctx: Context) -> None:
 def config_use_context(profile: str) -> None:
     """Switch the active profile.
 
+    \b
     Example:
         xnatctl config use-context production
     """
@@ -206,6 +208,7 @@ def config_add_profile(
 ) -> None:
     """Add a new profile.
 
+    \b
     Example:
         xnatctl config add-profile dev --url https://xnat-dev.example.org
     """
@@ -241,6 +244,7 @@ def config_add_profile(
 def config_remove_profile(name: str, dry_run: bool) -> None:
     """Remove a profile.
 
+    \b
     Example:
         xnatctl config remove-profile dev
         xnatctl config remove-profile dev --dry-run

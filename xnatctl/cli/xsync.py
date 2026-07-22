@@ -89,6 +89,7 @@ def _reject_argv_password(
 def xsync() -> None:
     """Manage XNAT XSync (cross-site federation) projects and credentials.
 
+    \b
     Examples:
 
         xnatctl xsync list
@@ -465,6 +466,7 @@ def xsync_refresh_credentials(
     runs entirely inside this command; operators no longer need to script
     against raw curl.
 
+    \b
     Examples:
 
         xnatctl xsync refresh-credentials -P PROJ \\

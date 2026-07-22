@@ -65,6 +65,7 @@ def resource_list(
 ) -> None:
     """List resources at project, session, or scan level.
 
+    \b
     Example:
         xnatctl resource list --project MYPROJ
         xnatctl resource list XNAT_E00001
@@ -132,6 +133,7 @@ def resource_list(
 def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str | None) -> None:
     """Show resource details and files.
 
+    \b
     Example:
         xnatctl resource show XNAT_E00001 DICOM
         xnatctl resource show XNAT_E00001 DICOM --scan 1
@@ -236,6 +238,7 @@ def resource_upload(
 
     Directories are zipped and extracted server-side.
 
+    \b
     Example:
         xnatctl resource upload XNAT_E00001 BIDS ./bids_data
         xnatctl resource upload XNAT_E00001 NIFTI ./file.nii.gz
@@ -319,6 +322,7 @@ def resource_upload(
 def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
     """Refresh a single XNAT resource catalog by archive URI.
 
+    \b
     Example:
         xnatctl resource refresh \\
           /archive/projects/MYPROJ/subjects/SUBJ/experiments/EXP/scans/1/resources/DICOM \\
@@ -357,6 +361,7 @@ def resource_download(
 ) -> None:
     """Download a resource as ZIP.
 
+    \b
     Example:
         xnatctl resource download XNAT_E00001 BIDS --file ./bids.zip
         xnatctl resource download XNAT_E00001 DICOM -f ./dicom.zip --scan 1

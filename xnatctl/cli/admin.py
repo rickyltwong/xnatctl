@@ -47,12 +47,14 @@ def admin_refresh_catalogs(
 ) -> None:
     """Refresh catalog XMLs for project experiments.
 
+    \b
     Options:
     - checksum: Generate missing checksums
     - delete: Remove entries without files
     - append: Add entries for new files
     - populateStats: Update resource statistics
 
+    \b
     Example:
         xnatctl admin refresh-catalogs MYPROJ
         xnatctl admin refresh-catalogs MYPROJ --option checksum --option delete
@@ -191,6 +193,7 @@ def user_add(
 
     Groups can be specified directly or generated from project IDs.
 
+    \b
     Example:
         xnatctl admin user add jsmith PROJ1_member PROJ2_owner
         xnatctl admin user add jsmith --projects PROJ1,PROJ2 --role member
@@ -266,6 +269,7 @@ def admin_audit(
 
     Note: Audit log availability depends on XNAT server configuration.
 
+    \b
     Example:
         xnatctl admin audit --project MYPROJ --limit 20
         xnatctl admin audit --user admin --since 7d

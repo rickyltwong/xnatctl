@@ -335,6 +335,7 @@ def api() -> None:
 
     Execute requests directly against XNAT REST endpoints.
 
+    \b
     Examples:
 
         xnatctl api get /data/projects
@@ -363,6 +364,7 @@ def api_get(
 ) -> None:
     """GET request to any XNAT endpoint.
 
+    \b
     Examples:
 
         xnatctl api get /data/projects
@@ -476,6 +478,7 @@ def api_post(
     respond with ``415 Unsupported Media Type`` unless the request is sent
     as ``text/plain``.
 
+    \b
     Examples:
 
         xnatctl api post /data/projects --data '{"ID": "NEWPROJ"}'
@@ -595,6 +598,7 @@ def api_put(
     raw body; xnatctl adds it automatically when a body is supplied (a note
     is printed to stderr). Pass ``--params inbody=false`` to opt out.
 
+    \b
     Examples:
 
         xnatctl api put /data/projects/MYPROJ --data '{"description": "Updated"}'
@@ -678,6 +682,7 @@ def api_delete(
 ) -> None:
     """DELETE request to any XNAT endpoint.
 
+    \b
     Examples:
 
         xnatctl api delete /data/projects/MYPROJ/subjects/SUB001 --yes

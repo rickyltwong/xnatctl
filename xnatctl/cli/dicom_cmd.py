@@ -53,6 +53,7 @@ def dicom_validate(
 ) -> None:
     """Validate DICOM files.
 
+    \b
     Example:
         xnatctl dicom validate /path/to/dicom
         xnatctl dicom validate /path/to/dicom -r
@@ -198,6 +199,7 @@ def dicom_inspect(
 ) -> None:
     """Inspect DICOM file headers.
 
+    \b
     Example:
         xnatctl dicom inspect /path/to/file.dcm
         xnatctl dicom inspect /path/to/file.dcm --tag PatientID --tag Modality
@@ -285,6 +287,7 @@ def dicom_list_tags(
 ) -> None:
     """List all tags in a DICOM file.
 
+    \b
     Example:
         xnatctl dicom list-tags /path/to/file.dcm
     """
@@ -350,6 +353,7 @@ def dicom_anonymize(
 ) -> None:
     """Anonymize DICOM files.
 
+    \b
     Example:
         xnatctl dicom anonymize input.dcm output.dcm --patient-id ANON001
         xnatctl dicom anonymize /input/dir /output/dir -r --remove-private
@@ -501,6 +505,7 @@ def dicom_modify(
     Accepts one or more --tag KEYWORD=VALUE pairs. Keywords use standard
     pydicom names (e.g. PatientID, StudyDescription).
 
+    \b
     Example:
         xnatctl dicom modify scan.dcm -t PatientID=ANON001
         xnatctl dicom modify ./dicoms -r -t PatientID=ANON -t StudyDescription=Demo

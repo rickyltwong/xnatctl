@@ -54,6 +54,7 @@ def session_list(
 ) -> None:
     """List sessions/experiments in a project.
 
+    \b
     Example:
         xnatctl session list --project MYPROJ
         xnatctl session list -P MYPROJ --subject SUB001
@@ -147,6 +148,7 @@ def session_list(
 def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     """Show session details including scans and resources.
 
+    \b
     Example:
         xnatctl session show -E XNAT_E00001
         xnatctl session show -E SESSION_LABEL -P MYPROJ
@@ -635,6 +637,7 @@ def session_download(
     downloaded. Use -r to include specific types, or --exclude-resource to
     exclude specific types.
 
+    \b
     Example:
         xnatctl session download -E XNAT_E00001
         xnatctl session download -E XNAT_E00001 --out ./data --workers 8
@@ -905,6 +908,7 @@ def session_upload(
 
     For DICOM C-STORE network transfer, use `session upload-dicom` instead.
 
+    \b
     Example:
         xnatctl session upload ./archive.zip -P MYPROJ -S SUB001 -E SESS001
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001
@@ -1114,6 +1118,7 @@ def session_upload_exam(
 ) -> None:
     """Upload an exam root (DICOM + session resources).
 
+    \b
     Exam roots follow a common folder convention:
     - DICOM files may appear anywhere under the root (recursive)
     - Top-level directories without DICOM-like files are treated as session-level
@@ -1907,6 +1912,7 @@ def session_upload_dicom(
 
     Requires pydicom and pynetdicom (install with: pip install xnatctl[dicom]).
 
+    \b
     Example:
         xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT
         xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT --port 8104
@@ -2015,6 +2021,7 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
     creating organized subdirectories. Use after downloading without --unzip,
     or to re-process existing downloads.
 
+    \b
     Example:
         # Extract a single session directory
         xnatctl local extract ./data/XNAT_E00001
