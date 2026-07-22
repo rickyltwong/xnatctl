@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import click
 import pytest
 from click.testing import CliRunner
@@ -110,3 +112,129 @@ def test_confirm_decline_exits_user_cancelled() -> None:
     result = CliRunner().invoke(cmd, input="n\n")
     assert result.exit_code == 7
     assert "deleted" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# ROB-13 / MAINT-02: tracebacks under --verbose / XNATCTL_DEBUG, hint otherwise
+# ---------------------------------------------------------------------------
+
+
+def test_unexpected_error_no_traceback_by_default(monkeypatch) -> None:
+    """An unexpected error prints one line + a hint, never a traceback."""
+    monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
+    result = CliRunner().invoke(_cmd(ValueError("boom")))
+    assert result.exit_code == 1
+    assert "Unexpected error" in result.output
+    assert "Run with --verbose for a full traceback." in result.output
+    assert "Traceback (most recent call last)" not in result.output
+
+
+def test_unexpected_error_traceback_with_debug_env(monkeypatch) -> None:
+    """XNATCTL_DEBUG=1 surfaces the full traceback on the unexpected path."""
+    monkeypatch.setenv("XNATCTL_DEBUG", "1")
+    result = CliRunner().invoke(_cmd(ValueError("boom")))
+    assert result.exit_code == 1
+    assert "Traceback (most recent call last)" in result.output
+    assert "test_exit_codes.py" in result.output
+    # The hint is suppressed once the real traceback is shown.
+    assert "Run with --verbose for a full traceback." not in result.output
+
+
+def test_xnatctl_error_traceback_with_debug_env(monkeypatch) -> None:
+    """Structured errors also yield a traceback under debug (no hint line)."""
+    monkeypatch.setenv("XNATCTL_DEBUG", "1")
+    result = CliRunner().invoke(_cmd(ResourceNotFoundError("session", "X")))
+    assert result.exit_code == 5
+    assert "Traceback (most recent call last)" in result.output
+
+
+def test_xnatctl_error_no_hint_or_traceback_by_default(monkeypatch) -> None:
+    """A clean XNATCtlError stays a one-liner: no traceback, no verbose hint."""
+    monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
+    result = CliRunner().invoke(_cmd(ResourceNotFoundError("session", "X")))
+    assert result.exit_code == 5
+    assert "Traceback (most recent call last)" not in result.output
+    assert "Run with --verbose for a full traceback." not in result.output
+
+
+def test_verbose_flag_on_context_enables_traceback(monkeypatch) -> None:
+    """`--verbose` (Context.verbose) enables the traceback without the env var."""
+    monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
+
+    from xnatctl.cli.common import Context, global_options
+
+    @click.command()
+    @global_options
+    @handle_errors
+    def cmd(ctx: Context) -> None:
+        raise ValueError("boom")
+
+    with patch("xnatctl.cli.common.Config.load", return_value=object()):
+        result = CliRunner().invoke(cmd, ["--verbose"])
+    assert result.exit_code == 1
+    assert "Traceback (most recent call last)" in result.output
+
+
+@pytest.mark.parametrize("falsey", ["0", "false", "FALSE", "no", "off", " ", ""])
+def test_debug_env_falsey_values_do_not_enable_traceback(monkeypatch, falsey) -> None:
+    """`XNATCTL_DEBUG=0`/`false`/`off` must NOT fail open into a traceback."""
+    monkeypatch.setenv("XNATCTL_DEBUG", falsey)
+    result = CliRunner().invoke(_cmd(ValueError("boom")))
+    assert result.exit_code == 1
+    assert "Traceback (most recent call last)" not in result.output
+    assert "Run with --verbose for a full traceback." in result.output
+
+
+def test_debug_env_arbitrary_truthy_value_enables_traceback(monkeypatch) -> None:
+    """Any non-falsey value (like `gh`'s GH_DEBUG=api) still enables tracebacks."""
+    monkeypatch.setenv("XNATCTL_DEBUG", "api")
+    result = CliRunner().invoke(_cmd(ValueError("boom")))
+    assert "Traceback (most recent call last)" in result.output
+
+
+# ---------------------------------------------------------------------------
+# main() last-resort guard: setup-phase errors (raised in @global_options,
+# outside @handle_errors) must still get the one-line / traceback policy.
+# ---------------------------------------------------------------------------
+
+
+def _run_main_raising(exc: BaseException) -> int:
+    """Invoke ``main()`` with ``cli()`` patched to raise, return the exit code."""
+    from xnatctl.cli import main as main_mod
+
+    def _boom() -> None:
+        raise exc
+
+    with patch.object(main_mod, "cli", _boom):
+        try:
+            main_mod.main()
+        except SystemExit as se:
+            return int(se.code or 0)
+    return 0
+
+
+def test_main_guard_renders_xnatctl_error_without_traceback(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
+    code = _run_main_raising(ResourceNotFoundError("session", "X"))
+    captured = capsys.readouterr()
+    assert code == 5
+    assert "Traceback (most recent call last)" not in (captured.out + captured.err)
+
+
+def test_main_guard_renders_unexpected_error_with_hint(monkeypatch, capsys) -> None:
+    """A non-XNATCtlError escaping setup (e.g. bad XNAT_TIMEOUT) is no longer raw."""
+    monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
+    code = _run_main_raising(ValueError("bad XNAT_TIMEOUT"))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Unexpected error" in (captured.out + captured.err)
+    assert "Run with --verbose for a full traceback." in (captured.out + captured.err)
+    assert "Traceback (most recent call last)" not in (captured.out + captured.err)
+
+
+def test_main_guard_shows_traceback_under_debug_env(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("XNATCTL_DEBUG", "1")
+    code = _run_main_raising(ValueError("bad XNAT_TIMEOUT"))
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Traceback (most recent call last)" in (captured.out + captured.err)

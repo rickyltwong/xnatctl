@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import enum
 import json
+import os
 import sys
+import traceback
 from collections.abc import Callable
 from functools import wraps
 from typing import Any, TypeVar
@@ -500,19 +502,71 @@ def parallel_options(f: F) -> F:
 # =============================================================================
 
 
+# Values that explicitly DISABLE debug tracebacks. Any other non-empty value
+# enables them, but the common "falsey" spellings must NOT fail open.
+_DEBUG_OFF_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+def _debug_enabled() -> bool:
+    """Return True when tracebacks should be surfaced.
+
+    Two independent opt-ins: the ``--verbose`` flag (stashed on the shared
+    :class:`Context` as ``verbose``) and the ``XNATCTL_DEBUG`` env var (mirrors
+    ``gh``'s ``GH_DEBUG``, so a traceback is obtainable even for failures that
+    occur before ``--verbose`` is parsed). ``XNATCTL_DEBUG=0``/``false``/``off``
+    counts as OFF -- an explicit falsey value must not enable tracebacks.
+    """
+    raw = os.environ.get("XNATCTL_DEBUG")
+    if raw is not None and raw.strip().lower() not in _DEBUG_OFF_VALUES:
+        return True
+    click_ctx = click.get_current_context(silent=True)
+    ctx_obj = click_ctx.obj if click_ctx is not None else None
+    return bool(getattr(ctx_obj, "verbose", False))
+
+
+def render_cli_error(exc: BaseException) -> int:
+    """Render a redacted one-line error (+ optional traceback) and return its exit code.
+
+    Shared by :func:`handle_errors` and the ``main()`` last-resort guard so the
+    traceback-under-debug policy lives in exactly one place. ``main()`` needs it
+    too because setup-phase failures (config load / env parsing inside
+    ``global_options``) are raised OUTSIDE the ``handle_errors`` wrapper.
+
+    Must be called from within an ``except`` block: it relies on
+    ``traceback.format_exc()`` reflecting the exception currently being handled.
+    """
+    if isinstance(exc, XNATCtlError):
+        # Defensive: print_error already redacts, but we redact here too so
+        # future direct callers cannot bypass the invariant.
+        print_error(redact_url_query(str(exc)))
+    else:
+        print_error(redact_url_query(f"Unexpected error: {exc}"))
+
+    if _debug_enabled():
+        # Redact the whole traceback: its final line echoes the exception
+        # message, which may carry a URL query string.
+        click.echo(redact_url_query(traceback.format_exc()), err=True)
+    elif not isinstance(exc, XNATCtlError):
+        # A clean XNATCtlError is already actionable; only the opaque
+        # "Unexpected error" line benefits from the verbose hint.
+        click.echo("Run with --verbose for a full traceback.", err=True)
+
+    return exit_code_for(exc)
+
+
 def handle_errors(f: F) -> F:
-    """Handle common errors and convert to CLI exceptions."""
+    """Handle common errors and convert to CLI exceptions.
+
+    Under ``--verbose`` or ``XNATCTL_DEBUG=1`` a full (redacted) traceback is
+    printed to stderr before exiting; otherwise unexpected errors print a single
+    line plus a hint. Tracebacks are never shown by default (ROB-13 / MAINT-02).
+    """
 
     @wraps(f)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         """Capture errors and exit with consistent messaging."""
         try:
             return f(*args, **kwargs)
-        except XNATCtlError as e:
-            # Defensive: print_error already redacts, but we redact here too
-            # so future direct callers cannot bypass the invariant.
-            print_error(redact_url_query(str(e)))
-            sys.exit(exit_code_for(e))
         except click.Abort:
             # User declined a destructive-op confirmation (Ctrl+C / "n").
             click.echo("Aborted!", err=True)
@@ -520,9 +574,7 @@ def handle_errors(f: F) -> F:
         except click.ClickException:
             raise
         except Exception as e:
-            # Defensive: same rationale as the XNATCtlError branch above.
-            print_error(redact_url_query(f"Unexpected error: {e}"))
-            sys.exit(exit_code_for(e))
+            sys.exit(render_cli_error(e))
 
     return wrapper  # type: ignore
 
