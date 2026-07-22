@@ -121,10 +121,60 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  security:
+    # Supply-chain vulnerability scan of the locked runtime deps (SEC-03 / GAP-02).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Export locked runtime dependencies
+        run: >-
+          uv export --no-dev --no-emit-project --format requirements-txt
+          --output-file requirements-audit.txt
+
+      - name: Audit dependencies for known vulnerabilities
+        # Unfixable advisories can be excluded here with, e.g.,
+        # --ignore-vuln GHSA-xxxx-xxxx-xxxx (document the reason in the PR).
+        run: uv tool run pip-audit -r requirements-audit.txt
+
+  min-deps:
+    # Prove the declared `>=` floors actually resolve and pass (GAP-02).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install at lowest direct dependency versions
+        run: uv sync --dev --resolution lowest-direct
+
+      - name: Run tests
+        run: uv run pytest tests/ -x -q
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [lint, typecheck, test]
+    needs: [lint, typecheck, test, security, min-deps]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -153,7 +203,7 @@ jobs:
   auto-tag:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [lint, typecheck, test]
+    needs: [lint, typecheck, test, security, min-deps]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
