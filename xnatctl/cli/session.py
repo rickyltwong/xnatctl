@@ -44,8 +44,8 @@ def session() -> None:
     "--modality", type=click.Choice(["MR", "PET", "CT", "EEG"]), help="Filter by modality"
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_list(
     ctx: Context,
     project: str | None,
@@ -142,8 +142,8 @@ def session_list(
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     """Show session details including scans and resources.
 
@@ -607,8 +607,8 @@ def _download_session_fast(
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_download(
     ctx: Context,
     session_id: str,
@@ -878,8 +878,8 @@ def session_download(
 )
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_upload(
     ctx: Context,
     input_path: str,
@@ -1093,8 +1093,8 @@ def session_upload(
 )
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_upload_exam(
     ctx: Context,
     exam_root: str,
@@ -1311,6 +1311,10 @@ def session_upload_exam(
                 f"{dicom_msg}; session '{session}' not archived yet{waited}. "
                 f"{pending} resource item(s) not attached -- re-run once archived:\n  {rerun}"
             )
+        # Deliberate exit 0 (NOT ROB-01): this is documented partial success --
+        # the DICOM upload succeeded and the emitted --attach-only command
+        # recovers the pending resources once archiving completes. Returning
+        # nonzero here would make callers treat a recoverable state as failure.
         return
 
     resource_service = ResourceService(client)
@@ -1446,7 +1450,11 @@ def _upload_gradual_dicom(
                 click.echo(f"  - {err}", err=True)
             if len(summary.errors) > 5:
                 click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
-            raise SystemExit(1)
+
+    # Exit code must not depend on the output format: a failed upload has to
+    # return nonzero under -o json too, or automation reports success (ROB-01).
+    if not summary.success:
+        raise SystemExit(1)
 
 
 def _upload_single_archive(
@@ -1761,7 +1769,10 @@ def _upload_directory_parallel(
                 click.echo(f"  - {error}", err=True)
             if len(summary.errors) > 5:
                 click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
-            raise SystemExit(1)
+
+    # Format-independent failure exit (ROB-01): -o json must also return nonzero.
+    if not summary.success:
+        raise SystemExit(1)
 
 
 def _upload_dicom_store(
@@ -1832,7 +1843,10 @@ def _upload_dicom_store(
                 f"{summary.failed}/{summary.total_files} files failed"
             )
             click.echo(f"Check logs in: {summary.log_dir}", err=True)
-            raise SystemExit(1)
+
+    # Format-independent failure exit (ROB-01): -o json must also return nonzero.
+    if not summary.success:
+        raise SystemExit(1)
 
 
 @session.command("upload-dicom")
@@ -1875,8 +1889,8 @@ def _upload_dicom_store(
 )
 @click.option("--dry-run", is_flag=True, help="Preview without sending")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_upload_dicom(
     ctx: Context,
     input_path: str,

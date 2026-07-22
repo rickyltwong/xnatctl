@@ -24,8 +24,8 @@ def prearchive() -> None:
 @prearchive.command("list")
 @click.option("--project", help="Filter by project ID")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_list(
     ctx: Context,
     project: str | None,
@@ -58,8 +58,8 @@ def prearchive_list(
 @click.option("--label", help="Target session label")
 @click.option("--overwrite", is_flag=True, help="Overwrite existing data")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_archive(
     ctx: Context,
     project: str,
@@ -99,8 +99,8 @@ def prearchive_archive(
 @click.argument("session_name")
 @confirm_destructive("Delete session from prearchive? This cannot be undone.")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_delete(
     ctx: Context,
     project: str,
@@ -135,8 +135,8 @@ def prearchive_delete(
 @click.argument("timestamp")
 @click.argument("session_name")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_rebuild(
     ctx: Context,
     project: str,
@@ -166,8 +166,8 @@ def prearchive_rebuild(
 @click.argument("session_name")
 @click.argument("target_project")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_move(
     ctx: Context,
     project: str,

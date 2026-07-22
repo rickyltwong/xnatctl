@@ -153,8 +153,8 @@ def scan() -> None:
     help="Subject ID/label (narrows experiment lookup, requires -P)",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def scan_list(ctx: Context, session_id: str, project: str | None, subject: str | None) -> None:
     """List scans in a session.
 
@@ -227,8 +227,8 @@ def scan_list(ctx: Context, session_id: str, project: str | None, subject: str |
 )
 @click.argument("scan_id")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def scan_show(
     ctx: Context, session_id: str, project: str | None, subject: str | None, scan_id: str
 ) -> None:
@@ -310,8 +310,8 @@ def scan_show(
 @confirm_destructive("Delete these scans?")
 @parallel_options
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def scan_delete(
     ctx: Context,
     session_id: str,
@@ -460,8 +460,8 @@ def scan_delete(
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def scan_download(
     ctx: Context,
     session_id: str,
@@ -597,4 +597,7 @@ def scan_download(
             print_error(
                 f"Download failed: {summary.errors[0] if summary.errors else 'Unknown error'}"
             )
-            raise SystemExit(1)
+
+    # Format-independent failure exit (ROB-01): -o json must also return nonzero.
+    if not summary.success:
+        raise SystemExit(1)

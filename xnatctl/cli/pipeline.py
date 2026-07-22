@@ -25,8 +25,8 @@ def pipeline() -> None:
 @pipeline.command("list")
 @click.option("--project", help="Filter by project ID")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def pipeline_list(
     ctx: Context,
     project: str | None,
@@ -57,8 +57,8 @@ def pipeline_list(
 @click.option("--wait", is_flag=True, help="Wait for completion")
 @click.option("--timeout", type=int, default=3600, help="Wait timeout in seconds")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def pipeline_run(
     ctx: Context,
     pipeline_name: str,
@@ -130,8 +130,8 @@ def pipeline_run(
 @click.option("--watch", is_flag=True, help="Watch status until completion")
 @click.option("--interval", type=int, default=30, help="Poll interval in seconds")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def pipeline_status(
     ctx: Context,
     job_id: str,
@@ -192,8 +192,8 @@ def pipeline_status(
 @click.argument("job_id")
 @confirm_destructive("Cancel pipeline job? This cannot be undone.")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def pipeline_cancel(
     ctx: Context,
     job_id: str,
@@ -221,8 +221,8 @@ def pipeline_cancel(
 @click.option("--status", "-s", help="Filter by status")
 @click.option("--limit", type=int, default=100, help="Maximum results")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def pipeline_jobs(
     ctx: Context,
     experiment: str | None,
