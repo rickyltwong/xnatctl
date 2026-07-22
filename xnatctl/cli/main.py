@@ -361,20 +361,21 @@ def main() -> None:
     Last-resort guard so no expected failure class (bad profile, unreachable
     server, expired session) ever reaches the user as a raw Python traceback.
     Commands normally render these via ``@handle_errors``; this catches anything
-    raised outside a decorated command body (e.g. group callbacks) too.
+    raised OUTSIDE a decorated command body too -- notably setup-phase failures
+    inside ``@global_options`` (config load, ``XNAT_TIMEOUT`` parsing), which the
+    per-command ``@handle_errors`` wrapper never sees. Uses the same
+    ``render_cli_error`` policy so ``XNATCTL_DEBUG=1`` yields a traceback here as
+    well. Click's own ``ClickException``/``Abort`` are handled by ``cli()`` in
+    standalone mode and surface as ``SystemExit``, which passes straight through.
     """
     import sys
 
-    from xnatctl.cli.common import exit_code_for
-    from xnatctl.core.exceptions import XNATCtlError
-    from xnatctl.core.output import print_error
-    from xnatctl.core.redact import redact_url_query
+    from xnatctl.cli.common import render_cli_error
 
     try:
         cli()
-    except XNATCtlError as e:
-        print_error(redact_url_query(str(e)))
-        sys.exit(exit_code_for(e))
+    except Exception as e:
+        sys.exit(render_cli_error(e))
 
 
 if __name__ == "__main__":
