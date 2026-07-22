@@ -244,6 +244,23 @@ def completion() -> None:
     pass
 
 
+def _render_completion(shell: str) -> str:
+    """Render Click's official completion script for *shell* (CLI-03).
+
+    Generated from the INSTALLED Click version so the emitted completion protocol
+    always matches the runtime. The old hand-rolled bash script emitted the
+    Click 7 raw-``COMPREPLY`` form, which under Click 8 produced literal
+    ``plain,project`` completions instead of ``project``; delegating to Click's
+    own generator fixes that and removes the drift risk for zsh/fish too.
+    """
+    from click.shell_completion import get_completion_class
+
+    comp_cls = get_completion_class(shell)
+    if comp_cls is None:  # pragma: no cover - bash/zsh/fish all ship with Click
+        raise click.ClickException(f"No completion support for shell: {shell}")
+    return comp_cls(cli, {}, "xnatctl", "_XNATCTL_COMPLETE").source()
+
+
 @completion.command("bash")
 def completion_bash() -> None:
     """Generate bash completion script.
@@ -251,21 +268,7 @@ def completion_bash() -> None:
     Install with:
       xnatctl completion bash > ~/.local/share/bash-completion/completions/xnatctl
     """
-
-    # Get the completion script using Click's built-in support
-    prog_name = "xnatctl"
-    source = f"""
-_xnatctl_completion() {{
-    local IFS=$'\\n'
-    COMPREPLY=( $( env COMP_WORDS="${{COMP_WORDS[*]}}" \\
-                   COMP_CWORD=$COMP_CWORD \\
-                   _{prog_name.upper()}_COMPLETE=bash_complete $1 ) )
-    return 0
-}}
-
-complete -o default -F _xnatctl_completion {prog_name}
-"""
-    click.echo(source.strip())
+    click.echo(_render_completion("bash"))
 
 
 @completion.command("zsh")
@@ -275,40 +278,7 @@ def completion_zsh() -> None:
     Install with:
       xnatctl completion zsh > ~/.zfunc/_xnatctl
     """
-    prog_name = "xnatctl"
-    source = f"""
-#compdef {prog_name}
-
-_{prog_name}_completion() {{
-    local -a completions
-    local -a completions_with_descriptions
-    local -a response
-    (( ! $+commands[{prog_name}] )) && return 1
-
-    response=("${{(@f)$( env COMP_WORDS="${{words[*]}}" \\
-                        COMP_CWORD=$((CURRENT-1)) \\
-                        _{prog_name.upper()}_COMPLETE=zsh_complete {prog_name} )}}")
-
-    for key descr in ${{(kv)response}}; do
-      if [[ "$descr" == "_" ]]; then
-          completions+=("$key")
-      else
-          completions_with_descriptions+=("$key":"$descr")
-      fi
-    done
-
-    if [ -n "$completions_with_descriptions" ]; then
-        _describe -V unsorted completions_with_descriptions -U
-    fi
-
-    if [ -n "$completions" ]; then
-        compadd -U -V unsorted -a completions
-    fi
-}}
-
-compdef _{prog_name}_completion {prog_name}
-"""
-    click.echo(source.strip())
+    click.echo(_render_completion("zsh"))
 
 
 @completion.command("fish")
@@ -318,27 +288,7 @@ def completion_fish() -> None:
     Install with:
       xnatctl completion fish > ~/.config/fish/completions/xnatctl.fish
     """
-    prog_name = "xnatctl"
-    source = f"""
-function _xnatctl_completion
-    set -l response (env _{prog_name.upper()}_COMPLETE=fish_complete COMP_WORDS=(commandline -cp) COMP_CWORD=(commandline -t) {prog_name})
-
-    for completion in $response
-        set -l metadata (string split "," -- $completion)
-
-        if [ $metadata[1] = "dir" ]
-            __fish_complete_directories $metadata[2]
-        else if [ $metadata[1] = "file" ]
-            __fish_complete_path $metadata[2]
-        else if [ $metadata[1] = "plain" ]
-            echo $metadata[2]
-        end
-    end
-end
-
-complete --no-files --command {prog_name} --arguments "(_xnatctl_completion)"
-"""
-    click.echo(source.strip())
+    click.echo(_render_completion("fish"))
 
 
 # =============================================================================
