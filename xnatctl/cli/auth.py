@@ -43,6 +43,7 @@ def auth_login(
     Credentials come from CLI args, environment variables (XNAT_USER, XNAT_PASS),
     or the selected profile config.
 
+    \b
     Example:
         xnatctl auth login
         xnatctl auth login --profile myserver
@@ -129,6 +130,7 @@ def auth_login(
 def auth_logout(profile_name: str | None) -> None:
     """Clear cached session.
 
+    \b
     Example:
         xnatctl auth logout
         xnatctl auth logout --profile myserver
@@ -167,6 +169,7 @@ def auth_logout(profile_name: str | None) -> None:
 def auth_status(profile_name: str | None, output: str) -> None:
     """Check authentication status.
 
+    \b
     Example:
         xnatctl auth status
         xnatctl auth status --profile myserver
@@ -215,6 +218,7 @@ def auth_status(profile_name: str | None, output: str) -> None:
 def auth_test(profile_name: str | None, output: str) -> None:
     """Test authentication by connecting to server.
 
+    \b
     Example:
         xnatctl auth test
         xnatctl auth test --profile myserver

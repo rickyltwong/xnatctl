@@ -35,6 +35,7 @@ def project() -> None:
 def project_list(ctx: Context) -> None:
     """List accessible projects.
 
+    \b
     Example:
         xnatctl project list
         xnatctl project list -o json
@@ -79,6 +80,7 @@ def project_list(ctx: Context) -> None:
 def project_show(ctx: Context, project_id: str) -> None:
     """Show project details.
 
+    \b
     Example:
         xnatctl project show MYPROJECT
     """
@@ -159,6 +161,7 @@ def project_create(
 ) -> None:
     """Create a new project.
 
+    \b
     Example:
         xnatctl project create NEWPROJ --name "New Project" --pi Smith
     """
@@ -226,6 +229,7 @@ def project_transfer(
     Incrementally syncs subjects, experiments, and resources from the source
     project to the destination, tracking state in a local SQLite database.
 
+    \b
     Example:
         xnatctl project transfer -P SRC --dest-profile staging --dest-project DST
         xnatctl project transfer -P SRC --dest-profile staging --dest-project DST --dry-run
@@ -317,6 +321,7 @@ def project_transfer(
 def project_transfer_status(ctx: Context, source_project: str) -> None:
     """Show status of the last transfer run.
 
+    \b
     Example:
         xnatctl project transfer-status -P MYPROJECT
     """
@@ -366,6 +371,7 @@ def project_transfer_status(ctx: Context, source_project: str) -> None:
 def project_transfer_history(ctx: Context, source_project: str) -> None:
     """Show transfer history for a project.
 
+    \b
     Example:
         xnatctl project transfer-history -P MYPROJECT
         xnatctl project transfer-history -P MYPROJECT -o json
@@ -440,6 +446,7 @@ def project_transfer_check(
     Verifies that both source and destination are reachable, authenticated,
     and that the user has sufficient permissions.
 
+    \b
     Example:
         xnatctl project transfer-check -P SRC --dest-profile staging --dest-project DST
     """
@@ -542,6 +549,7 @@ def project_transfer_init(
 ) -> None:
     """Generate a starter transfer configuration YAML.
 
+    \b
     Example:
         xnatctl project transfer-init -P SRC --dest-project DST
         xnatctl project transfer-init -P SRC --dest-project DST -f transfer.yaml

@@ -32,6 +32,7 @@ def prearchive_list(
 ) -> None:
     """List prearchive sessions.
 
+    \b
     Example:
         xnatctl prearchive list
         xnatctl prearchive list --project MYPROJ
@@ -71,6 +72,7 @@ def prearchive_archive(
 ) -> None:
     """Archive a session from prearchive.
 
+    \b
     Example:
         xnatctl prearchive archive MYPROJ 20240115_120000 Session1
         xnatctl prearchive archive MYPROJ 20240115_120000 Session1 --subject SUB001
@@ -110,6 +112,7 @@ def prearchive_delete(
 ) -> None:
     """Delete a session from prearchive.
 
+    \b
     Example:
         xnatctl prearchive delete MYPROJ 20240115_120000 Session1 --yes
         xnatctl prearchive delete MYPROJ 20240115_120000 Session1 --dry-run
@@ -145,6 +148,7 @@ def prearchive_rebuild(
 ) -> None:
     """Rebuild/refresh a prearchive session.
 
+    \b
     Example:
         xnatctl prearchive rebuild MYPROJ 20240115_120000 Session1
     """
@@ -177,6 +181,7 @@ def prearchive_move(
 ) -> None:
     """Move a prearchive session to another project.
 
+    \b
     Example:
         xnatctl prearchive move MYPROJ 20240115_120000 Session1 OTHERPROJ
     """

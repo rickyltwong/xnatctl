@@ -33,6 +33,7 @@ def pipeline_list(
 ) -> None:
     """List available pipelines.
 
+    \b
     Example:
         xnatctl pipeline list
         xnatctl pipeline list --project MYPROJ
@@ -69,6 +70,7 @@ def pipeline_run(
 ) -> None:
     """Run a pipeline on an experiment.
 
+    \b
     Example:
         xnatctl pipeline run dcm2niix --experiment XNAT_E00001
         xnatctl pipeline run freesurfer -e XNAT_E00001 --wait
@@ -140,6 +142,7 @@ def pipeline_status(
 ) -> None:
     """Check pipeline job status.
 
+    \b
     Example:
         xnatctl pipeline status JOB123
         xnatctl pipeline status JOB123 --watch
@@ -201,6 +204,7 @@ def pipeline_cancel(
 ) -> None:
     """Cancel a running pipeline job.
 
+    \b
     Example:
         xnatctl pipeline cancel JOB123 --yes
         xnatctl pipeline cancel JOB123 --dry-run
@@ -232,6 +236,7 @@ def pipeline_jobs(
 ) -> None:
     """List pipeline jobs.
 
+    \b
     Example:
         xnatctl pipeline jobs
         xnatctl pipeline jobs --experiment XNAT_E00001

@@ -158,6 +158,7 @@ def scan() -> None:
 def scan_list(ctx: Context, session_id: str, project: str | None, subject: str | None) -> None:
     """List scans in a session.
 
+    \b
     Example:
         xnatctl scan list -E XNAT_E00001
         xnatctl scan list -E XNAT_E00001 -o json
@@ -234,6 +235,7 @@ def scan_show(
 ) -> None:
     """Show scan details.
 
+    \b
     Example:
         xnatctl scan show -E XNAT_E00001 1
         xnatctl scan show -E SESSION_LABEL 1 -P MYPROJ
@@ -323,6 +325,7 @@ def scan_delete(
 ) -> None:
     """Delete scans from a session.
 
+    \b
     Example:
         xnatctl scan delete -E XNAT_E00001 --scans 1,2,3
         xnatctl scan delete -E XNAT_E00001 --scans '*'  # Delete all
@@ -487,6 +490,7 @@ def scan_download(
     Only one --resource value is supported per invocation.
     Omit --resource to download all resources for the scans.
 
+    \b
     Examples:
         xnatctl scan download -E XNAT_E00001 -s 1
         xnatctl scan download -E XNAT_E00001 -s 1 --out ./data
