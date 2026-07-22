@@ -27,8 +27,15 @@ from xnatctl.core.exceptions import (
     ServerUnreachableError,
     SessionExpiredError,
 )
+from xnatctl.core.exceptions import (
+    TimeoutError as XNATTimeoutError,
+)
 from xnatctl.core.redact import redact_url_query
-from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
+from xnatctl.core.timeouts import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_HTTP_TIMEOUT_SECONDS,
+    build_httpx_timeout,
+)
 from xnatctl.core.validation import validate_server_url
 
 # =============================================================================
@@ -120,7 +127,10 @@ class XNATClient:
                     )
             self._client = httpx.Client(
                 base_url=self.base_url,
-                timeout=self.timeout,
+                # Structured timeout: a short connect phase (ROB-02) so a
+                # blackholed host fails in seconds, with the long read ceiling
+                # preserved for large transfers.
+                timeout=build_httpx_timeout(self.timeout),
                 verify=verify,
                 follow_redirects=True,
             )
@@ -166,6 +176,9 @@ class XNATClient:
                 "/data/JSESSION",
                 auth=(self.username, self.password),
             )
+        except httpx.ConnectTimeout as e:
+            # Connect-phase timeout: same typed, fail-fast contract as _request.
+            raise XNATTimeoutError(self.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
         except httpx.ConnectError as e:
             raise ServerUnreachableError(self.base_url) from e
         except httpx.TimeoutException as e:
@@ -247,12 +260,17 @@ class XNATClient:
             ResourceNotFoundError: On 404.
             ClientRequestError: On any other 4xx.
             ServerError: On a 5xx that is not retryable or after retries drain.
-            RetryExhaustedError: When retryable statuses or connect/timeout
+            TimeoutError: On a connect-phase timeout (fails fast, not retried).
+            RetryExhaustedError: When retryable statuses or connect/read-timeout
                 failures exhaust ``max_retries``.
         """
         client = self._get_client()
 
-        request_timeout = timeout or self.timeout
+        # Read/write ceiling for this call (int, also used in error messages).
+        # Wrapped in a structured httpx.Timeout so a per-request override cannot
+        # re-flatten connect back to the multi-hour scalar (ROB-02).
+        read_timeout = timeout or self.timeout
+        request_timeout = build_httpx_timeout(read_timeout)
         last_error: Exception | None = None
         did_reauth = False
 
@@ -336,10 +354,18 @@ class XNATClient:
 
                 return resp
 
+            except httpx.ConnectTimeout as e:
+                # Fail fast: the connect phase timed out (host blackholed /
+                # firewall-DROPped). A typed TimeoutError instead of the generic
+                # NetworkError bucket, and NOT retried -- an unreachable host will
+                # not recover within the backoff window, and the whole point of
+                # ROB-02 is failing in seconds, not hours. (ROB-09 may revisit
+                # idempotency-aware connect retries.)
+                raise XNATTimeoutError(self.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
             except httpx.ConnectError:
                 last_error = ServerUnreachableError(self.base_url)
             except httpx.TimeoutException:
-                last_error = NetworkError(self.base_url, f"Timeout after {request_timeout}s")
+                last_error = NetworkError(self.base_url, f"Timeout after {read_timeout}s")
             except (AuthenticationError, ResourceNotFoundError):
                 raise
 

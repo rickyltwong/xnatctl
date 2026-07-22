@@ -410,6 +410,8 @@ def _download_session_fast(
 
     import httpx
 
+    from xnatctl.core.timeouts import build_httpx_timeout
+
     scans_resp = client.get_json(f"/data/experiments/{resolved_session_id}/scans")
     results = scans_resp.get("ResultSet", {}).get("Result", [])
     scan_ids = [r.get("ID") for r in results if r.get("ID")]
@@ -455,7 +457,7 @@ def _download_session_fast(
         try:
             with httpx.Client(
                 base_url=base_url,
-                timeout=timeout,
+                timeout=build_httpx_timeout(timeout),  # connect fails fast (ROB-02)
                 verify=verify_ssl,
             ) as http:
                 cookies = {"JSESSIONID": session_token} if session_token else {}
