@@ -186,13 +186,23 @@ def config_current_context() -> None:
     default=DEFAULT_HTTP_TIMEOUT_SECONDS,
     help="Request timeout in seconds",
 )
-@click.option("--no-verify-ssl", is_flag=True, help="Disable SSL verification")
+@click.option(
+    "--no-verify-ssl",
+    is_flag=True,
+    help="Disable SSL verification (INSECURE; prefer --ca-bundle for self-signed certs)",
+)
+@click.option(
+    "--ca-bundle",
+    default=None,
+    help="Path to a custom CA bundle for TLS verification (secure alternative to --no-verify-ssl)",
+)
 def config_add_profile(
     name: str,
     url: str,
     project: str | None,
     timeout: int,
     no_verify_ssl: bool,
+    ca_bundle: str | None,
 ) -> None:
     """Add a new profile.
 
@@ -217,6 +227,7 @@ def config_add_profile(
         default_project=project,
         timeout=timeout,
         verify_ssl=not no_verify_ssl,
+        ca_bundle=ca_bundle,
     )
     cfg.save()
 

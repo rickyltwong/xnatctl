@@ -116,8 +116,8 @@ def subject() -> None:
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--filter", "filter_expr", help="Filter expression (e.g., 'label:SUB*')")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def subject_list(ctx: Context, project: str | None, filter_expr: str | None) -> None:
     """List subjects in a project.
 
@@ -184,8 +184,8 @@ def subject_list(ctx: Context, project: str | None, filter_expr: str | None) -> 
 @click.argument("subject_id")
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
     """Show subject details.
 
@@ -240,8 +240,8 @@ def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @confirm_destructive("Delete this subject and all its sessions?")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: bool) -> None:
     """Delete a subject.
 
@@ -283,8 +283,8 @@ def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: 
 @click.option("--to", "to_template", help="Template for new label (use {1}, {2} for groups)")
 @click.option("--dry-run", is_flag=True, help="Preview changes without applying")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def subject_rename(
     ctx: Context,
     project: str | None,

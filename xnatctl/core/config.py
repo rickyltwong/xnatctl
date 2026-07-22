@@ -32,6 +32,28 @@ ENV_PROFILE = "XNAT_PROFILE"
 ENV_VERIFY_SSL = "XNAT_VERIFY_SSL"
 ENV_TIMEOUT = "XNAT_TIMEOUT"
 
+_TRUE_VALUES = frozenset({"true", "1", "yes"})
+_FALSE_VALUES = frozenset({"false", "0", "no"})
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    """Parse a boolean environment variable strictly.
+
+    Accepts ``true/false/1/0/yes/no`` case-insensitively (after stripping
+    whitespace). Anything else raises ``ConfigurationError`` rather than
+    silently evaluating to ``False`` -- a typo like ``XNAT_VERIFY_SSL=on`` must
+    never quietly disable TLS verification for a PHI-bearing connection.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in _TRUE_VALUES:
+        return True
+    if value in _FALSE_VALUES:
+        return False
+    raise ConfigurationError(f"Invalid value for {name}: {raw!r}. Use true/false.")
+
 
 # =============================================================================
 # Profile
@@ -47,6 +69,7 @@ class Profile:
 
     url: str
     verify_ssl: bool = True
+    ca_bundle: str | None = None
     timeout: int = DEFAULT_HTTP_TIMEOUT_SECONDS
     default_project: str | None = None
     username: str | None = None
@@ -66,6 +89,8 @@ class Profile:
             "timeout": self.timeout,
             "default_project": self.default_project,
         }
+        if self.ca_bundle:
+            result["ca_bundle"] = self.ca_bundle
         if self.username:
             result["username"] = self.username
         if self.password:
@@ -82,6 +107,7 @@ class Profile:
         return cls(
             url=data.get("url", ""),
             verify_ssl=data.get("verify_ssl", True),
+            ca_bundle=data.get("ca_bundle"),
             timeout=data.get("timeout", DEFAULT_HTTP_TIMEOUT_SECONDS),
             default_project=data.get("default_project"),
             username=data.get("username"),
@@ -141,7 +167,7 @@ class Config:
 
         # Environment variable overrides
         if url := os.getenv(ENV_URL):
-            verify_ssl = os.getenv(ENV_VERIFY_SSL, "true").lower() in ("true", "1", "yes")
+            verify_ssl = _parse_bool_env(ENV_VERIFY_SSL, True)
             timeout = int(os.getenv(ENV_TIMEOUT, str(DEFAULT_HTTP_TIMEOUT_SECONDS)))
 
             config.profiles["default"] = Profile(
@@ -201,6 +227,7 @@ class Config:
         verify_ssl: bool = True,
         timeout: int = DEFAULT_HTTP_TIMEOUT_SECONDS,
         default_project: str | None = None,
+        ca_bundle: str | None = None,
     ) -> Profile:
         """Add or update a profile.
 
@@ -210,6 +237,7 @@ class Config:
             verify_ssl: Whether to verify SSL certificates.
             timeout: Request timeout in seconds.
             default_project: Default project ID.
+            ca_bundle: Path to a custom CA bundle for TLS verification.
 
         Returns:
             Created profile.
@@ -217,6 +245,7 @@ class Config:
         profile = Profile(
             url=url,
             verify_ssl=verify_ssl,
+            ca_bundle=ca_bundle,
             timeout=timeout,
             default_project=default_project,
         )

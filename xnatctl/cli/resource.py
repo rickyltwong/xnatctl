@@ -55,8 +55,8 @@ def _validate_resource_list_scope(
 @click.option("--scan", help="Scope to specific scan")
 @click.argument("session_id", required=False, callback=_validate_resource_list_scope)
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def resource_list(
     ctx: Context,
     session_id: str | None,
@@ -127,8 +127,8 @@ def resource_list(
 @click.argument("resource_label")
 @click.option("--scan", help="Scope to specific scan")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str | None) -> None:
     """Show resource details and files.
 
@@ -215,8 +215,8 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
 @click.option("--content", help="Content type/description")
 @click.option("--format", "file_format", help="File format (e.g., DICOM, NIFTI)")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def resource_upload(
     ctx: Context,
     project: str | None,
@@ -314,8 +314,8 @@ def resource_upload(
     help="Refresh options (can repeat).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
     """Refresh a single XNAT resource catalog by archive URI.
 
@@ -346,8 +346,8 @@ def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
 @click.option("--file", "-f", "out", required=True, type=click.Path(), help="Output file path")
 @click.option("--scan", help="Download from scan resource")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def resource_download(
     ctx: Context,
     session_id: str,

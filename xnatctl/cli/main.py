@@ -348,8 +348,24 @@ complete --no-files --command {prog_name} --arguments "(_xnatctl_completion)"
 
 
 def main() -> None:
-    """Main entry point."""
-    cli()
+    """Main entry point.
+
+    Last-resort guard so no expected failure class (bad profile, unreachable
+    server, expired session) ever reaches the user as a raw Python traceback.
+    Commands normally render these via ``@handle_errors``; this catches anything
+    raised outside a decorated command body (e.g. group callbacks) too.
+    """
+    import sys
+
+    from xnatctl.core.exceptions import XNATCtlError
+    from xnatctl.core.output import print_error
+    from xnatctl.core.redact import redact_url_query
+
+    try:
+        cli()
+    except XNATCtlError as e:
+        print_error(redact_url_query(str(e)))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
