@@ -8,6 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from xnatctl.cli.main import cli
+from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 
 
 class FakeClient:
@@ -39,67 +40,58 @@ class ResourceServiceSpy:
 
     def create(
         self,
-        session_id: str,
-        resource_label: str,
-        scan_id: str | None,
-        format: str | None,
-        content: str | None,
-        project: str | None = None,
+        resource_label: str = "",
+        parent: object = None,
+        format: str | None = None,
+        content: str | None = None,
+        **_ignored: object,
     ) -> None:
         self.create_calls.append(
             {
-                "session_id": session_id,
                 "resource_label": resource_label,
-                "scan_id": scan_id,
+                "parent": parent,
                 "format": format,
                 "content": content,
-                "project": project,
             }
         )
 
     def upload_file(
         self,
-        session_id: str,
-        resource_label: str,
-        file_path: Path,
-        scan_id: str | None,
-        extract: bool,
-        overwrite: bool,
-        project: str | None = None,
+        resource_label: str = "",
+        file_path: Path | None = None,
+        parent: object = None,
+        extract: bool = False,
+        overwrite: bool = False,
+        **_ignored: object,
     ) -> None:
         if ResourceServiceSpy.raise_on_upload == "file":
             raise RuntimeError("kaboom")
         self.upload_file_calls.append(
             {
-                "session_id": session_id,
                 "resource_label": resource_label,
                 "file_path": file_path,
-                "scan_id": scan_id,
+                "parent": parent,
                 "extract": extract,
                 "overwrite": overwrite,
-                "project": project,
             }
         )
 
     def upload_directory(
         self,
-        session_id: str,
-        resource_label: str,
-        directory_path: Path,
-        scan_id: str | None,
-        overwrite: bool,
-        project: str | None = None,
+        resource_label: str = "",
+        directory_path: Path | None = None,
+        parent: object = None,
+        overwrite: bool = False,
+        **_ignored: object,
     ) -> None:
         if ResourceServiceSpy.raise_on_upload == "directory":
             raise RuntimeError("kaboom")
         self.upload_directory_calls.append(
             {
-                "session_id": session_id,
                 "resource_label": resource_label,
                 "directory_path": directory_path,
-                "scan_id": scan_id,
+                "parent": parent,
                 "overwrite": overwrite,
-                "project": project,
             }
         )
 
@@ -158,20 +150,21 @@ def test_resource_upload_file_routes_through_service(
 
         service = resource_service_spy.last_instance
         assert service is not None
+        scan_parent = ScanRef(
+            experiment=ExperimentRef(experiment="XNAT_E00001", project_id=None), scan_id="1"
+        )
         assert service.create_calls == [
             {
-                "session_id": "XNAT_E00001",
                 "resource_label": "DICOM",
-                "scan_id": "1",
+                "parent": scan_parent,
                 "format": "NIFTI",
                 "content": "raw",
-                "project": None,
             }
         ]
         assert service.upload_directory_calls == []
         assert len(service.upload_file_calls) == 1
         assert service.upload_file_calls[0]["file_path"] == file_path
-        assert service.upload_file_calls[0]["scan_id"] == "1"
+        assert service.upload_file_calls[0]["parent"] == scan_parent
         assert service.upload_file_calls[0]["extract"] is False
         assert service.upload_file_calls[0]["overwrite"] is False
 
@@ -206,7 +199,9 @@ def test_resource_upload_directory_routes_through_service(
         assert service.upload_file_calls == []
         assert len(service.upload_directory_calls) == 1
         assert service.upload_directory_calls[0]["directory_path"] == directory_path
-        assert service.upload_directory_calls[0]["scan_id"] is None
+        assert service.upload_directory_calls[0]["parent"] == ExperimentRef(
+            experiment="XNAT_E00002", project_id=None
+        )
         assert service.upload_directory_calls[0]["overwrite"] is False
 
 

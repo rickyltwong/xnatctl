@@ -387,10 +387,13 @@ class TestResourceUpload:
                         )
 
         assert result.exit_code == 0
-        # ``project=`` reaches both service calls.
-        assert mock_service.create.call_args[1]["project"] == "CLM01_UCA_4"
-        assert mock_service.upload_file.call_args[1]["project"] == "CLM01_UCA_4"
-        assert mock_service.upload_file.call_args[1]["scan_id"] == "1"
+        # The scan-level parent ref carries the project (for label resolution)
+        # and the scan id.
+        create_parent = mock_service.create.call_args.kwargs["parent"]
+        upload_parent = mock_service.upload_file.call_args.kwargs["parent"]
+        assert create_parent.experiment.project_id == "CLM01_UCA_4"
+        assert upload_parent.experiment.project_id == "CLM01_UCA_4"
+        assert upload_parent.scan_id == "1"
 
     def test_resource_upload_directory_passes_project(self, runner: CliRunner, tmp_path) -> None:
         """Directory upload also receives ``project=``."""
@@ -422,7 +425,9 @@ class TestResourceUpload:
                         )
 
         assert result.exit_code == 0
-        assert mock_service.upload_directory.call_args[1]["project"] == "MYPROJ"
+        upload_parent = mock_service.upload_directory.call_args.kwargs["parent"]
+        assert upload_parent.experiment == "SESS"
+        assert upload_parent.project_id == "MYPROJ"
 
     def test_resource_upload_failure(self, runner: CliRunner, tmp_path) -> None:
         client = _mock_client()
@@ -545,3 +550,184 @@ class TestResourceRefresh:
 
         assert result.exit_code != 0
         client.post.assert_not_called()
+
+
+def _wire_stream(client: MagicMock, capture: dict) -> None:
+    """Wire ``client._get_client().stream(...)`` to capture the requested URL."""
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.headers = {"content-length": "0"}
+    resp.iter_bytes.return_value = iter([b""])
+    cm = MagicMock()
+    cm.__enter__.return_value = resp
+    cm.__exit__.return_value = False
+
+    def stream(method: str, url: str, **kwargs: object) -> MagicMock:
+        capture["method"] = method
+        capture["url"] = url
+        return cm
+
+    inner = MagicMock()
+    inner.stream.side_effect = stream
+    client._get_client.return_value = inner
+    client._get_cookies.return_value = {}
+
+
+class TestResourceScopeLevels:
+    """Project/subject/session/scan scope for list, download, and upload."""
+
+    # ---- list --------------------------------------------------------------
+
+    def test_list_subject_scope_hits_subject_path(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["resource", "list", "--project", "PROJ1", "--subject", "SUB01"]
+                    )
+
+        assert result.exit_code == 0
+        client.get_json.assert_called_once_with("/data/projects/PROJ1/subjects/SUB01/resources")
+
+    def test_list_subject_without_project_rejected(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client) as mock_xnat:
+                    result = runner.invoke(cli, ["resource", "list", "--subject", "SUB01"])
+
+        assert result.exit_code != 0
+        assert "--subject requires --project" in result.output
+        mock_xnat.assert_not_called()
+
+    # ---- download ----------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "args,expected_url",
+        [
+            (
+                ["XNAT_E00001", "DICOM"],
+                "/data/experiments/XNAT_E00001/resources/DICOM/files",
+            ),
+            (
+                ["XNAT_E00001", "DICOM", "--scan", "1"],
+                "/data/experiments/XNAT_E00001/scans/1/resources/DICOM/files",
+            ),
+            (
+                ["-P", "MYPROJ", "TEMPLATEFLOW"],
+                "/data/projects/MYPROJ/resources/TEMPLATEFLOW/files",
+            ),
+            (
+                ["-P", "MYPROJ", "-S", "SUB01", "QC"],
+                "/data/projects/MYPROJ/subjects/SUB01/resources/QC/files",
+            ),
+        ],
+    )
+    def test_download_scope_urls(self, runner: CliRunner, args, expected_url) -> None:
+        client = _mock_client()
+        capture: dict = {}
+        _wire_stream(client, capture)
+
+        with runner.isolated_filesystem():
+            with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                    with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                        result = runner.invoke(
+                            cli, ["resource", "download", *args, "-f", "out.zip"]
+                        )
+
+        assert result.exit_code == 0, result.output
+        assert capture["url"] == expected_url
+
+    def test_download_no_scope_rejected(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with runner.isolated_filesystem():
+            with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                    with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                        # Single positional with no -P/-S is the resource label
+                        # but has no parent scope.
+                        result = runner.invoke(
+                            cli, ["resource", "download", "TEMPLATEFLOW", "-f", "out.zip"]
+                        )
+
+        assert result.exit_code != 0
+        assert "Provide a SESSION argument" in result.output
+
+    # ---- upload ------------------------------------------------------------
+
+    def test_upload_project_scope_parent(self, runner: CliRunner, tmp_path) -> None:
+        client = _mock_client()
+        mock_service = MagicMock()
+        test_file = tmp_path / "tpl.json"
+        test_file.write_text("{}")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    with patch(
+                        "xnatctl.services.resources.ResourceService",
+                        return_value=mock_service,
+                    ):
+                        result = runner.invoke(
+                            cli,
+                            ["resource", "upload", "-P", "MYPROJ", "TEMPLATEFLOW", str(test_file)],
+                        )
+
+        assert result.exit_code == 0, result.output
+        parent = mock_service.upload_file.call_args.kwargs["parent"]
+        assert type(parent).__name__ == "ProjectRef"
+        assert parent.project_id == "MYPROJ"
+
+    def test_upload_subject_scope_parent(self, runner: CliRunner, tmp_path) -> None:
+        client = _mock_client()
+        mock_service = MagicMock()
+        test_file = tmp_path / "qc.json"
+        test_file.write_text("{}")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    with patch(
+                        "xnatctl.services.resources.ResourceService",
+                        return_value=mock_service,
+                    ):
+                        result = runner.invoke(
+                            cli,
+                            [
+                                "resource",
+                                "upload",
+                                "-P",
+                                "MYPROJ",
+                                "-S",
+                                "SUB01",
+                                "QC",
+                                str(test_file),
+                            ],
+                        )
+
+        assert result.exit_code == 0, result.output
+        parent = mock_service.upload_file.call_args.kwargs["parent"]
+        assert type(parent).__name__ == "SubjectRef"
+        assert parent.project_id == "MYPROJ"
+        assert parent.subject == "SUB01"
+
+    def test_upload_subject_without_project_rejected(self, runner: CliRunner, tmp_path) -> None:
+        client = _mock_client()
+        test_file = tmp_path / "qc.json"
+        test_file.write_text("{}")
+
+        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["resource", "upload", "-S", "SUB01", "QC", str(test_file)]
+                    )
+
+        assert result.exit_code != 0
+        assert "--subject requires --project" in result.output
