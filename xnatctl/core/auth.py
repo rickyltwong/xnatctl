@@ -6,6 +6,7 @@ Handles credential storage and session token caching.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -13,10 +14,18 @@ from pathlib import Path
 
 from xnatctl.core.config import CONFIG_DIR, ENV_PASS, ENV_TOKEN, ENV_USER
 from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir, restrict_permissions
+from xnatctl.core.redact import redact_url_query
 
 # =============================================================================
 # Constants
 # =============================================================================
+
+logger = logging.getLogger(__name__)
+
+# Every log line in this module reports the *source* or *presence* of a
+# credential, never its value. "Which credential did xnatctl actually use?" is
+# the question `-v` has to answer here; the answer must not be the secret
+# itself (MAINT-01, SEC-09).
 
 SESSION_CACHE_FILE = CONFIG_DIR / ".session"
 SESSION_EXPIRY_MINUTES = 15  # XNAT JSESSION expires after 15 minutes of inactivity by default
@@ -95,6 +104,13 @@ class AuthManager:
         """
         username = os.getenv(ENV_USER)
         password = os.getenv(ENV_PASS)
+        logger.debug(
+            "Environment credentials: %s=%s, %s=%s",
+            ENV_USER,
+            "set" if username else "unset",
+            ENV_PASS,
+            "set" if password else "unset",
+        )
         return username, password
 
     def get_token_from_env(self) -> str | None:
@@ -149,6 +165,13 @@ class AuthManager:
         # silently leaving the token readable.
         restrict_permissions(self.cache_file)
 
+        logger.debug(
+            "Cached session for %s at %s (expires %s)",
+            username,
+            self.cache_file,
+            session.expires_at.isoformat() if session.expires_at else "never",
+        )
+
         return session
 
     def load_session(self, url: str | None = None) -> CachedSession | None:
@@ -161,6 +184,7 @@ class AuthManager:
             Cached session if valid, None otherwise.
         """
         if not self.cache_file.exists():
+            logger.debug("Session cache miss: %s does not exist", self.cache_file)
             return None
 
         try:
@@ -171,17 +195,28 @@ class AuthManager:
 
             # Check URL match
             if url and session.url != url:
+                logger.debug(
+                    "Session cache miss: cached for %s, wanted %s",
+                    redact_url_query(session.url),
+                    redact_url_query(url),
+                )
                 return None
 
             # Check expiry
             if session.is_expired():
+                logger.debug(
+                    "Session cache expired at %s; clearing",
+                    session.expires_at.isoformat() if session.expires_at else "unknown",
+                )
                 self.clear_session()
                 return None
 
+            logger.debug("Session cache hit for %s (user %s)", session.url, session.username)
             return session
 
-        except (json.JSONDecodeError, KeyError, ValueError):
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
             # Invalid cache file
+            logger.debug("Session cache unreadable (%s); clearing", type(e).__name__)
             self.clear_session()
             return None
 
@@ -230,6 +265,7 @@ class AuthManager:
         """
         # Check environment first
         if token := self.get_token_from_env():
+            logger.debug("Using session token from %s", ENV_TOKEN)
             return token
 
         # Check cache

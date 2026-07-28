@@ -205,6 +205,12 @@ editing a YAML file is impractical.
      - Override HTTP timeout in seconds. Applied when ``XNAT_URL`` is also set.
        Use this to tighten the timeout in CI where you want fast failure on
        network issues.
+   * - ``XNATCTL_DEBUG``
+     - Set to ``1`` to enable full diagnostics: debug logging plus a complete
+       httpx/httpcore wire trace, and a traceback on unexpected errors. Unlike
+       ``--verbose`` this is read before flags are parsed, so it also covers
+       failures during startup. ``0``, ``false``, ``no`` and ``off`` count as
+       unset. See :doc:`debugging`.
 
 The following example shows a typical CI/CD setup that authenticates with environment
 variables and lists session IDs for a project:

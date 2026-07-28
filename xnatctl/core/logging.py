@@ -6,6 +6,7 @@ Provides structured logging with audit trail support.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -21,6 +22,23 @@ from xnatctl.core.redact import redact_url_query
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 AUDIT_LOGGER_NAME = "xnatctl.audit"
+
+DEBUG_ENV_VAR = "XNATCTL_DEBUG"
+# Values that explicitly DISABLE debug output. Any other non-empty value
+# enables it, but the common "falsey" spellings must NOT fail open.
+_DEBUG_OFF_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+def debug_env_enabled() -> bool:
+    """Return True when ``XNATCTL_DEBUG`` asks for debug output.
+
+    Mirrors ``gh``'s ``GH_DEBUG``, so diagnostics are obtainable even for
+    failures that happen before ``--verbose`` is parsed. Defined here rather
+    than in the CLI layer so the logging setup and the CLI traceback policy
+    (MAINT-02) share one parser instead of drifting apart.
+    """
+    raw = os.environ.get(DEBUG_ENV_VAR)
+    return raw is not None and raw.strip().lower() not in _DEBUG_OFF_VALUES
 
 
 # =============================================================================
@@ -85,14 +103,27 @@ def setup_logging(
 ) -> None:
     """Configure logging for xnatctl.
 
+    Three tiers of HTTP visibility (MAINT-01):
+
+    * default -- httpx/httpcore stay at WARNING, so normal runs are quiet;
+    * ``--verbose`` -- xnatctl's own DEBUG lines plus httpx at INFO, which is
+      one line per request;
+    * ``XNATCTL_DEBUG=1`` -- adds httpcore at DEBUG for a full wire trace.
+      Deliberately not on ``--verbose``: httpcore DEBUG is per-socket-event and
+      drowns the diagnostics people actually came for.
+
+    ``--quiet`` wins over both: an explicit flag beats an ambient env var.
+
     Args:
         level: Base logging level.
         quiet: If True, only show errors.
         verbose: If True, show debug messages.
     """
+    trace = debug_env_enabled()
+
     if quiet:
         level = logging.ERROR
-    elif verbose:
+    elif verbose or trace:
         level = logging.DEBUG
 
     # Configure root logger
@@ -102,15 +133,29 @@ def setup_logging(
         datefmt=LOG_DATE_FORMAT,
         stream=sys.stderr,
     )
+    # basicConfig is a no-op when handlers already exist, so an earlier default
+    # call must not pin a later --verbose run to the old level.
+    logging.getLogger().setLevel(level)
 
     # Redaction is an invariant of the logging path, not a call-site duty
     # (SEC-09). basicConfig above is a no-op once root already has handlers, so
     # this is installed separately and idempotently.
     install_redaction_filter()
 
-    # Suppress noisy libraries
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # Library verbosity, tiered as described above. This used to be an
+    # unconditional WARNING, which meant -v could never show wire activity.
+    if quiet:
+        http_level = logging.WARNING
+    elif trace:
+        http_level = logging.DEBUG
+    elif verbose:
+        http_level = logging.INFO
+    else:
+        http_level = logging.WARNING
+    logging.getLogger("httpx").setLevel(http_level)
+    logging.getLogger("httpcore").setLevel(
+        logging.DEBUG if trace and not quiet else logging.WARNING
+    )
 
 
 def get_logger(name: str) -> logging.Logger:

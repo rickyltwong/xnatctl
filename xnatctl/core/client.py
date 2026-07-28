@@ -270,6 +270,8 @@ class XNATClient:
             raise AuthenticationError(self.base_url, "Invalid credentials or password expired")
 
         self.session_token = resp.text.strip()
+        # Never the token itself -- only that one was obtained (MAINT-01/SEC-09).
+        logger.debug("Authenticated as %s at %s", self.username, redact_url_query(self.base_url))
         return self.session_token
 
     def invalidate_session(self) -> None:
@@ -373,6 +375,7 @@ class XNATClient:
             else:
                 client.cookies.delete("JSESSIONID")
             auth = self._get_auth()
+            started = time.monotonic()
             try:
                 resp = client.request(
                     method,
@@ -387,12 +390,39 @@ class XNATClient:
                     timeout=request_timeout,
                 )
 
+                # One line per attempt is the backbone of `-v` diagnostics: it
+                # is what tells a user whether a slow command is stuck on one
+                # request or grinding through retries (MAINT-01). The full URL
+                # goes through redaction -- query strings carry tokens.
+                logger.debug(
+                    "%s %s -> %d in %dms (attempt %d/%d)",
+                    method.upper(),
+                    redact_url_query(str(resp.request.url)),
+                    resp.status_code,
+                    (time.monotonic() - started) * 1000,
+                    attempt + 1,
+                    self.max_retries + 1,
+                )
+
                 # Handle auth errors
                 if resp.status_code == 401:
                     if self.auto_reauth and not did_reauth and self.username and self.password:
+                        logger.debug(
+                            "401 on %s %s; re-authenticating and retrying once", method, path
+                        )
                         self.authenticate()
                         did_reauth = True
                         continue
+
+                    logger.debug(
+                        "401 on %s %s; not re-authenticating (auto_reauth=%s, "
+                        "already_retried=%s, credentials=%s)",
+                        method,
+                        path,
+                        self.auto_reauth,
+                        did_reauth,
+                        bool(self.username and self.password),
+                    )
 
                     expired_err = SessionExpiredError(self.base_url)
                     expired_err.details.update(
@@ -428,6 +458,19 @@ class XNATClient:
                         # case, where we never learn whether it ran.)
                         retry_after = _retry_after_seconds(resp)
                         delay = retry_after if retry_after is not None else _backoff_delay(attempt)
+                        # WARNING, not DEBUG: a retry storm is the single most
+                        # common cause of "xnatctl is hanging", and it used to
+                        # be completely invisible.
+                        logger.warning(
+                            "HTTP %d on %s %s; retrying in %.1fs%s (attempt %d/%d)",
+                            resp.status_code,
+                            method.upper(),
+                            path,
+                            delay,
+                            " per Retry-After" if retry_after is not None else "",
+                            attempt + 1,
+                            self.max_retries + 1,
+                        )
                         time.sleep(delay)
                         attempt += 1
                         continue
@@ -488,7 +531,17 @@ class XNATClient:
 
             # Retry with full-jitter backoff.
             if attempt < self.max_retries:
-                time.sleep(_backoff_delay(attempt))
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    "%s on %s %s; retrying in %.1fs (attempt %d/%d)",
+                    type(last_error).__name__ if last_error else "Transport error",
+                    method.upper(),
+                    path,
+                    delay,
+                    attempt + 1,
+                    self.max_retries + 1,
+                )
+                time.sleep(delay)
 
             attempt += 1
 
@@ -619,6 +672,17 @@ class XNATClient:
             results = data
             for key in result_key.split("."):
                 results = results.get(key, []) if isinstance(results, dict) else []
+
+            # Per-page visibility turns "the list command is slow" into a
+            # number of pages and items (MAINT-01). Logged in the client rather
+            # than BaseService._paginate, which only delegates here.
+            logger.debug(
+                "paginate %s: offset=%d limit=%d -> %d items",
+                path,
+                offset,
+                page_size,
+                len(results),
+            )
 
             if not results:
                 break

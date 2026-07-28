@@ -111,6 +111,38 @@ def test_changed_record_is_collapsed_without_double_interpolation() -> None:
     assert record.getMessage() == record.getMessage()
 
 
+def test_third_party_logger_output_is_redacted_too() -> None:
+    """The reason the filter lives on the handler rather than at our call sites.
+
+    Under --verbose, httpx logs one INFO line per request containing the full
+    URL. xnatctl never formats that line, so no amount of call-site redaction
+    would cover it -- only a handler-level filter does. This is what makes
+    SEC-09 a hard prerequisite for MAINT-01 rather than a nicety.
+    """
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    httpx_logger = logging.getLogger("httpx")
+    saved, saved_level = list(httpx_logger.handlers), httpx_logger.level
+    httpx_logger.handlers = [handler]
+    httpx_logger.propagate = False
+    httpx_logger.setLevel(logging.INFO)
+    install_redaction_filter(httpx_logger)
+    try:
+        # Verbatim shape of httpx's own request log line.
+        httpx_logger.info(
+            'HTTP Request: GET %s "HTTP/1.1 200 OK"',
+            "https://xnat.example.org/data/projects?token=s3cret&format=json",
+        )
+    finally:
+        httpx_logger.handlers, httpx_logger.propagate = saved, True
+        httpx_logger.setLevel(saved_level)
+
+    output = stream.getvalue()
+    assert "s3cret" not in output
+    assert "token=***" in output
+    assert "format=json" in output
+
+
 @pytest.mark.usefixtures("clean_root")
 def test_setup_logging_installs_the_filter_exactly_once() -> None:
     """setup_logging runs from both the CLI root group and @global_options."""
