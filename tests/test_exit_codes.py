@@ -7,6 +7,7 @@ from unittest.mock import patch
 import click
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam
 
 from xnatctl.cli.common import ExitCode, exit_code_for, handle_errors
 from xnatctl.core.exceptions import (
@@ -169,7 +170,7 @@ def test_verbose_flag_on_context_enables_traceback(monkeypatch) -> None:
     def cmd(ctx: Context) -> None:
         raise ValueError("boom")
 
-    with patch("xnatctl.cli.common.Config.load", return_value=object()):
+    with config_seam(object()):
         result = CliRunner().invoke(cmd, ["--verbose"])
     assert result.exit_code == 1
     assert "Traceback (most recent call last)" in result.output

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import click
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -157,8 +158,8 @@ class TestApiGet:
         }
         client.get.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["api", "get", "/data/projects"])
 
@@ -171,8 +172,8 @@ class TestApiGet:
         mock_resp.json.return_value = {"ResultSet": {"Result": []}}
         client.get.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -196,8 +197,8 @@ class TestApiGet:
         mock_resp.json.return_value = {"key": "value"}
         client.get.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["api", "get", "/some/path", "-o", "json"])
 
@@ -212,8 +213,8 @@ class TestApiGet:
         mock_resp.headers = {"content-type": "text/plain"}
         client.get.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["api", "get", "/some/text/endpoint"])
 
@@ -231,8 +232,8 @@ class TestApiGet:
         mock_resp.headers = {"content-type": "application/octet-stream"}
         client.get.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["api", "get", "/some/file.mat"])
 
@@ -255,8 +256,8 @@ class TestApiGet:
         mock_resp.headers = {"content-type": "text/plain"}
         client.get.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["api", "get", "/some/endpoint", "-o", "json"])
 
@@ -271,8 +272,8 @@ class TestApiGet:
         mock_resp.json.return_value = {"ResultSet": {"Result": []}}
         client.get.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -303,8 +304,8 @@ class TestApiPost:
         mock_resp.json.return_value = {"status": "created"}
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -332,8 +333,8 @@ class TestApiPost:
         payload = tmp_path / "payload.json"
         payload.write_text(json.dumps({"key": "value"}))
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -354,8 +355,8 @@ class TestApiPost:
         mock_resp.json.return_value = {"status": "ok"}
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -382,8 +383,8 @@ class TestApiPost:
         mock_resp.text = "XNAT_E00001"
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -408,8 +409,8 @@ class TestApiPost:
         mock_resp.json.return_value = "XNAT_E00001"
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -436,8 +437,8 @@ class TestApiPut:
         mock_resp.json.return_value = {"status": "updated"}
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -461,8 +462,8 @@ class TestApiPut:
         mock_resp.text = "XNAT_E00001"
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -493,8 +494,8 @@ class TestApiPut:
         mock_resp.json.return_value = {"status": "ok"}
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -523,8 +524,8 @@ class TestApiPut:
         mock_resp.json.return_value = {"status": "ok"}
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -553,8 +554,8 @@ class TestApiPut:
         mock_resp.json.return_value = {"status": "ok"}
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -575,8 +576,8 @@ class TestApiPut:
         """inbody=true with no body is an actionable error, not a silent empty PUT."""
         client = _mock_client()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -662,8 +663,8 @@ class TestApiBinaryFileBody:
         binary_path = tmp_path / "blob.dcm"
         binary_path.write_bytes(b"\xbe\x00\x01\x02fake-dicom\xff")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -693,8 +694,8 @@ class TestApiBinaryFileBody:
         binary_path = tmp_path / "blob.bin"
         binary_path.write_bytes(b"\xbe\xbf\xc0\xc1")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -724,8 +725,8 @@ class TestApiBinaryFileBody:
         json_path = tmp_path / "payload.json"
         json_path.write_text(json.dumps({"description": "Updated"}))
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -754,8 +755,8 @@ class TestApiBinaryFileBody:
         text_path = tmp_path / "note.txt"
         text_path.write_text("plain non-json text body")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -786,8 +787,8 @@ class TestApiContentType:
         mock_resp.json.return_value = "ok"
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -822,8 +823,8 @@ class TestApiContentType:
         payload = tmp_path / "payload.json"
         payload.write_text('{"k":"v"}')
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -861,8 +862,8 @@ class TestApiContentType:
         payload = tmp_path / "creds.json"
         payload.write_text(original)
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -897,8 +898,8 @@ class TestApiContentType:
         payload = tmp_path / "creds.json"
         payload.write_text(original)
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -930,8 +931,8 @@ class TestApiContentType:
         payload = tmp_path / "payload.json"
         payload.write_text(json.dumps({"k": "v"}))
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -962,8 +963,8 @@ class TestApiContentType:
         notes = tmp_path / "notes.txt"
         notes.write_text("hello world")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -987,8 +988,8 @@ class TestApiContentType:
         proj = tmp_path / "project.xml"
         proj.write_text("<project><ID>PROJ</ID></project>")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1014,8 +1015,8 @@ class TestApiContentType:
         blob = tmp_path / "payload.bin"
         blob.write_text("printable bytes")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1039,8 +1040,8 @@ class TestApiContentType:
         blob = tmp_path / "foo.dcm"
         blob.write_bytes(b"\xbe\x00\x01\x02DICM\xff")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1071,8 +1072,8 @@ class TestApiContentType:
         bad = tmp_path / "weird.json"
         bad.write_bytes(b"\xbe\xbf\xc0")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1093,8 +1094,8 @@ class TestApiContentType:
         mock_resp.json.return_value = "ok"
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1116,8 +1117,8 @@ class TestApiContentType:
         mock_resp.json.return_value = "ok"
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1234,8 +1235,8 @@ class TestApiDelete:
         mock_resp.status_code = 200
         client.delete.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1253,8 +1254,8 @@ class TestApiDelete:
     def test_api_delete_aborted(self, runner: CliRunner) -> None:
         client = _mock_client()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1271,8 +1272,8 @@ class TestApiDelete:
         mock_resp.status_code = 204
         client.delete.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1327,8 +1328,8 @@ class TestApiStdinBody:
         mock_resp.json.return_value = {"status": "ok"}
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1349,8 +1350,8 @@ class TestApiStdinBody:
         mock_resp.json.return_value = {"status": "ok"}
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1371,8 +1372,8 @@ class TestApiStdinBody:
         mock_resp.json.return_value = {"status": "ok"}
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1389,8 +1390,8 @@ class TestApiStdinBody:
         """Passing both ``-d -`` and ``-f -`` is a usage error."""
         client = _mock_client()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1417,8 +1418,8 @@ class TestApiEnvVarExpansion:
         mock_resp.json.return_value = {"status": "ok"}
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1446,8 +1447,8 @@ class TestApiEnvVarExpansion:
         mock_resp.json.return_value = {"status": "ok"}
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -1476,8 +1477,8 @@ class TestApiEnvVarExpansion:
         mock_resp.json.return_value = {"status": "ok"}
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,

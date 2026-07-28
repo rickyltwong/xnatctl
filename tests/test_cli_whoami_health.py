@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -73,7 +74,7 @@ def _mock_client():
 
 def test_whoami_honors_profile(runner, two_profile_config) -> None:
     """`-p prod whoami` must target prod's server, not the default profile."""
-    with patch("xnatctl.cli.common.Config.load", return_value=two_profile_config):
+    with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         try:
             result = runner.invoke(cli, ["-p", "prod", "whoami"])
@@ -87,7 +88,7 @@ def test_whoami_honors_profile(runner, two_profile_config) -> None:
 
 def test_whoami_honors_output_json(runner, two_profile_config) -> None:
     """`-o json whoami` must emit parseable JSON (not hardcoded table)."""
-    with patch("xnatctl.cli.common.Config.load", return_value=two_profile_config):
+    with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         inst.base_url = "https://prod.example.org"
         try:
@@ -103,7 +104,7 @@ def test_whoami_honors_output_json(runner, two_profile_config) -> None:
 
 
 def test_whoami_quiet_prints_only_username(runner, two_profile_config) -> None:
-    with patch("xnatctl.cli.common.Config.load", return_value=two_profile_config):
+    with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         try:
             result = runner.invoke(cli, ["-q", "whoami"])
@@ -123,7 +124,7 @@ def test_whoami_not_authenticated_exits_auth_error(runner, monkeypatch) -> None:
         default_profile="default",
         profiles={"default": Profile(url="https://default.example.org")},
     )
-    with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+    with config_seam(cfg):
         cm, mock_cls, inst = _mock_client()
         inst.is_authenticated = False
         inst.username = None
@@ -146,7 +147,7 @@ def test_whoami_not_authenticated_exits_auth_error(runner, monkeypatch) -> None:
 
 def test_health_ping_honors_profile(runner, two_profile_config) -> None:
     """`-p prod health ping` pings prod's server."""
-    with patch("xnatctl.cli.common.Config.load", return_value=two_profile_config):
+    with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         try:
             result = runner.invoke(cli, ["-p", "prod", "health", "ping"])
@@ -158,7 +159,7 @@ def test_health_ping_honors_profile(runner, two_profile_config) -> None:
 
 
 def test_health_ping_honors_output_json(runner, two_profile_config) -> None:
-    with patch("xnatctl.cli.common.Config.load", return_value=two_profile_config):
+    with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         inst.base_url = "https://prod.example.org"
         inst.ping.return_value = {
@@ -180,7 +181,7 @@ def test_health_ping_honors_output_json(runner, two_profile_config) -> None:
 
 def test_health_ping_quiet_prints_only_url(runner, two_profile_config) -> None:
     """`-q health ping` suppresses the banner/table, prints just the URL."""
-    with patch("xnatctl.cli.common.Config.load", return_value=two_profile_config):
+    with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         inst.ping.return_value = {
             "url": "https://prod.example.org",

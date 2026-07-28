@@ -16,8 +16,8 @@ directly (``from conftest import make_response``) for module-level use.
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Callable, Generator
-from contextlib import ExitStack
+from collections.abc import Callable, Generator, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -139,6 +139,36 @@ def make_authenticated_cli(default_project: str | None = "TESTPROJ") -> Authenti
     """Build an :class:`AuthenticatedCLI` harness."""
     ctx, client = make_authenticated_context(default_project=default_project)
     return AuthenticatedCLI(runner=CliRunner(), ctx=ctx, client=client)
+
+
+@contextmanager
+def authenticated_seams(ctx: Context, client: MagicMock) -> Iterator[None]:
+    """Patch the full auth stack for a ``CliRunner.invoke`` call.
+
+    Prefer the ``authenticated_cli`` fixture for new tests; this exists so
+    existing tests that build their own Context keep the seam strings in one
+    place.
+    """
+    with ExitStack() as stack:
+        stack.enter_context(patch(_CONFIG_LOAD_SEAM, return_value=ctx.config))
+        stack.enter_context(patch.object(Context, "get_client", return_value=client))
+        auth_cls = stack.enter_context(patch(_AUTH_MANAGER_SEAM))
+        auth_cls.return_value = ctx.auth_manager
+        yield
+
+
+@contextmanager
+def config_seam(config: Any) -> Iterator[None]:
+    """Patch only the CLI's config loader (no client/auth wiring)."""
+    with patch(_CONFIG_LOAD_SEAM, return_value=config):
+        yield
+
+
+@contextmanager
+def core_config_seam(config: Any) -> Iterator[None]:
+    """Patch the core config loader that ``Config.load`` call sites reach."""
+    with patch(_CORE_CONFIG_LOAD_SEAM, return_value=config):
+        yield
 
 
 @pytest.fixture

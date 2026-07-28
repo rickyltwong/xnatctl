@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -58,8 +59,8 @@ class TestAdminRefreshCatalogs:
         mock_resp.status_code = 200
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -82,8 +83,8 @@ class TestAdminRefreshCatalogs:
         mock_resp.status_code = 200
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -105,8 +106,8 @@ class TestAdminRefreshCatalogs:
         client = _mock_client()
         client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["admin", "refresh-catalogs", "EMPTYPROJ"])
 
@@ -127,8 +128,8 @@ class TestAdminRefreshCatalogs:
         mock_resp.status_code = 200
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -158,8 +159,8 @@ class TestAdminRefreshCatalogs:
         mock_resp.status_code = 200
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -186,8 +187,8 @@ class TestAdminUserAdd:
         mock_resp.status_code = 200
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -210,8 +211,8 @@ class TestAdminUserAdd:
         mock_resp.status_code = 200
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -242,8 +243,8 @@ class TestAdminUserAdd:
         mock_resp.text = "Internal server error"
         client.put.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -274,8 +275,8 @@ class TestAdminAudit:
             },
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["admin", "audit", "--limit", "10"])
 
@@ -285,8 +286,8 @@ class TestAdminAudit:
         client = _mock_client()
         client.get_json.return_value = []
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["admin", "audit"])
 
@@ -297,8 +298,8 @@ class TestAdminAudit:
         client = _mock_client()
         client.get_json.side_effect = Exception("404 Not Found")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["admin", "audit"])
 
