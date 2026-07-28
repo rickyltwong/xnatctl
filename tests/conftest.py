@@ -264,3 +264,19 @@ def sample_patterns_json() -> str:
   ]
 }
 """
+
+
+@pytest.fixture(autouse=True)
+def isolate_audit_log(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Keep the SEC-07 audit log out of the developer's real home directory.
+
+    ``confirm_destructive`` writes an audit record for every destructive
+    command, so any CliRunner test touching one would otherwise append to
+    ``~/.config/xnatctl/audit.log``. Autouse because the write happens inside a
+    decorator that individual tests never mention.
+    """
+    path = tmp_path_factory.mktemp("audit") / "audit.log"
+    monkeypatch.setattr("xnatctl.core.logging.AUDIT_LOG_FILE", path)
+    return path

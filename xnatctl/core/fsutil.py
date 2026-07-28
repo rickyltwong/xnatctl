@@ -47,6 +47,17 @@ def open_private(path: Path) -> TextIO:
     return open(path, "w", opener=_private_opener)
 
 
+def open_private_append(path: Path) -> TextIO:
+    """Open ``path`` for appending, creating it with 0600 permissions.
+
+    The append-only counterpart of :func:`open_private`, for logs that must not
+    be rewritten. Same caveat: the mode only applies when this call creates the
+    file, so a caller that cares about a pre-existing file should follow up with
+    :func:`restrict_permissions`.
+    """
+    return open(path, "a", opener=_private_opener)
+
+
 def restrict_permissions(path: Path) -> bool:
     """``chmod`` ``path`` to 0600, warning on failure rather than passing.
 

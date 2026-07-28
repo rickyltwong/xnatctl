@@ -5,14 +5,18 @@ Provides structured logging with audit trail support.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import stat
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+from xnatctl.core.fsutil import ensure_private_dir, open_private_append, restrict_permissions
 from xnatctl.core.redact import redact_url_query
 
 # =============================================================================
@@ -22,6 +26,11 @@ from xnatctl.core.redact import redact_url_query
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 AUDIT_LOGGER_NAME = "xnatctl.audit"
+
+# Audit trail (SEC-07). Defined here rather than imported from core.config so
+# this module stays free of the config import chain.
+AUDIT_LOG_FILE = Path.home() / ".config" / "xnatctl" / "audit.log"
+AUDIT_LOG_MAX_BYTES = 10 * 1024 * 1024
 
 DEBUG_ENV_VAR = "XNATCTL_DEBUG"
 # Values that explicitly DISABLE debug output. Any other non-empty value
@@ -273,14 +282,35 @@ def log_context(
 
 
 class AuditLogger:
-    """Logger for audit trail of operations."""
+    """Append-only local record of destructive operations (SEC-07).
 
-    def __init__(self, logger: logging.Logger | None = None):
+    Why keep a client-side trail at all: xnatctl deletes subjects, sessions and
+    scans, and XNAT's own audit log is server-side and frequently not readable
+    by the person who ran the command. "Who deleted SUB001 from this
+    workstation, when, and against which server" should be answerable locally.
+
+    Why it is on by default: the identifiers recorded here are the ones the
+    user just typed, which their shell history already holds -- so this adds no
+    new category of exposure -- and an audit log that has to be switched on
+    before the incident is useless. The file is created 0600 like the session
+    cache.
+
+    Writes are best-effort: an unwritable audit log warns, it never aborts the
+    operation being audited.
+    """
+
+    def __init__(
+        self,
+        log_file: Path | None = None,
+        logger: logging.Logger | None = None,
+    ):
         """Initialize audit logger.
 
         Args:
-            logger: Logger instance.
+            log_file: Destination JSON-lines file.
+            logger: Logger used for write failures (not for the records).
         """
+        self.log_file = log_file if log_file is not None else AUDIT_LOG_FILE
         self.logger = logger or logging.getLogger(AUDIT_LOGGER_NAME)
 
     def log_operation(
@@ -293,8 +323,13 @@ class AuditLogger:
         user: str | None = None,
         success: bool = True,
         details: dict[str, Any] | None = None,
+        server: str | None = None,
+        profile: str | None = None,
+        command: str | None = None,
+        dry_run: bool = False,
+        error: str | None = None,
     ) -> None:
-        """Log an auditable operation.
+        """Append one auditable operation to the log.
 
         Args:
             operation: Name of the operation.
@@ -303,27 +338,90 @@ class AuditLogger:
             session: Session ID.
             user: Username performing the operation.
             success: Whether operation succeeded.
-            details: Additional details.
+            details: Additional details (values are redacted).
+            server: XNAT server URL (redacted before writing).
+            profile: Active profile name.
+            command: Full command path, e.g. "xnatctl subject delete".
+            dry_run: Whether this was a preview rather than a real change.
+            error: Exception class name when the operation failed.
         """
-        audit_record = {
-            "timestamp": datetime.now().isoformat(),
+        record: dict[str, Any] = {
+            "timestamp": datetime.now().astimezone().isoformat(),
             "operation": operation,
             "success": success,
         }
 
-        if project:
-            audit_record["project"] = project
-        if subject:
-            audit_record["subject"] = subject
-        if session:
-            audit_record["session"] = session
-        if user:
-            audit_record["user"] = user
-        if details:
-            audit_record["details"] = details
+        optional: dict[str, Any] = {
+            "command": command,
+            "profile": profile,
+            "server": server,
+            "user": user,
+            "project": project,
+            "subject": subject,
+            "session": session,
+            "error": error,
+        }
+        for key, value in optional.items():
+            if value:
+                record[key] = _redact_value(value)
 
-        level = logging.INFO if success else logging.WARNING
-        self.logger.log(level, "AUDIT: %s", audit_record)
+        if dry_run:
+            record["dry_run"] = True
+        if details:
+            record["details"] = {k: _redact_value(v) for k, v in details.items()}
+
+        self._append(record)
+
+    def _append(self, record: dict[str, Any]) -> None:
+        """Write one JSON line, rotating first if the log has grown too large."""
+        try:
+            self._rotate_if_needed()
+            ensure_private_dir(self.log_file.parent)
+            with open_private_append(self.log_file) as handle:
+                handle.write(json.dumps(record, default=str) + "\n")
+            self._ensure_private()
+        except OSError as e:
+            # Never let bookkeeping break the operation being audited.
+            self.logger.warning("Could not write the audit log at %s: %s", self.log_file, e)
+
+    def _ensure_private(self) -> None:
+        """Tighten a log that others can read.
+
+        ``open_private_append``'s mode only applies to files it creates, so a
+        log written before this code existed -- or copied in from elsewhere --
+        keeps whatever mode it had. An append-only file cannot be swapped in
+        atomically the way the session cache is, so the mode is checked on each
+        write instead: one ``stat``, and only on destructive operations.
+        """
+        try:
+            mode = self.log_file.stat().st_mode
+        except OSError:
+            return
+        if stat.S_IMODE(mode) & 0o077:
+            restrict_permissions(self.log_file)
+
+    def _rotate_if_needed(self) -> None:
+        """Roll the log over once it passes :data:`AUDIT_LOG_MAX_BYTES`.
+
+        A single generation is deliberate: anything more is a worse reimple-
+        mentation of logrotate, which is the right tool once a user cares.
+        """
+        try:
+            size = self.log_file.stat().st_size
+        except OSError:
+            return
+        if size < AUDIT_LOG_MAX_BYTES:
+            return
+        self.log_file.replace(self.log_file.with_name(self.log_file.name + ".1"))
+
+
+def _redact_value(value: Any) -> Any:
+    """Redact a value destined for the audit log.
+
+    URLs are the realistic leak here -- a server URL with embedded credentials,
+    or a path carrying a query string (SEC-09).
+    """
+    return redact_url_query(value) if isinstance(value, str) else value
 
 
 def get_audit_logger() -> AuditLogger:
