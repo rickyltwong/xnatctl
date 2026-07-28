@@ -9,17 +9,33 @@ from typing import Any
 
 
 class XNATCtlError(Exception):
-    """Base exception for all xnatctl errors."""
+    """Base exception for all xnatctl errors.
 
-    def __init__(self, message: str, details: dict[str, Any] | None = None):
+    ``str(exc)`` is the human-facing message and nothing else. ``details``
+    survives for verbose output and structured rendering, but is no longer
+    appended to the message: doing so turned "Profile not found: prod" into
+    "Profile not found: prod (field=profile, value='prod')", where the suffix
+    only restated the message as debug noise (CLI-09).
+    """
+
+    #: Next step for this class of error, shown under the message as
+    #: ``Try: ...``. Set it on a subclass when there is a genuinely clear
+    #: action; leaving it None is correct when there is not, because a vague
+    #: hint is worse than none. Instances may override via ``hint=``.
+    default_hint: str | None = None
+
+    def __init__(
+        self,
+        message: str,
+        details: dict[str, Any] | None = None,
+        hint: str | None = None,
+    ):
         super().__init__(message)
         self.message = message
         self.details = details or {}
+        self.hint = hint if hint is not None else self.default_hint
 
     def __str__(self) -> str:
-        if self.details:
-            detail_str = ", ".join(f"{k}={v}" for k, v in self.details.items())
-            return f"{self.message} ({detail_str})"
         return self.message
 
 
@@ -49,6 +65,10 @@ class ConfigurationError(XNATCtlError):
 
 class ProfileNotFoundError(ConfigurationError):
     """Requested profile does not exist."""
+
+    default_hint = (
+        "Run 'xnatctl config show' to list profiles, or 'xnatctl config init' to create one."
+    )
 
     def __init__(self, profile: str):
         super().__init__(f"Profile not found: {profile}", field="profile", value=profile)
@@ -152,6 +172,8 @@ class NetworkError(ConnectionError):
 class ServerUnreachableError(ConnectionError):
     """Server is not reachable."""
 
+    default_hint = "Check the server URL, and whether you need a VPN to reach it."
+
     def __init__(self, url: str):
         super().__init__(f"Server unreachable: {url}", url)
 
@@ -239,6 +261,8 @@ class ServerError(HTTPResponseError):
 class AuthenticationError(XNATCtlError):
     """Authentication failed."""
 
+    default_hint = "Run 'xnatctl auth login', or set XNAT_USER and XNAT_PASS."
+
     def __init__(self, url: str | None = None, reason: str = ""):
         msg = "Authentication failed"
         if url:
@@ -254,12 +278,16 @@ class AuthenticationError(XNATCtlError):
 class SessionExpiredError(AuthenticationError):
     """Session has expired."""
 
+    default_hint = "Your session expired. Run 'xnatctl auth login' again."
+
     def __init__(self, url: str | None = None):
         super().__init__(url, "Session expired - please login again")
 
 
 class PermissionDeniedError(AuthenticationError):
     """User lacks permission for the requested operation."""
+
+    default_hint = "Check that your XNAT account has the required role on this project."
 
     def __init__(self, resource: str, operation: str = "access", url: str | None = None):
         super().__init__(url, reason=f"Permission denied to {operation} {resource}")
@@ -293,6 +321,10 @@ class ResourceError(XNATCtlError):
 
 class ResourceNotFoundError(ResourceError):
     """Requested resource does not exist."""
+
+    default_hint = (
+        "Check the ID or label. Labels require -P/--project (or default_project in the profile)."
+    )
 
     def __init__(self, resource_type: str, resource_id: str):
         super().__init__(

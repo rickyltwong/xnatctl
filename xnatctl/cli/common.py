@@ -28,7 +28,7 @@ from xnatctl.core.exceptions import (
     ConnectionError as XNATConnectionError,
 )
 from xnatctl.core.logging import debug_env_enabled, get_audit_logger, setup_logging
-from xnatctl.core.output import OutputFormat, print_error, print_warning
+from xnatctl.core.output import OutputFormat, print_error, print_hint, print_warning
 from xnatctl.core.redact import SECRET_QUERY_KEYS, redact_url_query
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -79,13 +79,11 @@ class Context:
         if self.config is None:
             self.config = Config.load()
 
-        try:
-            profile = self.config.get_profile(self.profile_name)
-        except ProfileNotFoundError as e:
-            raise ConfigurationError(
-                f"Profile '{self.profile_name or 'default'}' not found. "
-                "Run 'xnatctl config show' to list profiles or 'xnatctl config init' to create one."
-            ) from e
+        # ProfileNotFoundError now carries its own next-step hint, so it is left
+        # to propagate rather than being restated as a ConfigurationError -- that
+        # wrapper duplicated the hint text and discarded the more specific type
+        # (CLI-09). Both map to the same exit code.
+        profile = self.config.get_profile(self.profile_name)
 
         # Get credentials (env vars > profile config). If we are using a cached
         # session token, keep the cached username as a hint for current-user
@@ -628,14 +626,24 @@ def render_cli_error(exc: BaseException) -> int:
     Must be called from within an ``except`` block: it relies on
     ``traceback.format_exc()`` reflecting the exception currently being handled.
     """
+    debug = _debug_enabled()
+
     if isinstance(exc, XNATCtlError):
         # Defensive: print_error already redacts, but we redact here too so
         # future direct callers cannot bypass the invariant.
         print_error(redact_url_query(str(exc)))
+        if exc.hint:
+            print_hint(exc.hint)
+        if debug and exc.details:
+            # The details dict used to be glued onto every message. It is real
+            # diagnostic data, so it stays -- just behind --verbose, where the
+            # reader asked for it (CLI-09).
+            detail_str = ", ".join(f"{k}={v}" for k, v in exc.details.items())
+            click.echo(redact_url_query(f"Details: {detail_str}"), err=True)
     else:
         print_error(redact_url_query(f"Unexpected error: {exc}"))
 
-    if _debug_enabled():
+    if debug:
         # Redact the whole traceback: its final line echoes the exception
         # message, which may carry a URL query string.
         click.echo(redact_url_query(traceback.format_exc()), err=True)

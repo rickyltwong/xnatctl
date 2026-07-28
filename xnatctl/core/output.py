@@ -232,6 +232,16 @@ def print_warning(message: str) -> None:
     err_console.print(f"[yellow]Warning:[/yellow] {escape(redact_url_query(message))}")
 
 
+def print_hint(hint: str) -> None:
+    """Print a dimmed next-step line to stderr, below an error (CLI-09).
+
+    Dimmed and prefixed so it reads as guidance rather than a second failure,
+    and on stderr so it travels with the error it belongs to rather than
+    contaminating piped data.
+    """
+    err_console.print(f"[dim]Try: {escape(redact_url_query(hint))}[/dim]")
+
+
 def print_success(message: str) -> None:
     """Print success message."""
     console.print(f"[green]\u2713[/green] {escape(message)}")
