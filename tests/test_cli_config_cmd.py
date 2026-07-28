@@ -422,3 +422,94 @@ class TestConfigSetPassword:
 
         assert result.exit_code != 0
         assert "no such option" in result.output.lower()
+
+
+class TestConfigInitGuidedLogin:
+    """`config init` continues into a login (CLI-06).
+
+    Onboarding used to be two commands with a cliff between them: init wrote a
+    profile and stopped, and the natural next command failed with a
+    profile-not-found error that pointed nowhere.
+    """
+
+    def test_login_is_invoked_with_the_new_profile(self, runner: CliRunner, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        login = MagicMock(return_value={"status": "authenticated", "username": "admin"})
+
+        with (
+            patch("xnatctl.cli.config_cmd.CONFIG_FILE", config_file),
+            patch("xnatctl.core.config.CONFIG_FILE", config_file),
+            patch("xnatctl.cli.auth.do_login", login),
+            patch("xnatctl.cli.auth.report_login"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["config", "init", "--url", "https://xnat.example.org", "--login"],
+            )
+
+        assert result.exit_code == 0
+        login.assert_called_once()
+        assert login.call_args.kwargs["profile_name"] == "default"
+        assert login.call_args.args[1].url == "https://xnat.example.org"
+
+    def test_no_login_skips_and_says_what_to_run(self, runner: CliRunner, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        login = MagicMock()
+
+        with (
+            patch("xnatctl.cli.config_cmd.CONFIG_FILE", config_file),
+            patch("xnatctl.core.config.CONFIG_FILE", config_file),
+            patch("xnatctl.cli.auth.do_login", login),
+        ):
+            result = runner.invoke(
+                cli,
+                ["config", "init", "--url", "https://xnat.example.org", "--no-login"],
+            )
+
+        assert result.exit_code == 0
+        login.assert_not_called()
+        assert "auth login" in result.output
+
+    def test_non_tty_does_not_prompt(self, runner: CliRunner, tmp_path: Path) -> None:
+        """An unanswered prompt in a pipeline is a hang, so the prompt only
+        appears on a real terminal."""
+        config_file = tmp_path / "config.yaml"
+        login = MagicMock()
+
+        with (
+            patch("xnatctl.cli.config_cmd.CONFIG_FILE", config_file),
+            patch("xnatctl.core.config.CONFIG_FILE", config_file),
+            patch("xnatctl.cli.config_cmd.sys.stdin.isatty", return_value=False),
+            patch("xnatctl.cli.auth.do_login", login),
+        ):
+            result = runner.invoke(cli, ["config", "init", "--url", "https://xnat.example.org"])
+
+        assert result.exit_code == 0
+        login.assert_not_called()
+
+    def test_failed_login_keeps_the_profile_and_exits_zero(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """The profile was written and is valid; only the login failed. Saying
+        `config init` failed would be wrong, and would invite a rerun."""
+        from xnatctl.core.exceptions import AuthenticationError
+
+        config_file = tmp_path / "config.yaml"
+
+        with (
+            patch("xnatctl.cli.config_cmd.CONFIG_FILE", config_file),
+            patch("xnatctl.core.config.CONFIG_FILE", config_file),
+            patch(
+                "xnatctl.cli.auth.do_login",
+                side_effect=AuthenticationError("https://xnat.example.org", "bad password"),
+            ),
+        ):
+            result = runner.invoke(
+                cli,
+                ["config", "init", "--url", "https://xnat.example.org", "--login"],
+            )
+
+        assert result.exit_code == 0
+        assert config_file.exists(), "the profile must survive a failed login"
+        assert "Profile saved" in result.output
+        assert "auth login" in result.output

@@ -13,7 +13,11 @@ from typing import Any
 
 import yaml
 
-from xnatctl.core.exceptions import ConfigurationError, ProfileNotFoundError
+from xnatctl.core.exceptions import (
+    ConfigurationError,
+    NoConfigurationError,
+    ProfileNotFoundError,
+)
 from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir, restrict_permissions
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
@@ -305,6 +309,13 @@ class Config:
         Raises:
             ProfileNotFoundError: If profile doesn't exist.
         """
+        if not self.profiles:
+            # First run: nothing is configured, so "profile 'default' not
+            # found" would send the user hunting for a typo (CLI-06).
+            raise NoConfigurationError(
+                f"No profiles configured. Expected a config file at {CONFIG_FILE}."
+            )
+
         name = name or self.default_profile
         if name not in self.profiles:
             raise ProfileNotFoundError(name)

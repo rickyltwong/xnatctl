@@ -52,15 +52,28 @@ class ConfigurationError(XNATCtlError):
         message: str,
         field: str | None = None,
         value: Any = None,
+        hint: str | None = None,
     ):
         details = {}
         if field:
             details["field"] = field
         if value is not None:
             details["value"] = repr(value)
-        super().__init__(message, details)
+        super().__init__(message, details, hint=hint)
         self.field = field
         self.value = value
+
+
+class NoConfigurationError(ConfigurationError):
+    """No profiles are configured at all -- the first-run state.
+
+    Distinct from :class:`ProfileNotFoundError`, which means "that particular
+    profile is missing". On a fresh machine the honest problem is that nothing
+    has been configured yet, and telling the user their *default* profile was
+    not found sends them looking for a typo that does not exist (CLI-06).
+    """
+
+    default_hint = "Run 'xnatctl config init' to create one."
 
 
 class ProfileNotFoundError(ConfigurationError):
