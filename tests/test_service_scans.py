@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
+from conftest import make_response
 
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.scan import Scan
@@ -26,15 +26,6 @@ def service(mock_client: MagicMock) -> ScanService:
     return ScanService(mock_client)
 
 
-def _resp(json_data: dict | list | str, content_type: str = "application/json") -> MagicMock:
-    """Build a mock httpx.Response."""
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = json_data
-    resp.text = str(json_data)
-    resp.headers = {"content-type": content_type}
-    return resp
-
-
 SAMPLE_SCAN = {
     "ID": "1",
     "label": "1",
@@ -50,7 +41,7 @@ class TestScanList:
 
     def test_list_scans(self, service: ScanService, mock_client: MagicMock) -> None:
         """List returns Scan objects with session_id injected."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_SCAN]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SCAN]}})
 
         result = service.list("XNAT_E00001")
 
@@ -61,7 +52,7 @@ class TestScanList:
 
     def test_list_with_project(self, service: ScanService, mock_client: MagicMock) -> None:
         """List with project uses project-scoped path and injects project."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_SCAN]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SCAN]}})
 
         result = service.list("XNAT_E00001", project="PROJ01")
 
@@ -71,7 +62,7 @@ class TestScanList:
 
     def test_list_with_columns(self, service: ScanService, mock_client: MagicMock) -> None:
         """Columns param is passed."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list("E001", columns=["ID", "type"])
 
@@ -84,7 +75,7 @@ class TestScanGet:
 
     def test_get_scan(self, service: ScanService, mock_client: MagicMock) -> None:
         """Get returns Scan with session_id."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_SCAN]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SCAN]}})
 
         result = service.get("XNAT_E00001", "1")
 
@@ -94,7 +85,7 @@ class TestScanGet:
 
     def test_get_with_project(self, service: ScanService, mock_client: MagicMock) -> None:
         """Get with project injects project."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_SCAN]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SCAN]}})
 
         result = service.get("E001", "1", project="PROJ01")
 
@@ -102,7 +93,7 @@ class TestScanGet:
 
     def test_get_not_found(self, service: ScanService, mock_client: MagicMock) -> None:
         """Get raises ResourceNotFoundError on empty results."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         with pytest.raises(ResourceNotFoundError):
             service.get("E001", "999")
@@ -113,13 +104,13 @@ class TestScanDelete:
 
     def test_delete(self, service: ScanService, mock_client: MagicMock) -> None:
         """Delete returns True."""
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
 
         assert service.delete("E001", "1") is True
 
     def test_delete_with_remove_files(self, service: ScanService, mock_client: MagicMock) -> None:
         """Delete passes removeFiles."""
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
 
         service.delete("E001", "1", remove_files=True)
 
@@ -132,7 +123,7 @@ class TestScanDeleteMultiple:
 
     def test_delete_multiple_sequential(self, service: ScanService, mock_client: MagicMock) -> None:
         """Sequential deletion of multiple scans."""
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
 
         result = service.delete_multiple("E001", ["1", "2", "3"], parallel=False)
 
@@ -148,7 +139,7 @@ class TestScanDeleteMultiple:
         def delete_side_effect(path: str, **kwargs: object) -> MagicMock:
             if "scans/2" in path:
                 raise RuntimeError("server error")
-            return _resp("")
+            return make_response("")
 
         mock_client.delete.side_effect = delete_side_effect
 
@@ -161,7 +152,7 @@ class TestScanDeleteMultiple:
 
     def test_delete_multiple_wildcard(self, service: ScanService, mock_client: MagicMock) -> None:
         """Wildcard '*' fetches all scan IDs first."""
-        mock_client.get.return_value = _resp(
+        mock_client.get.return_value = make_response(
             {
                 "ResultSet": {
                     "Result": [
@@ -171,7 +162,7 @@ class TestScanDeleteMultiple:
                 }
             }
         )
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
 
         result = service.delete_multiple("E001", ["*"], parallel=False)
 
@@ -181,7 +172,7 @@ class TestScanDeleteMultiple:
         self, service: ScanService, mock_client: MagicMock
     ) -> None:
         """Progress callback is invoked for each scan."""
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
         callback = MagicMock()
 
         service.delete_multiple("E001", ["1", "2"], parallel=False, progress_callback=callback)
@@ -195,7 +186,7 @@ class TestScanGetResources:
     def test_get_resources(self, service: ScanService, mock_client: MagicMock) -> None:
         """get_resources returns raw dicts."""
         rows = [{"label": "DICOM", "file_count": 100}]
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.get_resources("E001", "1")
 
@@ -208,7 +199,7 @@ class TestScanSetQuality:
 
     def test_set_quality(self, service: ScanService, mock_client: MagicMock) -> None:
         """set_quality issues PUT with quality param."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         assert service.set_quality("E001", "1", "usable") is True
         put_params = mock_client.put.call_args[1]["params"]
@@ -220,7 +211,7 @@ class TestScanSetNote:
 
     def test_set_note(self, service: ScanService, mock_client: MagicMock) -> None:
         """set_note issues PUT with note param."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         assert service.set_note("E001", "1", "test note") is True
         put_params = mock_client.put.call_args[1]["params"]

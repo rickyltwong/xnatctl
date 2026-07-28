@@ -101,6 +101,9 @@ known-first-party = ["xnatctl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Makes `from conftest import make_response` work from test modules regardless
+# of pytest's import mode (TEST-08 shared harness).
+pythonpath = ["tests"]
 # -q keeps CI logs readable at 1000+ tests; pass -v per-run when debugging.
 # The integration tier is deselected by default (TEST-02 populates it).
 addopts = "-q --tb=short -m 'not integration'"

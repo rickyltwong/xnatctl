@@ -2,52 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import make_authenticated_context
 
 from xnatctl.cli.common import Context
 from xnatctl.cli.main import cli
-from xnatctl.core.config import Config, Profile
 
 
 @pytest.fixture
 def runner() -> CliRunner:
     """Create a CLI test runner."""
     return CliRunner()
-
-
-def _make_authenticated_context(
-    default_project: str | None = "TESTPROJ",
-) -> tuple[Context, MagicMock]:
-    """Build a Context with a mocked authenticated client.
-
-    Args:
-        default_project: Default project for the profile.
-
-    Returns:
-        Tuple of (Context, mock_client).
-    """
-    ctx = Context()
-    ctx.config = Config(
-        profiles={
-            "default": Profile(
-                url="https://xnat.example.org",
-                username="user",
-                password="pass",
-                default_project=default_project,
-            ),
-        },
-    )
-    mock_client = MagicMock()
-    mock_client.is_authenticated = True
-    mock_client.base_url = "https://xnat.example.org"
-    mock_client.whoami.return_value = {"login": "user"}
-    ctx.client = cast(Any, mock_client)
-    ctx.auth_manager = MagicMock()
-    return ctx, mock_client
 
 
 # =============================================================================
@@ -60,7 +29,7 @@ class TestSessionList:
 
     def test_session_list_happy_path(self, runner: CliRunner) -> None:
         """List sessions with results returns table output."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -96,7 +65,7 @@ class TestSessionList:
 
     def test_session_list_json_output(self, runner: CliRunner) -> None:
         """List sessions with --output json returns JSON."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -124,7 +93,7 @@ class TestSessionList:
 
     def test_session_list_modality_filter(self, runner: CliRunner) -> None:
         """Modality filter excludes non-matching sessions."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -163,7 +132,7 @@ class TestSessionList:
 
     def test_session_list_subject_filter(self, runner: CliRunner) -> None:
         """Subject filter passes through to API params."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         with (
@@ -180,7 +149,7 @@ class TestSessionList:
 
     def test_session_list_no_project_error(self, runner: CliRunner) -> None:
         """Missing project with no default raises ClickException."""
-        ctx, mock_client = _make_authenticated_context(default_project=None)
+        ctx, mock_client = make_authenticated_context(default_project=None)
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -195,7 +164,7 @@ class TestSessionList:
 
     def test_session_list_default_project_fallback(self, runner: CliRunner) -> None:
         """Falls back to profile default_project when -P not given."""
-        ctx, mock_client = _make_authenticated_context(default_project="FALLBACK")
+        ctx, mock_client = make_authenticated_context(default_project="FALLBACK")
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         with (
@@ -212,7 +181,7 @@ class TestSessionList:
 
     def test_session_list_quiet(self, runner: CliRunner) -> None:
         """Quiet mode outputs IDs only."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -240,7 +209,7 @@ class TestSessionList:
 
     def test_session_list_empty_results(self, runner: CliRunner) -> None:
         """Empty result set does not error."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         with (
@@ -264,7 +233,7 @@ class TestSessionShow:
 
     def test_session_show_by_id(self, runner: CliRunner) -> None:
         """Show session details by experiment ID."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             # whoami
             {"login": "user"},
@@ -307,7 +276,7 @@ class TestSessionShow:
 
     def test_session_show_with_project(self, runner: CliRunner) -> None:
         """Show session scoped to project uses project endpoint."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -337,7 +306,7 @@ class TestSessionShow:
 
     def test_session_show_non_mr_resolves_scan_xsi(self, runner: CliRunner) -> None:
         """Non-MR session (e.g. EEG) resolves scan xsiType for scan listing."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         call_count = 0
 
         def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
@@ -390,7 +359,7 @@ class TestSessionShow:
 
     def test_session_show_not_found(self, runner: CliRunner) -> None:
         """Non-existent session prints error and exits 1."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         with (
@@ -405,7 +374,7 @@ class TestSessionShow:
 
     def test_session_show_json_output(self, runner: CliRunner) -> None:
         """JSON output includes scans and resources."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
             if url.endswith("/scans"):
@@ -460,7 +429,7 @@ class TestSessionDownload:
 
     def test_session_download_dry_run(self, runner: CliRunner, tmp_path) -> None:
         """Dry run previews download without fetching data."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -501,7 +470,7 @@ class TestSessionDownload:
 
     def test_session_download_dry_run_no_project(self, runner: CliRunner, tmp_path) -> None:
         """Dry run without -P uses direct experiment endpoint."""
-        ctx, mock_client = _make_authenticated_context(default_project=None)
+        ctx, mock_client = make_authenticated_context(default_project=None)
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -541,7 +510,7 @@ class TestSessionDownload:
 
     def test_session_download_session_not_found(self, runner: CliRunner, tmp_path) -> None:
         """Missing session exits with error."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         with (
@@ -568,7 +537,7 @@ class TestSessionDownload:
 
     def test_session_download_name_with_path_separator(self, runner: CliRunner, tmp_path) -> None:
         """Name with path separator is rejected."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -597,7 +566,7 @@ class TestSessionDownload:
 
     def test_session_download_dry_run_label_resolution(self, runner: CliRunner, tmp_path) -> None:
         """Dry run with label shows resolved ID."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -638,7 +607,7 @@ class TestSessionDownload:
 
     def test_session_download_items_format_fallback(self, runner: CliRunner, tmp_path) -> None:
         """Falls back to items/data_fields format when ResultSet is empty."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {"Result": []},
             "items": [
@@ -678,7 +647,7 @@ class TestSessionDownload:
 
     def test_session_download_no_subject_error(self, runner: CliRunner, tmp_path) -> None:
         """Error when subject cannot be determined."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [

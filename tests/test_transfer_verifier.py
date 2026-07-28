@@ -4,18 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
+from conftest import make_response
 
 from xnatctl.services.transfer.verifier import VerificationResult, Verifier
-
-
-def _make_response(json_data: dict) -> MagicMock:
-    """Create a mock httpx.Response with given JSON payload."""
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = json_data
-    resp.headers = {"content-type": "application/json"}
-    return resp
 
 
 @pytest.fixture
@@ -48,8 +40,8 @@ class TestVerifyResource:
         dest_client: MagicMock,
     ) -> None:
         files = [{"Name": "file1.dcm"}, {"Name": "file2.dcm"}]
-        source_client.get.return_value = _make_response({"ResultSet": {"Result": files}})
-        dest_client.get.return_value = _make_response({"ResultSet": {"Result": files}})
+        source_client.get.return_value = make_response({"ResultSet": {"Result": files}})
+        dest_client.get.return_value = make_response({"ResultSet": {"Result": files}})
 
         result: VerificationResult = verifier.verify_resource(
             source_path="/data/experiments/E1/resources/DICOM/files",
@@ -66,10 +58,10 @@ class TestVerifyResource:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        source_client.get.return_value = _make_response(
+        source_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"Name": "f1"}, {"Name": "f2"}]}}
         )
-        dest_client.get.return_value = _make_response({"ResultSet": {"Result": [{"Name": "f1"}]}})
+        dest_client.get.return_value = make_response({"ResultSet": {"Result": [{"Name": "f1"}]}})
 
         result = verifier.verify_resource(
             source_path="/data/experiments/E1/resources/DICOM/files",
@@ -89,8 +81,8 @@ class TestVerifyScanSet:
         dest_client: MagicMock,
     ) -> None:
         scans = [{"ID": "1"}, {"ID": "2"}, {"ID": "3"}]
-        source_client.get.return_value = _make_response({"ResultSet": {"Result": scans}})
-        dest_client.get.return_value = _make_response({"ResultSet": {"Result": scans}})
+        source_client.get.return_value = make_response({"ResultSet": {"Result": scans}})
+        dest_client.get.return_value = make_response({"ResultSet": {"Result": scans}})
 
         result = verifier.verify_scan_set("/data/experiments/E1", "/data/experiments/E2")
 
@@ -105,10 +97,10 @@ class TestVerifyScanSet:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        source_client.get.return_value = _make_response(
+        source_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"ID": "1"}, {"ID": "2"}, {"ID": "3"}]}}
         )
-        dest_client.get.return_value = _make_response({"ResultSet": {"Result": [{"ID": "1"}]}})
+        dest_client.get.return_value = make_response({"ResultSet": {"Result": [{"ID": "1"}]}})
 
         result = verifier.verify_scan_set("/data/experiments/E1", "/data/experiments/E2")
 
@@ -124,9 +116,9 @@ class TestVerifyExperiment:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        scans_resp = _make_response({"ResultSet": {"Result": [{"ID": "1"}]}})
-        resources_resp = _make_response({"ResultSet": {"Result": [{"label": "DICOM"}]}})
-        files_resp = _make_response({"ResultSet": {"Result": [{"Name": "f1"}, {"Name": "f2"}]}})
+        scans_resp = make_response({"ResultSet": {"Result": [{"ID": "1"}]}})
+        resources_resp = make_response({"ResultSet": {"Result": [{"label": "DICOM"}]}})
+        files_resp = make_response({"ResultSet": {"Result": [{"Name": "f1"}, {"Name": "f2"}]}})
 
         # Source: scans (tier1+tier2 reused), resources, files
         # Dest: scans, files
@@ -147,10 +139,10 @@ class TestVerifyExperiment:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        source_client.get.return_value = _make_response(
+        source_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"ID": "1"}, {"ID": "2"}]}}
         )
-        dest_client.get.return_value = _make_response({"ResultSet": {"Result": [{"ID": "1"}]}})
+        dest_client.get.return_value = make_response({"ResultSet": {"Result": [{"ID": "1"}]}})
 
         result = verifier.verify_experiment("/data/experiments/E1", "/data/experiments/E2")
 
@@ -163,10 +155,10 @@ class TestVerifyExperiment:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        scans_resp = _make_response({"ResultSet": {"Result": [{"ID": "1"}]}})
-        resources_resp = _make_response({"ResultSet": {"Result": [{"label": "DICOM"}]}})
-        src_files = _make_response({"ResultSet": {"Result": [{"Name": "f1"}, {"Name": "f2"}]}})
-        dst_files = _make_response({"ResultSet": {"Result": [{"Name": "f1"}]}})
+        scans_resp = make_response({"ResultSet": {"Result": [{"ID": "1"}]}})
+        resources_resp = make_response({"ResultSet": {"Result": [{"label": "DICOM"}]}})
+        src_files = make_response({"ResultSet": {"Result": [{"Name": "f1"}, {"Name": "f2"}]}})
+        dst_files = make_response({"ResultSet": {"Result": [{"Name": "f1"}]}})
 
         # Source: scans (tier1+tier2 reused), resources, files
         # Dest: scans, files
