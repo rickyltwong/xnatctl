@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
+from xnatctl.core.redact import redact_url_query
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -19,6 +21,55 @@ from typing import Any
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 AUDIT_LOGGER_NAME = "xnatctl.audit"
+
+
+# =============================================================================
+# Redaction
+# =============================================================================
+
+
+class RedactionFilter(logging.Filter):
+    """Scrub secret-shaped URL values out of every record a handler emits.
+
+    Installing this once on the root handler makes redaction an invariant of
+    the logging path instead of something each call site has to remember. That
+    is the precondition for MAINT-01: verbose HTTP diagnostics log full request
+    URLs, and those carry query-string tokens (SEC-09).
+
+    Scope boundary: this covers the formatted message only. Exception
+    tracebacks are rendered by the Formatter *after* filters run, so a secret
+    inside a traceback is not scrubbed here. The CLI's own traceback path
+    already redacts (``cli/common.py``); a Formatter-level fix belongs with
+    GAP-04's log-file work.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Rewrite ``record`` in place when it contains something to redact."""
+        message = record.getMessage()
+        redacted = redact_url_query(message)
+        if redacted != message:
+            # Only collapse to the interpolated text when we actually changed
+            # something, so untouched records keep their lazy %-args for any
+            # other handler.
+            record.msg = redacted
+            record.args = None
+        return True
+
+
+def install_redaction_filter(logger: logging.Logger | None = None) -> None:
+    """Attach a :class:`RedactionFilter` to each of ``logger``'s handlers, once.
+
+    Handler-level rather than logger-level on purpose: a filter set on a logger
+    only sees records logged directly to it, not records propagated up from
+    child loggers, and every xnatctl logger is a child of root.
+
+    Idempotent, because ``setup_logging`` runs from both the CLI root group and
+    ``@global_options``.
+    """
+    target = logger if logger is not None else logging.getLogger()
+    for handler in target.handlers:
+        if not any(isinstance(existing, RedactionFilter) for existing in handler.filters):
+            handler.addFilter(RedactionFilter())
 
 
 # =============================================================================
@@ -51,6 +102,11 @@ def setup_logging(
         datefmt=LOG_DATE_FORMAT,
         stream=sys.stderr,
     )
+
+    # Redaction is an invariant of the logging path, not a call-site duty
+    # (SEC-09). basicConfig above is a no-op once root already has handlers, so
+    # this is installed separately and idempotently.
+    install_redaction_filter()
 
     # Suppress noisy libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)

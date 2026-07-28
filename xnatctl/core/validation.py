@@ -18,6 +18,7 @@ from xnatctl.core.exceptions import (
     InvalidURLError,
     PathValidationError,
 )
+from xnatctl.core.redact import redact_url_userinfo
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
 # =============================================================================
@@ -63,22 +64,39 @@ def validate_server_url(url: str) -> str:
     if not url:
         raise InvalidURLError(url, "URL cannot be empty")
 
+    # Every raise below reports the redacted form: InvalidURLError echoes the
+    # value into its message *and* keeps it as `.value`, so a rejected
+    # `https://admin:s3cret@host` would otherwise leak the password through the
+    # error path it was rejected by (SEC-09).
+    safe = redact_url_userinfo(url)
+
     try:
         parsed = urlparse(url)
     except Exception as e:
-        raise InvalidURLError(url, f"Failed to parse URL: {e}") from e
+        raise InvalidURLError(safe, f"Failed to parse URL: {redact_url_userinfo(str(e))}") from e
 
     if not parsed.scheme:
-        raise InvalidURLError(url, "URL must include scheme (http:// or https://)")
+        raise InvalidURLError(safe, "URL must include scheme (http:// or https://)")
 
     if parsed.scheme.lower() not in ALLOWED_URL_SCHEMES:
         raise InvalidURLError(
-            url,
+            safe,
             f"Unsupported scheme '{parsed.scheme}'. Use http or https.",
         )
 
     if not parsed.netloc:
-        raise InvalidURLError(url, "URL must include hostname")
+        raise InvalidURLError(safe, "URL must include hostname")
+
+    # Reject embedded credentials rather than stripping them. Stripping would
+    # silently drop credentials the user believed were in effect, and the URL
+    # is copied into `base_url`, which surfaces in error messages, log lines
+    # and `config show`.
+    if parsed.username or parsed.password:
+        raise InvalidURLError(
+            safe,
+            "Do not embed credentials in the URL. Use a profile, "
+            "XNAT_USER/XNAT_PASS, or `xnatctl auth login`.",
+        )
 
     return url.rstrip("/")
 
