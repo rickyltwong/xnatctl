@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -67,8 +68,8 @@ class TestResourceList:
             }
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["resource", "list", "XNAT_E00001"])
 
@@ -90,8 +91,8 @@ class TestResourceList:
             }
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -118,8 +119,8 @@ class TestResourceList:
             }
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["resource", "list", "--project", "PROJ1"])
 
@@ -130,8 +131,8 @@ class TestResourceList:
     def test_resource_list_rejects_project_and_session(self, runner: CliRunner) -> None:
         client = _mock_client()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client) as mock_xnat:
                     result = runner.invoke(
                         cli,
@@ -146,8 +147,8 @@ class TestResourceList:
     def test_resource_list_requires_scope(self, runner: CliRunner) -> None:
         client = _mock_client()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client) as mock_xnat:
                     result = runner.invoke(cli, ["resource", "list"])
 
@@ -159,8 +160,8 @@ class TestResourceList:
     def test_resource_list_rejects_project_with_scan(self, runner: CliRunner) -> None:
         client = _mock_client()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client) as mock_xnat:
                     result = runner.invoke(
                         cli,
@@ -188,8 +189,8 @@ class TestResourceList:
             }
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["resource", "list", "XNAT_E00001", "--quiet"])
 
@@ -200,8 +201,8 @@ class TestResourceList:
         client = _mock_client()
         client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["resource", "list", "XNAT_E00001"])
 
@@ -237,8 +238,8 @@ class TestResourceShow:
             },
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["resource", "show", "XNAT_E00001", "DICOM"])
 
@@ -248,8 +249,8 @@ class TestResourceShow:
         client = _mock_client()
         client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["resource", "show", "XNAT_E00001", "MISSING"])
 
@@ -274,8 +275,8 @@ class TestResourceShow:
             {"ResultSet": {"Result": [{"Name": "file1.dcm"}]}},
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -304,8 +305,8 @@ class TestResourceUpload:
         test_file = tmp_path / "test.nii.gz"
         test_file.write_text("fake nifti data")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.services.resources.ResourceService",
@@ -334,8 +335,8 @@ class TestResourceUpload:
         (test_dir / "file1.dcm").write_text("dcm1")
         (test_dir / "file2.dcm").write_text("dcm2")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.services.resources.ResourceService",
@@ -364,8 +365,8 @@ class TestResourceUpload:
         test_file = tmp_path / "test.nii.gz"
         test_file.write_text("fake nifti data")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.services.resources.ResourceService",
@@ -404,8 +405,8 @@ class TestResourceUpload:
         test_dir.mkdir()
         (test_dir / "file.nii.gz").write_text("fake")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.services.resources.ResourceService",
@@ -437,8 +438,8 @@ class TestResourceUpload:
         test_file = tmp_path / "test.nii.gz"
         test_file.write_text("fake data")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.services.resources.ResourceService",
@@ -471,8 +472,8 @@ class TestResourceRefresh:
 
         uri = "/archive/projects/MYPROJ/subjects/SUBJ/experiments/EXP/scans/1/resources/DICOM"
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -504,8 +505,8 @@ class TestResourceRefresh:
 
         uri = "/archive/projects/MYPROJ"
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["resource", "refresh", uri])
 
@@ -521,8 +522,8 @@ class TestResourceRefresh:
         mock_resp.text = "boom"
         client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["resource", "refresh", "/archive/projects/MYPROJ"])
 
@@ -534,8 +535,8 @@ class TestResourceRefresh:
         """``--options`` is constrained to the documented Choice set."""
         client = _mock_client()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -582,8 +583,8 @@ class TestResourceScopeLevels:
         client = _mock_client()
         client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli, ["resource", "list", "--project", "PROJ1", "--subject", "SUB01"]
@@ -595,8 +596,8 @@ class TestResourceScopeLevels:
     def test_list_subject_without_project_rejected(self, runner: CliRunner) -> None:
         client = _mock_client()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client) as mock_xnat:
                     result = runner.invoke(cli, ["resource", "list", "--subject", "SUB01"])
 
@@ -633,8 +634,8 @@ class TestResourceScopeLevels:
         _wire_stream(client, capture)
 
         with runner.isolated_filesystem():
-            with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-                with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+            with core_config_seam(_mock_config()):
+                with config_seam(_mock_config()):
                     with patch("xnatctl.cli.common.XNATClient", return_value=client):
                         result = runner.invoke(
                             cli, ["resource", "download", *args, "-f", "out.zip"]
@@ -647,8 +648,8 @@ class TestResourceScopeLevels:
         client = _mock_client()
 
         with runner.isolated_filesystem():
-            with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-                with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+            with core_config_seam(_mock_config()):
+                with config_seam(_mock_config()):
                     with patch("xnatctl.cli.common.XNATClient", return_value=client):
                         # Single positional with no -P/-S is the resource label
                         # but has no parent scope.
@@ -667,8 +668,8 @@ class TestResourceScopeLevels:
         test_file = tmp_path / "tpl.json"
         test_file.write_text("{}")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.services.resources.ResourceService",
@@ -690,8 +691,8 @@ class TestResourceScopeLevels:
         test_file = tmp_path / "qc.json"
         test_file.write_text("{}")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.services.resources.ResourceService",
@@ -722,8 +723,8 @@ class TestResourceScopeLevels:
         test_file = tmp_path / "qc.json"
         test_file.write_text("{}")
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli, ["resource", "upload", "-S", "SUB01", "QC", str(test_file)]

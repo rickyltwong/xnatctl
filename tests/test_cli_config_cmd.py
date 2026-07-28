@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -120,7 +121,7 @@ class TestConfigShow:
         cfg = Config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+            with config_seam(cfg):
                 result = runner.invoke(cli, ["config", "show"])
 
         assert result.exit_code != 0
@@ -130,7 +131,7 @@ class TestConfigShow:
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+            with config_seam(cfg):
                 result = runner.invoke(cli, ["config", "show", "-p", "dev"])
 
         assert result.exit_code == 0
@@ -145,7 +146,7 @@ class TestConfigShow:
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+            with config_seam(cfg):
                 result = runner.invoke(cli, ["config", "show", "-p", "dev", "-o", "json"])
 
         assert result.exit_code == 0
@@ -160,7 +161,7 @@ class TestConfigShow:
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+            with config_seam(cfg):
                 result = runner.invoke(cli, ["config", "show", "-p", "nonexist"])
 
         assert result.exit_code != 0

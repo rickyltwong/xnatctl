@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -60,8 +61,8 @@ class TestSubjectList:
             {"ResultSet": {"Result": [{"ID": "EXP2"}, {"ID": "EXP3"}]}},
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["subject", "list", "--project", "TESTPROJ"])
 
@@ -74,8 +75,8 @@ class TestSubjectList:
             "ResultSet": {"Result": [{"ID": "XNAT_S001", "label": "SUB001", "src": ""}]}
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["subject", "list"])
 
@@ -95,8 +96,8 @@ class TestSubjectList:
             },
         )
 
-        with patch("xnatctl.core.config.Config.load", return_value=cfg):
-            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+        with core_config_seam(cfg):
+            with config_seam(cfg):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["subject", "list"])
 
@@ -114,8 +115,8 @@ class TestSubjectList:
             }
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["subject", "list", "-P", "TESTPROJ", "--quiet"])
 
@@ -133,8 +134,8 @@ class TestSubjectList:
             }
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -181,8 +182,8 @@ class TestSubjectShow:
             },
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["subject", "show", "SUB001", "-P", "TESTPROJ"])
 
@@ -202,8 +203,8 @@ class TestSubjectShow:
             },
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["subject", "show", "SUB001", "-P", "TESTPROJ"])
 
@@ -214,8 +215,8 @@ class TestSubjectShow:
         client = _mock_client()
         client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(cli, ["subject", "show", "NOSUB", "-P", "TESTPROJ"])
 
@@ -228,8 +229,8 @@ class TestSubjectDelete:
     def test_subject_delete_dry_run(self, runner: CliRunner) -> None:
         client = _mock_client()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -253,8 +254,8 @@ class TestSubjectDelete:
         mock_resp.status_code = 200
         client.delete.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
@@ -279,8 +280,8 @@ class TestSubjectDelete:
         mock_resp.text = "Server error"
         client.delete.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,

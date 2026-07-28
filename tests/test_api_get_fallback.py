@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -42,8 +43,8 @@ def _mock_client() -> MagicMock:
 
 def _patched_invoke(runner: CliRunner, client: MagicMock, args: list[str]):
     """Invoke the CLI with the mock client + config patched in."""
-    with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-        with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+    with core_config_seam(_mock_config()):
+        with config_seam(_mock_config()):
             with patch("xnatctl.cli.common.XNATClient", return_value=client):
                 return runner.invoke(cli, args)
 

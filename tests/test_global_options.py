@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.common import Context, global_options, handle_errors
 from xnatctl.cli.main import cli
@@ -90,8 +89,8 @@ class TestInheritance:
 
     def test_root_verbose_inherited_when_subcommand_default(self, runner: CliRunner) -> None:
         """Root --verbose populates ctx.verbose when subcommand left it default."""
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 result = runner.invoke(cli, ["--verbose", "__probe_global__"])
 
         assert result.exit_code == 0, result.stderr
@@ -99,8 +98,8 @@ class TestInheritance:
 
     def test_subcommand_verbose_wins_when_root_unset(self, runner: CliRunner) -> None:
         """Existing `xnatctl <sub> -v` continues to work."""
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 result = runner.invoke(cli, ["__probe_global__", "-v"])
 
         assert result.exit_code == 0, result.stderr
@@ -108,8 +107,8 @@ class TestInheritance:
 
     def test_subcommand_explicit_output_wins_over_root(self, runner: CliRunner) -> None:
         """Subcommand `-o table` beats root `-o json` (explicit > inherited)."""
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 result = runner.invoke(cli, ["-o", "json", "__probe_global__", "-o", "table"])
 
         assert result.exit_code == 0, result.stderr
@@ -117,8 +116,8 @@ class TestInheritance:
 
     def test_root_output_inherited_when_subcommand_default(self, runner: CliRunner) -> None:
         """Root `-o json` flows into the subcommand when subcommand omitted -o."""
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 result = runner.invoke(cli, ["-o", "json", "__probe_global__"])
 
         assert result.exit_code == 0, result.stderr
@@ -126,8 +125,8 @@ class TestInheritance:
 
     def test_root_profile_inherited_when_subcommand_default(self, runner: CliRunner) -> None:
         """`xnatctl --profile staging <sub>` populates ctx.profile_name."""
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 result = runner.invoke(cli, ["--profile", "staging", "__probe_global__"])
 
         assert result.exit_code == 0, result.stderr

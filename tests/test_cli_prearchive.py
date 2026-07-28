@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -58,8 +59,8 @@ class TestPrearchiveList:
             },
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",
@@ -74,8 +75,8 @@ class TestPrearchiveList:
         mock_service = MagicMock()
         mock_service.list.return_value = []
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",
@@ -100,8 +101,8 @@ class TestPrearchiveList:
             },
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",
@@ -125,8 +126,8 @@ class TestPrearchiveArchive:
             "session": "Session1",
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",
@@ -151,8 +152,8 @@ class TestPrearchiveArchive:
         mock_service = MagicMock()
         mock_service.archive.return_value = {"success": True}
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",
@@ -193,8 +194,8 @@ class TestPrearchiveArchive:
             "session": "Session1",
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",
@@ -224,8 +225,8 @@ class TestPrearchiveDelete:
         client = _mock_client()
         mock_service = MagicMock()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",
@@ -251,8 +252,8 @@ class TestPrearchiveDelete:
         client = _mock_client()
         mock_service = MagicMock()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",
@@ -281,8 +282,8 @@ class TestPrearchiveRebuild:
         client = _mock_client()
         mock_service = MagicMock()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",
@@ -310,8 +311,8 @@ class TestPrearchiveMove:
         client = _mock_client()
         mock_service = MagicMock()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.prearchive.PrearchiveService",

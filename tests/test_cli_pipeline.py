@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -62,8 +63,8 @@ class TestPipelineList:
             },
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -78,8 +79,8 @@ class TestPipelineList:
         mock_service = MagicMock()
         mock_service.list.return_value = []
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -97,8 +98,8 @@ class TestPipelineList:
             {"name": "dcm2niix", "Name": "dcm2niix"},
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -123,8 +124,8 @@ class TestPipelineRun:
             "job_id": "JOB123",
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -152,8 +153,8 @@ class TestPipelineRun:
             "job_id": "JOB456",
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -188,8 +189,8 @@ class TestPipelineRun:
             "job_id": "JOB789",
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -224,8 +225,8 @@ class TestPipelineStatus:
             "start_time": "2024-01-15T10:00:00",
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -245,8 +246,8 @@ class TestPipelineStatus:
             "end_time": "2024-01-15T10:30:00",
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -268,8 +269,8 @@ class TestPipelineCancel:
         client = _mock_client()
         mock_service = MagicMock()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -285,8 +286,8 @@ class TestPipelineCancel:
         client = _mock_client()
         mock_service = MagicMock()
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -315,8 +316,8 @@ class TestPipelineJobs:
             },
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",
@@ -331,8 +332,8 @@ class TestPipelineJobs:
         mock_service = MagicMock()
         mock_service.list_jobs.return_value = []
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     with patch(
                         "xnatctl.cli.pipeline.PipelineService",

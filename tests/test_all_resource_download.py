@@ -15,9 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
-from conftest import make_authenticated_context
+from conftest import authenticated_seams, make_authenticated_context
 
-from xnatctl.cli.common import Context
 from xnatctl.cli.main import cli
 from xnatctl.cli.session import _extract_scan_zip
 from xnatctl.models.progress import DownloadSummary
@@ -301,19 +300,7 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -357,19 +344,7 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -409,19 +384,7 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -460,19 +423,7 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -515,22 +466,12 @@ class TestSessionDownloadResourceFlags:
         }
 
         with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            authenticated_seams(ctx, mock_client),
             pytest.warns(
                 DeprecationWarning,
                 match="--include-resources is deprecated",
             ),
         ):
-            mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
@@ -587,21 +528,11 @@ class TestSessionDownloadResourceFlags:
         }
 
         with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            authenticated_seams(ctx, mock_client),
             patch(
                 "xnatctl.cli.session._download_session_fast",
             ) as mock_fast,
         ):
-            mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
@@ -645,21 +576,11 @@ class TestSessionDownloadResourceFlags:
         }
 
         with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            authenticated_seams(ctx, mock_client),
             patch(
                 "xnatctl.cli.session._download_session_fast",
             ) as mock_fast,
         ):
-            mock_auth_cls.return_value = ctx.auth_manager
             result = runner.invoke(
                 cli,
                 [
@@ -700,19 +621,7 @@ class TestScanDownloadMultiResource:
         """Multiple -r flags are rejected with a clear error."""
         ctx, mock_client = make_authenticated_context()
 
-        with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -754,21 +663,11 @@ class TestScanDownloadMultiResource:
         )
 
         with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            authenticated_seams(ctx, mock_client),
             patch(
                 "xnatctl.services.downloads.DownloadService",
             ) as mock_dl_cls,
         ):
-            mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
                 cli,
@@ -810,21 +709,11 @@ class TestScanDownloadMultiResource:
         )
 
         with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            authenticated_seams(ctx, mock_client),
             patch(
                 "xnatctl.services.downloads.DownloadService",
             ) as mock_dl_cls,
         ):
-            mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
                 cli,
@@ -852,19 +741,7 @@ class TestScanDownloadMultiResource:
         """Multiple -r flags are rejected even with --dry-run."""
         ctx, mock_client = make_authenticated_context()
 
-        with (
-            patch(
-                "xnatctl.cli.common.Config.load",
-                return_value=ctx.config,
-            ),
-            patch.object(
-                Context,
-                "get_client",
-                return_value=mock_client,
-            ),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
