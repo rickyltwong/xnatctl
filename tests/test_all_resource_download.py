@@ -11,16 +11,15 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path
-from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import make_authenticated_context
 
 from xnatctl.cli.common import Context
 from xnatctl.cli.main import cli
 from xnatctl.cli.session import _extract_scan_zip
-from xnatctl.core.config import Config, Profile
 from xnatctl.models.progress import DownloadSummary
 
 # =============================================================================
@@ -32,30 +31,6 @@ from xnatctl.models.progress import DownloadSummary
 def runner() -> CliRunner:
     """Create a CLI test runner."""
     return CliRunner()
-
-
-def _make_authenticated_context(
-    default_project: str | None = "TESTPROJ",
-) -> tuple[Context, MagicMock]:
-    """Build a Context with a mocked authenticated client."""
-    ctx = Context()
-    ctx.config = Config(
-        profiles={
-            "default": Profile(
-                url="https://xnat.example.org",
-                username="user",
-                password="pass",
-                default_project=default_project,
-            ),
-        },
-    )
-    mock_client = MagicMock()
-    mock_client.is_authenticated = True
-    mock_client.base_url = "https://xnat.example.org"
-    mock_client.whoami.return_value = {"login": "user"}
-    ctx.client = cast(Any, mock_client)
-    ctx.auth_manager = MagicMock()
-    return ctx, mock_client
 
 
 # =============================================================================
@@ -313,7 +288,7 @@ class TestSessionDownloadResourceFlags:
         tmp_path: Path,
     ) -> None:
         """Dry run with --resource shows resource types."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -369,7 +344,7 @@ class TestSessionDownloadResourceFlags:
         tmp_path: Path,
     ) -> None:
         """Dry run with --exclude-resource shows excluded types."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -421,7 +396,7 @@ class TestSessionDownloadResourceFlags:
         tmp_path: Path,
     ) -> None:
         """Dry run with --session-resources shows flag status."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -472,7 +447,7 @@ class TestSessionDownloadResourceFlags:
         tmp_path: Path,
     ) -> None:
         """--resource and --exclude-resource cannot be combined."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -526,7 +501,7 @@ class TestSessionDownloadResourceFlags:
         tmp_path: Path,
     ) -> None:
         """--include-resources emits DeprecationWarning and maps to --session-resources."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -598,7 +573,7 @@ class TestSessionDownloadResourceFlags:
         tmp_path: Path,
     ) -> None:
         """--resource with workers=1 still uses parallel path."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -656,7 +631,7 @@ class TestSessionDownloadResourceFlags:
         tmp_path: Path,
     ) -> None:
         """--exclude-resource with workers=1 still uses parallel path."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -723,7 +698,7 @@ class TestScanDownloadMultiResource:
         tmp_path: Path,
     ) -> None:
         """Multiple -r flags are rejected with a clear error."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         with (
             patch(
@@ -765,7 +740,7 @@ class TestScanDownloadMultiResource:
         tmp_path: Path,
     ) -> None:
         """Single -r passes resource filter to service."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
             total=1,
@@ -821,7 +796,7 @@ class TestScanDownloadMultiResource:
         tmp_path: Path,
     ) -> None:
         """No -r flag passes resource=None (all resources)."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
             total=1,
@@ -875,7 +850,7 @@ class TestScanDownloadMultiResource:
         tmp_path: Path,
     ) -> None:
         """Multiple -r flags are rejected even with --dry-run."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         with (
             patch(

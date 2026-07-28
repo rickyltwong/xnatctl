@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
+from conftest import make_response
 
 from xnatctl.services.admin import AdminService
 
@@ -24,15 +24,6 @@ def service(mock_client: MagicMock) -> AdminService:
     return AdminService(mock_client)
 
 
-def _resp(json_data: dict | list | str, content_type: str = "application/json") -> MagicMock:
-    """Build a mock httpx.Response."""
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = json_data
-    resp.text = str(json_data)
-    resp.headers = {"content-type": content_type}
-    return resp
-
-
 class TestRefreshCatalogs:
     """Tests for AdminService.refresh_catalogs."""
 
@@ -40,7 +31,7 @@ class TestRefreshCatalogs:
         self, service: AdminService, mock_client: MagicMock
     ) -> None:
         """Refresh specified experiments."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         result = service.refresh_catalogs("PROJ01", experiments=["E001", "E002"], parallel=False)
 
@@ -52,10 +43,10 @@ class TestRefreshCatalogs:
         self, service: AdminService, mock_client: MagicMock
     ) -> None:
         """When no experiments given, fetches them from the project."""
-        mock_client.get.return_value = _resp(
+        mock_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"ID": "E001"}, {"ID": "E002"}]}}
         )
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         result = service.refresh_catalogs("PROJ01", parallel=False)
 
@@ -64,10 +55,10 @@ class TestRefreshCatalogs:
 
     def test_refresh_with_limit(self, service: AdminService, mock_client: MagicMock) -> None:
         """Limit truncates experiment list."""
-        mock_client.get.return_value = _resp(
+        mock_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"ID": f"E{i:03d}"} for i in range(10)]}}
         )
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         result = service.refresh_catalogs("PROJ01", limit=3, parallel=False)
 
@@ -75,7 +66,7 @@ class TestRefreshCatalogs:
 
     def test_refresh_with_options(self, service: AdminService, mock_client: MagicMock) -> None:
         """Options are joined and passed."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         service.refresh_catalogs(
             "PROJ01", experiments=["E001"], options=["checksum", "delete"], parallel=False
@@ -90,7 +81,7 @@ class TestRefreshCatalogs:
         def put_side_effect(path: str, **kwargs: object) -> MagicMock:
             if "E002" in path:
                 raise RuntimeError("server error")
-            return _resp("", content_type="text/plain")
+            return make_response("", content_type="text/plain")
 
         mock_client.put.side_effect = put_side_effect
 
@@ -102,7 +93,7 @@ class TestRefreshCatalogs:
 
     def test_refresh_progress_callback(self, service: AdminService, mock_client: MagicMock) -> None:
         """Progress callback is invoked."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
         callback = MagicMock()
 
         service.refresh_catalogs(
@@ -117,7 +108,7 @@ class TestAddUserToGroups:
 
     def test_add_user(self, service: AdminService, mock_client: MagicMock) -> None:
         """Add user to groups."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         result = service.add_user_to_groups("testuser", ["member"], projects=["PROJ01"])
 
@@ -135,7 +126,7 @@ class TestAddUserToGroups:
 
     def test_add_user_without_projects(self, service: AdminService, mock_client: MagicMock) -> None:
         """Groups without project expansion."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         result = service.add_user_to_groups("testuser", ["PROJ01_member"])
 
@@ -147,7 +138,7 @@ class TestRemoveUserFromGroups:
 
     def test_remove_user(self, service: AdminService, mock_client: MagicMock) -> None:
         """Remove user from groups."""
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
 
         result = service.remove_user_from_groups("testuser", ["member"], projects=["PROJ01"])
 
@@ -168,7 +159,7 @@ class TestListUsers:
     def test_list_all_users(self, service: AdminService, mock_client: MagicMock) -> None:
         """List all users."""
         rows = [{"login": "admin"}, {"login": "user1"}]
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.list_users()
 
@@ -178,7 +169,7 @@ class TestListUsers:
 
     def test_list_project_users(self, service: AdminService, mock_client: MagicMock) -> None:
         """List users filtered by project."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list_users(project="PROJ01")
 
@@ -192,7 +183,7 @@ class TestGetUser:
     def test_get_user_dict(self, service: AdminService, mock_client: MagicMock) -> None:
         """Get user returns dict when response is dict."""
         user = {"login": "admin", "email": "admin@example.org"}
-        mock_client.get.return_value = _resp(user)
+        mock_client.get.return_value = make_response(user)
 
         result = service.get_user("admin")
 
@@ -200,7 +191,9 @@ class TestGetUser:
 
     def test_get_user_from_result_set(self, service: AdminService, mock_client: MagicMock) -> None:
         """Get user returns full dict when response is a dict (isinstance check matches first)."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [{"login": "admin"}]}})
+        mock_client.get.return_value = make_response(
+            {"ResultSet": {"Result": [{"login": "admin"}]}}
+        )
 
         result = service.get_user("admin")
 
@@ -211,7 +204,7 @@ class TestGetUser:
         self, service: AdminService, mock_client: MagicMock
     ) -> None:
         """Get user returns empty dict when response is an empty list."""
-        mock_client.get.return_value = _resp([])
+        mock_client.get.return_value = make_response([])
 
         result = service.get_user("nobody")
 
@@ -224,7 +217,7 @@ class TestAuditLog:
     def test_audit_log_all(self, service: AdminService, mock_client: MagicMock) -> None:
         """Get all audit entries."""
         rows = [{"action": "LOGIN", "username": "admin"}]
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.audit_log()
 
@@ -234,7 +227,7 @@ class TestAuditLog:
 
     def test_audit_log_with_filters(self, service: AdminService, mock_client: MagicMock) -> None:
         """Audit log passes filter params."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.audit_log(project="PROJ01", username="admin", action="LOGIN", since="7d", limit=50)
 
@@ -251,7 +244,7 @@ class TestGetServerInfo:
 
     def test_get_server_info(self, service: AdminService, mock_client: MagicMock) -> None:
         """get_server_info returns version dict."""
-        mock_client.get.return_value = _resp({"version": "1.8.5"})
+        mock_client.get.return_value = make_response({"version": "1.8.5"})
 
         result = service.get_server_info()
 
@@ -263,7 +256,7 @@ class TestGetSiteConfig:
 
     def test_get_all_config(self, service: AdminService, mock_client: MagicMock) -> None:
         """Get all site config."""
-        mock_client.get.return_value = _resp({"siteId": "XNAT"})
+        mock_client.get.return_value = make_response({"siteId": "XNAT"})
 
         result = service.get_site_config()
 
@@ -273,7 +266,7 @@ class TestGetSiteConfig:
 
     def test_get_specific_config(self, service: AdminService, mock_client: MagicMock) -> None:
         """Get specific config key."""
-        mock_client.get.return_value = _resp({"value": "XNAT"})
+        mock_client.get.return_value = make_response({"value": "XNAT"})
 
         service.get_site_config(key="siteId")
 
@@ -286,7 +279,7 @@ class TestSetSiteConfig:
 
     def test_set_site_config(self, service: AdminService, mock_client: MagicMock) -> None:
         """set_site_config issues PUT with json value."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         assert service.set_site_config("siteId", "NEW_XNAT") is True
         call_path = mock_client.put.call_args[0][0]

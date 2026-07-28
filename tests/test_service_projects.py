@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
+from conftest import make_response
 
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.project import Project
@@ -26,17 +26,6 @@ def service(mock_client: MagicMock) -> ProjectService:
     return ProjectService(mock_client)
 
 
-def _make_response(
-    json_data: dict | list | str, content_type: str = "application/json"
-) -> MagicMock:
-    """Build a mock httpx.Response."""
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = json_data
-    resp.text = str(json_data)
-    resp.headers = {"content-type": content_type}
-    return resp
-
-
 SAMPLE_PROJECT_ROW = {
     "ID": "PROJ01",
     "label": "PROJ01",
@@ -54,7 +43,7 @@ class TestProjectList:
 
     def test_list_top_level_array(self, service: ProjectService, mock_client: MagicMock) -> None:
         """List tolerates top-level JSON arrays."""
-        mock_client.get.return_value = _make_response([SAMPLE_PROJECT_ROW])
+        mock_client.get.return_value = make_response([SAMPLE_PROJECT_ROW])
 
         result = service.list()
 
@@ -63,7 +52,7 @@ class TestProjectList:
 
     def test_list_returns_projects(self, service: ProjectService, mock_client: MagicMock) -> None:
         """List returns Project objects parsed from ResultSet."""
-        mock_client.get.return_value = _make_response(
+        mock_client.get.return_value = make_response(
             {"ResultSet": {"Result": [SAMPLE_PROJECT_ROW]}}
         )
 
@@ -80,7 +69,7 @@ class TestProjectList:
         rows = [
             {**SAMPLE_PROJECT_ROW, "ID": f"PROJ{i:02d}", "label": f"PROJ{i:02d}"} for i in range(5)
         ]
-        mock_client.get.return_value = _make_response({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.list(limit=2)
 
@@ -88,7 +77,7 @@ class TestProjectList:
 
     def test_list_accessible_param(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Accessible flag is passed as query param."""
-        mock_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list(accessible=True)
 
@@ -97,7 +86,7 @@ class TestProjectList:
 
     def test_list_empty(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Empty ResultSet returns empty list."""
-        mock_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         result = service.list()
 
@@ -109,7 +98,7 @@ class TestProjectGet:
 
     def test_get_items_response(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Get handles `items[]` detail responses."""
-        mock_client.get.return_value = _make_response(
+        mock_client.get.return_value = make_response(
             {
                 "items": [
                     {
@@ -131,7 +120,7 @@ class TestProjectGet:
 
     def test_get_returns_project(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Get returns a single Project."""
-        mock_client.get.return_value = _make_response(
+        mock_client.get.return_value = make_response(
             {"ResultSet": {"Result": [SAMPLE_PROJECT_ROW]}}
         )
 
@@ -145,7 +134,7 @@ class TestProjectGet:
         self, service: ProjectService, mock_client: MagicMock
     ) -> None:
         """Get raises ResourceNotFoundError when results are empty."""
-        mock_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         with pytest.raises(ResourceNotFoundError):
             service.get("MISSING")
@@ -165,8 +154,8 @@ class TestProjectCreate:
         self, service: ProjectService, mock_client: MagicMock
     ) -> None:
         """Create issues PUT then fetches the project."""
-        mock_client.put.return_value = _make_response("", content_type="text/plain")
-        mock_client.get.return_value = _make_response(
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+        mock_client.get.return_value = make_response(
             {"ResultSet": {"Result": [SAMPLE_PROJECT_ROW]}}
         )
 
@@ -180,8 +169,8 @@ class TestProjectCreate:
 
     def test_create_optional_params(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Optional params are only sent when provided."""
-        mock_client.put.return_value = _make_response("", content_type="text/plain")
-        mock_client.get.return_value = _make_response(
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+        mock_client.get.return_value = make_response(
             {"ResultSet": {"Result": [SAMPLE_PROJECT_ROW]}}
         )
 
@@ -197,7 +186,7 @@ class TestProjectDelete:
 
     def test_delete_returns_true(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Delete returns True on success."""
-        mock_client.delete.return_value = _make_response("")
+        mock_client.delete.return_value = make_response("")
 
         assert service.delete("PROJ01") is True
         mock_client.delete.assert_called_once()
@@ -206,7 +195,7 @@ class TestProjectDelete:
         self, service: ProjectService, mock_client: MagicMock
     ) -> None:
         """Delete passes removeFiles param."""
-        mock_client.delete.return_value = _make_response("")
+        mock_client.delete.return_value = make_response("")
 
         service.delete("PROJ01", remove_files=True)
 
@@ -220,7 +209,7 @@ class TestProjectGetSubjects:
     def test_get_subjects(self, service: ProjectService, mock_client: MagicMock) -> None:
         """get_subjects returns raw dicts."""
         rows = [{"ID": "SUBJ01", "label": "Subject 1"}]
-        mock_client.get.return_value = _make_response({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.get_subjects("PROJ01")
 
@@ -230,7 +219,7 @@ class TestProjectGetSubjects:
     def test_get_subjects_with_limit(self, service: ProjectService, mock_client: MagicMock) -> None:
         """Limit truncates subject results."""
         rows = [{"ID": f"SUBJ{i:02d}"} for i in range(5)]
-        mock_client.get.return_value = _make_response({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.get_subjects("PROJ01", limit=2)
 
@@ -243,7 +232,7 @@ class TestProjectGetSessions:
     def test_get_sessions(self, service: ProjectService, mock_client: MagicMock) -> None:
         """get_sessions returns raw dicts."""
         rows = [{"ID": "EXP01", "label": "Session 1"}]
-        mock_client.get.return_value = _make_response({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.get_sessions("PROJ01")
 
@@ -256,7 +245,7 @@ class TestProjectSetAccessibility:
 
     def test_set_accessibility(self, service: ProjectService, mock_client: MagicMock) -> None:
         """set_accessibility calls PUT on correct path."""
-        mock_client.put.return_value = _make_response("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         result = service.set_accessibility("PROJ01", "public")
 

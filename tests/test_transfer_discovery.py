@@ -4,21 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
+from conftest import make_response
 
 from xnatctl.services.transfer.discovery import (
     ChangeType,
     DiscoveryService,
     _parse_xnat_timestamp,
 )
-
-
-def _make_response(json_data: dict) -> MagicMock:
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = json_data
-    resp.headers = {"content-type": "application/json"}
-    return resp
 
 
 @pytest.fixture
@@ -59,7 +52,7 @@ class TestDiscoverSubjects:
     def test_all_new_when_no_last_sync(
         self, service: DiscoveryService, mock_client: MagicMock
     ) -> None:
-        mock_client.get.return_value = _make_response(
+        mock_client.get.return_value = make_response(
             {
                 "ResultSet": {
                     "Result": [
@@ -82,7 +75,7 @@ class TestDiscoverSubjects:
         assert entities[0].local_id == "XNAT_S001"
 
     def test_classifies_modified(self, service: DiscoveryService, mock_client: MagicMock) -> None:
-        mock_client.get.return_value = _make_response(
+        mock_client.get.return_value = make_response(
             {
                 "ResultSet": {
                     "Result": [
@@ -109,7 +102,7 @@ class TestDiscoverSubjects:
     def test_missing_last_modified_falls_back_to_insert_date(
         self, service: DiscoveryService, mock_client: MagicMock
     ) -> None:
-        mock_client.get.return_value = _make_response(
+        mock_client.get.return_value = make_response(
             {
                 "ResultSet": {
                     "Result": [
@@ -130,7 +123,7 @@ class TestDiscoverSubjects:
         assert entities[0].insert_date == entities[0].last_modified
 
     def test_skips_shared_subjects(self, service: DiscoveryService, mock_client: MagicMock) -> None:
-        mock_client.get.return_value = _make_response(
+        mock_client.get.return_value = make_response(
             {
                 "ResultSet": {
                     "Result": [
@@ -155,7 +148,7 @@ class TestDiscoverExperiments:
     def test_discovers_experiments_for_subject(
         self, service: DiscoveryService, mock_client: MagicMock
     ) -> None:
-        mock_client.get.return_value = _make_response(
+        mock_client.get.return_value = make_response(
             {
                 "ResultSet": {
                     "Result": [

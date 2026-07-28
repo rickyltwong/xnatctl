@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from conftest import make_response
 
 from xnatctl.core.exceptions import OperationError, ResourceNotFoundError
 from xnatctl.services.pipelines import PipelineService
@@ -25,22 +26,13 @@ def service(mock_client: MagicMock) -> PipelineService:
     return PipelineService(mock_client)
 
 
-def _resp(json_data: dict | list | str, content_type: str = "application/json") -> MagicMock:
-    """Build a mock httpx.Response."""
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = json_data
-    resp.text = str(json_data)
-    resp.headers = {"content-type": content_type}
-    return resp
-
-
 class TestPipelineList:
     """Tests for PipelineService.list."""
 
     def test_list_all(self, service: PipelineService, mock_client: MagicMock) -> None:
         """List without project uses /data/pipelines."""
         rows = [{"name": "freesurfer", "description": "FreeSurfer recon-all"}]
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.list()
 
@@ -51,7 +43,7 @@ class TestPipelineList:
 
     def test_list_by_project(self, service: PipelineService, mock_client: MagicMock) -> None:
         """List by project uses project-scoped path."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list(project="PROJ01")
 
@@ -65,7 +57,7 @@ class TestPipelineGet:
     def test_get_returns_dict(self, service: PipelineService, mock_client: MagicMock) -> None:
         """Get returns pipeline dict when response is a dict."""
         pipeline = {"name": "freesurfer", "version": "7.0"}
-        mock_client.get.return_value = _resp(pipeline)
+        mock_client.get.return_value = make_response(pipeline)
 
         result = service.get("freesurfer")
 
@@ -77,7 +69,9 @@ class TestPipelineGet:
         The isinstance(data, dict) check matches before _extract_results is called,
         so the full response dict is returned.
         """
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [{"name": "freesurfer"}]}})
+        mock_client.get.return_value = make_response(
+            {"ResultSet": {"Result": [{"name": "freesurfer"}]}}
+        )
 
         result = service.get("freesurfer")
 
@@ -97,7 +91,7 @@ class TestPipelineRun:
 
     def test_run_returns_job_info(self, service: PipelineService, mock_client: MagicMock) -> None:
         """Run returns success dict with job_id."""
-        mock_client.post.return_value = _resp({"jobId": "JOB123"})
+        mock_client.post.return_value = make_response({"jobId": "JOB123"})
 
         result = service.run("freesurfer", "E001")
 
@@ -119,7 +113,7 @@ class TestPipelineRun:
 
     def test_run_with_params(self, service: PipelineService, mock_client: MagicMock) -> None:
         """Run passes additional params."""
-        mock_client.post.return_value = _resp({"jobId": "JOB789"})
+        mock_client.post.return_value = make_response({"jobId": "JOB789"})
 
         service.run("freesurfer", "E001", params={"reconall_args": "-all"})
 
@@ -132,7 +126,7 @@ class TestPipelineStatus:
 
     def test_status_dict(self, service: PipelineService, mock_client: MagicMock) -> None:
         """Status returns dict when response is dict."""
-        mock_client.get.return_value = _resp({"job_id": "JOB123", "status": "Running"})
+        mock_client.get.return_value = make_response({"job_id": "JOB123", "status": "Running"})
 
         result = service.status("JOB123")
 
@@ -140,7 +134,9 @@ class TestPipelineStatus:
 
     def test_status_from_result_set(self, service: PipelineService, mock_client: MagicMock) -> None:
         """Status returns full dict when response is a dict (isinstance check matches first)."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [{"status": "Complete"}]}})
+        mock_client.get.return_value = make_response(
+            {"ResultSet": {"Result": [{"status": "Complete"}]}}
+        )
 
         result = service.status("JOB123")
 
@@ -152,7 +148,7 @@ class TestPipelineStatus:
     ) -> None:
         """Status returns unknown fallback when response is a non-dict non-list."""
         # _get returns resp.json() which is a list here (not a dict)
-        mock_client.get.return_value = _resp([])
+        mock_client.get.return_value = make_response([])
 
         result = service.status("JOB123")
 
@@ -169,7 +165,7 @@ class TestPipelineWait:
         """Wait returns when job reaches terminal state."""
         mock_time.time.side_effect = [0.0, 1.0]
         mock_time.sleep = MagicMock()
-        mock_client.get.return_value = _resp({"status": "Complete"})
+        mock_client.get.return_value = make_response({"status": "Complete"})
 
         result = service.wait("JOB123")
 
@@ -182,7 +178,7 @@ class TestPipelineWait:
         """Wait raises OperationError on timeout."""
         mock_time.time.side_effect = [0.0, 9999.0]
         mock_time.sleep = MagicMock()
-        mock_client.get.return_value = _resp({"status": "Running"})
+        mock_client.get.return_value = make_response({"status": "Running"})
 
         with pytest.raises(OperationError):
             service.wait("JOB123", timeout=10)
@@ -194,7 +190,7 @@ class TestPipelineWait:
         """Wait raises OperationError when job fails."""
         mock_time.time.side_effect = [0.0, 1.0]
         mock_time.sleep = MagicMock()
-        mock_client.get.return_value = _resp({"status": "Failed", "message": "OOM"})
+        mock_client.get.return_value = make_response({"status": "Failed", "message": "OOM"})
 
         with pytest.raises(OperationError):
             service.wait("JOB123")
@@ -206,7 +202,7 @@ class TestPipelineWait:
         """Wait invokes progress callback on each poll."""
         mock_time.time.side_effect = [0.0, 1.0]
         mock_time.sleep = MagicMock()
-        mock_client.get.return_value = _resp({"status": "Complete"})
+        mock_client.get.return_value = make_response({"status": "Complete"})
         callback = MagicMock()
 
         service.wait("JOB123", progress_callback=callback)
@@ -219,7 +215,7 @@ class TestPipelineCancel:
 
     def test_cancel(self, service: PipelineService, mock_client: MagicMock) -> None:
         """Cancel issues POST with kill action."""
-        mock_client.post.return_value = _resp("", content_type="text/plain")
+        mock_client.post.return_value = make_response("", content_type="text/plain")
 
         assert service.cancel("JOB123") is True
         post_params = mock_client.post.call_args[1]["params"]
@@ -232,7 +228,7 @@ class TestPipelineListJobs:
     def test_list_jobs_all(self, service: PipelineService, mock_client: MagicMock) -> None:
         """List all jobs."""
         rows = [{"job_id": "JOB1"}, {"job_id": "JOB2"}]
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.list_jobs()
 
@@ -244,7 +240,7 @@ class TestPipelineListJobs:
         self, service: PipelineService, mock_client: MagicMock
     ) -> None:
         """List jobs filtered by experiment."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list_jobs(experiment_id="E001")
 
@@ -253,7 +249,7 @@ class TestPipelineListJobs:
 
     def test_list_jobs_by_project(self, service: PipelineService, mock_client: MagicMock) -> None:
         """List jobs filtered by project."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list_jobs(project="PROJ01")
 
@@ -262,7 +258,7 @@ class TestPipelineListJobs:
 
     def test_list_jobs_with_status(self, service: PipelineService, mock_client: MagicMock) -> None:
         """Status filter is passed as param."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list_jobs(status="Running")
 

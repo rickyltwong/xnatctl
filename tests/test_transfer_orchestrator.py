@@ -8,8 +8,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
+from conftest import make_response
 
 from xnatctl.core.state import EntityStatus, SyncStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
@@ -19,15 +19,6 @@ from xnatctl.services.transfer.orchestrator import (
     TransferResult,
 )
 from xnatctl.services.transfer.poller import DeferredExperiment
-
-
-def _make_response(json_data: dict) -> MagicMock:
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = json_data
-    resp.text = str(json_data)
-    resp.headers = {"content-type": "application/json"}
-    resp.status_code = 200
-    return resp
 
 
 @pytest.fixture
@@ -97,7 +88,7 @@ class TestDryRun:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        source_client.get.return_value = _make_response(
+        source_client.get.return_value = make_response(
             {
                 "ResultSet": {
                     "Result": [
@@ -126,7 +117,7 @@ class TestDryRun:
         source_client: MagicMock,
         state_store: TransferStateStore,
     ) -> None:
-        source_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
+        source_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         orchestrator.run(dry_run=True)
 
@@ -153,7 +144,7 @@ class TestRemoteIdMapping:
         # Discovery returns one subject with no experiments
         source_client.get.side_effect = [
             # discover_subjects
-            _make_response(
+            make_response(
                 {
                     "ResultSet": {
                         "Result": [
@@ -169,7 +160,7 @@ class TestRemoteIdMapping:
                 }
             ),
             # discover_experiments (empty)
-            _make_response({"ResultSet": {"Result": []}}),
+            make_response({"ResultSet": {"Result": []}}),
         ]
 
         # create_subject returns a URI with the dest-assigned ID
@@ -200,7 +191,7 @@ class TestSuccessPropagation:
         """Verify result.success becomes False when an experiment fails."""
         source_client.get.side_effect = [
             # discover_subjects
-            _make_response(
+            make_response(
                 {
                     "ResultSet": {
                         "Result": [
@@ -215,7 +206,7 @@ class TestSuccessPropagation:
                 }
             ),
             # discover_experiments
-            _make_response(
+            make_response(
                 {
                     "ResultSet": {
                         "Result": [
@@ -231,11 +222,11 @@ class TestSuccessPropagation:
                 }
             ),
             # discover_scans (empty -> no DICOM -> experiment pre-created)
-            _make_response({"ResultSet": {"Result": []}}),
+            make_response({"ResultSet": {"Result": []}}),
         ]
 
         # check_experiment_exists -> not found, then create fails
-        dest_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
+        dest_client.get.return_value = make_response({"ResultSet": {"Result": []}})
         # create_subject succeeds, create_experiment raises
         subject_resp = MagicMock()
         subject_resp.text = "/data/subjects/XNAT_S999"
@@ -1155,7 +1146,7 @@ class TestPipelinedTransfer:
     @staticmethod
     def _subject_response() -> MagicMock:
         """Build mock discover_subjects HTTP response."""
-        return _make_response(
+        return make_response(
             {
                 "ResultSet": {
                     "Result": [
@@ -1190,7 +1181,7 @@ class TestPipelinedTransfer:
             }
             for eid, elabel, xsi in experiments
         ]
-        return _make_response({"ResultSet": {"Result": rows}})
+        return make_response({"ResultSet": {"Result": rows}})
 
     @staticmethod
     def _setup_fast_poller(orchestrator: TransferOrchestrator) -> None:
@@ -1726,12 +1717,12 @@ class TestDestReconciliation:
             }
             for sid, slabel in subjects
         ]
-        return _make_response({"ResultSet": {"Result": rows}})
+        return make_response({"ResultSet": {"Result": rows}})
 
     @staticmethod
     def _experiments_response() -> MagicMock:
         """Empty experiments response."""
-        return _make_response({"ResultSet": {"Result": []}})
+        return make_response({"ResultSet": {"Result": []}})
 
     def test_reconcile_re_syncs_deleted_subject(
         self,
@@ -1766,9 +1757,9 @@ class TestDestReconciliation:
         # Dest: subject does NOT exist (deleted)
         dest_client.get.side_effect = [
             # list_dest_subjects: empty (subject was deleted)
-            _make_response({"ResultSet": {"Result": []}}),
+            make_response({"ResultSet": {"Result": []}}),
             # conflict_checker.check_subject: empty (subject gone)
-            _make_response({"ResultSet": {"Result": []}}),
+            make_response({"ResultSet": {"Result": []}}),
         ]
 
         # create_subject returns URI
@@ -1804,7 +1795,7 @@ class TestDestReconciliation:
         ]
 
         # Dest: subject still exists
-        dest_client.get.return_value = _make_response(
+        dest_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}
         )
 
@@ -1829,7 +1820,7 @@ class TestDestReconciliation:
         ]
 
         # No dest conflict check since no prior mapping
-        dest_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
+        dest_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         subject_resp = MagicMock()
         subject_resp.text = "/data/subjects/XNAT_S001"
@@ -1860,12 +1851,12 @@ class TestExperimentReconciliation:
             }
             for sid, slabel in subjects
         ]
-        return _make_response({"ResultSet": {"Result": rows}})
+        return make_response({"ResultSet": {"Result": rows}})
 
     @staticmethod
     def _experiments_response() -> MagicMock:
         """Empty experiments response."""
-        return _make_response({"ResultSet": {"Result": []}})
+        return make_response({"ResultSet": {"Result": []}})
 
     def test_reconcile_re_syncs_subject_with_deleted_experiment(
         self,
@@ -1912,11 +1903,11 @@ class TestExperimentReconciliation:
         # Dest: subject exists but experiment does NOT
         dest_client.get.side_effect = [
             # list_dest_subjects: subject still there
-            _make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
+            make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
             # list_dest_experiments: experiment missing
-            _make_response({"ResultSet": {"Result": []}}),
+            make_response({"ResultSet": {"Result": []}}),
             # conflict_checker.check_subject
-            _make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
+            make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
         ]
 
         subject_resp = MagicMock()
@@ -1965,9 +1956,9 @@ class TestExperimentReconciliation:
         # Dest: both subject and experiment exist
         dest_client.get.side_effect = [
             # list_dest_subjects
-            _make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
+            make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
             # list_dest_experiments
-            _make_response({"ResultSet": {"Result": [{"ID": "XNAT_E999"}]}}),
+            make_response({"ResultSet": {"Result": [{"ID": "XNAT_E999"}]}}),
         ]
 
         result = orchestrator.run()
@@ -1987,7 +1978,7 @@ class TestExperimentReconciliation:
             self._experiments_response(),
         ]
 
-        dest_client.get.return_value = _make_response({"ResultSet": {"Result": []}})
+        dest_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         subject_resp = MagicMock()
         subject_resp.text = "/data/subjects/XNAT_S001"

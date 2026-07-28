@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from conftest import make_response
 
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.resource import Resource, ResourceFile
@@ -27,15 +28,6 @@ def service(mock_client: MagicMock) -> ResourceService:
     return ResourceService(mock_client)
 
 
-def _resp(json_data: dict | list | str, content_type: str = "application/json") -> MagicMock:
-    """Build a mock httpx.Response."""
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = json_data
-    resp.text = str(json_data)
-    resp.headers = {"content-type": content_type}
-    return resp
-
-
 SAMPLE_RESOURCE = {
     "ID": "RES001",
     "label": "DICOM",
@@ -51,7 +43,7 @@ class TestResourceList:
 
     def test_list_session_resources(self, service: ResourceService, mock_client: MagicMock) -> None:
         """List session-level resources."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.list("E001")
 
@@ -64,7 +56,7 @@ class TestResourceList:
 
     def test_list_scan_resources(self, service: ResourceService, mock_client: MagicMock) -> None:
         """List scan-level resources."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.list("E001", scan_id="1")
 
@@ -74,7 +66,7 @@ class TestResourceList:
 
     def test_list_with_project(self, service: ResourceService, mock_client: MagicMock) -> None:
         """List with project uses project-scoped path."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.list("E001", project="PROJ01")
 
@@ -104,7 +96,7 @@ class TestResourceList:
                 "URI": "/data/experiments/E001/resources/Other",
             },
         ]
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.list("E001")
 
@@ -128,7 +120,7 @@ class TestResourceList:
                 "URI": "/data/experiments/E001/resources/Physio",
             }
         ]
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.list("E001")
 
@@ -140,7 +132,7 @@ class TestResourceGet:
 
     def test_get_resource(self, service: ResourceService, mock_client: MagicMock) -> None:
         """Get resource by label."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.get("E001", "DICOM")
 
@@ -149,7 +141,7 @@ class TestResourceGet:
 
     def test_get_not_found(self, service: ResourceService, mock_client: MagicMock) -> None:
         """Get raises ResourceNotFoundError when label not matched."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         with pytest.raises(ResourceNotFoundError):
             service.get("E001", "NIFTI")
@@ -161,7 +153,7 @@ class TestResourceListFiles:
     def test_list_files(self, service: ResourceService, mock_client: MagicMock) -> None:
         """list_files returns ResourceFile objects."""
         file_row = {"Name": "scan001.dcm", "Size": 524288, "URI": "/files/scan001.dcm"}
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [file_row]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [file_row]}})
 
         result = service.list_files("E001", "DICOM")
 
@@ -172,7 +164,7 @@ class TestResourceListFiles:
 
     def test_list_files_scan_level(self, service: ResourceService, mock_client: MagicMock) -> None:
         """list_files at scan level uses correct path."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list_files("E001", "DICOM", scan_id="1", project="PROJ01")
 
@@ -185,8 +177,8 @@ class TestResourceCreate:
 
     def test_create_resource(self, service: ResourceService, mock_client: MagicMock) -> None:
         """Create issues PUT then fetches the resource."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.create("E001", "DICOM", format="DICOM", content="raw")
 
@@ -198,8 +190,8 @@ class TestResourceCreate:
 
     def test_create_scan_level(self, service: ResourceService, mock_client: MagicMock) -> None:
         """Create at scan level uses correct path."""
-        mock_client.put.return_value = _resp("", content_type="text/plain")
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         service.create("E001", "DICOM", scan_id="1")
 
@@ -214,7 +206,7 @@ class TestResourceCreate:
         mock_client.put.side_effect = httpx.HTTPStatusError(
             "409 Conflict", request=resp_409.request, response=resp_409
         )
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.create("E001", "DICOM")
 
@@ -239,7 +231,7 @@ class TestResourceDelete:
 
     def test_delete(self, service: ResourceService, mock_client: MagicMock) -> None:
         """Delete returns True."""
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
 
         assert service.delete("E001", "DICOM") is True
 
@@ -247,7 +239,7 @@ class TestResourceDelete:
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
         """Delete passes removeFiles=true by default."""
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
 
         service.delete("E001", "DICOM")
 
@@ -258,7 +250,7 @@ class TestResourceDelete:
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
         """Delete without remove_files omits param."""
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
 
         service.delete("E001", "DICOM", remove_files=False)
 
@@ -280,7 +272,7 @@ class TestResourceUploadFile:
         """Upload reads file and calls client.put."""
         test_file = tmp_path / "test.json"
         test_file.write_text('{"key": "value"}')
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         result = service.upload_file("E001", "DATA", test_file)
 
@@ -295,7 +287,7 @@ class TestResourceUploadFile:
         """ZIP files get application/zip content type."""
         test_file = tmp_path / "archive.zip"
         test_file.write_bytes(b"PK\x03\x04fake")
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         service.upload_file("E001", "DATA", test_file)
 
@@ -308,7 +300,7 @@ class TestResourceUploadFile:
         """Extract flag is passed as param."""
         test_file = tmp_path / "data.zip"
         test_file.write_bytes(b"fake")
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         result = service.upload_file("E001", "DATA", test_file, extract=True)
 
@@ -322,7 +314,7 @@ class TestResourceUploadFile:
         """Raw-body file writes must carry inbody=true (regression, issue #21)."""
         test_file = tmp_path / "params.json"
         test_file.write_text('{"k": "v"}')
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         service.upload_file("E001", "BIDS", test_file, project="PROJ")
 
@@ -335,7 +327,7 @@ class TestResourceUploadFile:
         """Body is sent through content= (raw stream), not the form data= param."""
         test_file = tmp_path / "blob.bin"
         test_file.write_bytes(b"\x00\x01\x02payload")
-        mock_client.put.return_value = _resp("", content_type="text/plain")
+        mock_client.put.return_value = make_response("", content_type="text/plain")
 
         service.upload_file("E001", "DATA", test_file)
 

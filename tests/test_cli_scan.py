@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import make_authenticated_context
 
 from xnatctl.cli.common import Context
 from xnatctl.cli.main import cli
-from xnatctl.core.config import Config, Profile
 from xnatctl.models.progress import DownloadSummary
 
 
@@ -18,37 +18,6 @@ from xnatctl.models.progress import DownloadSummary
 def runner() -> CliRunner:
     """Create a CLI test runner."""
     return CliRunner()
-
-
-def _make_authenticated_context(
-    default_project: str | None = "TESTPROJ",
-) -> tuple[Context, MagicMock]:
-    """Build a Context with a mocked authenticated client.
-
-    Args:
-        default_project: Default project for the profile.
-
-    Returns:
-        Tuple of (Context, mock_client).
-    """
-    ctx = Context()
-    ctx.config = Config(
-        profiles={
-            "default": Profile(
-                url="https://xnat.example.org",
-                username="user",
-                password="pass",
-                default_project=default_project,
-            ),
-        },
-    )
-    mock_client = MagicMock()
-    mock_client.is_authenticated = True
-    mock_client.base_url = "https://xnat.example.org"
-    mock_client.whoami.return_value = {"login": "user"}
-    ctx.client = cast(Any, mock_client)
-    ctx.auth_manager = MagicMock()
-    return ctx, mock_client
 
 
 # =============================================================================
@@ -71,7 +40,7 @@ class TestScanList:
 
     def test_scan_list_happy_path(self, runner: CliRunner) -> None:
         """List scans for a session returns table output."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:mrSessionData"),
             _scan_results(
@@ -110,7 +79,7 @@ class TestScanList:
 
     def test_scan_list_with_project(self, runner: CliRunner) -> None:
         """List scans with -P scopes to project endpoint."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
@@ -131,7 +100,7 @@ class TestScanList:
 
     def test_scan_list_without_project_uses_direct_endpoint(self, runner: CliRunner) -> None:
         """Without -P uses /data/experiments endpoint."""
-        ctx, mock_client = _make_authenticated_context(default_project=None)
+        ctx, mock_client = make_authenticated_context(default_project=None)
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
@@ -160,7 +129,7 @@ class TestScanList:
 
         # Case A: ResourceNotFoundError on the inspect probe is swallowed; the
         # scan list call still runs and returns the same output as before.
-        ctx, mock_client = _make_authenticated_context(default_project=None)
+        ctx, mock_client = make_authenticated_context(default_project=None)
         mock_client.get_json.side_effect = [
             ResourceNotFoundError("session", "XNAT_E00001"),
             _scan_results(),
@@ -179,7 +148,7 @@ class TestScanList:
         assert mock_client.get_json.call_count == 2
 
         # Case B: a non-404 (network) error must propagate, not be swallowed.
-        ctx2, mock_client2 = _make_authenticated_context(default_project=None)
+        ctx2, mock_client2 = make_authenticated_context(default_project=None)
         mock_client2.get_json.side_effect = NetworkError("upstream timeout")
 
         with (
@@ -196,7 +165,7 @@ class TestScanList:
 
     def test_scan_list_default_project_fallback(self, runner: CliRunner) -> None:
         """Falls back to profile default_project for label resolution."""
-        ctx, mock_client = _make_authenticated_context(default_project="FALLBACK")
+        ctx, mock_client = make_authenticated_context(default_project="FALLBACK")
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
@@ -216,7 +185,7 @@ class TestScanList:
 
     def test_scan_list_json_output(self, runner: CliRunner) -> None:
         """JSON output returns scan data."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results(
@@ -246,7 +215,7 @@ class TestScanList:
 
     def test_scan_list_quiet(self, runner: CliRunner) -> None:
         """Quiet mode outputs IDs only."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results(
@@ -276,7 +245,7 @@ class TestScanList:
 
     def test_scan_list_empty(self, runner: CliRunner) -> None:
         """A session with genuinely no scans does not error (fallback also empty)."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results(),  # unfiltered listing empty
@@ -302,7 +271,7 @@ class TestScanList:
         xsiType (which would drop every scan). The unfiltered listing returns
         all three scans and no fallback call is needed.
         """
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:optSessionData"),
             _scan_results(
@@ -333,7 +302,7 @@ class TestScanList:
 
     def test_scan_list_mr_session_lists_unfiltered(self, runner: CliRunner) -> None:
         """Imaging (MR) sessions list scans without a guessed xsiType filter."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:mrSessionData"),
             _scan_results(
@@ -363,7 +332,7 @@ class TestScanList:
         ``/scans`` request; for those, ``scan list`` retries with the matching
         scan xsiType (``xnat:eegScanData``) rather than reporting no scans.
         """
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:eegSessionData"),
             _scan_results(),  # unfiltered listing returns nothing
@@ -397,7 +366,7 @@ class TestScanShow:
 
     def test_scan_show_happy_path(self, runner: CliRunner) -> None:
         """Show scan details by scan ID."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
             if url.endswith("/resources"):
@@ -431,7 +400,7 @@ class TestScanShow:
 
     def test_scan_show_items_response(self, runner: CliRunner) -> None:
         """Show scan details from an `items[]` response shape."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             {
                 "items": [
@@ -479,7 +448,7 @@ class TestScanShow:
 
     def test_scan_show_with_project(self, runner: CliRunner) -> None:
         """Show scan with -P resolves to the canonical experiment ID for nested calls."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             {
                 "ResultSet": {
@@ -527,7 +496,7 @@ class TestScanShow:
 
     def test_scan_show_not_found(self, runner: CliRunner) -> None:
         """Non-existent scan prints error and exits 1."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         with (
@@ -551,7 +520,7 @@ class TestScanDelete:
 
     def test_scan_delete_dry_run(self, runner: CliRunner) -> None:
         """Dry run lists scans to delete without deleting."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -579,7 +548,7 @@ class TestScanDelete:
 
     def test_scan_delete_with_confirmation(self, runner: CliRunner) -> None:
         """Delete scans with -y skips prompt."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_client.delete.return_value = mock_response
@@ -608,7 +577,7 @@ class TestScanDelete:
 
     def test_scan_delete_wildcard_dry_run(self, runner: CliRunner) -> None:
         """Wildcard '*' fetches all scan IDs in dry run."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results([{"ID": "1"}, {"ID": "2"}, {"ID": "3"}]),
@@ -639,7 +608,7 @@ class TestScanDelete:
 
     def test_scan_delete_with_project(self, runner: CliRunner) -> None:
         """Delete with -P uses project-scoped endpoint."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_response = MagicMock()
         mock_response.status_code = 204
         mock_client.delete.return_value = mock_response
@@ -671,7 +640,7 @@ class TestScanDelete:
 
     def test_scan_delete_failure(self, runner: CliRunner) -> None:
         """Failed delete reports error and exits 1."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.delete.side_effect = Exception("Server error")
 
         with (
@@ -697,7 +666,7 @@ class TestScanDelete:
 
     def test_scan_delete_partial_failure(self, runner: CliRunner) -> None:
         """Mixed success/failure reports both and exits 1."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_ok = MagicMock()
         mock_ok.status_code = 200
         mock_client.delete.side_effect = [mock_ok, Exception("fail")]
@@ -736,7 +705,7 @@ class TestScanDownload:
 
     def test_scan_download_dry_run(self, runner: CliRunner, tmp_path) -> None:
         """Dry run previews download without fetching data."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -765,7 +734,7 @@ class TestScanDownload:
 
     def test_scan_download_dry_run_all(self, runner: CliRunner, tmp_path) -> None:
         """Dry run with '*' shows 'all scans'."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -794,7 +763,7 @@ class TestScanDownload:
 
     def test_scan_download_dry_run_with_resource(self, runner: CliRunner, tmp_path) -> None:
         """Dry run with --resource shows resource type."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -824,7 +793,7 @@ class TestScanDownload:
 
     def test_scan_download_name_with_path_separator(self, runner: CliRunner, tmp_path) -> None:
         """Name with path separator is rejected."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -853,7 +822,7 @@ class TestScanDownload:
 
     def test_scan_download_multiple_resources_rejected(self, runner: CliRunner, tmp_path) -> None:
         """Multiple --resource values are rejected."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         with (
             patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
@@ -884,7 +853,7 @@ class TestScanDownload:
 
     def test_scan_download_happy_path(self, runner: CliRunner, tmp_path) -> None:
         """Successful download produces success message."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
             total=1,
@@ -924,7 +893,7 @@ class TestScanDownload:
 
     def test_scan_download_failure(self, runner: CliRunner, tmp_path) -> None:
         """Failed download exits 1."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=False,
             total=1,
@@ -964,7 +933,7 @@ class TestScanDownload:
 
     def test_scan_download_failure_json_exits_nonzero(self, runner: CliRunner, tmp_path) -> None:
         """ROB-01: a failed download must exit 1 under -o json, not just table."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=False,
             total=1,
@@ -1007,7 +976,7 @@ class TestScanDownload:
 
     def test_scan_download_json_output(self, runner: CliRunner, tmp_path) -> None:
         """JSON output includes structured download summary."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
             total=1,
