@@ -99,6 +99,10 @@ class XNATClient:
     verify_ssl: bool = True
     ca_bundle: str | None = None
     auto_reauth: bool = False
+    # Injection seam for the underlying HTTP transport. Standard httpx practice
+    # for library consumers, and what lets tests drive real request/response
+    # cycles through httpx.MockTransport instead of mocking the client (TEST-03).
+    transport: httpx.BaseTransport | None = None
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -133,6 +137,7 @@ class XNATClient:
                 timeout=build_httpx_timeout(self.timeout),
                 verify=verify,
                 follow_redirects=True,
+                transport=self.transport,
             )
         return self._client
 
