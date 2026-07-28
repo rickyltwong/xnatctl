@@ -161,12 +161,17 @@ class TimeoutError(ConnectionError):
 
     Raised by ``XNATClient`` when the CONNECT phase times out (host blackholed /
     firewall-DROPped), so ``timeout`` is the connect timeout in seconds. This
-    fails fast and is not retried (ROB-02); read-phase timeouts remain the
-    generic ``NetworkError`` bucket.
+    fails fast and is not retried (ROB-02).
+
+    Also raised for a READ-phase timeout on a non-idempotent method (ROB-09):
+    the server has already seen the request, so retrying could execute it twice.
+    Those carry an explicit ``message`` saying the operation may have partially
+    executed. Read-phase timeouts on idempotent methods are retried and remain
+    the generic ``NetworkError`` bucket.
     """
 
-    def __init__(self, url: str, timeout: int):
-        super().__init__(f"Could not connect to {url} within {timeout}s", url)
+    def __init__(self, url: str, timeout: int, message: str | None = None):
+        super().__init__(message or f"Could not connect to {url} within {timeout}s", url)
         self.timeout = timeout
 
 

@@ -6,11 +6,14 @@ Provides retry logic, pagination, and session-based authentication.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import ssl
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -50,7 +53,17 @@ RETRY_BACKOFF_BASE = 2
 # import-race quirk handled in services/uploads.py), so it is NOT listed here.
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _RETRY_AFTER_STATUS_CODES = {429, 503}
+# Cap reconciled across the roadmap (ROB-03 said 300, GAP-06 said ~120): 300 is
+# what shipped and what the tests pin. A server asking for longer than 5 minutes
+# is telling us to give up, so we fall back to normal backoff and let the retry
+# budget drain instead of sleeping for an unbounded time.
 _MAX_RETRY_AFTER_SECONDS = 300
+
+# Methods whose retry after a READ-phase failure is safe. The request reached the
+# server, so a retry re-executes it; only methods XNAT treats as idempotent may
+# be repeated. POST/PATCH are excluded -- retrying them risks a double archive or
+# a double pipeline launch (ROB-09).
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS"})
 
 # Transport failures that are NOT ConnectError/TimeoutException but are still
 # transient: the socket died mid-exchange, or a proxy hiccupped. These are the
@@ -75,6 +88,10 @@ _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
 
 logger = logging.getLogger(__name__)
 
+# Module-level RNG for backoff jitter. Separate from the global `random` state so
+# seeding it in a test cannot be perturbed by unrelated code.
+_RNG = random.Random()
+
 
 def _body_snippet(resp: httpx.Response) -> str:
     """Return a short, redacted snippet of a response body for error details."""
@@ -85,19 +102,52 @@ def _body_snippet(resp: httpx.Response) -> str:
 
 
 def _retry_after_seconds(resp: httpx.Response) -> float | None:
-    """Return a bounded Retry-After delay (seconds) if the header is a usable int."""
+    """Return a bounded Retry-After delay in seconds, or None to use backoff.
+
+    RFC 9110 allows both forms of the header and real proxies emit both:
+    delta-seconds (``120``) and an HTTP-date (``Wed, 21 Oct 2026 07:28:00 GMT``).
+    Anything unparseable, negative, or beyond the cap returns None so the caller
+    falls back to exponential backoff.
+    """
     if resp.status_code not in _RETRY_AFTER_STATUS_CODES:
         return None
     raw = resp.headers.get("Retry-After")
     if raw is None:
         return None
+
+    raw = raw.strip()
+    seconds: float | None = None
     try:
-        seconds = int(raw.strip())
-    except (ValueError, AttributeError):
+        seconds = float(int(raw))
+    except (ValueError, TypeError):
+        # HTTP-date form: convert to a delay relative to now.
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - datetime.now(UTC)).total_seconds()
+
+    if seconds is None:
         return None
-    if 0 <= seconds <= _MAX_RETRY_AFTER_SECONDS:
-        return float(seconds)
+    # A date already in the past means "retry now", not "sleep negative".
+    seconds = max(seconds, 0.0)
+    if seconds <= _MAX_RETRY_AFTER_SECONDS:
+        return seconds
     return None
+
+
+def _backoff_delay(attempt: int, rng: random.Random = _RNG) -> float:
+    """Full-jitter exponential backoff for retry ``attempt`` (0-based).
+
+    Without jitter every parallel worker retries on the same tick and
+    re-stampedes a server that is already struggling -- the exact failure mode
+    behind concurrent-session exhaustion under ``--workers`` (ROB-09).
+    """
+    return rng.uniform(0.0, float(RETRY_BACKOFF_BASE ** (attempt + 1)))
 
 
 # =============================================================================
@@ -267,6 +317,7 @@ class XNATClient:
         files: Any | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
+        retry_non_idempotent: bool = False,
     ) -> httpx.Response:
         """Execute HTTP request with retry logic.
 
@@ -281,6 +332,10 @@ class XNATClient:
             files: Files to upload.
             headers: Additional headers.
             timeout: Request timeout override.
+            retry_non_idempotent: Allow read-phase retries for a method outside
+                :data:`IDEMPOTENT_METHODS`. Opt in per call site, only where the
+                operation is provably safe to repeat -- a retried POST can mean a
+                double archive or a double pipeline launch (ROB-09).
 
         Returns:
             HTTP response (2xx only; error statuses raise typed exceptions).
@@ -291,7 +346,8 @@ class XNATClient:
             ResourceNotFoundError: On 404.
             ClientRequestError: On any other 4xx.
             ServerError: On a 5xx that is not retryable or after retries drain.
-            TimeoutError: On a connect-phase timeout (fails fast, not retried).
+            TimeoutError: On a connect-phase timeout (fails fast, not retried),
+                or on a read-phase timeout for a non-idempotent method.
             RetryExhaustedError: When retryable statuses or connect/read-timeout
                 failures exhaust ``max_retries``.
         """
@@ -304,6 +360,7 @@ class XNATClient:
         request_timeout = build_httpx_timeout(read_timeout)
         last_error: Exception | None = None
         did_reauth = False
+        may_retry_after_send = method.upper() in IDEMPOTENT_METHODS or retry_non_idempotent
 
         attempt = 0
         while attempt <= self.max_retries:
@@ -363,12 +420,14 @@ class XNATClient:
                 if resp.status_code in RETRYABLE_STATUS_CODES:
                     last_error = ServerError(resp.status_code, method, path, _body_snippet(resp))
                     if attempt < self.max_retries:
+                        # An explicit Retry-After is an instruction, so it is used
+                        # verbatim; only our own backoff gets jitter. Status-based
+                        # retries keep applying to every method: the server
+                        # answered, and 429/503 mean it refused the work. (The
+                        # send-phase idempotency rule above covers the ambiguous
+                        # case, where we never learn whether it ran.)
                         retry_after = _retry_after_seconds(resp)
-                        delay = (
-                            retry_after
-                            if retry_after is not None
-                            else RETRY_BACKOFF_BASE ** (attempt + 1)
-                        )
+                        delay = retry_after if retry_after is not None else _backoff_delay(attempt)
                         time.sleep(delay)
                         attempt += 1
                         continue
@@ -394,23 +453,42 @@ class XNATClient:
                 # idempotency-aware connect retries.)
                 raise XNATTimeoutError(self.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
             except httpx.ConnectError:
+                # Connect phase: the request never reached the server, so a retry
+                # cannot duplicate a side effect regardless of method.
                 last_error = ServerUnreachableError(self.base_url)
-            except httpx.TimeoutException:
+            except httpx.TimeoutException as e:
+                # Read/write/pool phase: the server HAS seen the request. Retrying
+                # a non-idempotent method here risks executing it twice.
+                if not may_retry_after_send:
+                    raise XNATTimeoutError(
+                        self.base_url,
+                        read_timeout,
+                        f"{method.upper()} {path} timed out after the request was sent; "
+                        "it may have partially executed on the server. Not retried "
+                        "automatically - check server state before repeating it.",
+                    ) from e
                 last_error = NetworkError(self.base_url, f"Timeout after {read_timeout}s")
             except PERMANENT_TRANSPORT_ERRORS as e:
                 # Wrong scheme, malformed URL, undecodable body: retrying cannot
                 # help, so fail now with a typed error rather than after backoff.
                 raise NetworkError(self.base_url, f"{type(e).__name__}: {e}") from e
             except RETRYABLE_TRANSPORT_ERRORS as e:
-                # Socket died mid-exchange / proxy hiccup. Treated like a read
-                # timeout: recorded and retried, never leaked as a raw httpx error.
+                # Socket died mid-exchange / proxy hiccup. Same send-phase hazard
+                # as a read timeout, so it obeys the same idempotency rule.
+                if not may_retry_after_send:
+                    raise NetworkError(
+                        self.base_url,
+                        f"{type(e).__name__} on {method.upper()} {path} after the request "
+                        "was sent; it may have partially executed on the server. "
+                        "Not retried automatically.",
+                    ) from e
                 last_error = NetworkError(self.base_url, f"{type(e).__name__}: {e}")
             except (AuthenticationError, ResourceNotFoundError):
                 raise
 
-            # Retry with backoff
+            # Retry with full-jitter backoff.
             if attempt < self.max_retries:
-                time.sleep(RETRY_BACKOFF_BASE ** (attempt + 1))
+                time.sleep(_backoff_delay(attempt))
 
             attempt += 1
 

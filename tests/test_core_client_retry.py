@@ -1,10 +1,17 @@
-"""Transport-level characterization tests for XNATClient._request (ROB-14).
+"""Transport-level tests for XNATClient._request retry semantics.
 
-These lock the CURRENT retry/backoff contract via ``httpx.MockTransport`` before
-ROB-03 (typed status-exhaustion errors) and ROB-09 (idempotency-aware retries)
-change it. Assertions marked ``# current behavior`` deliberately capture today's
-warts (raw ``httpx.HTTPStatusError`` on status exhaustion, POSTs retried after a
-read timeout); flip them in the same PR as the behavior change.
+Started as ROB-14 characterization tests locking the then-current contract; the
+warts they pinned have since been fixed and the assertions flipped:
+
+* ROB-03 -- status exhaustion raises RetryExhaustedError, and no httpx error of
+  any kind escapes the client.
+* ROB-09 -- read-phase failures are only retried for idempotent methods, and
+  backoff is full-jitter rather than a fixed 2**n progression.
+* GAP-06 -- Retry-After is honoured on 429/503 in both the delta-seconds and
+  HTTP-date forms, bounded by a cap.
+
+Pagination, convenience methods and the public transport seam live in
+``tests/test_core_client_http.py`` (TEST-03).
 
 All sleeps are monkeypatched away, so the suite stays wall-clock cheap.
 """
@@ -12,11 +19,15 @@ All sleeps are monkeypatched away, so the suite stays wall-clock cheap.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 
 import httpx
 import pytest
 
 from xnatctl.core.client import (
+    _MAX_RETRY_AFTER_SECONDS,
+    IDEMPOTENT_METHODS,
     RETRY_BACKOFF_BASE,
     XNATClient,
 )
@@ -31,6 +42,9 @@ from xnatctl.core.exceptions import (
     ServerError,
     ServerUnreachableError,
     XNATCtlError,
+)
+from xnatctl.core.exceptions import (
+    TimeoutError as XNATTimeoutError,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -74,6 +88,19 @@ def _status_sequence(*codes: int) -> Handler:
     return handler
 
 
+def assert_jittered_backoff(sleeps: list[float], expected_attempts: int) -> None:
+    """Assert full-jitter backoff: one sleep per retry, each within its window.
+
+    ROB-09 replaced the fixed ``2**(attempt+1)`` progression with
+    ``uniform(0, 2**(attempt+1))`` so parallel workers stop retrying in lockstep.
+    Exact values are therefore no longer assertable -- the ceiling is.
+    """
+    assert len(sleeps) == expected_attempts, f"expected {expected_attempts} sleeps, got {sleeps}"
+    for i, slept in enumerate(sleeps):
+        ceiling = float(RETRY_BACKOFF_BASE ** (i + 1))
+        assert 0.0 <= slept <= ceiling, f"sleep {i} = {slept} outside [0, {ceiling}]"
+
+
 def test_502_502_then_200_succeeds_after_two_retries(sleeps: list[float]) -> None:
     client, calls = _client(_status_sequence(502, 502, 200), max_retries=3)
 
@@ -81,7 +108,7 @@ def test_502_502_then_200_succeeds_after_two_retries(sleeps: list[float]) -> Non
 
     assert resp.status_code == 200
     assert len(calls) == 3  # two retries, then success
-    assert sleeps == [RETRY_BACKOFF_BASE**1, RETRY_BACKOFF_BASE**2]  # [2, 4]
+    assert_jittered_backoff(sleeps, 2)
 
 
 def test_502_exhaustion_raises_retry_exhausted(sleeps: list[float]) -> None:
@@ -95,7 +122,7 @@ def test_502_exhaustion_raises_retry_exhausted(sleeps: list[float]) -> None:
     assert isinstance(exc.value.last_error, ServerError)
     assert exc.value.last_error.status_code == 502
     assert len(calls) == 2  # initial + 1 retry
-    assert sleeps == [RETRY_BACKOFF_BASE**1]  # [2]
+    assert_jittered_backoff(sleeps, 1)
 
 
 def test_409_is_not_retried_and_raises_client_request_error(sleeps: list[float]) -> None:
@@ -122,7 +149,7 @@ def test_500_is_retried_then_typed_on_exhaustion(sleeps: list[float]) -> None:
     assert isinstance(exc.value.last_error, ServerError)
     assert exc.value.last_error.status_code == 500
     assert len(calls) == 4  # attempts 0..3
-    assert sleeps == [RETRY_BACKOFF_BASE**1, RETRY_BACKOFF_BASE**2, RETRY_BACKOFF_BASE**3]
+    assert_jittered_backoff(sleeps, 3)
 
 
 def test_500_then_200_recovers(sleeps: list[float]) -> None:
@@ -164,23 +191,24 @@ def test_connect_error_exhausts_to_retry_exhausted(sleeps: list[float]) -> None:
     assert exc.value.attempts == client.max_retries + 1  # 4
     assert isinstance(exc.value.last_error, ServerUnreachableError)
     assert len(calls) == 4  # attempts 0..3
-    assert sleeps == [RETRY_BACKOFF_BASE**1, RETRY_BACKOFF_BASE**2, RETRY_BACKOFF_BASE**3]
+    assert_jittered_backoff(sleeps, 3)
 
 
-def test_post_read_timeout_is_retried_today(sleeps: list[float]) -> None:
+def test_post_read_timeout_is_not_retried(sleeps: list[float]) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("read timed out", request=request)
 
     client, calls = _client(handler, max_retries=2)
 
-    with pytest.raises(RetryExhaustedError):
-        # current behavior: a read-phase timeout on a non-idempotent POST is
-        # retried, risking duplicate side effects. ROB-09 will stop retrying
-        # POSTs after send and raise a typed timeout immediately.
+    # ROB-09 flipped this: a read-phase timeout on a non-idempotent POST is no
+    # longer retried, because the server has already seen the request and a
+    # retry could archive twice or launch a pipeline twice.
+    with pytest.raises(XNATTimeoutError) as exc:
         client._request("POST", "/data/services/import")
 
-    assert len(calls) == client.max_retries + 1  # 3 -- POST retried
-    assert sleeps == [RETRY_BACKOFF_BASE**1, RETRY_BACKOFF_BASE**2]
+    assert len(calls) == 1, "POST must not be retried after send"
+    assert sleeps == []
+    assert "may have partially executed" in str(exc.value)
 
 
 def test_404_raises_resource_not_found_immediately(sleeps: list[float]) -> None:
@@ -236,7 +264,7 @@ def test_transient_transport_errors_are_retried_and_typed(
         client._request("GET", "/data/projects")
 
     assert len(calls) == 3, "initial attempt plus two retries"
-    assert sleeps == [RETRY_BACKOFF_BASE**1, RETRY_BACKOFF_BASE**2]
+    assert_jittered_backoff(sleeps, 2)
 
 
 @pytest.mark.parametrize("exc_name", ["UnsupportedProtocol", "DecodingError"])
@@ -320,3 +348,167 @@ def test_retryable_status_policy_has_a_single_source() -> None:
     assert UPLOAD_CODES - CLIENT_RETRYABLE_STATUS_CODES == UPLOAD_ONLY_RETRYABLE_STATUS_CODES
     assert 400 in UPLOAD_CODES, "the XNAT import race stays upload-only"
     assert 400 not in CLIENT_RETRYABLE_STATUS_CODES, "a 400 is a real client error on the core path"
+
+
+# =============================================================================
+# Idempotency-aware retries and jitter (ROB-09)
+# =============================================================================
+
+
+@pytest.mark.parametrize("method", sorted(IDEMPOTENT_METHODS))
+def test_idempotent_methods_retry_read_timeouts(method: str, sleeps: list[float]) -> None:
+    """The request may have run, but repeating it is harmless for these verbs."""
+    client, calls = _client(_raising(lambda r: httpx.ReadTimeout("t", request=r)), max_retries=2)
+
+    with pytest.raises(RetryExhaustedError):
+        client._request(method, "/data/projects")
+
+    assert len(calls) == 3
+    assert_jittered_backoff(sleeps, 2)
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH"])
+def test_non_idempotent_methods_fail_fast_on_read_timeout(method: str, sleeps: list[float]) -> None:
+    """A double archive or a double pipeline launch is worse than a failed call."""
+    client, calls = _client(_raising(lambda r: httpx.ReadTimeout("t", request=r)), max_retries=3)
+
+    with pytest.raises(XNATTimeoutError) as exc:
+        client._request(method, "/data/services/archive")
+
+    assert len(calls) == 1
+    assert sleeps == []
+    assert "may have partially executed" in str(exc.value)
+
+
+def test_method_matching_is_case_insensitive(sleeps: list[float]) -> None:
+    client, calls = _client(_raising(lambda r: httpx.ReadTimeout("t", request=r)), max_retries=2)
+
+    with pytest.raises(RetryExhaustedError):
+        client._request("get", "/data/projects")
+
+    assert len(calls) == 3, "lowercase 'get' is still idempotent"
+
+
+def test_retry_non_idempotent_opt_in_restores_retries(sleeps: list[float]) -> None:
+    """The escape hatch exists for call sites that prove a POST is safe to repeat."""
+    client, calls = _client(_raising(lambda r: httpx.ReadTimeout("t", request=r)), max_retries=2)
+
+    with pytest.raises(RetryExhaustedError):
+        client._request("POST", "/data/services/refresh", retry_non_idempotent=True)
+
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH"])
+def test_connect_phase_failures_still_retry_for_any_method(
+    method: str, sleeps: list[float]
+) -> None:
+    """The request never reached the server, so a retry cannot duplicate anything."""
+    client, calls = _client(_raising(lambda r: httpx.ConnectError("refused", request=r)))
+
+    with pytest.raises(RetryExhaustedError):
+        client._request(method, "/data/services/archive")
+
+    assert len(calls) == 4, "connect-phase retries are method-agnostic"
+
+
+def test_non_idempotent_transport_error_after_send_fails_fast(sleeps: list[float]) -> None:
+    """A dropped socket mid-POST has the same ambiguity as a read timeout."""
+    client, calls = _client(_raising(lambda r: httpx.ReadError("dropped", request=r)))
+
+    with pytest.raises(NetworkError) as exc:
+        client._request("POST", "/data/services/archive")
+
+    assert len(calls) == 1
+    assert "may have partially executed" in str(exc.value)
+
+
+def test_backoff_is_jittered_not_a_fixed_progression(sleeps: list[float]) -> None:
+    """Two runs must not produce identical sleeps, or workers retry in lockstep."""
+    runs = []
+    for _ in range(6):
+        sleeps.clear()
+        client, _calls = _client(_status_sequence(*([503] * 4)), max_retries=3)
+        with pytest.raises(RetryExhaustedError):
+            client._request("GET", "/data/projects")
+        runs.append(tuple(sleeps))
+
+    assert len({r for r in runs}) > 1, "jitter should vary across runs"
+    for run in runs:
+        assert_jittered_backoff(list(run), 3)
+
+
+# =============================================================================
+# Retry-After parsing (GAP-06)
+# =============================================================================
+
+
+def _retry_after_then_ok(value: str, status: int = 429) -> Handler:
+    seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not seen:
+            seen.append(1)
+            return httpx.Response(status, headers={"Retry-After": value}, json={})
+        return httpx.Response(200, json={"ok": True})
+
+    return handler
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_retry_after_delta_seconds_is_used_verbatim(status: int, sleeps: list[float]) -> None:
+    client, _ = _client(_retry_after_then_ok("7", status), max_retries=3)
+
+    assert client._request("GET", "/data/projects").status_code == 200
+    assert sleeps == [7.0], "an explicit instruction is not jittered"
+
+
+def test_retry_after_http_date_form_is_parsed(sleeps: list[float]) -> None:
+    """RFC 9110 allows an HTTP-date; real proxies emit it."""
+    when = datetime.now(UTC) + timedelta(seconds=45)
+    client, _ = _client(_retry_after_then_ok(format_datetime(when, usegmt=True)), max_retries=3)
+
+    assert client._request("GET", "/data/projects").status_code == 200
+    assert len(sleeps) == 1
+    assert 30 <= sleeps[0] <= 50, f"expected ~45s from the HTTP-date, got {sleeps[0]}"
+
+
+def test_retry_after_http_date_in_the_past_means_retry_now(sleeps: list[float]) -> None:
+    when = datetime.now(UTC) - timedelta(seconds=60)
+    client, _ = _client(_retry_after_then_ok(format_datetime(when, usegmt=True)), max_retries=3)
+
+    assert client._request("GET", "/data/projects").status_code == 200
+    assert sleeps == [0.0], "a past date must not become a negative sleep"
+
+
+@pytest.mark.parametrize("value", ["not-a-number", "", "12.5", "-5"])
+def test_malformed_retry_after_falls_back_to_jittered_backoff(
+    value: str, sleeps: list[float]
+) -> None:
+    client, _ = _client(_retry_after_then_ok(value), max_retries=3)
+
+    assert client._request("GET", "/data/projects").status_code == 200
+    assert_jittered_backoff(sleeps, 1)
+
+
+def test_retry_after_beyond_the_cap_falls_back_to_backoff(sleeps: list[float]) -> None:
+    """A server asking for an hour is telling us to give up, not to sleep an hour."""
+    client, _ = _client(_retry_after_then_ok(str(_MAX_RETRY_AFTER_SECONDS + 1)), max_retries=3)
+
+    assert client._request("GET", "/data/projects").status_code == 200
+    assert_jittered_backoff(sleeps, 1)
+
+
+def test_retry_after_exactly_at_the_cap_is_honoured(sleeps: list[float]) -> None:
+    client, _ = _client(_retry_after_then_ok(str(_MAX_RETRY_AFTER_SECONDS)), max_retries=3)
+
+    assert client._request("GET", "/data/projects").status_code == 200
+    assert sleeps == [float(_MAX_RETRY_AFTER_SECONDS)]
+
+
+def test_retry_after_ignored_on_statuses_that_do_not_define_it(sleeps: list[float]) -> None:
+    """Only 429/503 carry Retry-After semantics; a 502 uses normal backoff."""
+    client, _ = _client(_retry_after_then_ok("7", status=502), max_retries=3)
+
+    assert client._request("GET", "/data/projects").status_code == 200
+    assert_jittered_backoff(sleeps, 1)
