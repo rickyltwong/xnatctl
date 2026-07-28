@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from xnatctl.core.config import CONFIG_DIR, ENV_PASS, ENV_TOKEN, ENV_USER
+from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir, restrict_permissions
 
 # =============================================================================
 # Constants
@@ -135,18 +136,18 @@ class AuthManager:
             expires_at=now + timedelta(minutes=expiry_minutes),
         )
 
-        # Ensure directory exists
-        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure the directory exists and is owner-only (SEC-08).
+        ensure_private_dir(self.cache_file.parent)
 
-        # Write cache file with restricted permissions
-        with open(self.cache_file, "w") as f:
+        # Write through a private temp file so the token is never observable
+        # under the process umask, not even for the duration of the write.
+        with atomic_private_write(self.cache_file) as f:
             json.dump(session.to_dict(), f)
 
-        # Set restrictive permissions (owner read/write only)
-        try:
-            os.chmod(self.cache_file, 0o600)
-        except OSError:
-            pass  # May fail on some systems
+        # The replace already carries the temp file's 0600 mode; this is
+        # belt-and-braces for filesystems that do not, and it warns rather than
+        # silently leaving the token readable.
+        restrict_permissions(self.cache_file)
 
         return session
 

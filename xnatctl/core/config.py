@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from xnatctl.core.exceptions import ConfigurationError, ProfileNotFoundError
+from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir, restrict_permissions
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
 # =============================================================================
@@ -188,7 +189,7 @@ class Config:
             config_path: Optional path to config file.
         """
         path = config_path or CONFIG_FILE
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(path.parent)
 
         data = {
             "default_profile": self.default_profile,
@@ -196,8 +197,12 @@ class Config:
             "profiles": {name: p.to_dict() for name, p in self.profiles.items()},
         }
 
-        with open(path, "w") as f:
+        # config.yaml can carry a plaintext profile password today, so it gets
+        # the same 0600 atomic treatment as the session cache (SEC-08). Whether
+        # it should hold a password at all is SEC-02's question.
+        with atomic_private_write(path) as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        restrict_permissions(path)
 
     def get_profile(self, name: str | None = None) -> Profile:
         """Get profile by name or default.
