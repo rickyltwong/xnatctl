@@ -51,6 +51,25 @@ RETRY_BACKOFF_BASE = 2
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _RETRY_AFTER_STATUS_CODES = {429, 503}
 _MAX_RETRY_AFTER_SECONDS = 300
+
+# Transport failures that are NOT ConnectError/TimeoutException but are still
+# transient: the socket died mid-exchange, or a proxy hiccupped. These are the
+# classic long-transfer failure mode for this tool (a dropped connection during
+# a multi-GB DICOM read), so they retry like a read timeout rather than escaping
+# raw (ROB-03: no httpx exception may leave XNATClient).
+RETRYABLE_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+    httpx.ProxyError,
+)
+# Permanent transport failures: a bad scheme or an undecodable body will not fix
+# itself, so they raise immediately instead of burning the retry budget.
+PERMANENT_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
+    httpx.UnsupportedProtocol,
+    httpx.DecodingError,
+    httpx.InvalidURL,
+)
 _BODY_SNIPPET_CHARS = 200
 _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
 
@@ -188,6 +207,10 @@ class XNATClient:
             raise ServerUnreachableError(self.base_url) from e
         except httpx.TimeoutException as e:
             raise NetworkError(self.base_url, f"Timeout: {e}") from e
+        except (*RETRYABLE_TRANSPORT_ERRORS, *PERMANENT_TRANSPORT_ERRORS) as e:
+            # Same contract as _request: no raw httpx error escapes. Login is a
+            # single attempt, so transient and permanent collapse to one branch.
+            raise NetworkError(self.base_url, f"{type(e).__name__}: {e}") from e
 
         if resp.status_code != 200:
             raise AuthenticationError(self.base_url, f"HTTP {resp.status_code}")
@@ -204,14 +227,17 @@ class XNATClient:
         if self.session_token:
             try:
                 client = self._get_client()
-                client.delete(
-                    "/data/JSESSION",
-                    cookies={"JSESSIONID": self.session_token},
-                )
+                # Cookie on the client instance, not per-request: httpx 0.28
+                # deprecates `cookies=` on individual calls (ROB-03 step 6).
+                client.cookies.set("JSESSIONID", self.session_token)
+                client.delete("/data/JSESSION")
             except Exception:
                 pass  # Best effort
             finally:
                 self.session_token = None
+                # Do not leave the dead credential sitting on the client.
+                if self._client is not None:
+                    self._client.cookies.delete("JSESSIONID")
 
     # =========================================================================
     # HTTP Methods
@@ -371,6 +397,14 @@ class XNATClient:
                 last_error = ServerUnreachableError(self.base_url)
             except httpx.TimeoutException:
                 last_error = NetworkError(self.base_url, f"Timeout after {read_timeout}s")
+            except PERMANENT_TRANSPORT_ERRORS as e:
+                # Wrong scheme, malformed URL, undecodable body: retrying cannot
+                # help, so fail now with a typed error rather than after backoff.
+                raise NetworkError(self.base_url, f"{type(e).__name__}: {e}") from e
+            except RETRYABLE_TRANSPORT_ERRORS as e:
+                # Socket died mid-exchange / proxy hiccup. Treated like a read
+                # timeout: recorded and retried, never leaked as a raw httpx error.
+                last_error = NetworkError(self.base_url, f"{type(e).__name__}: {e}")
             except (AuthenticationError, ResourceNotFoundError):
                 raise
 

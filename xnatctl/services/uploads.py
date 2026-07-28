@@ -30,6 +30,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
 
+from xnatctl.core.client import RETRYABLE_STATUS_CODES as CLIENT_RETRYABLE_STATUS_CODES
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
 from xnatctl.models.progress import (
     OperationPhase,
@@ -60,7 +61,19 @@ DICOM_EXTENSIONS = {".dcm", ".ima", ".img", ".dicom"}
 
 UPLOAD_MAX_RETRIES = 5
 UPLOAD_RETRY_BACKOFF_BASE = 2  # seconds: 2, 4, 8, 16, 32
-RETRYABLE_STATUS_CODES = {400, 429, 500, 502, 503, 504}
+
+# One source of truth for the shared statuses (ROB-03 step 3): the core client
+# owns the base policy, uploads extend it. Previously both modules defined a
+# constant of the same name and they drifted -- the client did not retry 429/500
+# while uploads did.
+UPLOAD_ONLY_RETRYABLE_STATUS_CODES = {
+    # XNAT's import service returns a transient 400 while an archive operation
+    # races; retrying clears it. Deliberately NOT in the core client's set,
+    # where a 400 is a genuine client error. ROB-08 will discriminate the
+    # transient 400s from the permanent ones.
+    400,
+}
+RETRYABLE_STATUS_CODES = CLIENT_RETRYABLE_STATUS_CODES | UPLOAD_ONLY_RETRYABLE_STATUS_CODES
 
 # When running with --verbose, we can log small snippets of retryable HTTP 400
 # response bodies to help diagnose transient XNAT import races. Keep this capped

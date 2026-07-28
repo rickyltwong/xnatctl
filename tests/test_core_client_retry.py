@@ -16,13 +16,21 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from xnatctl.core.client import RETRY_BACKOFF_BASE, XNATClient
+from xnatctl.core.client import (
+    RETRY_BACKOFF_BASE,
+    XNATClient,
+)
+from xnatctl.core.client import (
+    RETRYABLE_STATUS_CODES as CLIENT_RETRYABLE_STATUS_CODES,
+)
 from xnatctl.core.exceptions import (
     ClientRequestError,
+    NetworkError,
     ResourceNotFoundError,
     RetryExhaustedError,
     ServerError,
     ServerUnreachableError,
+    XNATCtlError,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -195,3 +203,120 @@ def test_403_raises_permission_denied_immediately(sleeps: list[float]) -> None:
 
     assert len(calls) == 1
     assert sleeps == []
+
+
+# =============================================================================
+# Transport-exception contract (ROB-03)
+#
+# httpx's transport errors are NOT all ConnectError/TimeoutException subclasses;
+# ReadError, WriteError, RemoteProtocolError and ProxyError sit beside them and
+# used to escape XNATClient raw, surfacing as "Unexpected error:" with no retry.
+# =============================================================================
+
+
+def _raising(exc_factory: Callable[[httpx.Request], Exception]) -> Handler:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc_factory(request)
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    "exc_name",
+    ["ReadError", "WriteError", "RemoteProtocolError", "ProxyError"],
+)
+def test_transient_transport_errors_are_retried_and_typed(
+    exc_name: str, sleeps: list[float]
+) -> None:
+    """A socket dying mid-exchange retries like a read timeout, never leaks raw."""
+    exc_cls = getattr(httpx, exc_name)
+    client, calls = _client(_raising(lambda r: exc_cls("boom", request=r)), max_retries=2)
+
+    with pytest.raises(RetryExhaustedError):
+        client._request("GET", "/data/projects")
+
+    assert len(calls) == 3, "initial attempt plus two retries"
+    assert sleeps == [RETRY_BACKOFF_BASE**1, RETRY_BACKOFF_BASE**2]
+
+
+@pytest.mark.parametrize("exc_name", ["UnsupportedProtocol", "DecodingError"])
+def test_permanent_transport_errors_fail_fast(exc_name: str, sleeps: list[float]) -> None:
+    """A bad scheme or an undecodable body will not fix itself; do not retry."""
+    exc_cls = getattr(httpx, exc_name)
+    client, calls = _client(_raising(lambda r: exc_cls("boom", request=r)), max_retries=3)
+
+    with pytest.raises(NetworkError):
+        client._request("GET", "/data/projects")
+
+    assert len(calls) == 1, "permanent transport failures must not burn retries"
+    assert sleeps == []
+
+
+def test_transient_transport_error_recovers_when_it_stops(sleeps: list[float]) -> None:
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise httpx.ReadError("dropped", request=request)
+        return httpx.Response(200, json={"ok": True})
+
+    client, calls = _client(handler, max_retries=3)
+
+    assert client._request("GET", "/data/projects").json() == {"ok": True}
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize(
+    "exc_name",
+    [
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+        "ReadError",
+        "WriteError",
+        "RemoteProtocolError",
+        "ProxyError",
+        "UnsupportedProtocol",
+        "DecodingError",
+    ],
+)
+def test_no_httpx_exception_escapes_the_client(exc_name: str, sleeps: list[float]) -> None:
+    """The ROB-03 contract, asserted as a guard over the whole httpx error family.
+
+    Add any newly-handled httpx error class here; a raw leak fails this test
+    rather than silently reaching the CLI as "Unexpected error:".
+    """
+    exc_cls = getattr(httpx, exc_name)
+    client, _ = _client(_raising(lambda r: exc_cls("boom", request=r)), max_retries=1)
+
+    with pytest.raises(XNATCtlError):
+        client._request("GET", "/data/projects")
+
+
+@pytest.mark.parametrize("exc_name", ["ReadError", "RemoteProtocolError", "UnsupportedProtocol"])
+def test_authenticate_maps_transport_errors_too(exc_name: str) -> None:
+    """authenticate() bypasses the retry loop and had the identical gap."""
+    exc_cls = getattr(httpx, exc_name)
+    client, _ = _client(_raising(lambda r: exc_cls("boom", request=r)))
+    client.username, client.password = "user", "pass"
+
+    with pytest.raises(NetworkError):
+        client.authenticate()
+
+
+def test_retryable_status_policy_has_a_single_source() -> None:
+    """uploads extends the client's set rather than redefining it (ROB-03 step 3)."""
+    from xnatctl.services.uploads import (
+        RETRYABLE_STATUS_CODES as UPLOAD_CODES,
+    )
+    from xnatctl.services.uploads import (
+        UPLOAD_ONLY_RETRYABLE_STATUS_CODES,
+    )
+
+    assert CLIENT_RETRYABLE_STATUS_CODES <= UPLOAD_CODES
+    assert UPLOAD_CODES - CLIENT_RETRYABLE_STATUS_CODES == UPLOAD_ONLY_RETRYABLE_STATUS_CODES
+    assert 400 in UPLOAD_CODES, "the XNAT import race stays upload-only"
+    assert 400 not in CLIENT_RETRYABLE_STATUS_CODES, "a 400 is a real client error on the core path"
