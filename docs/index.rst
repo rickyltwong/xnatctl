@@ -123,6 +123,7 @@ Trigger a catalog refresh for a specific project (admin operation):
    :maxdepth: 2
    :caption: Development
 
+   debugging
    contributing
    changelog
 

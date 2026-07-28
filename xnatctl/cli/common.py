@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import enum
 import json
-import os
 import sys
 import traceback
 from collections.abc import Callable
@@ -27,7 +26,7 @@ from xnatctl.core.exceptions import (
 from xnatctl.core.exceptions import (
     ConnectionError as XNATConnectionError,
 )
-from xnatctl.core.logging import setup_logging
+from xnatctl.core.logging import debug_env_enabled, setup_logging
 from xnatctl.core.output import OutputFormat, print_error, print_warning
 from xnatctl.core.redact import redact_url_query
 
@@ -502,11 +501,6 @@ def parallel_options(f: F) -> F:
 # =============================================================================
 
 
-# Values that explicitly DISABLE debug tracebacks. Any other non-empty value
-# enables them, but the common "falsey" spellings must NOT fail open.
-_DEBUG_OFF_VALUES = frozenset({"", "0", "false", "no", "off"})
-
-
 def _debug_enabled() -> bool:
     """Return True when tracebacks should be surfaced.
 
@@ -515,9 +509,11 @@ def _debug_enabled() -> bool:
     ``gh``'s ``GH_DEBUG``, so a traceback is obtainable even for failures that
     occur before ``--verbose`` is parsed). ``XNATCTL_DEBUG=0``/``false``/``off``
     counts as OFF -- an explicit falsey value must not enable tracebacks.
+
+    The env var's spelling is parsed by :func:`debug_env_enabled` so this policy
+    and the logging tiers it turns on (MAINT-01) cannot drift apart.
     """
-    raw = os.environ.get("XNATCTL_DEBUG")
-    if raw is not None and raw.strip().lower() not in _DEBUG_OFF_VALUES:
+    if debug_env_enabled():
         return True
     click_ctx = click.get_current_context(silent=True)
     ctx_obj = click_ctx.obj if click_ctx is not None else None
