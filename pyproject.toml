@@ -42,6 +42,9 @@ dicom = [
     "pydicom>=2.4.0",
     "pynetdicom>=2.0.0",
 ]
+keyring = [
+    "keyring>=24",
+]
 dev = [
     "pytest>=9.0.0",
     "pytest-cov>=4.0.0",

@@ -61,7 +61,7 @@ def auth_login(
     # Get credentials: CLI args > env vars > profile config > prompt
     env_user, env_pass = auth_mgr.get_credentials()
     user = username or env_user or profile.username
-    pwd = password or env_pass or profile.password
+    pwd = password or env_pass or profile.resolve_password()
 
     if not user:
         user = click.prompt("Username")
@@ -236,7 +236,7 @@ def auth_test(profile_name: str | None, output: str) -> None:
     session_token = auth_mgr.get_session_token(profile.url)
     env_user, env_pass = auth_mgr.get_credentials()
     user = env_user or profile.username
-    pwd = env_pass or profile.password
+    pwd = env_pass or profile.resolve_password()
 
     if session_token:
         click.echo("Testing with cached session...")

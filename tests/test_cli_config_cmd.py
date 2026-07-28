@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
-from conftest import config_seam
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    """Drop Rich's colour codes so assertions can see the literal message."""
+    return _ANSI_RE.sub("", text)
 
 
 @pytest.fixture
@@ -304,3 +312,113 @@ class TestConfigRemoveProfile:
             result = runner.invoke(cli, ["config", "remove-profile", "dev"], input="n\n")
 
         assert result.exit_code != 0
+
+
+class TestConfigSetPassword:
+    """Tests for `config set-password` (SEC-02).
+
+    The command exists because nothing else could put a password into a
+    profile: `add-profile` has no password option and `auth login` only caches
+    a session token, so before this the only route was hand-editing the YAML.
+    """
+
+    def _config(self) -> Config:
+        return Config(
+            default_profile="prod",
+            profiles={"prod": Profile(url="https://xnat.example.org", name="prod")},
+        )
+
+    def test_password_is_stored_in_the_keychain_not_the_file(self, runner: CliRunner) -> None:
+        cfg = self._config()
+        fake_keyring = MagicMock()
+
+        with (
+            core_config_seam(cfg),
+            patch.dict("sys.modules", {"keyring": fake_keyring}),
+            patch.object(Config, "save") as save,
+        ):
+            result = runner.invoke(
+                cli, ["config", "set-password", "prod"], input="s3cret\ns3cret\n"
+            )
+
+        assert result.exit_code == 0
+        fake_keyring.set_password.assert_called_once_with(
+            "xnatctl", "prod@https://xnat.example.org", "s3cret"
+        )
+        save.assert_called_once()
+        assert cfg.profiles["prod"].password_source == "keyring"
+        assert cfg.profiles["prod"].password is None
+
+    def test_inline_password_is_dropped_on_migration(self, runner: CliRunner) -> None:
+        """The migration path for a profile that already holds plaintext."""
+        cfg = self._config()
+        cfg.profiles["prod"].password = "old-plaintext"
+
+        with (
+            core_config_seam(cfg),
+            patch.dict("sys.modules", {"keyring": MagicMock()}),
+            patch.object(Config, "save"),
+        ):
+            result = runner.invoke(
+                cli, ["config", "set-password", "prod"], input="s3cret\ns3cret\n"
+            )
+
+        assert result.exit_code == 0
+        assert cfg.profiles["prod"].password is None
+        assert "password" not in cfg.profiles["prod"].to_dict()
+
+    def test_password_is_never_echoed(self, runner: CliRunner) -> None:
+        with (
+            core_config_seam(self._config()),
+            patch.dict("sys.modules", {"keyring": MagicMock()}),
+            patch.object(Config, "save"),
+        ):
+            result = runner.invoke(
+                cli, ["config", "set-password", "prod"], input="s3cret\ns3cret\n"
+            )
+
+        assert "s3cret" not in result.output
+
+    def test_unknown_profile_fails(self, runner: CliRunner) -> None:
+        with core_config_seam(self._config()):
+            result = runner.invoke(cli, ["config", "set-password", "nope"])
+
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_missing_keyring_package_reports_the_install_hint(self, runner: CliRunner) -> None:
+        with core_config_seam(self._config()), patch.dict("sys.modules", {"keyring": None}):
+            result = runner.invoke(cli, ["config", "set-password", "prod"])
+
+        assert result.exit_code == 1
+        # Rich colourises inside the message, so compare on the plain text.
+        assert "xnatctl[keyring]" in _strip_ansi(result.output)
+
+    def test_keychain_write_failure_does_not_rewrite_the_config(self, runner: CliRunner) -> None:
+        """A failed keychain write must not leave the profile claiming its
+        password lives somewhere it does not."""
+        cfg = self._config()
+        fake_keyring = MagicMock()
+        fake_keyring.set_password.side_effect = RuntimeError("no backend available")
+
+        with (
+            core_config_seam(cfg),
+            patch.dict("sys.modules", {"keyring": fake_keyring}),
+            patch.object(Config, "save") as save,
+        ):
+            result = runner.invoke(
+                cli, ["config", "set-password", "prod"], input="s3cret\ns3cret\n"
+            )
+
+        assert result.exit_code == 1
+        save.assert_not_called()
+        assert cfg.profiles["prod"].password_source is None
+
+    def test_password_is_never_accepted_as_an_argument(self, runner: CliRunner) -> None:
+        """Prompt-only by design, so it cannot reach shell history or the
+        process table (SEC-05 removes the remaining argv password flags)."""
+        with core_config_seam(self._config()):
+            result = runner.invoke(cli, ["config", "set-password", "prod", "--password", "s3cret"])
+
+        assert result.exit_code != 0
+        assert "no such option" in result.output.lower()

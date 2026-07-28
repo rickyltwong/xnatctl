@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
@@ -213,23 +214,27 @@ def print_error(message: str) -> None:
     """Print error message to stderr.
 
     The message is routed through :func:`redact_url_query` so that URLs
-    embedded in the error never leak secret-shaped query values.
+    embedded in the error never leak secret-shaped query values, and escaped so
+    that square brackets in it are shown rather than parsed as Rich markup --
+    an install hint like ``pip install 'xnatctl[keyring]'`` otherwise renders
+    with the extra silently deleted.
     """
-    err_console.print(f"[red]Error:[/red] {redact_url_query(message)}")
+    err_console.print(f"[red]Error:[/red] {escape(redact_url_query(message))}")
 
 
 def print_warning(message: str) -> None:
     """Print warning message to stderr.
 
     The message is routed through :func:`redact_url_query` so that URLs
-    embedded in the warning never leak secret-shaped query values.
+    embedded in the warning never leak secret-shaped query values, and escaped
+    so that square brackets survive (see :func:`print_error`).
     """
-    err_console.print(f"[yellow]Warning:[/yellow] {redact_url_query(message)}")
+    err_console.print(f"[yellow]Warning:[/yellow] {escape(redact_url_query(message))}")
 
 
 def print_success(message: str) -> None:
     """Print success message."""
-    console.print(f"[green]\u2713[/green] {message}")
+    console.print(f"[green]\u2713[/green] {escape(message)}")
 
 
 def print_info(message: str) -> None:

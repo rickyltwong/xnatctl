@@ -7,7 +7,15 @@ from typing import Any
 import click
 
 from xnatctl.cli.common import Context, confirm_destructive, global_options, handle_errors
-from xnatctl.core.config import CONFIG_FILE, Config
+from xnatctl.core.config import (
+    CONFIG_FILE,
+    KEYRING_SERVICE,
+    PASSWORD_SOURCE_KEYRING,
+    Config,
+    keyring_key,
+    load_keyring,
+)
+from xnatctl.core.exceptions import ConfigurationError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -267,3 +275,47 @@ def config_remove_profile(name: str, dry_run: bool) -> None:
     cfg.save()
 
     print_success(f"Profile '{name}' removed")
+
+
+@config.command("set-password")
+@click.argument("name")
+def config_set_password(name: str) -> None:
+    """Store a profile's password in the OS keychain.
+
+    Prompts for the password. It is never accepted as an argument, so it cannot
+    leak into shell history or the process table. On success the profile records
+    only ``password_source: keyring``, and any inline plaintext password is
+    dropped from config.yaml.
+
+    Requires the optional keyring extra: pip install 'xnatctl[keyring]'
+
+    \b
+    Example:
+        xnatctl config set-password prod
+    """
+    cfg = Config.load()
+
+    if not cfg.has_profile(name):
+        print_error(f"Profile '{name}' not found.")
+        raise SystemExit(1)
+
+    try:
+        keyring = load_keyring()
+    except ConfigurationError as e:
+        print_error(str(e))
+        raise SystemExit(1) from e
+
+    profile = cfg.get_profile(name)
+    password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
+
+    try:
+        keyring.set_password(KEYRING_SERVICE, keyring_key(name, profile.url), password)
+    except Exception as e:
+        print_error(f"Could not write to the OS keychain: {e}")
+        raise SystemExit(1) from e
+
+    profile.password_source = PASSWORD_SOURCE_KEYRING
+    profile.password = None
+    cfg.save()
+
+    print_success(f"Password for profile '{name}' stored in the OS keychain")
