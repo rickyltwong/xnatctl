@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import click
@@ -15,10 +16,11 @@ from xnatctl.core.config import (
     keyring_key,
     load_keyring,
 )
-from xnatctl.core.exceptions import ConfigurationError
+from xnatctl.core.exceptions import ConfigurationError, XNATCtlError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
+    print_hint,
     print_key_value,
     print_output,
     print_success,
@@ -38,12 +40,29 @@ def config() -> None:
 @click.option("--profile", default="default", help="Profile name")
 @click.option("--project", default=None, help="Default project ID")
 @click.option("--force", is_flag=True, help="Overwrite existing config")
-def config_init(url: str, profile: str, project: str | None, force: bool) -> None:
+@click.option(
+    "--login/--no-login",
+    "login",
+    default=None,
+    help="Log in after writing the profile (prompts when not specified)",
+)
+def config_init(
+    url: str,
+    profile: str,
+    project: str | None,
+    force: bool,
+    login: bool | None,
+) -> None:
     """Create configuration file with a new profile.
+
+    Offers to log in straight afterwards, so a fresh machine gets from nothing
+    to an authenticated session in one command. Pass --no-login to skip the
+    prompt in scripts.
 
     \b
     Example:
         xnatctl config init --url https://xnat.example.org
+        xnatctl config init --url https://xnat.example.org --no-login
     """
     # Validate URL
     try:
@@ -83,6 +102,34 @@ def config_init(url: str, profile: str, project: str | None, force: bool) -> Non
             "default_project": project or "-",
         }
     )
+
+    # Continue into a login rather than stopping at a cliff between two
+    # commands (CLI-06). Only prompt on a real terminal: in a pipeline an
+    # unanswered prompt is a hang, and --login/--no-login covers scripts.
+    if login is None:
+        login = sys.stdin.isatty() and click.confirm("Log in now?", default=True)
+    if not login:
+        click.echo("Run 'xnatctl auth login' when you are ready.", err=True)
+        return
+
+    from xnatctl.cli.auth import do_login, report_login
+
+    ctx = Context()
+    ctx.config = cfg
+    ctx.profile_name = profile
+
+    try:
+        result = do_login(ctx, cfg.get_profile(profile), profile_name=profile)
+    except XNATCtlError as e:
+        # The profile is written and valid; only the login failed. Say so
+        # rather than implying init itself failed, and keep exit 0.
+        print_error(str(e))
+        if e.hint:
+            print_hint(e.hint)
+        click.echo("Profile saved. Retry with 'xnatctl auth login'.", err=True)
+        return
+
+    report_login(ctx, result)
 
 
 @config.command("show")
