@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 from collections import deque
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -44,8 +45,12 @@ def dest_client() -> MagicMock:
 
 
 @pytest.fixture
-def state_store(tmp_path) -> TransferStateStore:
-    return TransferStateStore(tmp_path / "transfer.db")
+def state_store(tmp_path) -> Iterator[TransferStateStore]:
+    store = TransferStateStore(tmp_path / "transfer.db")
+    try:
+        yield store
+    finally:
+        store.close()
 
 
 @pytest.fixture
