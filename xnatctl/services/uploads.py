@@ -2037,34 +2037,40 @@ class UploadService(BaseService):
             else:
                 base_path = f"/data/experiments/{session_id}/resources/{resource_label}/files"
 
+        # A directory source is zipped to a temp file that MUST be removed on
+        # every exit path. It used to leak on all of them: a 50 GB resource
+        # directory left a 50 GB zip behind on each invocation, and
+        # `session upload-exam` calls this once per resource directory (ROB-12).
+        temp_zip: Path | None = None
         if source_path.is_dir():
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
                 zip_path = Path(tmp.name)
 
             shutil.make_archive(str(zip_path.with_suffix("")), "zip", source_path)
+            temp_zip = zip_path
             source_path = zip_path
             extract = True
 
-        file_size = source_path.stat().st_size
-
-        if progress_callback:
-            progress_callback(
-                UploadProgress(
-                    phase=OperationPhase.UPLOADING,
-                    total_bytes=file_size,
-                    message=f"Uploading {source_path.name}",
-                )
-            )
-
-        params: dict[str, Any] = {}
-        if extract:
-            params["extract"] = "true"
-        if overwrite:
-            params["overwrite"] = "true"
-
-        path = f"{base_path}/{source_path.name}"
-
         try:
+            file_size = source_path.stat().st_size
+
+            if progress_callback:
+                progress_callback(
+                    UploadProgress(
+                        phase=OperationPhase.UPLOADING,
+                        total_bytes=file_size,
+                        message=f"Uploading {source_path.name}",
+                    )
+                )
+
+            params: dict[str, Any] = {}
+            if extract:
+                params["extract"] = "true"
+            if overwrite:
+                params["overwrite"] = "true"
+
+            path = f"{base_path}/{source_path.name}"
+
             base_url = self.client.base_url
             session_token = self.client.session_token
             verify_ssl = self.client.verify_ssl
@@ -2137,6 +2143,11 @@ class UploadService(BaseService):
                 errors=[str(e)],
                 session_id=session_id,
             )
+        finally:
+            # Covers both the success return and the broad `except` above, which
+            # returns a failure summary rather than propagating.
+            if temp_zip is not None:
+                temp_zip.unlink(missing_ok=True)
 
     def _split_into_batches(
         self,
