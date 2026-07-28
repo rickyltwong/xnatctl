@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import json
+import logging
 import sys
 import traceback
 from collections.abc import Callable
@@ -26,11 +27,15 @@ from xnatctl.core.exceptions import (
 from xnatctl.core.exceptions import (
     ConnectionError as XNATConnectionError,
 )
-from xnatctl.core.logging import debug_env_enabled, setup_logging
+from xnatctl.core.logging import debug_env_enabled, get_audit_logger, setup_logging
 from xnatctl.core.output import OutputFormat, print_error, print_warning
-from xnatctl.core.redact import redact_url_query
+from xnatctl.core.redact import SECRET_QUERY_KEYS, redact_url_query
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+# Click context key used to pass the real exception class from handle_errors
+# to the audit record, across the SystemExit that separates them.
+AUDIT_ERROR_KEY = "xnatctl.audit_error"
 
 
 # =============================================================================
@@ -336,8 +341,86 @@ def require_auth(f: F) -> F:
 # =============================================================================
 
 
+# Parameter names whose values must never reach the audit log. Built from the
+# canonical secret-shaped key set plus the CLI's own credential flags.
+_AUDIT_SECRET_PARAMS = SECRET_QUERY_KEYS | {"dest_pass", "dest_password", "passphrase"}
+
+# Parameters that describe *how* a command ran rather than *what* it touched.
+_AUDIT_UNINTERESTING_PARAMS = frozenset(
+    {"yes", "dry_run", "output_format", "quiet", "verbose", "profile"}
+)
+
+
+def _audit_details(params: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a command's parameters to the identifiers worth recording.
+
+    A denylist rather than an allowlist: the interesting fields differ per
+    command, and an allowlist would silently record nothing for any command
+    added later. Secret-shaped names are dropped outright, and every surviving
+    string is redacted on the way out.
+    """
+    details: dict[str, Any] = {}
+    for key, value in params.items():
+        if value is None or value is False:
+            continue
+        if key in _AUDIT_SECRET_PARAMS or key in _AUDIT_UNINTERESTING_PARAMS:
+            continue
+        details[key] = value
+    return details
+
+
+def _record_audit(*, dry_run: bool, confirmed: bool, params: dict[str, Any], error: str | None):
+    """Append one audit record for a destructive command. Never raises."""
+    try:
+        click_ctx = click.get_current_context(silent=True)
+        ctx_obj = click_ctx.obj if click_ctx is not None else None
+        command = click_ctx.command_path if click_ctx is not None else None
+
+        # profile_name is None whenever the user relied on the default profile,
+        # which is the common case -- fall back so the field is not usually blank.
+        config = getattr(ctx_obj, "config", None)
+        profile_name = getattr(ctx_obj, "profile_name", None) or getattr(
+            config, "default_profile", None
+        )
+
+        # Read the client only if one was already built; never construct one
+        # just to log. A --dry-run never builds a client, so fall back to the
+        # profile -- "which server was this aimed at" is exactly what the record
+        # is for.
+        client = getattr(ctx_obj, "client", None)
+        profile = get_profile(ctx_obj) if isinstance(ctx_obj, Context) else None
+        server = getattr(client, "base_url", None) or getattr(profile, "url", None)
+        user = getattr(client, "username", None) or getattr(profile, "username", None)
+
+        get_audit_logger().log_operation(
+            # The command path is the operation identifier: unambiguous, and it
+            # cannot drift out of sync with a hand-written name.
+            operation=command or "unknown",
+            command=command,
+            profile=profile_name,
+            server=server,
+            user=user,
+            project=params.get("project"),
+            subject=params.get("subject_id") or params.get("subject"),
+            session=params.get("experiment") or params.get("session_id"),
+            success=error is None,
+            error=error,
+            dry_run=dry_run,
+            details={**_audit_details(params), "confirmed": confirmed},
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        # Auditing must never be the reason a delete fails.
+        logging.getLogger(__name__).warning("Could not record audit entry: %s", e)
+
+
 def confirm_destructive(message: str) -> Callable[[F], F]:
-    """Require confirmation for destructive operations."""
+    """Require confirmation for destructive operations.
+
+    Also the audit seam (SEC-07): carrying this decorator is what marks a
+    command as state-changing, so the record is written here rather than in
+    each command. That keeps coverage automatic -- a new destructive command is
+    audited by virtue of being declared destructive.
+    """
 
     def decorator(f: F) -> F:
         """Wrap a command to enforce confirmation/dry-run behavior."""
@@ -351,12 +434,26 @@ def confirm_destructive(message: str) -> Callable[[F], F]:
                 click.echo("[DRY-RUN] Preview mode - no changes will be made", err=True)
                 kwargs["dry_run"] = True
             elif not yes:
+                # An aborted confirmation is not an audited event: nothing was
+                # attempted, and logging it would bury real changes in noise.
                 click.confirm(message, abort=True)
                 kwargs["dry_run"] = False
             else:
                 kwargs["dry_run"] = False
 
-            return f(*args, **kwargs)
+            error: str | None = None
+            try:
+                return f(*args, **kwargs)
+            except BaseException as exc:
+                # handle_errors converts failures to SystemExit, so the useful
+                # class name is the one it stashed rather than SystemExit itself.
+                click_ctx = click.get_current_context(silent=True)
+                stashed = click_ctx.meta.get(AUDIT_ERROR_KEY) if click_ctx else None
+                error = stashed or type(exc).__name__
+                raise
+            finally:
+                # In a finally so a command that exits mid-way is still recorded.
+                _record_audit(dry_run=dry_run, confirmed=yes, params=dict(kwargs), error=error)
 
         return wrapper  # type: ignore
 
@@ -570,6 +667,11 @@ def handle_errors(f: F) -> F:
         except click.ClickException:
             raise
         except Exception as e:
+            # Stash the real class before collapsing to SystemExit, so the
+            # audit record names the actual failure (SEC-07).
+            click_ctx = click.get_current_context(silent=True)
+            if click_ctx is not None:
+                click_ctx.meta[AUDIT_ERROR_KEY] = type(e).__name__
             sys.exit(render_cli_error(e))
 
     return wrapper  # type: ignore

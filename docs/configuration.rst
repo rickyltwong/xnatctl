@@ -281,7 +281,34 @@ You can also explicitly clear your session at any time:
 
 .. warning::
 
-   Avoid storing passwords directly in ``config.yaml`` on shared or multi-user systems.
-   The config file is not encrypted, and anyone with read access to your home directory
-   can see the credentials. Prefer environment variables, a secrets manager, or the
-   interactive prompt for sensitive environments.
+   Avoid storing passwords directly in ``config.yaml``. The file is written
+   ``0600``, but it is not encrypted, and a plaintext password in it is
+   readable by anything running as you. Prefer the OS keychain
+   (``xnatctl config set-password``), environment variables, a secrets manager,
+   or the interactive prompt. xnatctl warns at startup if it finds a plaintext
+   password in a config file that other users can read.
+
+Audit trail
+-----------
+
+Destructive commands -- anything that prompts for confirmation, such as
+``subject delete``, ``scan delete`` and ``prearchive delete`` -- append one
+JSON line to ``~/.config/xnatctl/audit.log``, created ``0600``. Each record
+holds the timestamp, command, profile, server, user, the identifiers the
+command targeted, whether it was a ``--dry-run``, and the outcome:
+
+.. code-block:: json
+
+   {"timestamp": "2026-07-28T14:02:11-04:00", "operation": "xnatctl subject delete",
+    "success": true, "profile": "prod", "server": "https://xnat.example.org",
+    "user": "admin", "project": "STUDY01", "subject": "SUB001"}
+
+This answers "who deleted SUB001 from this workstation, when, and against which
+server" locally -- XNAT's own audit log is server-side and often not readable
+by the person who ran the command. Read-only commands are not recorded, and
+neither is a confirmation you declined, since nothing was attempted.
+
+Secrets never enter the file: credential-shaped parameters are dropped by name
+and every recorded string is redacted the same way log output is. The log
+rotates once to ``audit.log.1`` at 10 MB. Writing is best-effort -- if the file
+cannot be written, xnatctl warns and completes the operation anyway.
