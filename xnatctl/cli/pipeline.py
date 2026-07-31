@@ -87,7 +87,7 @@ def pipeline_run(
     service = PipelineService(client)
 
     if not ctx.quiet:
-        click.echo(f"Starting pipeline {pipeline_name} on {experiment}...")
+        click.echo(f"Starting pipeline {pipeline_name} on {experiment}...", err=True)
 
     result = service.run(
         pipeline_name=pipeline_name,
@@ -99,14 +99,14 @@ def pipeline_run(
 
     if wait and job_id:
         if not ctx.quiet:
-            click.echo(f"Waiting for job {job_id} to complete...")
+            click.echo(f"Waiting for job {job_id} to complete...", err=True)
 
         def progress_callback(status: dict) -> None:
             """Print pipeline job status updates during wait."""
             if ctx.quiet:
                 return
             job_status = status.get("status", "unknown")
-            click.echo(f"  Status: {job_status}")
+            click.echo(f"  Status: {job_status}", err=True)
 
         try:
             final_status = service.wait(
@@ -152,14 +152,14 @@ def pipeline_status(
 
     if watch:
         if not ctx.quiet:
-            click.echo(f"Watching job {job_id}...")
+            click.echo(f"Watching job {job_id}...", err=True)
 
         def progress_callback(status: dict) -> None:
             """Print pipeline job status updates during watch."""
             if ctx.quiet:
                 return
             job_status = status.get("status", "unknown")
-            click.echo(f"  Status: {job_status}")
+            click.echo(f"  Status: {job_status}", err=True)
 
         try:
             final_status = service.wait(
@@ -210,7 +210,7 @@ def pipeline_cancel(
         xnatctl pipeline cancel JOB123 --dry-run
     """
     if dry_run:
-        click.echo(f"[DRY-RUN] Would cancel job {job_id}")
+        click.echo(f"[DRY-RUN] Would cancel job {job_id}", err=True)
         return
 
     client = ctx.get_client()

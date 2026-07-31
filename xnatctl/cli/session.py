@@ -422,11 +422,11 @@ def _download_session_fast(
 
     if not scan_ids:
         if not quiet:
-            click.echo("No scans found in session")
+            click.echo("No scans found in session", err=True)
         return
 
     if not quiet:
-        click.echo(f"Downloading {len(scan_ids)} scans in parallel...")
+        click.echo(f"Downloading {len(scan_ids)} scans in parallel...", err=True)
 
     base_url = client.base_url
     session_token = client.session_token
@@ -461,7 +461,7 @@ def _download_session_fast(
         try:
             with httpx.Client(
                 base_url=base_url,
-                timeout=build_httpx_timeout(timeout),  # connect fails fast (ROB-02)
+                timeout=build_httpx_timeout(timeout),  # connect fails fast
                 verify=verify_ssl,
             ) as http:
                 cookies = {"JSESSIONID": session_token} if session_token else {}
@@ -523,14 +523,14 @@ def _download_session_fast(
                 succeeded.append(scan_id)
                 if not quiet:
                     status = f" ({msg})" if msg else ""
-                    click.echo(f"  Scan {scan_id} done{status}")
+                    click.echo(f"  Scan {scan_id} done{status}", err=True)
             else:
                 failed.append((scan_id, msg))
                 if not quiet:
-                    click.echo(f"  Scan {scan_id} FAILED: {msg}")
+                    click.echo(f"  Scan {scan_id} FAILED: {msg}", err=True)
 
     if failed and not quiet:
-        click.echo(f"Warning: {len(failed)}/{len(download_tasks)} downloads failed")
+        click.echo(f"Warning: {len(failed)}/{len(download_tasks)} downloads failed", err=True)
 
 
 @session.command("download")
@@ -712,20 +712,20 @@ def session_download(
         raise SystemExit(1)
 
     if dry_run:
-        click.echo(f"[DRY-RUN] Would download session {session_id}")
+        click.echo(f"[DRY-RUN] Would download session {session_id}", err=True)
         if resolved_session_id != session_id:
-            click.echo(f"  Resolved ID: {resolved_session_id}")
-        click.echo(f"  Project: {session_project}")
-        click.echo(f"  Subject: {subject}")
-        click.echo(f"  Output: {out_path / (name or session_id)}")
-        click.echo(f"  Workers: {workers}")
+            click.echo(f"  Resolved ID: {resolved_session_id}", err=True)
+        click.echo(f"  Project: {session_project}", err=True)
+        click.echo(f"  Subject: {subject}", err=True)
+        click.echo(f"  Output: {out_path / (name or session_id)}", err=True)
+        click.echo(f"  Workers: {workers}", err=True)
         if resource:
-            click.echo(f"  Resources: {', '.join(resource)}")
+            click.echo(f"  Resources: {', '.join(resource)}", err=True)
         elif exclude_resource:
-            click.echo(f"  Exclude resources: {', '.join(exclude_resource)}")
+            click.echo(f"  Exclude resources: {', '.join(exclude_resource)}", err=True)
         else:
-            click.echo("  Resources: all")
-        click.echo(f"  Session resources: {session_resources}")
+            click.echo("  Resources: all", err=True)
+        click.echo(f"  Session resources: {session_resources}", err=True)
         return
 
     # Create session directory
@@ -781,7 +781,7 @@ def session_download(
     # Download session-level resources (outside scans)
     if session_resources:
         if not ctx.quiet:
-            click.echo("Downloading session-level resources...")
+            click.echo("Downloading session-level resources...", err=True)
         try:
             res_url = (
                 f"/data/projects/{session_project}/subjects/{subject}"
@@ -807,10 +807,10 @@ def session_download(
                             f.write(chunk)
 
             if not ctx.quiet:
-                click.echo(f"  Session resources downloaded ({len(sess_resources)})")
+                click.echo(f"  Session resources downloaded ({len(sess_resources)})", err=True)
         except Exception as e:
             if not ctx.quiet:
-                click.echo(f"  Session resources: {e}")
+                click.echo(f"  Session resources: {e}", err=True)
 
     # Extract ZIPs if requested
     if unzip:
@@ -939,7 +939,7 @@ def session_upload(
         validate_subject_id,
     )
 
-    # A password value on argv is refused by the --password callback (SEC-05);
+    # A password value on argv is refused by the --password callback;
     # stdin is the only explicit per-command source. Downstream fallbacks
     # (XNAT_PASS, prompt) live in _upload_directory_parallel.
     password = read_password_stdin("--password-stdin") if password_stdin else None
@@ -979,16 +979,16 @@ def session_upload(
 
     # Dry run handling
     if dry_run:
-        click.echo("[DRY-RUN] Would upload with the following settings:")
-        click.echo(f"  Source: {source_path}")
-        click.echo(f"  Project: {project}")
-        click.echo(f"  Subject: {subject}")
-        click.echo(f"  Session: {session}")
-        click.echo(f"  Mode: {mode}")
-        click.echo(f"  Workers: {workers}")
+        click.echo("[DRY-RUN] Would upload with the following settings:", err=True)
+        click.echo(f"  Source: {source_path}", err=True)
+        click.echo(f"  Project: {project}", err=True)
+        click.echo(f"  Subject: {subject}", err=True)
+        click.echo(f"  Session: {session}", err=True)
+        click.echo(f"  Mode: {mode}", err=True)
+        click.echo(f"  Workers: {workers}", err=True)
         if not gradual:
-            click.echo(f"  Overwrite: {overwrite}")
-            click.echo(f"  Direct archive: {direct_archive}")
+            click.echo(f"  Overwrite: {overwrite}", err=True)
+            click.echo(f"  Direct archive: {direct_archive}", err=True)
         return
 
     # Gradual per-file upload
@@ -1197,17 +1197,17 @@ def session_upload_exam(
         resource_labels.append(validate_resource_label(resource_dir.name))
 
     if dry_run:
-        click.echo("[DRY-RUN] Would upload exam with the following settings:")
-        click.echo(f"  Exam root: {exam_root_path}")
-        click.echo(f"  Project: {project}")
-        click.echo(f"  Subject: {subject}")
-        click.echo(f"  Session: {session}")
-        click.echo(f"  Workers: {workers}")
-        click.echo(f"  Direct archive: {direct_archive}")
-        click.echo(f"  Resource dirs ({len(resource_labels)}):")
+        click.echo("[DRY-RUN] Would upload exam with the following settings:", err=True)
+        click.echo(f"  Exam root: {exam_root_path}", err=True)
+        click.echo(f"  Project: {project}", err=True)
+        click.echo(f"  Subject: {subject}", err=True)
+        click.echo(f"  Session: {session}", err=True)
+        click.echo(f"  Workers: {workers}", err=True)
+        click.echo(f"  Direct archive: {direct_archive}", err=True)
+        click.echo(f"  Resource dirs ({len(resource_labels)}):", err=True)
         for label in resource_labels:
-            click.echo(f"    - {label}")
-        click.echo(f"  Misc label: {misc_label}")
+            click.echo(f"    - {label}", err=True)
+        click.echo(f"  Misc label: {misc_label}", err=True)
         return
 
     client = ctx.get_client()
@@ -1341,7 +1341,7 @@ def session_upload_exam(
                 f"{dicom_msg}; session '{session}' not archived yet{waited}. "
                 f"{pending} resource item(s) not attached -- re-run once archived:\n  {rerun}"
             )
-        # Deliberate exit 0 (NOT ROB-01): this is documented partial success --
+        # Deliberate exit 0: this is documented partial success --
         # the DICOM upload succeeded and the emitted --attach-only command
         # recovers the pending resources once archiving completes. Returning
         # nonzero here would make callers treat a recoverable state as failure.
@@ -1442,7 +1442,7 @@ def _upload_gradual_dicom(
         progress_counter += 1
         if p.phase.value == "uploading" and progress_counter % 100 != 0:
             return
-        click.echo(f"  [{p.phase.value}] {p.message}")
+        click.echo(f"  [{p.phase.value}] {p.message}", err=True)
 
     try:
         summary = service.upload_dicom_gradual(
@@ -1482,7 +1482,7 @@ def _upload_gradual_dicom(
                 click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
 
     # Exit code must not depend on the output format: a failed upload has to
-    # return nonzero under -o json too, or automation reports success (ROB-01).
+    # return nonzero under -o json too, or automation reports success.
     if not summary.success:
         raise SystemExit(1)
 
@@ -1800,7 +1800,7 @@ def _upload_directory_parallel(
             if len(summary.errors) > 5:
                 click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
 
-    # Format-independent failure exit (ROB-01): -o json must also return nonzero.
+    # Format-independent failure exit: -o json must also return nonzero.
     if not summary.success:
         raise SystemExit(1)
 
@@ -1839,7 +1839,7 @@ def _upload_dicom_store(
         raise SystemExit(1) from e
 
     if not ctx.quiet:
-        click.echo(f"Sending DICOM files to {dicom_host}:{dicom_port} ({called_aet})...")
+        click.echo(f"Sending DICOM files to {dicom_host}:{dicom_port} ({called_aet})...", err=True)
 
     client = ctx.get_client()
     service = UploadService(client)
@@ -1874,7 +1874,7 @@ def _upload_dicom_store(
             )
             click.echo(f"Check logs in: {summary.log_dir}", err=True)
 
-    # Format-independent failure exit (ROB-01): -o json must also return nonzero.
+    # Format-independent failure exit: -o json must also return nonzero.
     if not summary.success:
         raise SystemExit(1)
 
@@ -1949,12 +1949,12 @@ def session_upload_dicom(
         workers = profile.workers if (profile and profile.workers is not None) else 4
 
     if dry_run:
-        click.echo("[DRY-RUN] Would send DICOM files via C-STORE:")
-        click.echo(f"  Source: {source_path}")
-        click.echo(f"  Host: {host}:{port}")
-        click.echo(f"  Called AET: {called_aet}")
-        click.echo(f"  Calling AET: {calling_aet}")
-        click.echo(f"  Workers: {workers}")
+        click.echo("[DRY-RUN] Would send DICOM files via C-STORE:", err=True)
+        click.echo(f"  Source: {source_path}", err=True)
+        click.echo(f"  Host: {host}:{port}", err=True)
+        click.echo(f"  Called AET: {called_aet}", err=True)
+        click.echo(f"  Calling AET: {calling_aet}", err=True)
+        click.echo(f"  Workers: {workers}", err=True)
         return
 
     _upload_dicom_store(
@@ -1985,7 +1985,7 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
 
     for zip_path in zip_files:
         if not quiet:
-            click.echo(f"Extracting {zip_path.name}...")
+            click.echo(f"Extracting {zip_path.name}...", err=True)
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
@@ -2015,7 +2015,7 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
             if cleanup:
                 zip_path.unlink()
                 if not quiet:
-                    click.echo(f"  Removed {zip_path.name}")
+                    click.echo(f"  Removed {zip_path.name}", err=True)
         except zipfile.BadZipFile:
             print_error(f"Invalid ZIP file: {zip_path.name}")
 
@@ -2067,25 +2067,25 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
         zip_files = list(input_path.glob("*.zip"))
 
     if not zip_files:
-        click.echo("No ZIP files found.")
+        click.echo("No ZIP files found.", err=True)
         return
 
-    click.echo(f"Found {len(zip_files)} ZIP file(s)")
+    click.echo(f"Found {len(zip_files)} ZIP file(s)", err=True)
 
     if dry_run:
-        click.echo("\n[DRY-RUN] Would extract:")
+        click.echo("\n[DRY-RUN] Would extract:", err=True)
         for zip_file in zip_files:
             extract_dir = zip_file.parent / zip_file.stem
-            click.echo(f"  {zip_file} -> {extract_dir}/")
+            click.echo(f"  {zip_file} -> {extract_dir}/", err=True)
             if cleanup:
-                click.echo(f"    (would remove {zip_file.name})")
+                click.echo(f"    (would remove {zip_file.name})", err=True)
         return
 
     extracted = 0
     failed = 0
 
     for zip_path in zip_files:
-        click.echo(f"Extracting {zip_path.name}...")
+        click.echo(f"Extracting {zip_path.name}...", err=True)
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
@@ -2115,7 +2115,7 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
 
             if cleanup:
                 zip_path.unlink()
-                click.echo(f"  Removed {zip_path.name}")
+                click.echo(f"  Removed {zip_path.name}", err=True)
         except zipfile.BadZipFile:
             print_error(f"Invalid ZIP file: {zip_path.name}")
             failed += 1
@@ -2124,6 +2124,6 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
             failed += 1
 
     if failed:
-        click.echo(f"\nExtracted: {extracted}, Failed: {failed}")
+        click.echo(f"\nExtracted: {extracted}, Failed: {failed}", err=True)
     else:
         print_success(f"Extracted {extracted} ZIP file(s)")

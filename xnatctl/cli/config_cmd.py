@@ -104,7 +104,7 @@ def config_init(
     )
 
     # Continue into a login rather than stopping at a cliff between two
-    # commands (CLI-06). Only prompt on a real terminal: in a pipeline an
+    # commands. Only prompt on a real terminal: in a pipeline an
     # unanswered prompt is a hang, and --login/--no-login covers scripts.
     if login is None:
         login = sys.stdin.isatty() and click.confirm("Log in now?", default=True)
@@ -208,7 +208,7 @@ def config_use_context(profile: str) -> None:
 
     if not cfg.has_profile(profile):
         print_error(f"Profile '{profile}' not found.")
-        click.echo(f"Available profiles: {', '.join(cfg.profiles.keys())}")
+        click.echo(f"Available profiles: {', '.join(cfg.profiles.keys())}", err=True)
         raise SystemExit(1)
 
     cfg.set_default_profile(profile)
@@ -315,7 +315,7 @@ def config_remove_profile(name: str, dry_run: bool) -> None:
         raise SystemExit(1)
 
     if dry_run:
-        click.echo(f"[DRY-RUN] Would remove profile '{name}'")
+        click.echo(f"[DRY-RUN] Would remove profile '{name}'", err=True)
         return
 
     cfg.remove_profile(name)

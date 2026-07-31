@@ -259,7 +259,7 @@ def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: 
     client = ctx.get_client()
 
     if dry_run:
-        click.echo(f"Would delete subject: {subject_id} from project: {project}")
+        click.echo(f"Would delete subject: {subject_id} from project: {project}", err=True)
         return
 
     # Delete subject

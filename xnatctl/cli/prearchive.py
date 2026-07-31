@@ -118,7 +118,7 @@ def prearchive_delete(
         xnatctl prearchive delete MYPROJ 20240115_120000 Session1 --dry-run
     """
     if dry_run:
-        click.echo(f"[DRY-RUN] Would delete {session_name} from prearchive")
+        click.echo(f"[DRY-RUN] Would delete {session_name} from prearchive", err=True)
         return
 
     client = ctx.get_client()
