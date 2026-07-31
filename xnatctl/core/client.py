@@ -49,11 +49,11 @@ DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
 DEFAULT_MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2
 # Statuses safe to retry on the core client path. 429/500 join the original
-# 502/503/504 (ROB-03); 400 stays upload-only (it encodes a transient XNAT
+# 502/503/504; 400 stays upload-only (it encodes a transient XNAT
 # import-race quirk handled in services/uploads.py), so it is NOT listed here.
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _RETRY_AFTER_STATUS_CODES = {429, 503}
-# Cap reconciled across the roadmap (ROB-03 said 300, GAP-06 said ~120): 300 is
+# Cap on how long an explicit Retry-After is honoured: 300 is
 # what shipped and what the tests pin. A server asking for longer than 5 minutes
 # is telling us to give up, so we fall back to normal backoff and let the retry
 # budget drain instead of sleeping for an unbounded time.
@@ -62,14 +62,14 @@ _MAX_RETRY_AFTER_SECONDS = 300
 # Methods whose retry after a READ-phase failure is safe. The request reached the
 # server, so a retry re-executes it; only methods XNAT treats as idempotent may
 # be repeated. POST/PATCH are excluded -- retrying them risks a double archive or
-# a double pipeline launch (ROB-09).
+# a double pipeline launch.
 IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS"})
 
 # Transport failures that are NOT ConnectError/TimeoutException but are still
 # transient: the socket died mid-exchange, or a proxy hiccupped. These are the
 # classic long-transfer failure mode for this tool (a dropped connection during
 # a multi-GB DICOM read), so they retry like a read timeout rather than escaping
-# raw (ROB-03: no httpx exception may leave XNATClient).
+# raw (contract: no httpx exception may leave XNATClient).
 RETRYABLE_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
     httpx.ReadError,
     httpx.WriteError,
@@ -145,7 +145,7 @@ def _backoff_delay(attempt: int, rng: random.Random = _RNG) -> float:
 
     Without jitter every parallel worker retries on the same tick and
     re-stampedes a server that is already struggling -- the exact failure mode
-    behind concurrent-session exhaustion under ``--workers`` (ROB-09).
+    behind concurrent-session exhaustion under ``--workers``.
     """
     return rng.uniform(0.0, float(RETRY_BACKOFF_BASE ** (attempt + 1)))
 
@@ -170,7 +170,7 @@ class XNATClient:
     auto_reauth: bool = False
     # Injection seam for the underlying HTTP transport. Standard httpx practice
     # for library consumers, and what lets tests drive real request/response
-    # cycles through httpx.MockTransport instead of mocking the client (TEST-03).
+    # cycles through httpx.MockTransport instead of mocking the client.
     transport: httpx.BaseTransport | None = None
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
 
@@ -200,7 +200,7 @@ class XNATClient:
                     )
             self._client = httpx.Client(
                 base_url=self.base_url,
-                # Structured timeout: a short connect phase (ROB-02) so a
+                # Structured timeout: a short connect phase so a
                 # blackholed host fails in seconds, with the long read ceiling
                 # preserved for large transfers.
                 timeout=build_httpx_timeout(self.timeout),
@@ -270,7 +270,7 @@ class XNATClient:
             raise AuthenticationError(self.base_url, "Invalid credentials or password expired")
 
         self.session_token = resp.text.strip()
-        # Never the token itself -- only that one was obtained (MAINT-01/SEC-09).
+        # Never the token itself -- only that one was obtained.
         logger.debug("Authenticated as %s at %s", self.username, redact_url_query(self.base_url))
         return self.session_token
 
@@ -280,7 +280,7 @@ class XNATClient:
             try:
                 client = self._get_client()
                 # Cookie on the client instance, not per-request: httpx 0.28
-                # deprecates `cookies=` on individual calls (ROB-03 step 6).
+                # deprecates `cookies=` on individual calls.
                 client.cookies.set("JSESSIONID", self.session_token)
                 client.delete("/data/JSESSION")
             except Exception:
@@ -337,7 +337,7 @@ class XNATClient:
             retry_non_idempotent: Allow read-phase retries for a method outside
                 :data:`IDEMPOTENT_METHODS`. Opt in per call site, only where the
                 operation is provably safe to repeat -- a retried POST can mean a
-                double archive or a double pipeline launch (ROB-09).
+                double archive or a double pipeline launch.
 
         Returns:
             HTTP response (2xx only; error statuses raise typed exceptions).
@@ -357,7 +357,7 @@ class XNATClient:
 
         # Read/write ceiling for this call (int, also used in error messages).
         # Wrapped in a structured httpx.Timeout so a per-request override cannot
-        # re-flatten connect back to the multi-hour scalar (ROB-02).
+        # re-flatten connect back to the multi-hour scalar.
         read_timeout = timeout or self.timeout
         request_timeout = build_httpx_timeout(read_timeout)
         last_error: Exception | None = None
@@ -392,7 +392,7 @@ class XNATClient:
 
                 # One line per attempt is the backbone of `-v` diagnostics: it
                 # is what tells a user whether a slow command is stuck on one
-                # request or grinding through retries (MAINT-01). The full URL
+                # request or grinding through retries. The full URL
                 # goes through redaction -- query strings carry tokens.
                 logger.debug(
                     "%s %s -> %d in %dms (attempt %d/%d)",
@@ -492,7 +492,8 @@ class XNATClient:
                 # firewall-DROPped). A typed TimeoutError instead of the generic
                 # NetworkError bucket, and NOT retried -- an unreachable host will
                 # not recover within the backoff window, and the whole point of
-                # ROB-02 is failing in seconds, not hours. (ROB-09 may revisit
+                # the split timeout is failing in seconds, not hours. (A future
+                # revision may add
                 # idempotency-aware connect retries.)
                 raise XNATTimeoutError(self.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
             except httpx.ConnectError:
@@ -674,7 +675,7 @@ class XNATClient:
                 results = results.get(key, []) if isinstance(results, dict) else []
 
             # Per-page visibility turns "the list command is slow" into a
-            # number of pages and items (MAINT-01). Logged in the client rather
+            # number of pages and items. Logged in the client rather
             # than BaseService._paginate, which only delegates here.
             logger.debug(
                 "paginate %s: offset=%d limit=%d -> %d items",

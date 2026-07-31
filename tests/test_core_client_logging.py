@@ -1,4 +1,4 @@
-"""Diagnostic-logging tests for the client and auth layers (MAINT-01).
+"""Diagnostic-logging tests for the client and auth layers.
 
 Before this, `xnatctl -v` told you nothing about HTTP: the client had no
 per-request logging, the retry loop slept silently (so a retry storm looked
@@ -7,7 +7,7 @@ like a hang), and setup_logging pinned httpx/httpcore to WARNING even under
 actually use?" was unanswerable without a debugger.
 
 Every assertion here doubles as a redaction check: these are the log lines
-SEC-09's RedactionFilter exists to protect.
+the RedactionFilter exists to protect.
 """
 
 from __future__ import annotations

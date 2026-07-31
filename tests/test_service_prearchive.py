@@ -283,7 +283,7 @@ class TestPrearchiveGetScans:
 
 
 # =============================================================================
-# Response inspection (ROB-10)
+# Response inspection
 #
 # XNAT's prearchive services answer HTTP 200 with an error-shaped body instead
 # of a 4xx, so these verbs used to return {"success": True} regardless.

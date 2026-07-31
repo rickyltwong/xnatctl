@@ -790,7 +790,7 @@ class TestScanDownload:
         assert result.exit_code == 1
 
     def test_scan_download_failure_json_exits_nonzero(self, runner: CliRunner, tmp_path) -> None:
-        """ROB-01: a failed download must exit 1 under -o json, not just table."""
+        """A failed download must exit 1 under -o json, not just table."""
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=False,

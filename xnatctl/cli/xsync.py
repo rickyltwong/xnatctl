@@ -49,7 +49,7 @@ from xnatctl.services.xsync import XsyncService
 _REMOTE_PASS_ENV: str = "XNAT_XSYNC_REMOTE_PASS"
 
 
-# Canonical implementation lives in cli/common.py (SEC-05); this module was
+# Canonical implementation lives in cli/common.py; this module was
 # the pattern's origin and now just parameterizes it.
 _reject_argv_password = reject_argv_password(
     f"Use --remote-pass-stdin or set the {_REMOTE_PASS_ENV} env var."

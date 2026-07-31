@@ -1,4 +1,4 @@
-"""Permission and atomicity tests for the on-disk secrets (SEC-08).
+"""Permission and atomicity tests for the on-disk secrets.
 
 The session cache holds a live JSESSIONID and config.yaml can hold a plaintext
 profile password. Both used to be created with ``open(path, "w")``, which
@@ -64,7 +64,7 @@ def test_session_cache_is_owner_only_under_loose_umask(tmp_path: Path) -> None:
 
 @pytest.mark.usefixtures("group_writable_umask")
 def test_session_cache_is_owner_only_under_group_writable_umask(tmp_path: Path) -> None:
-    """The regression that motivated SEC-08: umask 0o002 yielded a 0664 token."""
+    """The motivating regression: umask 0o002 yielded a 0664 token."""
     cache = tmp_path / "cfgdir" / ".session"
     AuthManager(cache_file=cache).save_session("TOK", "https://x.example.org", "u")
 
@@ -127,7 +127,7 @@ def test_no_temp_file_is_left_behind(tmp_path: Path) -> None:
 def test_cache_mode_does_not_depend_on_chmod_succeeding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The core SEC-08 invariant.
+    """The core invariant.
 
     The old code created the file under the umask and relied on a follow-up
     chmod to fix it, so the token was briefly group-readable and permanently so
@@ -170,8 +170,8 @@ def test_failing_chmod_warns_instead_of_passing_silently(
 
 @pytest.mark.usefixtures("group_writable_umask")
 def test_config_file_is_owner_only(tmp_path: Path) -> None:
-    """config.yaml can carry a plaintext password today (SEC-02 owns whether it
-    should), so it gets the same treatment as the session cache."""
+    """config.yaml can carry a plaintext password today, so it gets the same
+    treatment as the session cache."""
     path = tmp_path / "cfgdir" / "config.yaml"
     config = Config()
     config.profiles["default"] = Profile(url="https://x.example.org")

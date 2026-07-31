@@ -15,7 +15,7 @@ class XNATCtlError(Exception):
     survives for verbose output and structured rendering, but is no longer
     appended to the message: doing so turned "Profile not found: prod" into
     "Profile not found: prod (field=profile, value='prod')", where the suffix
-    only restated the message as debug noise (CLI-09).
+    only restated the message as debug noise.
     """
 
     #: Next step for this class of error, shown under the message as
@@ -70,7 +70,7 @@ class NoConfigurationError(ConfigurationError):
     Distinct from :class:`ProfileNotFoundError`, which means "that particular
     profile is missing". On a fresh machine the honest problem is that nothing
     has been configured yet, and telling the user their *default* profile was
-    not found sends them looking for a typo that does not exist (CLI-06).
+    not found sends them looking for a typo that does not exist.
     """
 
     default_hint = "Run 'xnatctl config init' to create one."
@@ -196,9 +196,9 @@ class TimeoutError(ConnectionError):
 
     Raised by ``XNATClient`` when the CONNECT phase times out (host blackholed /
     firewall-DROPped), so ``timeout`` is the connect timeout in seconds. This
-    fails fast and is not retried (ROB-02).
+    fails fast and is not retried.
 
-    Also raised for a READ-phase timeout on a non-idempotent method (ROB-09):
+    Also raised for a READ-phase timeout on a non-idempotent method:
     the server has already seen the request, so retrying could execute it twice.
     Those carry an explicit ``message`` saying the operation may have partially
     executed. Read-phase timeouts on idempotent methods are retried and remain

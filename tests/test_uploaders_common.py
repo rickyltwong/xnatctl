@@ -358,7 +358,7 @@ class TestUploadWithRetry:
         assert fn.call_count == 2
 
     def test_connect_timeout_fails_fast_without_retry(self):
-        """ROB-02: a connect-phase timeout must not burn retries (fail on attempt 1).
+        """A connect-phase timeout must not burn retries (fail on attempt 1).
 
         Contrast with the transient ConnectError above, which stays retryable.
         """

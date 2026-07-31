@@ -105,10 +105,10 @@ known-first-party = ["xnatctl"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Makes `from conftest import make_response` work from test modules regardless
-# of pytest's import mode (TEST-08 shared harness).
+# of pytest's import mode (shared test harness).
 pythonpath = ["tests"]
 # -q keeps CI logs readable at 1000+ tests; pass -v per-run when debugging.
-# The integration tier is deselected by default (TEST-02 populates it).
+# The integration tier is deselected by default.
 addopts = "-q --tb=short -m 'not integration'"
 # NOTE: use the ini options, not `--strict-markers`/`--strict-config` in
 # addopts. Under pytest 9 those flags are only honoured on the command line and
@@ -127,7 +127,7 @@ filterwarnings = [
     # test module raises about itself.
     "error::DeprecationWarning:xnatctl.*",
 ]
-# Per-test hang backstop, far above any legitimate test duration (TEST-10).
+# Per-test hang backstop, far above any legitimate test duration.
 timeout = 120
 
 [tool.mypy]
@@ -144,9 +144,9 @@ source = ["xnatctl"]
 omit = ["*/tests/*", "*/__pycache__/*"]
 
 [tool.coverage.report]
-# Coverage gate (TEST-05). Set just below the measured baseline so it catches
+# Coverage gate. Set just below the measured baseline so it catches
 # regressions, not existing debt.
-# Ratchet: raise to 75 after TEST-01/TEST-03/TEST-06 land, 80 after TEST-07.
+# Ratchet upward as the upload/download/DICOM test coverage lands.
 # Keep this identical to --cov-fail-under in .github/workflows/ci.yml.
 fail_under = 73
 exclude_lines = [

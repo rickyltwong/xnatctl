@@ -1,4 +1,4 @@
-"""Behavior tests for `whoami` and `health ping` (CLI-02 / MAINT-09).
+"""Behavior tests for `whoami` and `health ping`.
 
 These pin the two root-level commands onto the standard decorator stack: they
 must honor the global ``--profile``/``-o``/``-q`` flags (wrong-server identity is

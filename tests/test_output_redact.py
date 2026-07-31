@@ -79,12 +79,12 @@ def test_url_embedded_in_error_message_redacted() -> None:
 
 
 # =============================================================================
-# URL userinfo (SEC-09)
+# URL userinfo
 # =============================================================================
 
 
 def test_userinfo_password_redacted_without_query_string() -> None:
-    """The gap SEC-09 opened on: credentials in the authority passed straight
+    """The motivating gap: credentials in the authority passed straight
     through, because the helper only ever looked at query strings."""
     out = redact_url_query("https://admin:s3cret@xnat.example.org/data/projects")
     assert "s3cret" not in out

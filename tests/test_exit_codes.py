@@ -1,4 +1,4 @@
-"""CLI-04: differentiated, documented exit codes via exit_code_for + handle_errors."""
+"""Differentiated, documented exit codes via exit_code_for + handle_errors."""
 
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ def test_confirm_decline_exits_user_cancelled() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ROB-13 / MAINT-02: tracebacks under --verbose / XNATCTL_DEBUG, hint otherwise
+# Tracebacks under --verbose / XNATCTL_DEBUG, hint otherwise
 # ---------------------------------------------------------------------------
 
 

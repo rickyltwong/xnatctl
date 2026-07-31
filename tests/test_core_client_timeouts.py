@@ -1,4 +1,4 @@
-"""ROB-02: split the scalar timeout so connect fails in seconds, not hours."""
+"""Split the scalar timeout so connect fails in seconds, not hours."""
 
 from __future__ import annotations
 

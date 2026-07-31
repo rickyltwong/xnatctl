@@ -245,7 +245,7 @@ def completion() -> None:
 
 
 def _render_completion(shell: str) -> str:
-    """Render Click's official completion script for *shell* (CLI-03).
+    """Render Click's official completion script for *shell*.
 
     Generated from the INSTALLED Click version so the emitted completion protocol
     always matches the runtime. The old hand-rolled bash script emitted the

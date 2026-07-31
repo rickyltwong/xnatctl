@@ -1,4 +1,4 @@
-"""ROB-01: failed transfers must exit nonzero in every output format.
+"""Failed transfers must exit nonzero in every output format.
 
 Before the fix, ``raise SystemExit(1)`` lived only inside the table-output
 branch of each upload helper, so ``-o json`` printed a ``success: false``

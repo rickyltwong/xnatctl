@@ -1,4 +1,4 @@
-"""SEC-01: TLS verification must warn loudly, parse strictly, and support ca_bundle."""
+"""TLS verification must warn loudly, parse strictly, and support ca_bundle."""
 
 from __future__ import annotations
 

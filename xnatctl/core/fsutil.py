@@ -1,7 +1,7 @@
 """Filesystem helpers for files that must stay readable only by their owner.
 
 xnatctl writes two secrets under ``~/.config/xnatctl``: the cached JSESSIONID
-(``.session``) and, until SEC-02 lands, plaintext profile passwords
+(``.session``) and, for profiles not yet using the keychain, plaintext passwords
 (``config.yaml``). Creating either with a plain ``open(path, "w")`` applies the
 process umask -- 0664 on a typical multi-user host -- so the secret is
 world-readable for the whole window between creation and a follow-up ``chmod``,
@@ -14,7 +14,7 @@ than it looks:
   half-written token.
 
 :func:`atomic_private_write` closes all three by writing a fresh 0600 temp file
-and ``os.replace``-ing it over the destination (SEC-08).
+and ``os.replace``-ing it over the destination.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def restrict_permissions(path: Path) -> bool:
 
     Returns True when the permissions were applied. A failure is reported, not
     swallowed: silently leaving a token world-readable is exactly the outcome
-    SEC-08 exists to prevent.
+    this module exists to prevent.
     """
     try:
         os.chmod(path, PRIVATE_FILE_MODE)
@@ -89,7 +89,7 @@ def ensure_private_dir(path: Path) -> None:
         os.chmod(path, PRIVATE_DIR_MODE)
     except OSError as e:
         # NOTE: os.chmod is largely a no-op on Windows, where the equivalent
-        # protection is an ACL. Windows semantics are unaudited (GAP-10); warn
+        # protection is an ACL. Windows semantics are unaudited; warn
         # rather than fail, since an over-permissive directory is not worth
         # aborting a login over.
         logger.warning("Could not restrict permissions on %s: %s", path, e)

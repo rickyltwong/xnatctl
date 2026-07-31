@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if CLAUDE.md drifts from the package tree or CLI command inventory (MAINT-03).
+"""Fail if CLAUDE.md drifts from the package tree or CLI command inventory.
 
 Two checks:
 

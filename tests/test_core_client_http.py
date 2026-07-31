@@ -1,8 +1,8 @@
 """Transport-level tests for XNATClient pagination, convenience methods, and
-the public ``transport=`` seam (TEST-03).
+the public ``transport=`` seam.
 
 Retry/backoff numerics and status->exception mapping live in
-``tests/test_core_client_retry.py`` (ROB-14); this module deliberately does not
+``tests/test_core_client_retry.py``; this module deliberately does not
 duplicate them. What it owns:
 
 * the ``transport=`` constructor seam itself,
@@ -295,7 +295,7 @@ class TestWhoami:
 
 class TestTransportFailureMapping:
     def test_connect_error_retries_then_raises_retry_exhausted(self) -> None:
-        """No raw httpx error escapes the client (ROB-03 contract)."""
+        """No raw httpx error escapes the client."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("refused", request=request)
@@ -319,7 +319,7 @@ class TestTransportFailureMapping:
         assert len(calls) == 1
 
     def test_connect_timeout_fails_fast_without_retrying(self) -> None:
-        """ROB-02: a blackholed host must fail in seconds, not after backoff."""
+        """A blackholed host must fail in seconds, not after backoff."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectTimeout("connect timed out", request=request)

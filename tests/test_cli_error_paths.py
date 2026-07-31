@@ -1,6 +1,6 @@
 """Error-path tests: expected failures must never surface a Python traceback.
 
-Covers CLI-01 (roadmap 10-cli-ux): bad profile, first-run/no-config, unreachable
+Covers the no-raw-traceback contract: bad profile, first-run/no-config, unreachable
 server, and the last-resort ``main()`` guard.
 """
 
