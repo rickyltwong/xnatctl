@@ -206,16 +206,17 @@ credentials to authenticate its HTTP requests. If you have a cached session toke
 (from ``xnatctl auth login``), xnatctl reuses it across all workers
 automatically.
 
-If you do not have a cached session token, xnatctl will prompt for credentials
-or you can provide them explicitly. Credential sources follow the standard
-priority: CLI args > environment variables > profile config > interactive prompt.
+If you do not have a cached session token, xnatctl will prompt for credentials,
+or you can supply them through the environment. Credential sources follow the
+standard priority: environment variables > profile config (inline or OS
+keychain) > interactive prompt. Never put a password on the command line -- it
+would be visible in ``ps`` and shell history.
 
 .. code-block:: console
 
+   $ export XNAT_USER=myuser XNAT_PASS="$(secret-tool lookup service xnat)"
    $ xnatctl session upload /path/to/DICOM_ROOT \
-       -P MYPROJECT -S MYSUBJECT -E MYSESSION \
-       --username myuser \
-       --password mypassword
+       -P MYPROJECT -S MYSUBJECT -E MYSESSION
 
 .. tip::
 

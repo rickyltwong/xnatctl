@@ -103,8 +103,12 @@ different XNAT environments without re-entering connection details.
 - ``config show`` -- Display the current configuration and all profiles
 - ``config current-context`` -- Print the name of the active profile
 - ``config remove-profile`` -- Remove a named profile
+- ``config set-password`` -- Store a profile's password in the OS keychain
+  (prompts; requires the ``xnatctl[keyring]`` extra)
 
-Set up xnatctl for the first time with your server URL:
+Set up xnatctl for the first time with your server URL -- after writing the
+profile it offers to log in right away (``--login``/``--no-login`` decide up
+front in scripts):
 
 .. code-block:: console
 
@@ -140,18 +144,23 @@ after 15 minutes of inactivity; xnatctl re-authenticates automatically.
 - ``auth status`` -- Show the current authentication state (cached session, env vars)
 - ``auth test`` -- Test connectivity by making a live request to the server
 
-Log in interactively (credentials are prompted if not provided):
+Log in interactively (credentials are prompted if not provided), or pipe the
+password in for scripts:
 
 .. code-block:: console
 
    $ xnatctl auth login
+   $ echo "$PASS" | xnatctl auth login -u admin --password-stdin
    $ xnatctl auth status
 
 .. note::
 
    Credentials resolve in priority order: CLI arguments > environment variables
-   (``XNAT_USER``, ``XNAT_PASS``) > profile configuration > interactive prompt.
-   Set ``XNAT_TOKEN`` to skip credential-based authentication entirely.
+   (``XNAT_USER``, ``XNAT_PASS``) > profile configuration (inline or OS
+   keychain) > interactive prompt. Set ``XNAT_TOKEN`` to skip credential-based
+   authentication entirely. A password *value* on argv
+   (``--password <secret>``) is refused -- it would be visible in ``ps`` and
+   shell history; use ``--password-stdin`` instead.
 
 xnatctl also provides two top-level utility commands:
 

@@ -198,10 +198,14 @@ models and raw API responses. For example, ``ProjectService.list()`` calls
 ``Project`` model instances.
 
 **Core layer** (``xnatctl/core/``). The ``XNATClient`` wraps httpx with retry
-logic (exponential backoff on 502/503/504), automatic re-authentication on 401,
-pagination support, and session token management. The config module handles
-YAML-based profiles and environment variable overrides. The output module uses Rich
-to render tables, JSON, and quiet (ID-only) formats.
+logic (jittered exponential backoff on 429/500/502/503/504, honoring
+``Retry-After``; transport failures such as a dropped connection are retried
+only for idempotent methods, since a retried POST could execute twice),
+automatic re-authentication on 401, pagination support, and session token
+management. The config module handles YAML-based profiles and environment
+variable overrides. The output module uses Rich to render tables, JSON, and
+quiet (ID-only) formats; log output passes through a redaction filter that
+scrubs secret-shaped URL values.
 
 The CLI decorator stack composes behavior declaratively. A typical command looks
 like this:

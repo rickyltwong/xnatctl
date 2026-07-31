@@ -31,6 +31,11 @@ If you omit ``--url``, the command prompts you interactively. The ``--project`` 
 optional but convenient -- it sets a default project so you can skip the ``-P`` flag on
 most commands.
 
+After writing the profile, ``config init`` offers to log in right away (on a
+real terminal; pass ``--login`` or ``--no-login`` to decide up front in
+scripts), so a fresh machine gets from nothing to an authenticated session in
+one command.
+
 After running ``config init``, your configuration file will look like this:
 
 .. code-block:: yaml
@@ -119,14 +124,25 @@ required; the rest have sensible defaults.
        ``XNAT_USER`` environment variable or prompts interactively.
    * - ``password``
      - *(none)*
-     - Password for authentication. Storing passwords in the config file is
-       discouraged on shared systems -- prefer environment variables or the
-       interactive prompt instead.
+     - Password for authentication, stored in plaintext. Discouraged: prefer the
+       OS keychain (see ``password_source``), environment variables, or the
+       interactive prompt. See `Storing Passwords in the OS Keychain`_.
+   * - ``password_source``
+     - *(none)*
+     - Set to ``keyring`` to read the password from the OS keychain instead of
+       the inline ``password`` field. Written for you by
+       ``xnatctl config set-password``; requires the ``xnatctl[keyring]``
+       extra.
    * - ``verify_ssl``
      - ``true``
      - Whether to verify TLS certificates when connecting. Set this to ``false``
        only when working with development servers that use self-signed certificates.
        Never disable verification for production servers.
+   * - ``ca_bundle``
+     - *(none)*
+     - Path to a custom CA bundle for TLS verification -- the secure alternative
+       to ``verify_ssl: false`` for servers with self-signed or institutional
+       certificates.
    * - ``timeout``
      - ``21600``
      - HTTP request timeout in seconds. The default of 21600 (6 hours) is
@@ -229,11 +245,13 @@ Credential Priority
 When xnatctl needs credentials, it checks four sources in order and uses the first
 match it finds:
 
-1. **CLI arguments** -- ``--username`` and ``--password`` passed directly on the command
-   line.
+1. **CLI arguments** -- ``--username`` on the command line, and for the
+   password ``--password-stdin`` (reads one line from stdin). A password
+   *value* on argv is refused with a usage error: it would be visible in
+   ``ps``, ``/proc/*/cmdline``, and shell history.
 2. **Environment variables** -- ``XNAT_USER`` and ``XNAT_PASS`` in the current shell.
-3. **Profile configuration** -- ``username`` and ``password`` fields in the active
-   profile inside ``config.yaml``.
+3. **Profile configuration** -- the ``username`` field plus either the inline
+   ``password`` or, with ``password_source: keyring``, the OS keychain.
 4. **Interactive prompt** -- if none of the above provide credentials, xnatctl asks you
    at the terminal.
 
@@ -243,6 +261,54 @@ match it finds:
    day-to-day use, override it with an environment variable in CI, and still pass
    ``--username`` on the command line when you need to authenticate as a different user
    for a single command. Each layer shadows the ones below it without removing them.
+
+
+Storing Passwords in the OS Keychain
+------------------------------------
+
+Instead of a plaintext ``password`` in ``config.yaml``, xnatctl can keep the
+password in your operating system's keychain (macOS Keychain, GNOME
+Keyring/KWallet, Windows Credential Manager) via the optional `keyring
+<https://pypi.org/project/keyring/>`_ package.
+
+If you already have a profile with an inline plaintext password, migrating
+takes two commands:
+
+.. code-block:: console
+
+   $ pip install 'xnatctl[keyring]'
+   $ xnatctl config set-password prod
+   Password: ********
+   Repeat for confirmation: ********
+   ✓ Password for profile 'prod' stored in the OS keychain
+
+``set-password`` prompts for the password (never accepts it as an argument),
+stores it in the keychain, writes ``password_source: keyring`` into the
+profile, and **removes the inline** ``password:`` **line** from
+``config.yaml``. Afterwards the profile looks like:
+
+.. code-block:: yaml
+
+   profiles:
+     prod:
+       url: https://xnat.example.org
+       username: admin
+       password_source: keyring   # no plaintext password on disk
+
+Nothing else changes: every command resolves the password through the same
+credential chain, so ``auth login``, transfers, and automatic
+re-authentication all read the keychain transparently. ``XNAT_PASS`` still
+wins over the keychain when set.
+
+If the keychain entry is missing or the ``keyring`` package is not installed,
+commands fail with an error naming the exact fix. A failed keychain write
+leaves ``config.yaml`` untouched.
+
+.. note::
+
+   On headless servers without a keychain backend, use the ``XNAT_PASS``
+   environment variable sourced from a secret store instead, or simply delete
+   the ``password:`` line and let interactive commands prompt.
 
 
 Authentication Flow
