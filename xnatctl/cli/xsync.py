@@ -21,7 +21,6 @@ Secret-handling notes (load-bearing — do not relax without updating
 from __future__ import annotations
 
 import os
-import sys
 from typing import Any
 
 import click
@@ -31,6 +30,8 @@ from xnatctl.cli.common import (
     confirm_destructive,
     global_options,
     handle_errors,
+    read_password_stdin,
+    reject_argv_password,
     require_auth,
     require_project_from_context,
 )
@@ -48,41 +49,11 @@ from xnatctl.services.xsync import XsyncService
 _REMOTE_PASS_ENV: str = "XNAT_XSYNC_REMOTE_PASS"
 
 
-def _reject_argv_password(
-    ctx: click.Context,
-    param: click.Parameter,
-    value: str | None,
-) -> None:
-    """Reject ``--remote-pass <secret>`` at parse time.
-
-    Wired as the ``callback=`` for the ``--remote-pass`` option so the
-    failure mode is a :class:`click.UsageError` (exit 2) before any
-    authentication, configuration, or context decorator runs. The
-    deterrent flag exists only to surface the secret-sourcing contract
-    in ``--help``; supplying a value on argv is unconditionally a usage
-    error.
-
-    Args:
-        ctx: Click parsing context (unused).
-        param: The ``--remote-pass`` parameter (unused).
-        value: The argv-supplied value, or ``None`` if the flag was
-            omitted.
-
-    Returns:
-        ``None``. The callback never propagates a value into the
-        command body; only the absence-of-value case is permitted, and
-        the command signature treats the parameter as always-``None``.
-
-    Raises:
-        click.UsageError: If ``value`` is not ``None``.
-    """
-    del ctx, param  # Unused; the rejection is unconditional.
-    if value is not None:
-        raise click.UsageError(
-            "Refusing to read remote password from argv. "
-            "Use --remote-pass-stdin or set the XNAT_XSYNC_REMOTE_PASS env var."
-        )
-    return None
+# Canonical implementation lives in cli/common.py (SEC-05); this module was
+# the pattern's origin and now just parameterizes it.
+_reject_argv_password = reject_argv_password(
+    f"Use --remote-pass-stdin or set the {_REMOTE_PASS_ENV} env var."
+)
 
 
 @click.group("xsync")
@@ -302,14 +273,7 @@ def _resolve_remote_password(*, pass_stdin: bool) -> str:
         The remote password as a string. Never logged by this helper.
     """
     if pass_stdin:
-        # ``readline`` so a trailing newline (common with ``echo``) is
-        # stripped without consuming any further stdin bytes.
-        secret = sys.stdin.readline()
-        if secret.endswith("\n"):
-            secret = secret[:-1]
-        if not secret:
-            raise click.UsageError("--remote-pass-stdin was set but stdin was empty.")
-        return secret
+        return read_password_stdin("--remote-pass-stdin")
 
     env_value = os.environ.get(_REMOTE_PASS_ENV)
     if env_value:
