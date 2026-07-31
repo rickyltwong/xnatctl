@@ -112,12 +112,21 @@ Transfer commands that connect to a destination XNAT accept these options:
      - Destination XNAT URL (inline, instead of a profile)
    * - ``--dest-user TEXT``
      - Destination username (inline)
-   * - ``--dest-pass TEXT``
-     - Destination password (inline)
+   * - ``--dest-pass-stdin``
+     - Read the destination password from stdin (one line)
 
-You can either reference a pre-configured profile with ``--dest-profile`` or
-provide connection details inline with ``--dest-url``, ``--dest-user``, and
-``--dest-pass``.
+You can either reference a pre-configured profile with ``--dest-profile``
+(recommended -- its credentials come from the profile or keychain) or provide
+connection details inline with ``--dest-url``, ``--dest-user``, and
+``--dest-pass-stdin``. A destination password *value* on argv
+(``--dest-pass <secret>``) is refused with a usage error: it would be visible
+in ``ps`` and shell history.
+
+.. code-block:: console
+
+   $ echo "$DEST_PASS" | xnatctl project transfer -P SRC \
+       --dest-url https://dest.example.org --dest-user admin \
+       --dest-pass-stdin --dest-project DST
 
 
 project transfer

@@ -311,8 +311,9 @@ Configuration
        verify_ssl: true
        timeout: 21600       # 6 hours (default for large transfers)
        default_project: MYPROJ
-       username: admin      # optional
-       password: secret     # optional
+       username: admin              # optional
+       password_source: keyring     # optional; via `config set-password`
+                                    # (or an inline `password:`, discouraged)
 
 **Environment variables** (priority: CLI args > env vars > profile > prompt):
 

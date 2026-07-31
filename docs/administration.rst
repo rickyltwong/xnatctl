@@ -235,6 +235,13 @@ Use ``--output json`` to get structured output for further processing:
    XNAT deployments do not enable audit logging by default. If the command
    returns an error, contact your site administrator to enable it.
 
+.. note::
+
+   Independently of the server-side log, xnatctl records every destructive
+   command it runs (deletes, transfers, prearchive operations) in a local
+   audit trail at ``~/.config/xnatctl/audit.log``, which needs no server
+   support at all. See the "Audit trail" section in :doc:`configuration`.
+
 For a scripted approach to data integrity auditing (comparing session counts
 against a manifest), see the "Auditing a Project" section in :doc:`workflows`.
 
