@@ -364,6 +364,12 @@ permanent archive.
        --subject MYSUBJECT \
        --label MYSESSION
 
+The command verifies the outcome rather than trusting the HTTP status: XNAT
+reports conflicts and failures in the *body* of a successful-looking response,
+so a session that already exists in the archive, or an archive that failed
+server-side, surfaces as an error instead of a false success. On success the
+result includes the archived experiment's URI.
+
 
 Delete a Prearchive Session
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

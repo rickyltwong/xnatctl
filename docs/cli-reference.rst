@@ -46,6 +46,49 @@ sub-command path. For example:
    ``local``, ``health``, and ``dicom`` expose their own options and do not
    universally support ``--quiet`` or ``--verbose``.
 
+Exit Codes
+----------
+
+Failures exit with a differentiated code, so scripts can branch on *why* a
+command failed rather than parsing stderr. Codes only ever became more
+specific than the old blanket ``1``, so existing ``!= 0`` checks keep working.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 10 25 65
+
+   * - Code
+     - Meaning
+     - Typical cause
+   * - 0
+     - Success
+     -
+   * - 1
+     - General error
+     - Server-side errors, upload/download failures, anything unclassified
+   * - 2
+     - Usage error
+     - Reserved by Click: wrong flags or arguments (including a refused argv
+       password)
+   * - 3
+     - Authentication error
+     - Bad credentials, expired session that could not be refreshed
+   * - 4
+     - Network error
+     - Server unreachable, timeout, retries exhausted
+   * - 5
+     - Not found
+     - Project/subject/session/resource does not exist
+   * - 6
+     - Permission denied
+     - Authenticated, but the account lacks the required role
+   * - 7
+     - User cancelled
+     - A confirmation prompt was declined or interrupted
+
+Failed uploads and downloads exit nonzero under ``-o json`` too -- machine
+output does not swallow the failure signal.
+
 Command Summary
 ---------------
 
@@ -386,30 +429,36 @@ For more download patterns, see :doc:`downloading`.
 resource
 --------
 
-The ``resource`` commands manage file collections attached to sessions or scans.
-Resources are labeled containers (e.g., ``DICOM``, ``NIFTI``, ``BIDS``) that hold
-files.
+The ``resource`` commands manage file collections attached to projects,
+subjects, sessions, or scans. Resources are labeled containers (e.g.,
+``DICOM``, ``NIFTI``, ``BIDS``) that hold files.
 
-- ``resource list`` -- List resources at session or scan level
+- ``resource list`` -- List resources at project, subject, session, or scan level
 - ``resource show`` -- Display resource details and file listing
 - ``resource upload`` -- Upload a file or directory to a resource
 - ``resource download`` -- Download a resource as a ZIP archive
 
-List resources at session and scan level:
+The scope is chosen by what you pass: ``-P`` alone targets the project,
+``-P`` with ``-S`` the subject, a session ID the session, and ``--scan``
+narrows to one scan:
 
 .. code-block:: console
 
+   $ xnatctl resource list -P MYPROJ
+   $ xnatctl resource list -P MYPROJ -S SUB001
    $ xnatctl resource list XNAT_E00001
    $ xnatctl resource list XNAT_E00001 --scan 1
 
-Upload files and download resources:
+Upload and download work at every level too -- project-scope resources are
+how shared templates or QC outputs are stored:
 
 .. code-block:: console
 
    $ xnatctl resource upload XNAT_E00001 NIFTI ./file.nii.gz
    $ xnatctl resource upload XNAT_E00001 DICOM ./dicoms --scan 1
    $ xnatctl resource download XNAT_E00001 DICOM --file ./dicom.zip
-   $ xnatctl resource download XNAT_E00001 DICOM --file ./scan1.zip --scan 1
+   $ xnatctl resource download -P MYPROJ TEMPLATEFLOW --file ./tf.zip
+   $ xnatctl resource download -P MYPROJ -S SUB001 QC --file ./qc.zip
 
 .. note::
 

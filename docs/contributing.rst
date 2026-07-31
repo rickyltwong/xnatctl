@@ -108,6 +108,13 @@ To run a single test function:
    Use ``-k`` to run tests matching a keyword expression, e.g.
    ``uv run pytest tests/ -k "upload and not dicom" -v``.
 
+.. note::
+
+   Tests marked ``integration`` (requiring a live XNAT server) are deselected
+   by default; run them explicitly with ``-m integration``. CI enforces a
+   coverage floor (see ``fail_under`` in ``pyproject.toml``), so substantial
+   new code needs tests to keep the gate green.
+
 
 Linting, Formatting, and Type Checking
 ---------------------------------------
