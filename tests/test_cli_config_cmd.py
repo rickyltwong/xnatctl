@@ -315,7 +315,7 @@ class TestConfigRemoveProfile:
 
 
 class TestConfigSetPassword:
-    """Tests for `config set-password` (SEC-02).
+    """Tests for `config set-password`.
 
     The command exists because nothing else could put a password into a
     profile: `add-profile` has no password option and `auth login` only caches
@@ -416,7 +416,7 @@ class TestConfigSetPassword:
 
     def test_password_is_never_accepted_as_an_argument(self, runner: CliRunner) -> None:
         """Prompt-only by design, so it cannot reach shell history or the
-        process table (SEC-05 removes the remaining argv password flags)."""
+        process table (the remaining argv password flags are likewise refused)."""
         with core_config_seam(self._config()):
             result = runner.invoke(cli, ["config", "set-password", "prod", "--password", "s3cret"])
 
@@ -425,7 +425,7 @@ class TestConfigSetPassword:
 
 
 class TestConfigInitGuidedLogin:
-    """`config init` continues into a login (CLI-06).
+    """`config init` continues into a login.
 
     Onboarding used to be two commands with a cliff between them: init wrote a
     profile and stopped, and the natural next command failed with a

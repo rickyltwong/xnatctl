@@ -22,7 +22,7 @@ def _quote_path_segment(value: str) -> str:
 
 
 # XNAT's prearchive services answer HTTP 200 with an error-shaped body rather
-# than a 4xx, so the status code alone cannot be trusted (ROB-10).
+# than a 4xx, so the status code alone cannot be trusted.
 _EXPERIMENT_URI_RE = re.compile(r"/data/(?:archive/)?experiments/[^\s\"'<>]+")
 _CONFLICT_MARKERS = ("already exists", "conflict")
 _ERROR_MARKERS = ("error", "exception", "failed", "failure", "not allowed", "denied")
@@ -49,8 +49,8 @@ def _raise_if_error_shaped(operation: str, result: Any, details: dict[str, Any])
 
     Only positively error-shaped bodies raise. An empty or unrecognised body is
     left alone: several XNAT deployments answer these services with a bare 200
-    and no payload, and failing those would be worse than the silence ROB-10 set
-    out to fix.
+    and no payload, and failing those would be worse than the silence this check
+    exists to fix.
     """
     text = _response_text(result).strip()
     if not text:
@@ -127,7 +127,7 @@ class PrearchiveService(BaseService):
             # Re-scope the client's typed 404 to name the prearchive session.
             # This used to be `if "404" in str(e)`, which also fired on any
             # unrelated error whose text merely contained "404" -- a session
-            # labelled SUB404, for instance (ROB-10).
+            # labelled SUB404, for instance.
             raise ResourceNotFoundError(
                 "prearchive session",
                 f"{project}/{timestamp}/{session_name}",
@@ -203,7 +203,7 @@ class PrearchiveService(BaseService):
             ) from exc
 
         # A 2xx is not proof of success: XNAT reports conflicts and failures in
-        # the body of a 200 (ROB-10).
+        # the body of a 200.
         details = {"project": project, "timestamp": timestamp, "session": session_name}
         _raise_if_error_shaped("archive", result, details)
 

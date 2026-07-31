@@ -16,7 +16,7 @@ from xnatctl.services.transfer.poller import ArchivePoller, DeferredExperiment
 FAST_POLL = 0.05
 # Deadline-based waits, so a generous timeout is free: the happy path still
 # finishes in milliseconds and only genuine failures wait the full duration.
-# pytest-timeout (120s, pyproject.toml) is the real hang backstop (TEST-10).
+# pytest-timeout (120s, pyproject.toml) is the real hang backstop.
 WAIT_TIMEOUT = 10.0
 
 
@@ -213,7 +213,7 @@ class TestArchivePoller:
         # waits on _stop_event, so stop() must return immediately. A busy-sleep
         # implementation would block for the interval instead.
         # Asserting against a small interval only measured scheduler jitter and
-        # flaked on loaded runners (TEST-10).
+        # flaked on loaded runners.
         long_interval = 30.0
         poller = ArchivePoller(mock_executor, poll_interval=long_interval)
         poller.start()

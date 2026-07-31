@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Every log line in this module reports the *source* or *presence* of a
 # credential, never its value. "Which credential did xnatctl actually use?" is
 # the question `-v` has to answer here; the answer must not be the secret
-# itself (MAINT-01, SEC-09).
+# itself.
 
 SESSION_CACHE_FILE = CONFIG_DIR / ".session"
 SESSION_EXPIRY_MINUTES = 15  # XNAT JSESSION expires after 15 minutes of inactivity by default
@@ -152,7 +152,7 @@ class AuthManager:
             expires_at=now + timedelta(minutes=expiry_minutes),
         )
 
-        # Ensure the directory exists and is owner-only (SEC-08).
+        # Ensure the directory exists and is owner-only.
         ensure_private_dir(self.cache_file.parent)
 
         # Write through a private temp file so the token is never observable

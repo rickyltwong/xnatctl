@@ -1,8 +1,8 @@
-"""Redaction invariants for the logging path and URL validation (SEC-09).
+"""Redaction invariants for the logging path and URL validation.
 
 Redaction used to be applied only where a human explicitly remembered it --
 ``print_error``/``print_warning`` and a couple of client call sites. Nothing
-routed ``logging.Logger`` records through it, which blocks MAINT-01: verbose
+routed ``logging.Logger`` records through it, which blocked diagnostics: verbose
 HTTP diagnostics log full request URLs, and those carry query-string tokens.
 """
 
@@ -117,7 +117,7 @@ def test_third_party_logger_output_is_redacted_too() -> None:
     Under --verbose, httpx logs one INFO line per request containing the full
     URL. xnatctl never formats that line, so no amount of call-site redaction
     would cover it -- only a handler-level filter does. This is what makes
-    SEC-09 a hard prerequisite for MAINT-01 rather than a nicety.
+    the filter a hard prerequisite for HTTP diagnostics rather than a nicety.
     """
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)

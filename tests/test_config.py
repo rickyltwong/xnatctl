@@ -201,7 +201,7 @@ class TestConfig:
 
     def test_empty_config_reports_the_first_run_state(self):
         """With nothing configured, "profile 'default' not found" would send
-        the user hunting for a typo that does not exist (CLI-06)."""
+        the user hunting for a typo that does not exist."""
         from xnatctl.core.exceptions import NoConfigurationError
 
         config = Config(profiles={})

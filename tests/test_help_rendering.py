@@ -1,4 +1,4 @@
-"""Help-text rendering guard (CLI-05).
+"""Help-text rendering guard.
 
 Click rewraps a docstring paragraph into one block unless a line containing only
 ``\\b`` precedes it. Without those markers, multi-line ``Example:`` blocks

@@ -1,4 +1,4 @@
-"""Audit-trail tests (SEC-07).
+"""Audit-trail tests.
 
 `AuditLogger` existed but was dead: the only references in the package were two
 re-exports, and no command ever called `log_operation`. It also logged to

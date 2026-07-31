@@ -27,7 +27,7 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 AUDIT_LOGGER_NAME = "xnatctl.audit"
 
-# Audit trail (SEC-07). Defined here rather than imported from core.config so
+# Audit trail. Defined here rather than imported from core.config so
 # this module stays free of the config import chain.
 AUDIT_LOG_FILE = Path.home() / ".config" / "xnatctl" / "audit.log"
 AUDIT_LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -44,7 +44,7 @@ def debug_env_enabled() -> bool:
     Mirrors ``gh``'s ``GH_DEBUG``, so diagnostics are obtainable even for
     failures that happen before ``--verbose`` is parsed. Defined here rather
     than in the CLI layer so the logging setup and the CLI traceback policy
-    (MAINT-02) share one parser instead of drifting apart.
+    share one parser instead of drifting apart.
     """
     raw = os.environ.get(DEBUG_ENV_VAR)
     return raw is not None and raw.strip().lower() not in _DEBUG_OFF_VALUES
@@ -60,14 +60,14 @@ class RedactionFilter(logging.Filter):
 
     Installing this once on the root handler makes redaction an invariant of
     the logging path instead of something each call site has to remember. That
-    is the precondition for MAINT-01: verbose HTTP diagnostics log full request
-    URLs, and those carry query-string tokens (SEC-09).
+    is the precondition for verbose HTTP diagnostics, which log full request
+    URLs -- and those carry query-string tokens.
 
     Scope boundary: this covers the formatted message only. Exception
     tracebacks are rendered by the Formatter *after* filters run, so a secret
     inside a traceback is not scrubbed here. The CLI's own traceback path
     already redacts (``cli/common.py``); a Formatter-level fix belongs with
-    GAP-04's log-file work.
+    future log-file work.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -112,7 +112,7 @@ def setup_logging(
 ) -> None:
     """Configure logging for xnatctl.
 
-    Three tiers of HTTP visibility (MAINT-01):
+    Three tiers of HTTP visibility:
 
     * default -- httpx/httpcore stay at WARNING, so normal runs are quiet;
     * ``--verbose`` -- xnatctl's own DEBUG lines plus httpx at INFO, which is
@@ -147,7 +147,7 @@ def setup_logging(
     logging.getLogger().setLevel(level)
 
     # Redaction is an invariant of the logging path, not a call-site duty
-    # (SEC-09). basicConfig above is a no-op once root already has handlers, so
+    # . basicConfig above is a no-op once root already has handlers, so
     # this is installed separately and idempotently.
     install_redaction_filter()
 
@@ -282,7 +282,7 @@ def log_context(
 
 
 class AuditLogger:
-    """Append-only local record of destructive operations (SEC-07).
+    """Append-only local record of destructive operations.
 
     Why keep a client-side trail at all: xnatctl deletes subjects, sessions and
     scans, and XNAT's own audit log is server-side and frequently not readable
@@ -419,7 +419,7 @@ def _redact_value(value: Any) -> Any:
     """Redact a value destined for the audit log.
 
     URLs are the realistic leak here -- a server URL with embedded credentials,
-    or a path carrying a query string (SEC-09).
+    or a path carrying a query string.
     """
     return redact_url_query(value) if isinstance(value, str) else value
 

@@ -1,4 +1,4 @@
-"""Tests for the CLAUDE.md drift checker (MAINT-03).
+"""Tests for the CLAUDE.md drift checker.
 
 The checker's logic is exercised against synthetic fixtures so these run in CI
 even though the real CLAUDE.md is gitignored and absent there.

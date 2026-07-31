@@ -4,9 +4,8 @@ These commands sit on the same decorator stack as every other command
 (``@global_options`` + ``@handle_errors``). They used to declare their own
 ``-p``/``-o`` -- with the output choices in the opposite order, and no ``-q``
 or ``-v`` at all -- and hand-roll ``print_error`` + ``SystemExit``. That last
-part meant the actionable hints CLI-09 attached to the exceptions never
-rendered here, because nothing on this path went through ``render_cli_error``
-(CLI-06).
+part meant the actionable hints attached to the exceptions never
+rendered here, because nothing on this path went through ``render_cli_error``.
 
 ``auth login`` legitimately skips ``@require_auth``: it is what establishes the
 session that decorator requires.
@@ -52,7 +51,7 @@ def do_login(
 
     Factored out of the ``auth login`` command so ``config init`` can offer to
     continue straight into a login, rather than leaving the user at a cliff
-    between two commands (CLI-06).
+    between two commands.
 
     Args:
         ctx: CLI context, used for the auth manager and output format.

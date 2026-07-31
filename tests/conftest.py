@@ -1,4 +1,4 @@
-"""Pytest configuration and shared test harness for xnatctl (TEST-08/MAINT-07).
+"""Pytest configuration and shared test harness for xnatctl.
 
 Harness policy — use these instead of hand-rolling a mock stack:
 
@@ -7,7 +7,7 @@ Harness policy — use these instead of hand-rolling a mock stack:
   patch seams into ``cli/common.py``, so a rename there is a one-line fix here
   rather than a few hundred test edits.
 * **Service tests** use ``fake_client`` plus :func:`make_response`.
-* **Wire-behaviour tests** use ``httpx.MockTransport`` (TEST-03) — not mocks.
+* **Wire-behaviour tests** use ``httpx.MockTransport`` — not mocks.
 
 :func:`make_response` and :func:`make_authenticated_context` are also importable
 directly (``from conftest import make_response``) for module-level use.
@@ -270,7 +270,7 @@ def sample_patterns_json() -> str:
 def isolate_audit_log(
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> Path:
-    """Keep the SEC-07 audit log out of the developer's real home directory.
+    """Keep the audit log out of the developer's real home directory.
 
     ``confirm_destructive`` writes an audit record for every destructive
     command, so any CliRunner test touching one would otherwise append to

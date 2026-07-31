@@ -256,11 +256,11 @@ class TestAuthTest:
 
 
 class TestAuthGlobalOptions:
-    """auth commands now carry the standard decorator stack (CLI-06).
+    """auth commands now carry the standard decorator stack.
 
     They previously declared their own -p/-o -- with the output choices in the
     opposite order and no -q/-v -- and hand-rolled print_error + SystemExit,
-    which meant CLI-09's actionable hints never rendered on this path.
+    which meant the exceptions' actionable hints never rendered on this path.
     """
 
     def test_root_level_profile_flag_is_respected(self, runner: CliRunner) -> None:
@@ -317,7 +317,7 @@ class TestAuthGlobalOptions:
 
 
 class TestFirstRun:
-    """The no-config cliff (CLI-06)."""
+    """The no-config cliff."""
 
     def _empty(self) -> Config:
         return Config(profiles={})

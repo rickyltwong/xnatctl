@@ -1,17 +1,17 @@
 """Transport-level tests for XNATClient._request retry semantics.
 
-Started as ROB-14 characterization tests locking the then-current contract; the
+Started as characterization tests locking the then-current contract; the
 warts they pinned have since been fixed and the assertions flipped:
 
-* ROB-03 -- status exhaustion raises RetryExhaustedError, and no httpx error of
+* status exhaustion raises RetryExhaustedError, and no httpx error of
   any kind escapes the client.
-* ROB-09 -- read-phase failures are only retried for idempotent methods, and
+* read-phase failures are only retried for idempotent methods, and
   backoff is full-jitter rather than a fixed 2**n progression.
-* GAP-06 -- Retry-After is honoured on 429/503 in both the delta-seconds and
+* Retry-After is honoured on 429/503 in both the delta-seconds and
   HTTP-date forms, bounded by a cap.
 
 Pagination, convenience methods and the public transport seam live in
-``tests/test_core_client_http.py`` (TEST-03).
+``tests/test_core_client_http.py``.
 
 All sleeps are monkeypatched away, so the suite stays wall-clock cheap.
 """
@@ -91,7 +91,7 @@ def _status_sequence(*codes: int) -> Handler:
 def assert_jittered_backoff(sleeps: list[float], expected_attempts: int) -> None:
     """Assert full-jitter backoff: one sleep per retry, each within its window.
 
-    ROB-09 replaced the fixed ``2**(attempt+1)`` progression with
+    Jitter replaced the fixed ``2**(attempt+1)`` progression with
     ``uniform(0, 2**(attempt+1))`` so parallel workers stop retrying in lockstep.
     Exact values are therefore no longer assertable -- the ceiling is.
     """
@@ -115,7 +115,7 @@ def test_502_exhaustion_raises_retry_exhausted(sleeps: list[float]) -> None:
     client, calls = _client(_status_sequence(502, 502), max_retries=1)
 
     with pytest.raises(RetryExhaustedError) as exc:
-        # ROB-03: status exhaustion now raises a typed RetryExhaustedError
+        # Status exhaustion raises a typed RetryExhaustedError
         # wrapping a ServerError, never a raw httpx.HTTPStatusError.
         client._request("GET", "/data/projects")
 
@@ -129,7 +129,7 @@ def test_409_is_not_retried_and_raises_client_request_error(sleeps: list[float])
     client, calls = _client(_status_sequence(409), max_retries=3)
 
     with pytest.raises(ClientRequestError) as exc:
-        # ROB-03: a non-retryable 4xx is a typed ClientRequestError, not raw httpx.
+        # A non-retryable 4xx is a typed ClientRequestError, not raw httpx.
         client._request("POST", "/data/services/import")
 
     assert exc.value.status_code == 409
@@ -140,7 +140,7 @@ def test_409_is_not_retried_and_raises_client_request_error(sleeps: list[float])
 
 
 def test_500_is_retried_then_typed_on_exhaustion(sleeps: list[float]) -> None:
-    """ROB-03 adds 500 to the retryable set (was non-retryable)."""
+    """500 is in the retryable set (it used to be non-retryable)."""
     client, calls = _client(_status_sequence(500, 500, 500, 500), max_retries=3)
 
     with pytest.raises(RetryExhaustedError) as exc:
@@ -162,7 +162,7 @@ def test_500_then_200_recovers(sleeps: list[float]) -> None:
 
 
 def test_429_honors_retry_after_header(sleeps: list[float]) -> None:
-    """ROB-03: 429 is retryable and a bounded integer Retry-After overrides backoff."""
+    """429 is retryable and a bounded integer Retry-After overrides backoff."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         if len(seen) == 0:
@@ -200,7 +200,8 @@ def test_post_read_timeout_is_not_retried(sleeps: list[float]) -> None:
 
     client, calls = _client(handler, max_retries=2)
 
-    # ROB-09 flipped this: a read-phase timeout on a non-idempotent POST is no
+    # Deliberately flipped from the old behaviour: a read-phase timeout on a
+    # non-idempotent POST is no
     # longer retried, because the server has already seen the request and a
     # retry could archive twice or launch a pipeline twice.
     with pytest.raises(XNATTimeoutError) as exc:
@@ -234,7 +235,7 @@ def test_403_raises_permission_denied_immediately(sleeps: list[float]) -> None:
 
 
 # =============================================================================
-# Transport-exception contract (ROB-03)
+# Transport-exception contract
 #
 # httpx's transport errors are NOT all ConnectError/TimeoutException subclasses;
 # ReadError, WriteError, RemoteProtocolError and ProxyError sit beside them and
@@ -312,7 +313,7 @@ def test_transient_transport_error_recovers_when_it_stops(sleeps: list[float]) -
     ],
 )
 def test_no_httpx_exception_escapes_the_client(exc_name: str, sleeps: list[float]) -> None:
-    """The ROB-03 contract, asserted as a guard over the whole httpx error family.
+    """The no-escape contract, asserted as a guard over the whole httpx error family.
 
     Add any newly-handled httpx error class here; a raw leak fails this test
     rather than silently reaching the CLI as "Unexpected error:".
@@ -336,7 +337,7 @@ def test_authenticate_maps_transport_errors_too(exc_name: str) -> None:
 
 
 def test_retryable_status_policy_has_a_single_source() -> None:
-    """uploads extends the client's set rather than redefining it (ROB-03 step 3)."""
+    """uploads extends the client's set rather than redefining it."""
     from xnatctl.services.uploads import (
         RETRYABLE_STATUS_CODES as UPLOAD_CODES,
     )
@@ -351,7 +352,7 @@ def test_retryable_status_policy_has_a_single_source() -> None:
 
 
 # =============================================================================
-# Idempotency-aware retries and jitter (ROB-09)
+# Idempotency-aware retries and jitter
 # =============================================================================
 
 
@@ -439,7 +440,7 @@ def test_backoff_is_jittered_not_a_fixed_progression(sleeps: list[float]) -> Non
 
 
 # =============================================================================
-# Retry-After parsing (GAP-06)
+# Retry-After parsing
 # =============================================================================
 
 

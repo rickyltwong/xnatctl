@@ -1,4 +1,4 @@
-# Supply-chain update automation (SEC-03 / GAP-02).
+# Supply-chain update automation.
 # PRs target `dev` per the branching strategy in CLAUDE.md.
 version: 2
 updates:

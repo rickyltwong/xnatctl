@@ -187,8 +187,8 @@ class TestRefreshCredentialsSecretSourcing:
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
         )
         combined = result.stdout + result.stderr
-        # Wording comes from the shared reject_argv_password helper (SEC-05
-        # consolidated it into cli/common.py); assert the invariants, not the
+        # Wording comes from the shared reject_argv_password helper in
+        # cli/common.py; assert the invariants, not the
         # exact sentence.
         assert "Refusing to read --remote-pass from argv" in combined
         assert "--remote-pass-stdin" in combined

@@ -70,7 +70,7 @@ def _parse_bool_env(name: str, default: bool) -> bool:
 
 _OPERATIONAL_FIELDS = ("workers", "overwrite", "direct_archive", "archive_mode", "extract")
 
-# Keychain integration (SEC-02). `keyring` is an optional extra: install with
+# Keychain integration. `keyring` is an optional extra: install with
 # `pip install 'xnatctl[keyring]'`.
 KEYRING_SERVICE = "xnatctl"
 PASSWORD_SOURCE_KEYRING = "keyring"
@@ -115,7 +115,7 @@ class Profile:
     password: str | None = None
     # Where the password comes from: None means the inline `password` field,
     # "keyring" means the OS keychain. Optional with a default so existing
-    # config files keep loading unchanged (GAP-07 will version this schema).
+    # config files keep loading unchanged (a schema version field can come later).
     password_source: str | None = None
     # Operational defaults (None = not configured, use command default)
     workers: int | None = None
@@ -142,7 +142,7 @@ class Profile:
             result["username"] = self.username
         if self.password_source:
             # A keychain-backed profile never writes the secret back out --
-            # that is the whole point of moving it (SEC-02).
+            # that is the whole point of moving it.
             result["password_source"] = self.password_source
         elif self.password:
             result["password"] = self.password
@@ -291,8 +291,8 @@ class Config:
         }
 
         # config.yaml can carry a plaintext profile password today, so it gets
-        # the same 0600 atomic treatment as the session cache (SEC-08). Whether
-        # it should hold a password at all is SEC-02's question.
+        # the same 0600 atomic treatment as the session cache. Whether
+        # it should hold a password at all, prefer the keychain.
         with atomic_private_write(path) as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         restrict_permissions(path)
@@ -311,7 +311,7 @@ class Config:
         """
         if not self.profiles:
             # First run: nothing is configured, so "profile 'default' not
-            # found" would send the user hunting for a typo (CLI-06).
+            # found" would send the user hunting for a typo.
             raise NoConfigurationError(
                 f"No profiles configured. Expected a config file at {CONFIG_FILE}."
             )
@@ -389,7 +389,7 @@ class Config:
 def _warn_on_exposed_password(config: Config, path: Path) -> None:
     """Warn when a plaintext password sits in a file others can read.
 
-    New writes are 0600 (SEC-08), but a config.yaml created before that, or
+    New writes are 0600, but a config.yaml created before that, or
     copied in from elsewhere, keeps whatever mode it had. Warn rather than
     chmod: silently changing permissions on a file the user did not ask us to
     touch is its own surprise, and the actionable fix is to move the password

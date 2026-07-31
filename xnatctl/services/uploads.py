@@ -62,14 +62,14 @@ DICOM_EXTENSIONS = {".dcm", ".ima", ".img", ".dicom"}
 UPLOAD_MAX_RETRIES = 5
 UPLOAD_RETRY_BACKOFF_BASE = 2  # seconds: 2, 4, 8, 16, 32
 
-# One source of truth for the shared statuses (ROB-03 step 3): the core client
+# One source of truth for the shared statuses: the core client
 # owns the base policy, uploads extend it. Previously both modules defined a
 # constant of the same name and they drifted -- the client did not retry 429/500
 # while uploads did.
 UPLOAD_ONLY_RETRYABLE_STATUS_CODES = {
     # XNAT's import service returns a transient 400 while an archive operation
     # races; retrying clears it. Deliberately NOT in the core client's set,
-    # where a 400 is a genuine client error. ROB-08 will discriminate the
+    # where a 400 is a genuine client error. A follow-up will discriminate the
     # transient 400s from the permanent ones.
     400,
 }
@@ -155,7 +155,7 @@ class _SessionRefresher:
                 with httpx.Client(
                     base_url=self._base_url,
                     verify=self._verify_ssl,
-                    timeout=build_httpx_timeout(30.0),  # connect fails fast (ROB-02)
+                    timeout=build_httpx_timeout(30.0),  # connect fails fast
                 ) as client:
                     resp = client.post(
                         "/data/JSESSION",
@@ -187,9 +187,7 @@ def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client
 
         client = httpx.Client(
             base_url=base_url,
-            timeout=build_httpx_timeout(
-                _GRADUAL_HTTP_TIMEOUT_SECONDS
-            ),  # connect fails fast (ROB-02)
+            timeout=build_httpx_timeout(_GRADUAL_HTTP_TIMEOUT_SECONDS),  # connect fails fast
             verify=verify_ssl,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
         )
@@ -506,12 +504,12 @@ def upload_with_retry(
                 )
                 time.sleep(delay)
         except httpx.ConnectTimeout:
-            # Fail fast (ROB-02): a connect-phase timeout means the host is
+            # Fail fast: a connect-phase timeout means the host is
             # unreachable and will not recover within the backoff window -- unlike
             # the transient ConnectError bursts XNAT throws during cold start,
             # which stay retryable below. Re-raise immediately instead of burning
             # ~120s of retries. (Typed-error conversion on the upload path is
-            # ROB-03/ROB-08.)
+            # the shared retry policy.)
             logger.warning("%s: connect timed out; not retrying", label)
             raise
         except (httpx.TimeoutException, httpx.ConnectError) as e:
@@ -638,7 +636,7 @@ def _upload_single_archive(
 
     with httpx.Client(
         base_url=base_url,
-        timeout=build_httpx_timeout(timeout),  # connect fails fast (ROB-02)
+        timeout=build_httpx_timeout(timeout),  # connect fails fast
         verify=verify_ssl,
     ) as client:
         try:
@@ -2040,7 +2038,7 @@ class UploadService(BaseService):
         # A directory source is zipped to a temp file that MUST be removed on
         # every exit path. It used to leak on all of them: a 50 GB resource
         # directory left a 50 GB zip behind on each invocation, and
-        # `session upload-exam` calls this once per resource directory (ROB-12).
+        # `session upload-exam` calls this once per resource directory.
         temp_zip: Path | None = None
         if source_path.is_dir():
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
@@ -2079,7 +2077,7 @@ class UploadService(BaseService):
 
             with httpx.Client(
                 base_url=base_url,
-                timeout=build_httpx_timeout(res_timeout),  # connect fails fast (ROB-02)
+                timeout=build_httpx_timeout(res_timeout),  # connect fails fast
                 verify=verify_ssl,
             ) as http:
 

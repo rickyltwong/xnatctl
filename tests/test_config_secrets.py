@@ -1,4 +1,4 @@
-"""Password-handling tests for Config/Profile (SEC-02).
+"""Password-handling tests for Config/Profile.
 
 `config.yaml` could hold a plaintext password with nothing but file permissions
 protecting it, and `Config.save`'s docstring claimed the opposite ("excludes
@@ -82,7 +82,7 @@ def test_keyring_profile_never_serializes_a_password() -> None:
 
 
 def test_inline_password_still_serializes() -> None:
-    """Existing configs keep working; SEC-02 adds an option, not a removal."""
+    """Existing configs keep working; keyring support adds an option, not a removal."""
     assert _profile(password="s3cret").to_dict()["password"] == "s3cret"
 
 
@@ -111,7 +111,7 @@ def test_loaded_profiles_know_their_own_name(tmp_path: Path) -> None:
 
 
 def test_profile_without_password_source_omits_the_key() -> None:
-    """An untouched profile must not gain a new key -- GAP-07 will version the
+    """An untouched profile must not gain a new key -- a future change will version the
     schema, and until then the file should stay as it was."""
     assert "password_source" not in _profile().to_dict()
 

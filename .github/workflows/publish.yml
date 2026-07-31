@@ -110,7 +110,7 @@ jobs:
         if: ${{ !inputs.dry_run }}
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
-          # PEP 740 provenance attestations via trusted publishing (GAP-02).
+          # PEP 740 provenance attestations via trusted publishing.
           attestations: true
 
       - name: Dry run — skipped publish

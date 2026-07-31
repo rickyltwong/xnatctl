@@ -1,11 +1,11 @@
-"""Argv-password rejection for auth login and --dest-pass (SEC-05).
+"""Argv-password rejection for auth login and --dest-pass.
 
 A password on argv is visible in ``ps``, ``/proc/*/cmdline``, and shell
 history. ``auth login --password <secret>`` used to accept one, and the hidden
 ``--dest-pass`` on the transfer commands did the same. Both now refuse at parse
 time and offer a ``--*-stdin`` flag instead, following docker login's pattern.
 The canonical rejection helper started life in ``cli/xsync.py``
-(``--remote-pass``) and SEC-05 moved it to ``cli/common.py``.
+(``--remote-pass``) and was later moved to ``cli/common.py``.
 """
 
 from __future__ import annotations
@@ -159,7 +159,7 @@ class TestDestPassOption:
 class TestSessionUploadPassword:
     """The third argv-password site, found during the docs walkthrough.
 
-    `session upload` kept its own hidden `--password` after SEC-05 closed
+    `session upload` kept its own hidden `--password` after the fix closed
     auth login and --dest-pass -- hidden from --help, but just as visible in
     ps. Same treatment: refuse argv, offer --password-stdin.
     """

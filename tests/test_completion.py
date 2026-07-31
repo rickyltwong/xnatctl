@@ -1,4 +1,4 @@
-"""Shell-completion generation tests (CLI-03).
+"""Shell-completion generation tests.
 
 The old hand-rolled bash script emitted the Click 7 raw-``COMPREPLY`` protocol,
 which under Click 8 produced literal ``plain,project`` completions. These pin the

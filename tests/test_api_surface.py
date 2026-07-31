@@ -1,4 +1,4 @@
-"""Guards on the package's on-disk surface (LIB-11).
+"""Guards on the package's on-disk surface.
 
 These are cheap structural invariants, not behavior tests: they fail loudly if a
 module is deleted but leaves a stale ``__pycache__``-only directory behind (which

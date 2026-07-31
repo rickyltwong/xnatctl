@@ -123,7 +123,7 @@ jobs:
           fail_ci_if_error: false
 
   security:
-    # Supply-chain vulnerability scan of the locked runtime deps (SEC-03 / GAP-02).
+    # Supply-chain vulnerability scan of the locked runtime deps.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -150,7 +150,7 @@ jobs:
         run: uv tool run pip-audit -r requirements-audit.txt
 
   min-deps:
-    # Prove the declared `>=` floors actually resolve and pass (GAP-02).
+    # Prove the declared `>=` floors actually resolve and pass.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

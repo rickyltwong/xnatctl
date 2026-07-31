@@ -1,4 +1,4 @@
-"""Temp-file lifecycle tests for UploadService.upload_resource (ROB-12).
+"""Temp-file lifecycle tests for UploadService.upload_resource.
 
 A directory source is zipped to a NamedTemporaryFile(delete=False) before
 upload. That zip used to leak on every exit path: a 50 GB resource directory
@@ -103,7 +103,7 @@ def test_temp_zip_removed_when_setup_fails_before_the_request(
     """Cleanup must cover the setup work between zipping and the request too.
 
     That window (stat, progress reporting, param building) used to sit outside
-    the try block, so a failure there leaked the zip even after ROB-12's finally
+    the try block, so a failure there leaked the zip even after the finally
     was added.
     """
 

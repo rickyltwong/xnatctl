@@ -67,7 +67,7 @@ def validate_server_url(url: str) -> str:
     # Every raise below reports the redacted form: InvalidURLError echoes the
     # value into its message *and* keeps it as `.value`, so a rejected
     # `https://admin:s3cret@host` would otherwise leak the password through the
-    # error path it was rejected by (SEC-09).
+    # error path it was rejected by.
     safe = redact_url_userinfo(url)
 
     try:

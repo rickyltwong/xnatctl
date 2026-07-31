@@ -1,4 +1,4 @@
-"""Error-rendering contract for the exception hierarchy (CLI-09).
+"""Error-rendering contract for the exception hierarchy.
 
 Two changes are pinned here. ``str(exc)`` is now the message alone -- it used
 to append the details dict, so users saw

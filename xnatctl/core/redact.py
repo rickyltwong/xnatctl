@@ -5,7 +5,7 @@ query-parameter key names that xnatctl treats as secret-shaped. The helper
 scans free-form text for ``http(s)://...`` URLs, parses each URL's query
 string, and rewrites any value whose key (compared case-insensitively) is in
 :data:`SECRET_QUERY_KEYS` to ``***``. It also scrubs the password out of a
-``user:pass@host`` authority (SEC-09) -- credentials embedded in a URL would
+``user:pass@host`` authority -- credentials embedded in a URL would
 otherwise ride along into every error message and log line that echoes it.
 
 :func:`redact_url_userinfo` does the authority half alone for a single URL of
