@@ -154,3 +154,113 @@ class TestDestPassOption:
             )
 
         assert create.call_args.kwargs["dest_pass"] == SECRET
+
+
+class TestSessionUploadPassword:
+    """The third argv-password site, found during the docs walkthrough.
+
+    `session upload` kept its own hidden `--password` after SEC-05 closed
+    auth login and --dest-pass -- hidden from --help, but just as visible in
+    ps. Same treatment: refuse argv, offer --password-stdin.
+    """
+
+    def test_argv_password_is_rejected(self, tmp_path) -> None:
+        src = tmp_path / "archive.zip"
+        src.write_bytes(b"PK")
+        harness = make_authenticated_cli(default_project="PROJ")
+
+        result = harness.invoke(
+            [
+                "session",
+                "upload",
+                str(src),
+                "-P",
+                "PROJ",
+                "-S",
+                "SUB001",
+                "-E",
+                "SESS01",
+                "--password",
+                SECRET,
+            ]
+        )
+
+        assert result.exit_code == 2
+        assert "Refusing to read --password from argv" in result.output
+        assert SECRET not in result.output
+
+    def test_password_stdin_reaches_the_upload(self, tmp_path) -> None:
+        src = tmp_path / "dicom_dir"
+        src.mkdir()
+        (src / "a.dcm").write_bytes(b"DICM")
+        harness = make_authenticated_cli(default_project="PROJ")
+
+        with patch("xnatctl.cli.session._upload_directory_parallel") as upload:
+            result = harness.invoke(
+                [
+                    "session",
+                    "upload",
+                    str(src),
+                    "-P",
+                    "PROJ",
+                    "-S",
+                    "SUB001",
+                    "-E",
+                    "SESS01",
+                    "--password-stdin",
+                ],
+                input=f"{SECRET}\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert upload.call_args.kwargs["password"] == SECRET
+
+    def test_no_flags_means_no_explicit_password(self, tmp_path) -> None:
+        """Without the stdin flag the downstream env/prompt chain takes over."""
+        src = tmp_path / "dicom_dir"
+        src.mkdir()
+        (src / "a.dcm").write_bytes(b"DICM")
+        harness = make_authenticated_cli(default_project="PROJ")
+
+        with patch("xnatctl.cli.session._upload_directory_parallel") as upload:
+            result = harness.invoke(
+                [
+                    "session",
+                    "upload",
+                    str(src),
+                    "-P",
+                    "PROJ",
+                    "-S",
+                    "SUB001",
+                    "-E",
+                    "SESS01",
+                ]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert upload.call_args.kwargs["password"] is None
+
+
+def test_no_command_accepts_a_password_value_on_argv() -> None:
+    """Sweep the whole CLI tree: any option whose name says password/pass must
+    either be a flag (…-stdin) or carry the argv-rejection callback. This is
+    the guard that keeps a fourth leak site from appearing."""
+    import click as click_mod
+
+    from xnatctl.cli.main import cli as root
+
+    offenders: list[str] = []
+
+    def walk(cmd, path: str) -> None:
+        for param in getattr(cmd, "params", []):
+            name = (param.name or "").lower()
+            if "pass" in name and not name.endswith("_stdin"):
+                if isinstance(param, click_mod.Option) and not param.is_flag:
+                    if param.callback is None:
+                        offenders.append(f"{path} --{param.name}")
+        if isinstance(cmd, click_mod.Group):
+            for sub_name, sub in cmd.commands.items():
+                walk(sub, f"{path} {sub_name}")
+
+    walk(root, "xnatctl")
+    assert offenders == [], f"argv-password options without rejection: {offenders}"

@@ -14,6 +14,8 @@ from xnatctl.cli.common import (
     default_project_from_context,
     global_options,
     handle_errors,
+    read_password_stdin,
+    reject_argv_password,
     require_auth,
     require_project_from_context,
     resolve_workers_from_context,
@@ -829,7 +831,23 @@ def session_download(
     callback=_make_forwarding_alias_cb("--session", "--experiment", "experiment"),
 )
 @click.option("--username", "-u", hidden=True, help="XNAT username (REST upload)")
-@click.option("--password", hidden=True, help="XNAT password (REST upload)")
+@click.option(
+    "--password",
+    hidden=True,
+    expose_value=False,
+    is_eager=True,
+    callback=reject_argv_password(
+        "Use --password-stdin, set XNAT_PASS, run 'xnatctl auth login' first, "
+        "or let the command prompt."
+    ),
+    help="REFUSED: use --password-stdin, XNAT_PASS, or the prompt",
+)
+@click.option(
+    "--password-stdin",
+    is_flag=True,
+    hidden=True,
+    help="Read the upload password from stdin (one line)",
+)
 @click.option(
     "--mode",
     type=click.Choice(["tar", "zip", "gradual"]),
@@ -892,7 +910,7 @@ def session_upload(
     subject: str,
     experiment: str,
     username: str | None,
-    password: str | None,
+    password_stdin: bool,
     mode: str | None,
     zip_to_tar: bool,
     workers: int | None,
@@ -920,6 +938,11 @@ def session_upload(
         validate_session_id,
         validate_subject_id,
     )
+
+    # A password value on argv is refused by the --password callback (SEC-05);
+    # stdin is the only explicit per-command source. Downstream fallbacks
+    # (XNAT_PASS, prompt) live in _upload_directory_parallel.
+    password = read_password_stdin("--password-stdin") if password_stdin else None
 
     # Resolve profile defaults
     profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
