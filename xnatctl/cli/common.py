@@ -82,7 +82,7 @@ class Context:
         # ProfileNotFoundError now carries its own next-step hint, so it is left
         # to propagate rather than being restated as a ConfigurationError -- that
         # wrapper duplicated the hint text and discarded the more specific type
-        # (CLI-09). Both map to the same exit code.
+        # . Both map to the same exit code.
         profile = self.config.get_profile(self.profile_name)
 
         # Get credentials (env vars > profile config). If we are using a cached
@@ -414,7 +414,7 @@ def _record_audit(*, dry_run: bool, confirmed: bool, params: dict[str, Any], err
 def confirm_destructive(message: str) -> Callable[[F], F]:
     """Require confirmation for destructive operations.
 
-    Also the audit seam (SEC-07): carrying this decorator is what marks a
+    Also the audit seam: carrying this decorator is what marks a
     command as state-changing, so the record is written here rather than in
     each command. That keeps coverage automatic -- a new destructive command is
     audited by virtue of being declared destructive.
@@ -434,7 +434,7 @@ def confirm_destructive(message: str) -> Callable[[F], F]:
             elif not yes:
                 # An aborted confirmation is not an audited event: nothing was
                 # attempted, and logging it would bury real changes in noise.
-                click.confirm(message, abort=True)
+                click.confirm(message, abort=True, err=True)
                 kwargs["dry_run"] = False
             else:
                 kwargs["dry_run"] = False
@@ -606,7 +606,7 @@ def _debug_enabled() -> bool:
     counts as OFF -- an explicit falsey value must not enable tracebacks.
 
     The env var's spelling is parsed by :func:`debug_env_enabled` so this policy
-    and the logging tiers it turns on (MAINT-01) cannot drift apart.
+    and the logging tiers it turns on cannot drift apart.
     """
     if debug_env_enabled():
         return True
@@ -637,7 +637,7 @@ def render_cli_error(exc: BaseException) -> int:
         if debug and exc.details:
             # The details dict used to be glued onto every message. It is real
             # diagnostic data, so it stays -- just behind --verbose, where the
-            # reader asked for it (CLI-09).
+            # reader asked for it.
             detail_str = ", ".join(f"{k}={v}" for k, v in exc.details.items())
             click.echo(redact_url_query(f"Details: {detail_str}"), err=True)
     else:
@@ -660,7 +660,7 @@ def handle_errors(f: F) -> F:
 
     Under ``--verbose`` or ``XNATCTL_DEBUG=1`` a full (redacted) traceback is
     printed to stderr before exiting; otherwise unexpected errors print a single
-    line plus a hint. Tracebacks are never shown by default (ROB-13 / MAINT-02).
+    line plus a hint. Tracebacks are never shown by default.
     """
 
     @wraps(f)
@@ -676,7 +676,7 @@ def handle_errors(f: F) -> F:
             raise
         except Exception as e:
             # Stash the real class before collapsing to SystemExit, so the
-            # audit record names the actual failure (SEC-07).
+            # audit record names the actual failure.
             click_ctx = click.get_current_context(silent=True)
             if click_ctx is not None:
                 click_ctx.meta[AUDIT_ERROR_KEY] = type(e).__name__
@@ -693,7 +693,7 @@ def handle_errors(f: F) -> F:
 def reject_argv_password(
     alternatives: str,
 ) -> Callable[[click.Context, click.Parameter, Any], None]:
-    """Build a Click callback that rejects an argv-supplied password (SEC-05).
+    """Build a Click callback that rejects an argv-supplied password.
 
     A password on argv is visible in ``ps``, ``/proc/*/cmdline``, and shell
     history. The option this is wired to survives only as a deterrent that
@@ -741,7 +741,7 @@ def read_password_stdin(flag_name: str) -> str:
 def dest_profile_options(f: F) -> F:
     """Add destination profile options for transfer commands.
 
-    ``--dest-pass`` is argv-rejected (SEC-05); the wrapper resolves
+    ``--dest-pass`` is argv-rejected; the wrapper resolves
     ``--dest-pass-stdin`` here and injects the secret as ``dest_pass``, so the
     wrapped commands keep their existing signatures.
     """

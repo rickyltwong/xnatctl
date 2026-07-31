@@ -63,7 +63,9 @@ def print_table(
         column_labels: Optional mapping of column keys to display labels.
     """
     if not rows:
-        console.print("[dim]No results[/dim]")
+        # Stderr so an empty `-o table` pipe stays clean. Scripts
+        # should use `-o json` for emptiness checks, not parse this line.
+        err_console.print("[dim]No results[/dim]")
         return
 
     table = Table(title=title, show_header=True, header_style="bold")
@@ -233,7 +235,7 @@ def print_warning(message: str) -> None:
 
 
 def print_hint(hint: str) -> None:
-    """Print a dimmed next-step line to stderr, below an error (CLI-09).
+    """Print a dimmed next-step line to stderr, below an error.
 
     Dimmed and prefixed so it reads as guidance rather than a second failure,
     and on stderr so it travels with the error it belongs to rather than
@@ -243,13 +245,17 @@ def print_hint(hint: str) -> None:
 
 
 def print_success(message: str) -> None:
-    """Print success message."""
-    console.print(f"[green]\u2713[/green] {escape(message)}")
+    """Print success message to stderr.
+
+    Stderr so it never interleaves with data being piped from stdout:
+    a success line is commentary about the run, not part of its output.
+    """
+    err_console.print(f"[green]\u2713[/green] {escape(message)}")
 
 
 def print_info(message: str) -> None:
-    """Print info message."""
-    console.print(f"[blue]Info:[/blue] {message}")
+    """Print info message to stderr (commentary, not data)."""
+    err_console.print(f"[blue]Info:[/blue] {escape(message)}")
 
 
 # =============================================================================
@@ -268,7 +274,11 @@ def create_progress() -> Progress:
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
-        console=console,
+        # Stderr, so `xnatctl session download ... > log` still shows a live
+        # bar: Rich disables live display when its console is a non-tty, and
+        # with stdout redirected that used to kill the bar even though stderr
+        # was an interactive terminal.
+        console=err_console,
     )
 
 
@@ -281,5 +291,5 @@ def create_spinner() -> Progress:
     return Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
-        console=console,
+        console=err_console,
     )

@@ -3,7 +3,7 @@
 Square brackets in a message used to be parsed as Rich markup and silently
 dropped, so an install hint like ``pip install 'xnatctl[keyring]'`` reached the
 user as ``pip install 'xnatctl'`` -- the actionable half deleted. Found while
-wiring SEC-02's keyring error; the broader error-rendering work is CLI-09's.
+wiring the keyring install-hint error.
 """
 
 from __future__ import annotations
@@ -37,7 +37,8 @@ def test_warning_keeps_square_brackets(capsys: pytest.CaptureFixture[str]) -> No
 def test_success_keeps_square_brackets(capsys: pytest.CaptureFixture[str]) -> None:
     print_success("Wrote profile [prod]")
 
-    assert "[prod]" in plain(capsys.readouterr().out)
+    # Success is status commentary, so it lives on stderr.
+    assert "[prod]" in plain(capsys.readouterr().err)
 
 
 def test_unclosed_bracket_does_not_raise(capsys: pytest.CaptureFixture[str]) -> None:

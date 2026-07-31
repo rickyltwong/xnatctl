@@ -688,7 +688,7 @@ def api_delete(
         xnatctl api delete /data/projects/MYPROJ/subjects/SUB001 --yes
     """
     if not yes:
-        click.confirm(f"Delete {path}?", abort=True)
+        click.confirm(f"Delete {path}?", abort=True, err=True)
 
     client = ctx.get_client()
 
@@ -698,7 +698,7 @@ def api_delete(
     resp = client.delete(url)
 
     if resp.status_code in (200, 204):
-        click.echo(f"Deleted: {path}")
+        click.echo(f"Deleted: {path}", err=True)
     else:
         try:
             result = resp.json()

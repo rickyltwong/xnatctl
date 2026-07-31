@@ -21,7 +21,7 @@ from xnatctl.cli.common import (
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
-    console,
+    err_console,
     print_error,
     print_json,
     print_output,
@@ -354,9 +354,9 @@ def scan_delete(
         raise SystemExit(1)
 
     if dry_run:
-        click.echo(f"[DRY-RUN] Would delete {len(scan_ids)} scans:")
+        click.echo(f"[DRY-RUN] Would delete {len(scan_ids)} scans:", err=True)
         for sid in scan_ids:
-            click.echo(f"  - {sid}")
+            click.echo(f"  - {sid}", err=True)
         return
 
     workers = resolve_workers_from_context(ctx, workers)
@@ -395,13 +395,14 @@ def scan_delete(
         noun = "scan" if len(deleted) == 1 else "scans"
         # Use highlight=False so Rich does not turn the integer into a
         # styled token; tests assert on the raw "Deleted N scan(s)" text.
-        console.print(f"[green]✓[/green] Deleted {len(deleted)} {noun}", highlight=False)
+        # Stderr: status commentary, not data.
+        err_console.print(f"[green]✓[/green] Deleted {len(deleted)} {noun}", highlight=False)
 
     if failed:
         noun = "scan" if len(failed) == 1 else "scans"
         print_error(f"Failed to delete {len(failed)} {noun}:")
         for scan_id, error in failed:
-            click.echo(f"  - {scan_id}: {error}")
+            click.echo(f"  - {scan_id}: {error}", err=True)
         raise SystemExit(1)
 
 
@@ -534,11 +535,13 @@ def scan_download(
         scan_desc = "all scans" if use_all_keyword else f"{len(scan_ids)} scans"
         resource_desc = resource[0] if resource else "all resources"
         click.echo(
-            f"[DRY-RUN] Would download {scan_desc} ({resource_desc}) to {output_dir}/{name or session_id}/"
+            f"[DRY-RUN] Would download {scan_desc} ({resource_desc}) "
+            f"to {output_dir}/{name or session_id}/",
+            err=True,
         )
         if not use_all_keyword:
             for sid in scan_ids:
-                click.echo(f"  - Scan {sid}")
+                click.echo(f"  - Scan {sid}", err=True)
         return
 
     session_output = output_dir / (name or session_id)
@@ -550,7 +553,7 @@ def scan_download(
             if progress.total_bytes:
                 pct = progress.bytes_received * 100 // progress.total_bytes
                 mb = progress.bytes_received / (1024 * 1024)
-                click.echo(f"\r  Downloading: {pct}% ({mb:.1f} MB)", nl=False)
+                click.echo(f"\r  Downloading: {pct}% ({mb:.1f} MB)", nl=False, err=True)
 
     from xnatctl.core.exceptions import ResourceNotFoundError
 
@@ -572,7 +575,8 @@ def scan_download(
         raise SystemExit(1) from None
 
     if not ctx.quiet:
-        click.echo()
+        # Terminate the \r progress line above, which also lives on stderr.
+        click.echo(err=True)
 
     if ctx.output_format == OutputFormat.JSON:
         print_json(
@@ -602,6 +606,6 @@ def scan_download(
                 f"Download failed: {summary.errors[0] if summary.errors else 'Unknown error'}"
             )
 
-    # Format-independent failure exit (ROB-01): -o json must also return nonzero.
+    # Format-independent failure exit: -o json must also return nonzero.
     if not summary.success:
         raise SystemExit(1)

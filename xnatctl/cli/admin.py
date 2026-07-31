@@ -86,7 +86,7 @@ def admin_refresh_catalogs(
             experiments.append((subject_id, exp_id))
 
     if not experiments:
-        click.echo(f"No experiments found for project {project}")
+        click.echo(f"No experiments found for project {project}", err=True)
         return
 
     # Filter by specific IDs
@@ -99,7 +99,7 @@ def admin_refresh_catalogs(
         experiments = experiments[:limit]
 
     if not experiments:
-        click.echo("No experiments matched selection")
+        click.echo("No experiments matched selection", err=True)
         return
 
     # Resolve workers from profile
@@ -165,7 +165,7 @@ def admin_refresh_catalogs(
         if failed:
             print_error(f"Failed to refresh {len(failed)} experiments")
             for exp_id, error in failed[:5]:
-                click.echo(f"  - {exp_id}: {error}")
+                click.echo(f"  - {exp_id}: {error}", err=True)
 
 
 @admin.group()
@@ -295,7 +295,7 @@ def admin_audit(
             entries = resp.get("ResultSet", {}).get("Result", resp.get("items", []))
 
         if not entries:
-            click.echo("No audit entries found")
+            click.echo("No audit entries found", err=True)
             return
 
         print_output(
@@ -308,5 +308,5 @@ def admin_audit(
     except Exception as e:
         # Audit API may not be available
         print_error(f"Audit log not available: {e}")
-        click.echo("Note: Audit logging may not be enabled on this XNAT server")
+        click.echo("Note: Audit logging may not be enabled on this XNAT server", err=True)
         raise SystemExit(1) from e
