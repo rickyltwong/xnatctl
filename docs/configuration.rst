@@ -145,10 +145,12 @@ required; the rest have sensible defaults.
        certificates.
    * - ``timeout``
      - ``21600``
-     - HTTP request timeout in seconds. The default of 21600 (6 hours) is
-       deliberately generous to accommodate large DICOM transfers. You can lower
-       this for faster failure detection on slow or unreliable networks, or raise it
-       further if your transfers routinely exceed six hours.
+     - HTTP read timeout in seconds -- how long a single request may take once
+       connected. The default of 21600 (6 hours) is deliberately generous to
+       accommodate large DICOM transfers. The *connect* phase is governed
+       separately and fails in about 10 seconds regardless of this value, so
+       an unreachable or firewalled host errors out quickly instead of
+       hanging for hours.
    * - ``default_project``
      - *(none)*
      - Default project ID used as a fallback when you omit the ``-P`` flag. This
@@ -214,9 +216,11 @@ editing a YAML file is impractical.
        ``config.yaml`` for the current session. Handy when you want to pin a
        particular profile in a shell without editing the config file.
    * - ``XNAT_VERIFY_SSL``
-     - Override SSL verification (``true`` or ``false``). Applied when ``XNAT_URL``
-       is also set. Useful for CI environments connecting to development servers
-       with self-signed certificates.
+     - Override SSL verification. Accepts ``true``/``false``/``1``/``0``/
+       ``yes``/``no`` (case-insensitive); any other value is an error rather
+       than silently disabling verification. Applied when ``XNAT_URL`` is also
+       set. Disabling verification prints a warning -- prefer ``ca_bundle`` in
+       the profile for self-signed certificates.
    * - ``XNAT_TIMEOUT``
      - Override HTTP timeout in seconds. Applied when ``XNAT_URL`` is also set.
        Use this to tighten the timeout in CI where you want fast failure on

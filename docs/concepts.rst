@@ -187,7 +187,7 @@ You can list and archive prearchive entries with the ``prearchive`` commands:
 .. code-block:: console
 
    $ xnatctl prearchive list --project MYPROJECT
-   $ xnatctl prearchive archive --project MYPROJECT --session SESS001
+   $ xnatctl prearchive archive MYPROJECT 20240115_120000 SESS001
 
 .. tip::
 
