@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+**Breaking**
+
+- `auth login --password <value>` and the hidden `--dest-pass <value>` no
+  longer accept a password on argv (visible in `ps`, `/proc/*/cmdline`, and
+  shell history). Passing a value is now a usage error (exit 2). Use
+  `--password-stdin` / `--dest-pass-stdin`, the `XNAT_PASS` env var, stored
+  profile credentials, or the interactive prompt. (SEC-05)
+
 ## 0.2.11 - 2026-07-21
 
 **Fixes**

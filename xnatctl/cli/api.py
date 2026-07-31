@@ -487,8 +487,8 @@ def api_post(
 
         echo '{"k":"v"}' | xnatctl api post /data/endpoint -d -
 
-        xnatctl api post /xapi/xsync/credentials/check/projects/PROJ \\
-            -d 'user:pass' -t text/plain
+        printf 'user:pass' | xnatctl api post \\
+            /xapi/xsync/credentials/check/projects/PROJ -d - -t text/plain
     """
     client = ctx.get_client()
 

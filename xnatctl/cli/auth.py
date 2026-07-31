@@ -16,7 +16,13 @@ from __future__ import annotations
 
 import click
 
-from xnatctl.cli.common import Context, global_options, handle_errors
+from xnatctl.cli.common import (
+    Context,
+    global_options,
+    handle_errors,
+    read_password_stdin,
+    reject_argv_password,
+)
 from xnatctl.core.client import XNATClient
 from xnatctl.core.config import Config, Profile
 from xnatctl.core.exceptions import ConfigurationError
@@ -130,24 +136,42 @@ def report_login(ctx: Context, result: dict[str, object]) -> None:
 
 @auth.command("login")
 @click.option("--username", "-u", help="Username")
-@click.option("--password", help="Password (will prompt if not provided)")
+@click.option(
+    "--password",
+    expose_value=False,
+    is_eager=True,
+    callback=reject_argv_password(
+        "Use --password-stdin, set XNAT_PASS, or let the command prompt."
+    ),
+    help="REFUSED: use --password-stdin, XNAT_PASS, or the prompt",
+)
+@click.option(
+    "--password-stdin",
+    is_flag=True,
+    help="Read the password from stdin (one line)",
+)
 @global_options
 @handle_errors
-def auth_login(ctx: Context, username: str | None, password: str | None) -> None:
+def auth_login(ctx: Context, username: str | None, password_stdin: bool) -> None:
     """Login and create a session.
 
     Authenticates with the XNAT server and caches the session token.
-    Credentials come from CLI args, environment variables (XNAT_USER, XNAT_PASS),
-    or the selected profile config.
+    Credentials come from --password-stdin, environment variables
+    (XNAT_USER, XNAT_PASS), the selected profile config, or an interactive
+    prompt. A password on argv is refused: it would be visible in ps and
+    shell history.
 
     \b
     Example:
         xnatctl auth login
         xnatctl auth login --profile myserver
         xnatctl auth login -u admin
+        echo "$PASS" | xnatctl auth login -u admin --password-stdin
     """
     config = ctx.config or Config.load()
     profile = config.get_profile(ctx.profile_name)
+
+    password = read_password_stdin("--password-stdin") if password_stdin else None
 
     result = do_login(
         ctx,

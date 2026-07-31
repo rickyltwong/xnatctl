@@ -187,7 +187,11 @@ class TestRefreshCredentialsSecretSourcing:
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
         )
         combined = result.stdout + result.stderr
-        assert "Refusing to read remote password from argv" in combined
+        # Wording comes from the shared reject_argv_password helper (SEC-05
+        # consolidated it into cli/common.py); assert the invariants, not the
+        # exact sentence.
+        assert "Refusing to read --remote-pass from argv" in combined
+        assert "--remote-pass-stdin" in combined
         # Critical: the secret must not appear anywhere in the captured output.
         assert SECRET not in combined
         # And no HTTP call may have been issued.
