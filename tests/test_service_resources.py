@@ -78,7 +78,6 @@ class TestResourceList:
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
         """list() tolerates real-ish rows that violate strict typing."""
-
         rows = [
             {
                 "label": "Physio",
@@ -110,7 +109,6 @@ class TestResourceList:
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
         """Bool file_count should not coerce to 1/0."""
-
         rows = [
             {
                 "label": "Physio",

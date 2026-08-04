@@ -307,7 +307,7 @@ class XNATClient:
             return (self.username, self.password)
         return None
 
-    def _request(
+    def _request(  # noqa: C901  # pre-existing; see pyproject
         self,
         method: str,
         path: str,

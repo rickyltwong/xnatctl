@@ -244,7 +244,8 @@ class TestSessionUploadPassword:
 def test_no_command_accepts_a_password_value_on_argv() -> None:
     """Sweep the whole CLI tree: any option whose name says password/pass must
     either be a flag (…-stdin) or carry the argv-rejection callback. This is
-    the guard that keeps a fourth leak site from appearing."""
+    the guard that keeps a fourth leak site from appearing.
+    """
     import click as click_mod
 
     from xnatctl.cli.main import cli as root
@@ -254,10 +255,14 @@ def test_no_command_accepts_a_password_value_on_argv() -> None:
     def walk(cmd, path: str) -> None:
         for param in getattr(cmd, "params", []):
             name = (param.name or "").lower()
-            if "pass" in name and not name.endswith("_stdin"):
-                if isinstance(param, click_mod.Option) and not param.is_flag:
-                    if param.callback is None:
-                        offenders.append(f"{path} --{param.name}")
+            takes_a_password_value = (
+                "pass" in name
+                and not name.endswith("_stdin")
+                and isinstance(param, click_mod.Option)
+                and not param.is_flag
+            )
+            if takes_a_password_value and param.callback is None:
+                offenders.append(f"{path} --{param.name}")
         if isinstance(cmd, click_mod.Group):
             for sub_name, sub in cmd.commands.items():
                 walk(sub, f"{path} {sub_name}")

@@ -57,7 +57,6 @@ class DownloadService(BaseService):
         subject: str | None = None,
     ) -> ExperimentRef:
         """Resolve label-based experiment references to a canonical experiment ID."""
-
         if project and not session_id.startswith("XNAT_E"):
             source_ref = ExperimentRef(
                 experiment=session_id,

@@ -50,7 +50,8 @@ def test_resource_not_found_has_no_details_suffix() -> None:
 
 def test_session_expired_does_not_repeat_the_url() -> None:
     """It read `Authentication failed for https://x: Session expired ... (url=https://x)`
-    -- the URL twice, once as noise."""
+    -- the URL twice, once as noise.
+    """
     message = str(SessionExpiredError("https://xnat.example.org"))
 
     assert message.count("https://xnat.example.org") == 1

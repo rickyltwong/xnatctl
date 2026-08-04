@@ -187,7 +187,7 @@ class TestRefreshPropagation:
         assert client.session_token == "FRESH", "the owning client kept a dead token"
 
     def test_without_an_owner_nothing_blows_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """owner is optional; the refresher must still work standalone."""
+        """Owner is optional; the refresher must still work standalone."""
         self._patch_transport(monkeypatch, lambda _r: httpx.Response(200, text="FRESH"))
 
         assert self._refresher(None).refresh("OLD") == "FRESH"

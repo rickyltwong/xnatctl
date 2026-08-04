@@ -396,7 +396,8 @@ class TestConfigSetPassword:
 
     def test_keychain_write_failure_does_not_rewrite_the_config(self, runner: CliRunner) -> None:
         """A failed keychain write must not leave the profile claiming its
-        password lives somewhere it does not."""
+        password lives somewhere it does not.
+        """
         cfg = self._config()
         fake_keyring = MagicMock()
         fake_keyring.set_password.side_effect = RuntimeError("no backend available")
@@ -416,7 +417,8 @@ class TestConfigSetPassword:
 
     def test_password_is_never_accepted_as_an_argument(self, runner: CliRunner) -> None:
         """Prompt-only by design, so it cannot reach shell history or the
-        process table (the remaining argv password flags are likewise refused)."""
+        process table (the remaining argv password flags are likewise refused).
+        """
         with core_config_seam(self._config()):
             result = runner.invoke(cli, ["config", "set-password", "prod", "--password", "s3cret"])
 
@@ -472,7 +474,8 @@ class TestConfigInitGuidedLogin:
 
     def test_non_tty_does_not_prompt(self, runner: CliRunner, tmp_path: Path) -> None:
         """An unanswered prompt in a pipeline is a hang, so the prompt only
-        appears on a real terminal."""
+        appears on a real terminal.
+        """
         config_file = tmp_path / "config.yaml"
         login = MagicMock()
 
@@ -491,7 +494,8 @@ class TestConfigInitGuidedLogin:
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
         """The profile was written and is valid; only the login failed. Saying
-        `config init` failed would be wrong, and would invite a rerun."""
+        `config init` failed would be wrong, and would invite a rerun.
+        """
         from xnatctl.core.exceptions import AuthenticationError
 
         config_file = tmp_path / "config.yaml"

@@ -69,7 +69,8 @@ def zip_handler(payload: bytes) -> Handler:
 
 def test_downloaded_bytes_land_on_disk_intact(tmp_path: Path) -> None:
     """The whole point of the transport: what the server sent is what is
-    written, byte for byte."""
+    written, byte for byte.
+    """
     service = make_service(zip_handler(build_zip(SCAN_FILES)))
 
     summary = service.download_session("XNAT_E00001", tmp_path)
@@ -158,7 +159,8 @@ def test_pattern_is_forwarded_as_a_file_format_filter(tmp_path: Path) -> None:
 
 def test_server_error_is_reported_in_the_summary_not_raised(tmp_path: Path) -> None:
     """A download failure is a result, not an exception -- the CLI turns the
-    summary into an exit code."""
+    summary into an exit code.
+    """
     service = make_service(lambda r: httpx.Response(500, text="boom"))
 
     summary = service.download_session("XNAT_E00001", tmp_path)
@@ -235,7 +237,8 @@ def test_total_bytes_comes_from_the_content_length_header(tmp_path: Path) -> Non
 
 def test_parent_traversal_member_cannot_escape_the_extraction_root(tmp_path: Path) -> None:
     """A malicious archive must not write outside the directory the user
-    asked for. Today's policy is to skip such members silently."""
+    asked for. Today's policy is to skip such members silently.
+    """
     archive = tmp_path / "evil.zip"
     archive.write_bytes(build_zip({"../../escaped.txt": b"pwned", "safe.txt": b"fine"}))
     extract_dir = tmp_path / "out" / "nested"
@@ -359,7 +362,8 @@ def test_matching_checksums_verify(tmp_path: Path) -> None:
 
 def test_a_mismatched_checksum_is_reported(tmp_path: Path) -> None:
     """Today verification is a boolean on the summary rather than an error;
-    that is the contract asserted here."""
+    that is the contract asserted here.
+    """
     checksums = {
         Path(name).name: hashlib.md5(data).hexdigest() for name, data in SCAN_FILES.items()
     }
@@ -374,7 +378,8 @@ def test_a_mismatched_checksum_is_reported(tmp_path: Path) -> None:
 def test_same_named_files_in_different_scans_both_verify(tmp_path: Path) -> None:
     """XNAT sites that number DICOM files per scan repeat `00001.dcm` in every
     scan. A basename->single-digest map reported those byte-perfect downloads
-    as corrupt; the map holds a set of digests per name instead."""
+    as corrupt; the map holds a set of digests per name instead.
+    """
     collide = {
         "scans/1/DICOM/00001.dcm": b"scan-one-data",
         "scans/2/DICOM/00001.dcm": b"scan-two-data",
@@ -418,7 +423,8 @@ def test_verification_is_skipped_unless_asked_for(tmp_path: Path) -> None:
 def test_verifying_nothing_is_not_a_pass(tmp_path: Path) -> None:
     """The original defect: when the listing covered none of the downloaded
     files, every comparison was skipped and verification reported success
-    without checking anything."""
+    without checking anything.
+    """
     service = make_service(verifying_handler(build_zip(SCAN_FILES), {}))
 
     summary = service.download_session("XNAT_E00001", tmp_path, verify=True)
@@ -429,7 +435,8 @@ def test_verifying_nothing_is_not_a_pass(tmp_path: Path) -> None:
 
 def test_verify_download_consults_both_listings_project_scoped(tmp_path: Path) -> None:
     """Scan files and session-level resources live behind different endpoints;
-    checking only one left the other unverified."""
+    checking only one left the other unverified.
+    """
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -464,7 +471,8 @@ def test_verify_download_falls_back_to_the_global_listing(tmp_path: Path) -> Non
 
 def test_a_session_with_no_scans_still_verifies_its_resources(tmp_path: Path) -> None:
     """The scans listing 404s for a resource-only session; that must not
-    abort verification of what the other listing does cover."""
+    abort verification of what the other listing does cover.
+    """
     data = b"physio-recording"
     (tmp_path / "rest1.pmu").write_bytes(data)
 
@@ -503,7 +511,8 @@ def test_verify_download_detects_a_corrupted_local_file(tmp_path: Path) -> None:
 def test_entries_without_a_digest_are_not_treated_as_a_mismatch(tmp_path: Path) -> None:
     """XNAT omits `digest` for some file types. A blank must not be compared
     against a real hash -- but nor can it count as a verified file, so a
-    listing of only such entries verifies nothing."""
+    listing of only such entries verifies nothing.
+    """
     (tmp_path / "scan.dcm").write_bytes(b"whatever")
 
     def handler(request: httpx.Request) -> httpx.Response:

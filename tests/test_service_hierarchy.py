@@ -14,14 +14,12 @@ from xnatctl.services.hierarchy import HierarchyService
 @pytest.fixture
 def mock_client() -> MagicMock:
     """Create a mock XNAT client."""
-
     return MagicMock()
 
 
 @pytest.fixture
 def service(mock_client: MagicMock) -> HierarchyService:
     """Create a hierarchy service."""
-
     return HierarchyService(mock_client)
 
 
@@ -30,13 +28,11 @@ class TestPathBuilders:
 
     def test_build_subject_path_with_project(self, service: HierarchyService) -> None:
         """Subjects become project-scoped when a project is supplied."""
-
         path = service.build_subject_path(SubjectRef(subject="SUB001", project_id="PROJ"))
         assert path == "/data/projects/PROJ/subjects/SUB001"
 
     def test_build_experiment_path_with_subject_scope(self, service: HierarchyService) -> None:
         """Experiments support project+subject scoping."""
-
         path = service.build_experiment_path(
             ExperimentRef(experiment="SESS001", project_id="PROJ", subject="SUB001")
         )
@@ -46,13 +42,11 @@ class TestPathBuilders:
         self, service: HierarchyService
     ) -> None:
         """Subject scope without project is invalid in XNAT."""
-
         with pytest.raises(ValueError):
             service.build_experiment_path(ExperimentRef(experiment="SESS001", subject="SUB001"))
 
     def test_build_scan_resource_path(self, service: HierarchyService) -> None:
         """Scan resource paths descend through experiment and scan levels."""
-
         path = service.build_resource_path(
             ResourceRef(
                 parent=ScanRef(
@@ -67,7 +61,6 @@ class TestPathBuilders:
 
     def test_build_project_resource_path(self, service: HierarchyService) -> None:
         """Project resources are rooted directly under the project."""
-
         path = service.build_resource_path(
             ResourceRef(parent=ProjectRef(project_id="PROJ"), resource_label="QA")
         )
@@ -79,7 +72,6 @@ class TestResolution:
 
     def test_extract_rows_from_top_level_list(self, service: HierarchyService) -> None:
         """Top-level JSON arrays are treated as collection rows."""
-
         rows = service.extract_rows(
             [
                 {"ID": "PROJ1", "name": "Project 1"},
@@ -91,7 +83,6 @@ class TestResolution:
 
     def test_parse_resolved_experiment_from_resultset(self, service: HierarchyService) -> None:
         """ResultSet detail rows are normalized into a resolved experiment ref."""
-
         resolved = service.parse_resolved_experiment(
             ExperimentRef(experiment="SESS001", project_id="PROJ", experiment_is_label=True),
             {
@@ -120,7 +111,6 @@ class TestResolution:
 
     def test_parse_resolved_experiment_from_items(self, service: HierarchyService) -> None:
         """`items[]` detail responses are normalized into a resolved experiment ref."""
-
         resolved = service.parse_resolved_experiment(
             ExperimentRef(experiment="SESS001", project_id="PROJ", experiment_is_label=True),
             {
@@ -147,7 +137,6 @@ class TestResolution:
         self, service: HierarchyService, mock_client: MagicMock
     ) -> None:
         """Live resolution goes through the client's JSON helper."""
-
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -169,7 +158,6 @@ class TestResolution:
 
     def test_parse_resolved_experiment_not_found(self, service: HierarchyService) -> None:
         """Empty responses raise a resource-not-found error."""
-
         with pytest.raises(ResourceNotFoundError):
             service.parse_resolved_experiment(
                 ExperimentRef(experiment="MISSING"), {"ResultSet": {"Result": []}}
@@ -177,14 +165,12 @@ class TestResolution:
 
     def test_resolve_scan_xsi_type(self, service: HierarchyService) -> None:
         """Session xsiTypes map cleanly onto scan xsiTypes."""
-
         assert service.resolve_scan_xsi_type("xnat:eegSessionData") == "xnat:eegScanData"
 
     def test_hierarchy_resolve_experiment_label_fallback(
         self, service: HierarchyService, mock_client: MagicMock
     ) -> None:
         """When the direct GET returns empty ResultSet, fall back to project listing."""
-
         # 1) direct path returns empty ResultSet (label probe miss);
         # 2) project listing returns the canonical row;
         # 3) retry with canonical accession ID resolves.
@@ -241,7 +227,6 @@ class TestResolution:
         self, service: HierarchyService, mock_client: MagicMock
     ) -> None:
         """Accession-ID-shaped tokens fall back to /data/experiments/{ID} cross-project."""
-
         # 1) direct project-scoped GET 404s (ID not owned by default_project);
         # 2) project listing returns no match;
         # 3) cross-project /data/experiments/{ID} resolves.
@@ -278,7 +263,6 @@ class TestResolution:
         self, service: HierarchyService, mock_client: MagicMock
     ) -> None:
         """When no fallback resolves, raise ResourceNotFoundError with the original token."""
-
         mock_client.get_json.side_effect = [
             ResourceNotFoundError("session", "MISSING_LABEL"),
             {"ResultSet": {"Result": []}},

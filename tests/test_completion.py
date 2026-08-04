@@ -78,7 +78,7 @@ def test_bash_completion_parses_plain_values(tmp_path, runner) -> None:
 
 
 def test_zsh_matches_installed_click_template(runner) -> None:
-    """zsh output is Click's own generated source (no hand-rolled divergence)."""
+    """Zsh output is Click's own generated source (no hand-rolled divergence)."""
     from click.shell_completion import get_completion_class
 
     out = _completion(runner, "zsh").strip()

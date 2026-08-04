@@ -917,21 +917,21 @@ class TestScanHelp:
     """Tests for scan subcommand help texts."""
 
     def test_scan_list_help(self, runner: CliRunner) -> None:
-        """scan list --help shows expected options."""
+        """Scan list --help shows expected options."""
         result = runner.invoke(cli, ["scan", "list", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
         assert "--project" in result.output
 
     def test_scan_show_help(self, runner: CliRunner) -> None:
-        """scan show --help shows expected options."""
+        """Scan show --help shows expected options."""
         result = runner.invoke(cli, ["scan", "show", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
         assert "SCAN_ID" in result.output
 
     def test_scan_delete_help(self, runner: CliRunner) -> None:
-        """scan delete --help shows expected options."""
+        """Scan delete --help shows expected options."""
         result = runner.invoke(cli, ["scan", "delete", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
@@ -940,7 +940,7 @@ class TestScanHelp:
         assert "--yes" in result.output
 
     def test_scan_download_help(self, runner: CliRunner) -> None:
-        """scan download --help shows expected options."""
+        """Scan download --help shows expected options."""
         result = runner.invoke(cli, ["scan", "download", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
@@ -1025,7 +1025,8 @@ class TestScanNestedUrlRouting:
 
     def test_missing_subject_id_falls_back_to_the_flat_url(self, runner: CliRunner) -> None:
         """With no subject to insert, the URL drops the project rather than
-        keeping the prefix XNAT refuses to route."""
+        keeping the prefix XNAT refuses to route.
+        """
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(subject_id=None),

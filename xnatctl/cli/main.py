@@ -68,7 +68,7 @@ def cli(
     quiet: bool,
     verbose: bool,
 ) -> None:
-    """xnatctl - A CLI for standardized XNAT REST workflows.
+    """Xnatctl - A CLI for standardized XNAT REST workflows.
 
     Manage XNAT projects, subjects, sessions, scans, and resources.
     Supports parallel uploads/downloads, batch operations, and admin tasks.

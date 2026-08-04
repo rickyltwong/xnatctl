@@ -65,7 +65,7 @@ jobs:
         run: uv run ruff check xnatctl scripts
 
       - name: Type check
-        run: uv run mypy xnatctl --ignore-missing-imports
+        run: uv run mypy xnatctl
 
       - name: Test
         run: uv run pytest tests/ -v --tb=short

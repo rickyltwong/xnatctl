@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from xnatctl.core.config import CONFIG_DIR, ENV_PASS, ENV_TOKEN, ENV_USER
 from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir, restrict_permissions
@@ -78,7 +79,7 @@ class CachedSession:
         self.last_used_at = now
         self.expires_at = now + timedelta(minutes=expiry_minutes)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "token": self.token,
@@ -90,7 +91,7 @@ class CachedSession:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> CachedSession:
+    def from_dict(cls, data: dict[str, Any]) -> CachedSession:
         """Create from dictionary."""
         created_at = datetime.fromisoformat(data["created_at"])
         last_used = data.get("last_used_at")
@@ -325,7 +326,7 @@ class AuthManager:
 
         return None
 
-    def get_session_info(self, url: str | None = None) -> dict | None:
+    def get_session_info(self, url: str | None = None) -> dict[str, Any] | None:
         """Get session information for display.
 
         Args:

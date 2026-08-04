@@ -41,10 +41,10 @@ jobs:
         run: uv sync --dev
 
       - name: Run ruff check
-        run: uv run ruff check xnatctl scripts
+        run: uv run ruff check xnatctl tests scripts
 
       - name: Run ruff format check
-        run: uv run ruff format --check xnatctl scripts
+        run: uv run ruff format --check xnatctl tests scripts
 
   typecheck:
     runs-on: ubuntu-latest
@@ -72,7 +72,7 @@ jobs:
           key: mypy-${{ hashFiles('pyproject.toml', 'uv.lock') }}
 
       - name: Run mypy
-        run: uv run mypy xnatctl --ignore-missing-imports
+        run: uv run mypy xnatctl
 
   test:
     timeout-minutes: 15

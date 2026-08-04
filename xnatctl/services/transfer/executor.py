@@ -685,7 +685,7 @@ class TransferExecutor:
         )
         return resp.text
 
-    def _rewrite_experiment_xml(
+    def _rewrite_experiment_xml(  # noqa: C901  # pre-existing; see pyproject
         self,
         xml_text: str,
         dest_experiment_id: str | None = None,
@@ -893,7 +893,7 @@ class TransferExecutor:
             )
             return 0
 
-    def wait_for_archive(
+    def wait_for_archive(  # noqa: C901  # pre-existing; see pyproject
         self,
         dest_project: str,
         subject_label: str,

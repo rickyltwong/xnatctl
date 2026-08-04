@@ -265,7 +265,8 @@ class TestAuthGlobalOptions:
 
     def test_root_level_profile_flag_is_respected(self, runner: CliRunner) -> None:
         """`xnatctl -p other auth status` -- the root-group flag, which the
-        local -p could not see."""
+        local -p could not see.
+        """
         cfg = Config(
             default_profile="default",
             profiles={
@@ -333,7 +334,8 @@ class TestFirstRun:
 
     def test_no_config_does_not_blame_a_missing_default_profile(self, runner: CliRunner) -> None:
         """It used to say `Profile not found: default`, sending the user
-        looking for a typo that does not exist."""
+        looking for a typo that does not exist.
+        """
         with patch("xnatctl.cli.common.Config.load", return_value=self._empty()):
             result = runner.invoke(cli, ["auth", "login"])
 

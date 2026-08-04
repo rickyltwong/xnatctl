@@ -93,7 +93,8 @@ def test_records_without_secrets_are_left_untouched(
 
 def test_untouched_record_keeps_lazy_args() -> None:
     """Only records we actually change get collapsed, so other handlers keep
-    the original %-args."""
+    the original %-args.
+    """
     record = logging.LogRecord("x", logging.INFO, __file__, 1, "plain %s", ("value",), None)
     assert RedactionFilter().filter(record) is True
     assert record.msg == "plain %s"
@@ -102,7 +103,8 @@ def test_untouched_record_keeps_lazy_args() -> None:
 
 def test_changed_record_is_collapsed_without_double_interpolation() -> None:
     """After rewriting, ``args`` must be cleared or the next getMessage() would
-    try to interpolate an already-formatted string."""
+    try to interpolate an already-formatted string.
+    """
     record = logging.LogRecord("x", logging.WARNING, __file__, 1, "GET %s", (SECRET_URL,), None)
     assert RedactionFilter().filter(record) is True
     assert record.args is None
@@ -172,7 +174,8 @@ def test_userinfo_url_is_rejected() -> None:
 def test_rejection_message_does_not_leak_the_password() -> None:
     """The error raised *because* the URL held a credential must not repeat
     it -- InvalidURLError echoes the value into the message and keeps it as
-    ``.value``."""
+    ``.value``.
+    """
     with pytest.raises(InvalidURLError) as exc_info:
         validate_server_url(USERINFO_URL)
 
@@ -185,7 +188,8 @@ def test_rejection_message_does_not_leak_the_password() -> None:
 def test_password_is_not_leaked_by_an_unrelated_rejection() -> None:
     """A userinfo URL that fails an earlier check (scheme) must be redacted
     too -- and that value is not http(s), so the text-scanning helper alone
-    would not have caught it."""
+    would not have caught it.
+    """
     with pytest.raises(InvalidURLError) as exc_info:
         validate_server_url("ftp://admin:s3cret@xnat.example.org")
 

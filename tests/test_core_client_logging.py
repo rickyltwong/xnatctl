@@ -93,7 +93,8 @@ def test_retries_are_logged_at_warning_with_the_backoff(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A retry storm was previously invisible -- the single most common cause
-    of "xnatctl is hanging"."""
+    of "xnatctl is hanging".
+    """
     attempts = {"n": 0}
 
     def flaky(request: httpx.Request) -> httpx.Response:
@@ -199,7 +200,8 @@ def test_refusal_to_reauth_explains_why(caplog: pytest.LogCaptureFixture) -> Non
 
 def test_request_logging_redacts_query_secrets(caplog: pytest.LogCaptureFixture) -> None:
     """The per-attempt line logs the full URL, so it is the most likely place
-    for a token to leak."""
+    for a token to leak.
+    """
     client = make_client(lambda r: httpx.Response(200, json={}))
 
     with caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER):
@@ -292,7 +294,8 @@ def test_default_keeps_httpx_quiet() -> None:
 @pytest.mark.usefixtures("clean_root")
 def test_verbose_raises_httpx_to_info() -> None:
     """The regression: -v used to leave httpx pinned at WARNING, so it could
-    never show wire activity."""
+    never show wire activity.
+    """
     setup_logging(verbose=True)
 
     assert logging.getLogger().level == logging.DEBUG

@@ -86,6 +86,7 @@ def check(text: str) -> list[str]:
 
 
 def main() -> int:
+    """Report CLAUDE.md drift; exit non-zero when the map is stale."""
     if not CLAUDE_MD.exists():
         print(f"check_claude_md_drift: {CLAUDE_MD.name} not found (gitignored); skipping.")
         return 0

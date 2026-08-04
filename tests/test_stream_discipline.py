@@ -47,7 +47,8 @@ class TestOutputHelpers:
 
     def test_empty_table_notice_goes_to_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
         """An empty `-o table` pipe stays byte-clean; scripts should use
-        `-o json` for emptiness checks."""
+        `-o json` for emptiness checks.
+        """
         print_table([], columns=["id"])
 
         captured = capsys.readouterr()
@@ -86,7 +87,8 @@ class TestCommandStreams:
 
     def test_confirmation_prompt_goes_to_stderr(self) -> None:
         """A prompt on stdout would corrupt piped output before the user even
-        answers it."""
+        answers it.
+        """
         harness = make_authenticated_cli(default_project="PROJ")
         harness.client.delete.return_value = make_response(text="OK")
 

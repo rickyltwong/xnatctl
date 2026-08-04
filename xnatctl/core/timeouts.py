@@ -33,11 +33,11 @@ def build_httpx_timeout(read_timeout: float | None) -> httpx.Timeout:
      allows. Centralized here so every httpx.Client in the package shares one policy
     .
 
-     Args:
+    Args:
          read_timeout: Read/write ceiling in seconds; ``None`` falls back to the
              6-hour default.
 
-     Returns:
+    Returns:
          An ``httpx.Timeout`` with ``connect`` fixed at
          :data:`DEFAULT_CONNECT_TIMEOUT_SECONDS`.
     """

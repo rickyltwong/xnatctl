@@ -337,7 +337,7 @@ def test_authenticate_maps_transport_errors_too(exc_name: str) -> None:
 
 
 def test_retryable_status_policy_has_a_single_source() -> None:
-    """uploads extends the client's set rather than redefining it."""
+    """Uploads extends the client's set rather than redefining it."""
     from xnatctl.services.uploads import (
         RETRYABLE_STATUS_CODES as UPLOAD_CODES,
     )

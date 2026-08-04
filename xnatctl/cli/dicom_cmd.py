@@ -50,7 +50,7 @@ def dicom() -> None:
 @click.option("--recursive", "-r", is_flag=True, help="Search recursively")
 @click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
 @click.option("--quiet", "-q", is_flag=True, help="Only output invalid files")
-def dicom_validate(
+def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
     path: str,
     recursive: bool,
     output: str,
@@ -347,7 +347,7 @@ def dicom_list_tags(
 @click.option("--remove-private", is_flag=True, help="Remove private tags")
 @click.option("--recursive", "-r", is_flag=True, help="Process directory recursively")
 @click.option("--dry-run", is_flag=True, help="Preview without saving")
-def dicom_anonymize(
+def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
     input_path: str,
     output_path: str,
     patient_id: str | None,
@@ -497,7 +497,7 @@ def _collect_dicom_files(path: Path, recursive: bool) -> list[Path]:
     default="table",
 )
 @click.option("--dry-run", is_flag=True, help="Preview changes without writing")
-def dicom_modify(
+def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
     path: str,
     tags: tuple[str, ...],
     recursive: bool,
