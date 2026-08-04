@@ -40,7 +40,9 @@ def missing_files(text: str, package_dir: Path) -> list[str]:
         if f.name in _SKIP_BASENAMES:
             continue
         if f.name not in text:
-            missing.append(str(f.relative_to(package_dir.parent)))
+            # as_posix so the reported path matches the forward-slash tree in
+            # CLAUDE.md on every platform, not just POSIX ones.
+            missing.append(f.relative_to(package_dir.parent).as_posix())
     return missing
 
 

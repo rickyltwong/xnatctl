@@ -31,6 +31,16 @@ logger = logging.getLogger(__name__)
 PRIVATE_FILE_MODE = 0o600
 PRIVATE_DIR_MODE = 0o700
 
+#: Whether POSIX permission bits mean anything on this platform.
+#:
+#: On Windows they do not: ``os.stat`` reports 0o666 for any writable file and
+#: 0o777 for any directory regardless of its ACL, and ``os.chmod`` only toggles
+#: the read-only flag. Code that *reasons about* a mode -- as opposed to merely
+#: requesting one -- has to check this first, or it concludes that every file on
+#: Windows is world-readable. The real equivalent there is an ACL, which xnatctl
+#: does not manage.
+POSIX_PERMISSIONS = os.name == "posix"
+
 
 def _private_opener(path: str, flags: int) -> int:
     """``open()`` opener that creates files with :data:`PRIVATE_FILE_MODE`."""

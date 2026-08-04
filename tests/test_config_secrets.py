@@ -30,6 +30,7 @@ from xnatctl.core.config import (
     load_keyring,
 )
 from xnatctl.core.exceptions import ConfigurationError
+from xnatctl.core.fsutil import POSIX_PERMISSIONS
 
 URL = "https://xnat.example.org"
 
@@ -199,6 +200,9 @@ def test_env_password_wins_and_skips_the_keychain(
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 def test_world_readable_config_with_inline_password_warns(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -234,6 +238,27 @@ def test_world_readable_config_without_a_password_does_not_warn(
     path = tmp_path / "config.yaml"
     path.write_text(yaml.dump({"profiles": {"prod": {"url": URL}}}))
     os.chmod(path, 0o644)
+
+    with caplog.at_level(logging.WARNING, logger="xnatctl.core.config"):
+        Config.load(config_path=path)
+
+    assert caplog.records == []
+
+
+def test_no_permission_warning_where_modes_are_meaningless(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows the mode check is skipped entirely.
+
+    ``os.stat`` reports 0o666 for every writable file there, so the check would
+    fire on every command and tell the user to run a ``chmod`` that neither
+    exists on that platform nor would help. Exercised by patching the flag, so
+    the behaviour stays covered on the POSIX machines that run this suite.
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.dump({"profiles": {"prod": {"url": URL, "password": "s3cret"}}}))
+    os.chmod(path, 0o644)
+    monkeypatch.setattr("xnatctl.core.config.POSIX_PERMISSIONS", False)
 
     with caplog.at_level(logging.WARNING, logger="xnatctl.core.config"):
         Config.load(config_path=path)

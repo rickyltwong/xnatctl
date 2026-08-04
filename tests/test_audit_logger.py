@@ -23,6 +23,7 @@ from click.testing import CliRunner
 from conftest import make_authenticated_cli
 
 from xnatctl.cli.main import cli
+from xnatctl.core.fsutil import POSIX_PERMISSIONS
 from xnatctl.core.logging import AUDIT_LOG_MAX_BYTES, AuditLogger
 
 
@@ -72,6 +73,9 @@ def test_records_append_rather_than_overwrite(audit_log: Path) -> None:
     assert [e["operation"] for e in records(audit_log)] == ["first", "second"]
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 def test_log_file_is_owner_only(audit_log: Path) -> None:
     """It records which subjects were deleted from which server; same class of
     secret as the session cache."""
@@ -80,6 +84,9 @@ def test_log_file_is_owner_only(audit_log: Path) -> None:
     assert stat.S_IMODE(audit_log.stat().st_mode) == 0o600
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 def test_existing_world_readable_log_is_tightened(audit_log: Path) -> None:
     audit_log.parent.mkdir(parents=True, exist_ok=True)
     audit_log.write_text("")

@@ -112,3 +112,18 @@ def test_real_claude_md_in_sync_if_present() -> None:
     if not drift.CLAUDE_MD.exists():
         pytest.skip("CLAUDE.md is gitignored and absent (e.g. CI)")
     assert drift.check(drift.CLAUDE_MD.read_text()) == []
+
+
+def test_reported_paths_use_forward_slashes(tmp_path: Path) -> None:
+    """Reported paths match the forward-slash tree in CLAUDE.md on every OS.
+
+    ``str(Path)`` yields backslashes on Windows, so the drift report named a
+    path that does not appear in the document it is asking the reader to
+    compare against.
+    """
+    pkg = _make_pkg(tmp_path, ["sub/nested.py"])
+
+    missing = drift.missing_files("mentions nothing", pkg)
+
+    assert missing == ["pkg/sub/nested.py"]
+    assert not any("\\" in m for m in missing)
