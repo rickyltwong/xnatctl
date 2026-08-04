@@ -55,6 +55,9 @@ dev = [
     "mypy>=1.8.0",
     "pre-commit>=3.7.0",
     "types-PyYAML>=6.0.0",
+    # Generates throwaway certs for the DICOM TLS tests. Without it those
+    # tests skip, which is how the DICOM tier went years without running.
+    "cryptography>=42",
 ]
 docs = [
     "sphinx>=7.0",
@@ -80,6 +83,7 @@ package = true
 
 [dependency-groups]
 dev = [
+    "cryptography>=42",
     "mypy>=1.8.0",
     "pre-commit>=3.7.0",
     "pytest>=9.0.0",
