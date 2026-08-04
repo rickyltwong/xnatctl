@@ -300,3 +300,40 @@ def isolate_session_cache(
     monkeypatch.setattr("xnatctl.core.auth.SESSION_CACHE_FILE", path)
     monkeypatch.setattr("xnatctl.core.config.SESSION_CACHE_FILE", path, raising=False)
     return path
+
+
+class _NullHighlighter:
+    """A Rich highlighter that adds no styling."""
+
+    def __call__(self, text: object) -> object:
+        from rich.text import Text
+
+        return Text(text) if isinstance(text, str) else text
+
+
+@pytest.fixture(autouse=True)
+def disable_rich_colour(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make assertions on CLI output independent of the developer's terminal.
+
+    Rich styles output when it believes a terminal is attached, and honours
+    ``FORCE_COLOR`` even under ``CliRunner`` -- whose captured stream is not a
+    tty. A developer who exports ``FORCE_COLOR`` (common in modern shells) then
+    sees ``Modified \\x1b[1;36m1\\x1b[0m files`` where the test asserts
+    ``Modified 1``, and five dicom tests fail for them and pass in CI.
+
+    Neutralised here rather than by loosening the assertions: the plain strings
+    are what a user piping xnatctl to another program sees, so they are the
+    right thing to assert.
+    """
+    # Set on the Console objects, not via the environment: Rich reads
+    # FORCE_COLOR once, when the module-level consoles are constructed at
+    # import time, which is long before any fixture runs.
+    from xnatctl.core import output
+
+    for con in (output.console, output.err_console):
+        monkeypatch.setattr(con, "no_color", True)
+        monkeypatch.setattr(con, "_force_terminal", False)
+        # highlight=True is what wraps bare integers in a style, turning
+        # "Modified 1 files" into "Modified \x1b[1;36m1\x1b[0m files".
+        monkeypatch.setattr(con, "_highlight", False, raising=False)
+        monkeypatch.setattr(con, "highlighter", _NullHighlighter(), raising=False)
