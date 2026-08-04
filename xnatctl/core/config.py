@@ -18,7 +18,12 @@ from xnatctl.core.exceptions import (
     NoConfigurationError,
     ProfileNotFoundError,
 )
-from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir, restrict_permissions
+from xnatctl.core.fsutil import (
+    POSIX_PERMISSIONS,
+    atomic_private_write,
+    ensure_private_dir,
+    restrict_permissions,
+)
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
 # =============================================================================
@@ -397,6 +402,12 @@ def _warn_on_exposed_password(config: Config, path: Path) -> None:
     """
     exposed = [name for name, profile in config.profiles.items() if profile.password]
     if not exposed:
+        return
+
+    # Windows reports 0o666 for every writable file, so the check below would
+    # fire on every command and tell the user to run a chmod that neither
+    # exists there nor would help.
+    if not POSIX_PERMISSIONS:
         return
 
     try:

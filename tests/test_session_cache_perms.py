@@ -21,7 +21,7 @@ import pytest
 
 from xnatctl.core.auth import AuthManager
 from xnatctl.core.config import Config, Profile
-from xnatctl.core.fsutil import atomic_private_write
+from xnatctl.core.fsutil import POSIX_PERMISSIONS, atomic_private_write
 
 
 def mode_of(path: Path) -> int:
@@ -54,6 +54,9 @@ def group_writable_umask() -> Iterator[int]:
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 @pytest.mark.usefixtures("loose_umask")
 def test_session_cache_is_owner_only_under_loose_umask(tmp_path: Path) -> None:
     cache = tmp_path / "cfgdir" / ".session"
@@ -62,6 +65,9 @@ def test_session_cache_is_owner_only_under_loose_umask(tmp_path: Path) -> None:
     assert mode_of(cache) == 0o600
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 @pytest.mark.usefixtures("group_writable_umask")
 def test_session_cache_is_owner_only_under_group_writable_umask(tmp_path: Path) -> None:
     """The motivating regression: umask 0o002 yielded a 0664 token."""
@@ -71,6 +77,9 @@ def test_session_cache_is_owner_only_under_group_writable_umask(tmp_path: Path) 
     assert mode_of(cache) == 0o600
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 @pytest.mark.usefixtures("loose_umask")
 def test_created_parent_directory_is_owner_only(tmp_path: Path) -> None:
     parent = tmp_path / "cfgdir"
@@ -79,6 +88,9 @@ def test_created_parent_directory_is_owner_only(tmp_path: Path) -> None:
     assert mode_of(parent) == 0o700
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 def test_existing_parent_directory_permissions_are_left_alone(tmp_path: Path) -> None:
     """Only directories we create are tightened; an existing one may be the
     user's deliberate choice, and silently changing it would be a surprise."""
@@ -91,6 +103,9 @@ def test_existing_parent_directory_permissions_are_left_alone(tmp_path: Path) ->
     assert mode_of(parent) == 0o755
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 def test_rewriting_a_world_readable_cache_tightens_it(tmp_path: Path) -> None:
     """``opener=`` only applies its mode to files it creates, so an in-place
     rewrite of a 0644 file would have stayed 0644. The atomic replace hands the
@@ -123,6 +138,9 @@ def test_no_temp_file_is_left_behind(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == [".session"]
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 @pytest.mark.usefixtures("group_writable_umask")
 def test_cache_mode_does_not_depend_on_chmod_succeeding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -168,6 +186,9 @@ def test_failing_chmod_warns_instead_of_passing_silently(
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 @pytest.mark.usefixtures("group_writable_umask")
 def test_config_file_is_owner_only(tmp_path: Path) -> None:
     """config.yaml can carry a plaintext password today, so it gets the same
@@ -212,6 +233,9 @@ def test_atomic_write_leaves_original_intact_on_error(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == ["secret.txt"]
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
 @pytest.mark.usefixtures("group_writable_umask")
 def test_atomic_write_creates_owner_only_file(tmp_path: Path) -> None:
     target = tmp_path / "secret.txt"
