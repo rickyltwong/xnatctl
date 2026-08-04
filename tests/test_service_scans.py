@@ -51,14 +51,19 @@ class TestScanList:
         assert result[0].session_id == "XNAT_E00001"
 
     def test_list_with_project(self, service: ScanService, mock_client: MagicMock) -> None:
-        """List with project uses project-scoped path and injects project."""
+        """A project still tags the result, but must not break the listing URL.
+
+        /data/projects/{P}/experiments/{E}/scans is not a scan listing -- XNAT
+        answers it with the experiment document, so this returned no scans at
+        all. Without a subject segment the flat form is the routed one.
+        """
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SCAN]}})
 
         result = service.list("XNAT_E00001", project="PROJ01")
 
         assert result[0].project == "PROJ01"
         call_path = mock_client.get.call_args[0][0]
-        assert "/data/projects/PROJ01/experiments/XNAT_E00001/scans" in call_path
+        assert call_path == "/data/experiments/XNAT_E00001/scans"
 
     def test_list_with_columns(self, service: ScanService, mock_client: MagicMock) -> None:
         """Columns param is passed."""

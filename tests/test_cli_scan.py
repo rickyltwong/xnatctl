@@ -24,9 +24,25 @@ def runner() -> CliRunner:
 # =============================================================================
 
 
-def _exp_metadata(xsi_type: str = "xnat:mrSessionData") -> dict[str, Any]:
-    """Build a minimal experiment metadata response."""
-    return {"ResultSet": {"Result": [{"xsiType": xsi_type}]}}
+def _exp_metadata(
+    xsi_type: str = "xnat:mrSessionData",
+    *,
+    experiment_id: str | None = "XNAT_E00001",
+    subject_id: str | None = "XNAT_S00001",
+) -> dict[str, Any]:
+    """Build an experiment metadata response.
+
+    Real XNAT experiment documents always carry ``ID`` and ``subject_ID``. Both
+    matter: the accession ID makes nested calls canonical, and the subject is
+    what makes the nested URL route at all under a project (see
+    ``TestScanNestedUrlRouting``). Pass ``None`` to model a sparse response.
+    """
+    row: dict[str, Any] = {"xsiType": xsi_type}
+    if experiment_id:
+        row["ID"] = experiment_id
+    if subject_id:
+        row["subject_ID"] = subject_id
+    return {"ResultSet": {"Result": [row]}}
 
 
 def _scan_results(scans: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -83,9 +99,14 @@ class TestScanList:
             result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
 
         assert result.exit_code == 0
-        # Second call is the scans listing
+        # Second call is the scans listing. It stays inside the project (ACLs
+        # apply) and goes through the subject, which is what makes XNAT route
+        # the /scans suffix instead of echoing the experiment document.
         scan_call_url = mock_client.get_json.call_args_list[1][0][0]
-        assert "/data/projects/TESTPROJ/experiments/SESS001/scans" in scan_call_url
+        assert (
+            "/data/projects/TESTPROJ/subjects/XNAT_S00001/experiments/XNAT_E00001/scans"
+            in scan_call_url
+        )
 
     def test_scan_list_without_project_uses_direct_endpoint(self, runner: CliRunner) -> None:
         """Without -P uses /data/experiments endpoint."""
@@ -386,6 +407,7 @@ class TestScanShow:
                             "ID": "XNAT_E00001",
                             "label": "SESS001",
                             "project": "TESTPROJ",
+                            "subject_ID": "XNAT_S00001",
                             "xsiType": "xnat:mrSessionData",
                         }
                     ]
@@ -414,9 +436,13 @@ class TestScanShow:
         assert result.exit_code == 0
         resolve_url = mock_client.get_json.call_args_list[0][0][0]
         assert "/data/projects/TESTPROJ/experiments/SESS001" in resolve_url
-        # After inspection, nested calls preserve project scope so ACLs apply.
+        # After inspection, nested calls preserve project scope so ACLs apply,
+        # and address the scan through the subject so XNAT routes the suffix.
         scan_url = mock_client.get_json.call_args_list[1][0][0]
-        assert "/data/projects/TESTPROJ/experiments/XNAT_E00001/scans/1" in scan_url
+        assert (
+            "/data/projects/TESTPROJ/subjects/XNAT_S00001/experiments/XNAT_E00001/scans/1"
+            in scan_url
+        )
 
     def test_scan_show_not_found(self, runner: CliRunner) -> None:
         """Non-existent scan prints error and exits 1."""
@@ -511,8 +537,15 @@ class TestScanDelete:
         assert "3 scans" in result.output
 
     def test_scan_delete_with_project(self, runner: CliRunner) -> None:
-        """Delete with -P uses project-scoped endpoint."""
+        """Delete with -P targets the scan under its subject, not the experiment.
+
+        ``/data/projects/{P}/experiments/{E}/scans/1`` does not address a scan:
+        XNAT ignores the suffix and the URL resolves to the experiment itself,
+        so a DELETE there risks removing the whole session. The subject segment
+        is what makes it address the scan.
+        """
         ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.return_value = _exp_metadata()
         mock_response = MagicMock()
         mock_response.status_code = 204
         mock_client.delete.return_value = mock_response
@@ -535,7 +568,12 @@ class TestScanDelete:
 
         assert result.exit_code == 0
         delete_url = mock_client.delete.call_args[0][0]
-        assert "/data/projects/TESTPROJ/experiments/SESS001/scans/1" in delete_url
+        assert (
+            "/data/projects/TESTPROJ/subjects/XNAT_S00001/experiments/XNAT_E00001/scans/1"
+            in delete_url
+        )
+        # The unrouted prefix must not be what gets DELETEd.
+        assert "/data/projects/TESTPROJ/experiments/" not in delete_url
 
     def test_scan_delete_failure(self, runner: CliRunner) -> None:
         """Failed delete reports error and exits 1."""
@@ -911,3 +949,146 @@ class TestScanHelp:
         assert "--dry-run" in result.output
         assert "--resource" in result.output
         assert "--extract" in result.output
+
+
+# =============================================================================
+# Nested URL routing
+# =============================================================================
+
+
+class TestScanNestedUrlRouting:
+    """Regression tests for the URL prefix used by nested scan calls.
+
+    XNAT does not route sub-resource suffixes on
+    ``/data/projects/{P}/experiments/{E}``. It answers ``/scans`` -- or any
+    other suffix, including nonsense ones -- with the parent experiment
+    document. ``extract_rows`` finds no ``ResultSet`` there and returns an empty
+    list, so ``scan list -P`` reported "no scans" for sessions that had them,
+    ``scan show -P`` printed session fields under a scan heading, and
+    ``scan delete -P`` aimed a DELETE at the experiment.
+
+    Routing the call through the subject fixes all three at once.
+    """
+
+    def test_project_scoped_listing_goes_through_the_subject(self, runner: CliRunner) -> None:
+        """With -P, the scans URL carries the subject from the experiment doc."""
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata(subject_id="XNAT_S00042"),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/subjects/XNAT_S00042/" in scan_url
+
+    def test_explicit_subject_is_not_overwritten(self, runner: CliRunner) -> None:
+        """A user-supplied -S wins over the subject_ID in the experiment doc."""
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata(subject_id="XNAT_S00042"),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli, ["scan", "list", "-P", "TESTPROJ", "-S", "SUB_LABEL", "-E", "SESS001"]
+            )
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/subjects/SUB_LABEL/" in scan_url
+        assert "XNAT_S00042" not in scan_url
+
+    def test_no_project_keeps_the_flat_experiment_url(self, runner: CliRunner) -> None:
+        """Without a project there is no subject segment to add.
+
+        ``/data/experiments/{E}/scans`` routes correctly on its own, and XNAT
+        rejects a subject segment outside a project.
+        """
+        ctx, mock_client = make_authenticated_context(default_project=None)
+        mock_client.get_json.side_effect = [
+            _exp_metadata(subject_id="XNAT_S00042"),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert scan_url == "/data/experiments/XNAT_E00001/scans"
+        assert "/subjects/" not in scan_url
+
+    def test_missing_subject_id_falls_back_to_the_flat_url(self, runner: CliRunner) -> None:
+        """With no subject to insert, the URL drops the project rather than
+        keeping the prefix XNAT refuses to route."""
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata(subject_id=None),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert scan_url == "/data/experiments/XNAT_E00001/scans"
+
+    def test_items_response_subject_is_carried_forward(self, runner: CliRunner) -> None:
+        """The subject is read from an `items[]` experiment document too."""
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            {
+                "items": [
+                    {
+                        "data_fields": {
+                            "ID": "XNAT_E00001",
+                            "label": "SESS001",
+                            "project": "TESTPROJ",
+                            "subject_ID": "XNAT_S00042",
+                        },
+                        "meta": {"xsi:type": "xnat:mrSessionData"},
+                        "children": [],
+                    }
+                ]
+            },
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/subjects/XNAT_S00042/" in scan_url
+
+    def test_unresolvable_label_refuses_rather_than_guessing(self, runner: CliRunner) -> None:
+        """A label that inspection cannot resolve fails closed on every verb.
+
+        The URL would stay on the prefix XNAT answers with the experiment
+        document, so a listing would report no scans and a DELETE would target
+        the session. `-E` here is label-shaped, so the flat form is not an
+        option.
+        """
+        from xnatctl.core.exceptions import ResourceNotFoundError
+
+        for argv in (
+            ["scan", "list", "-P", "TESTPROJ", "-E", "SESS_LABEL"],
+            ["scan", "show", "-P", "TESTPROJ", "-E", "SESS_LABEL", "1"],
+            ["scan", "delete", "-P", "TESTPROJ", "-E", "SESS_LABEL", "--scans", "1", "-y"],
+        ):
+            ctx, mock_client = make_authenticated_context()
+            mock_client.get_json.side_effect = ResourceNotFoundError("session", "SESS_LABEL")
+
+            with authenticated_seams(ctx, mock_client):
+                result = runner.invoke(cli, argv)
+
+            assert result.exit_code != 0, argv
+            assert "SESS_LABEL" in result.output
+            # Nothing was issued against the unrouted URL.
+            mock_client.delete.assert_not_called()

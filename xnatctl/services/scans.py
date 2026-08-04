@@ -8,9 +8,39 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 from xnatctl.models.scan import Scan
 
 from .base import BaseService
+from .hierarchy import HierarchyService
+
+
+def _scan_collection_path(session_id: str, project: str | None) -> str:
+    """Build the scans listing path for a session."""
+
+    return HierarchyService.build_scan_collection_path(
+        ExperimentRef(experiment=session_id, project_id=project)
+    )
+
+
+def _scan_item_path(session_id: str, scan_id: str, project: str | None, *parts: str) -> str:
+    """Build a scan item path (optionally with a nested suffix).
+
+    Routed through ``HierarchyService`` rather than interpolated here, because
+    ``/data/projects/{P}/experiments/{E}/scans/{id}`` does not address a scan:
+    XNAT ignores the suffix and answers with the experiment document, so a
+    listing came back empty and a DELETE resolved to the whole session. Without
+    a subject segment the flat form is the only one that routes; access is
+    enforced server-side either way. See ``routable_scan_parent``.
+    """
+
+    return HierarchyService.build_scan_path(
+        ScanRef(
+            experiment=ExperimentRef(experiment=session_id, project_id=project),
+            scan_id=scan_id,
+        ),
+        *parts,
+    )
 
 
 class ScanService(BaseService):
@@ -32,10 +62,7 @@ class ScanService(BaseService):
         Returns:
             List of Scan objects
         """
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/scans"
-        else:
-            path = f"/data/experiments/{session_id}/scans"
+        path = _scan_collection_path(session_id, project)
 
         params: dict[str, Any] = {"format": "json"}
         if columns:
@@ -72,10 +99,7 @@ class ScanService(BaseService):
         Raises:
             ResourceNotFoundError: If scan not found
         """
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}"
-        else:
-            path = f"/data/experiments/{session_id}/scans/{scan_id}"
+        path = _scan_item_path(session_id, scan_id, project)
 
         params = {"format": "json"}
 
@@ -111,10 +135,7 @@ class ScanService(BaseService):
         Returns:
             True if successful
         """
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}"
-        else:
-            path = f"/data/experiments/{session_id}/scans/{scan_id}"
+        path = _scan_item_path(session_id, scan_id, project)
 
         params: dict[str, Any] = {}
         if remove_files:
@@ -210,10 +231,7 @@ class ScanService(BaseService):
         Returns:
             List of resource data dicts
         """
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}/resources"
-        else:
-            path = f"/data/experiments/{session_id}/scans/{scan_id}/resources"
+        path = _scan_item_path(session_id, scan_id, project, "resources")
 
         params = {"format": "json"}
         data = self._get(path, params=params)
@@ -237,10 +255,7 @@ class ScanService(BaseService):
         Returns:
             True if successful
         """
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}"
-        else:
-            path = f"/data/experiments/{session_id}/scans/{scan_id}"
+        path = _scan_item_path(session_id, scan_id, project)
 
         params = {"xnat:imageScanData/quality": quality}
         self._put(path, params=params)
@@ -264,10 +279,7 @@ class ScanService(BaseService):
         Returns:
             True if successful
         """
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}"
-        else:
-            path = f"/data/experiments/{session_id}/scans/{scan_id}"
+        path = _scan_item_path(session_id, scan_id, project)
 
         params = {"xnat:imageScanData/note": note}
         self._put(path, params=params)

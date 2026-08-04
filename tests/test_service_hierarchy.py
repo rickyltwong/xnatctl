@@ -352,3 +352,79 @@ class TestListScanRows:
 
         assert rows == []
         assert mock_client.get_json.call_count == 1
+
+
+class TestRoutableScanParent:
+    """Tests for the scan-URL routing rule.
+
+    XNAT does not route sub-resource suffixes under
+    ``/data/projects/{P}/experiments/{E}``: ``/scans``, ``/scans/{id}`` and even
+    a nonsense suffix all return 200 with the parent experiment document.
+    Verified against a live server, where the project-scoped ``/scans`` returned
+    a single ``items[]`` record while the subject-scoped and flat forms both
+    returned a 23-row ``ResultSet``.
+    """
+
+    def test_project_scoped_id_drops_the_project(self) -> None:
+        """A project-scoped accession ID becomes the flat, routed form."""
+        ref = ExperimentRef(experiment="XNAT_E00001", project_id="PROJ")
+        assert HierarchyService.build_scan_collection_path(ref) == (
+            "/data/experiments/XNAT_E00001/scans"
+        )
+
+    def test_accession_id_flagged_as_label_still_routes(self) -> None:
+        """``experiment_is_label`` means "may be a label", not "is one".
+
+        The scan CLI sets the flag whenever a project is in scope, including
+        for accession IDs, so the ID shape has to decide.
+        """
+        ref = ExperimentRef(experiment="XNAT_E00001", project_id="PROJ", experiment_is_label=True)
+        assert HierarchyService.routable_scan_parent(ref) == ExperimentRef(experiment="XNAT_E00001")
+
+    def test_a_subject_is_left_alone(self) -> None:
+        """With a subject the project-scoped URL already routes; keep the ACL scope."""
+        ref = ExperimentRef(experiment="XNAT_E00001", project_id="PROJ", subject="XNAT_S00001")
+        assert HierarchyService.build_scan_collection_path(ref) == (
+            "/data/projects/PROJ/subjects/XNAT_S00001/experiments/XNAT_E00001/scans"
+        )
+
+    def test_a_genuine_label_cannot_be_rewritten(self) -> None:
+        """A label needs its project, so it is returned unchanged.
+
+        Callers must resolve it to an accession ID; the scan CLI refuses rather
+        than issuing a request that would act on the experiment.
+        """
+        ref = ExperimentRef(experiment="SESS_LABEL", project_id="PROJ", experiment_is_label=True)
+        assert HierarchyService.routable_scan_parent(ref) == ref
+
+    def test_no_project_is_untouched(self) -> None:
+        """The flat form already routes."""
+        ref = ExperimentRef(experiment="XNAT_E00001")
+        assert HierarchyService.routable_scan_parent(ref) == ref
+
+    def test_scan_item_and_nested_suffixes_route_too(self) -> None:
+        """The rule applies to scan items and their sub-resources.
+
+        ``/data/projects/{P}/experiments/{E}/scans/{id}`` resolves to the
+        experiment, so a DELETE there targets the whole session.
+        """
+        scan = ScanRef(
+            experiment=ExperimentRef(experiment="XNAT_E00001", project_id="PROJ"), scan_id="2"
+        )
+        assert HierarchyService.build_scan_path(scan) == "/data/experiments/XNAT_E00001/scans/2"
+        assert HierarchyService.build_scan_path(scan, "files") == (
+            "/data/experiments/XNAT_E00001/scans/2/files"
+        )
+        assert HierarchyService.build_resource_collection_path(scan) == (
+            "/data/experiments/XNAT_E00001/scans/2/resources"
+        )
+
+    def test_experiment_level_resources_keep_the_project(self) -> None:
+        """``/resources`` is the one suffix that does route on that prefix.
+
+        Verified live (1-row ResultSet), so it is deliberately left scoped.
+        """
+        ref = ExperimentRef(experiment="XNAT_E00001", project_id="PROJ")
+        assert HierarchyService.build_resource_collection_path(ref) == (
+            "/data/projects/PROJ/experiments/XNAT_E00001/resources"
+        )
