@@ -44,6 +44,18 @@ use case you are trying to solve. Explaining *why* you need the feature -- not j
 *what* -- helps maintainers evaluate and prioritize the request.
 
 
+Architecture Decisions
+----------------------
+
+A change that constrains future code -- a retry policy, a URL convention, a
+lint rule deliberately left off -- needs an Architecture Decision Record in
+``docs/adr/``. Copy ``docs/adr/template.md``, number it sequentially, and link
+it from ``docs/adr/README.md``.
+
+The test is whether the decision would surprise someone reading only the code.
+If it would, the reasoning belongs somewhere it will be found before it is
+"cleaned up".
+
 Development Setup
 -----------------
 
