@@ -148,7 +148,9 @@ omit = ["*/tests/*", "*/__pycache__/*"]
 # regressions, not existing debt.
 # Ratchet upward as the upload/download/DICOM test coverage lands.
 # Keep this identical to --cov-fail-under in .github/workflows/ci.yml.
-fail_under = 78
+# 78 -> 82 once the DICOM tier actually ran in CI: installing the `dicom`
+# extra took cli/dicom_cmd.py from 16% to 88% on its own.
+fail_under = 82
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",

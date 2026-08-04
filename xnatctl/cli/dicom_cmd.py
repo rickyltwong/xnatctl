@@ -12,7 +12,6 @@ from xnatctl.core.output import (
     print_json,
     print_success,
     print_table,
-    print_warning,
 )
 
 
@@ -36,8 +35,14 @@ def dicom() -> None:
 
     Install with: pip install xnatctl[dicom]
     """
-    if not check_pydicom():
-        print_warning("pydicom not installed. Install with: pip install xnatctl[dicom]")
+    # No warning here: every subcommand already refuses with the same sentence
+    # and a non-zero exit. Emitting it at group level too printed the identical
+    # line twice, once as a warning and once as an error, which reads like two
+    # separate problems.
+    #
+    # The group body still runs for `xnatctl dicom --help`, where a bare
+    # warning would be noise -- the docstring above already says what to
+    # install.
 
 
 @dicom.command("validate")
