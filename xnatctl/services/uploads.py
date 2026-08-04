@@ -78,6 +78,106 @@ UPLOAD_ONLY_RETRYABLE_STATUS_CODES = {
 }
 RETRYABLE_STATUS_CODES = CLIENT_RETRYABLE_STATUS_CODES | UPLOAD_ONLY_RETRYABLE_STATUS_CODES
 
+# Which 400s are worth retrying.
+#
+# Harvested 2026-08-04 from the messages compiled into the deployed XNAT
+# **1.9.2.1** on cnmdpxnatv01 (org.nrg.xnat.archive.PrearcSessionArchiver,
+# PrearcUtils, restlet.services.Importer), cross-checked against a real
+# ClientException in that host's prearchive.log. Read off the running server
+# rather than guessed, because the whole point is to tell two 400s apart.
+#
+# The transient ones are all concurrency: two uploads meeting in the same
+# session. Waiting genuinely clears them, which is why 400 was made retryable
+# in the first place.
+TRANSIENT_400_SIGNATURES = (
+    "session processing in progress",
+    "concurrent modification is discouraged",
+    "duplicate archive attempt",
+    "destination session in use",
+)
+
+# The permanent ones are configuration or data errors. No amount of waiting
+# fixes a project that does not exist, and retrying is what made a mislabeled
+# upload burn 62s per file across three passes before reporting the failure.
+PERMANENT_400_SIGNATURES = (
+    "unable to deduce session label",
+    "unable to identify subject",
+    "unable to identify destination project",
+    "not allowed to create new subjects",
+    "unable to create new subject id",
+    "unable to create new session id",
+    "session already exists, retry with overwrite enabled",
+    "via archive process",  # "Invalid modification of session {label,project,UID,...}"
+    "session already contains a scan",
+    "already exists for another subject",
+    "src uri is invalid",
+    "expected a catalog file, however it was missing",
+    "non-standard prearchive structure",
+    "or non-parsable dicom) files",
+    "is required when requesting",
+)
+
+
+def is_permanent_400(body: str) -> bool:
+    """Whether a 400 body names a fault that retrying cannot fix.
+
+    Deliberately a denylist of *known-permanent* messages rather than an
+    allowlist of known-transient ones. Both fix the pathology this addresses --
+    a misconfigured upload always produces one of the messages above, and now
+    fails on the first attempt instead of the sixth. The difference is how each
+    behaves when XNAT's wording drifts:
+
+    * denylist: an unrecognised 400 is retried, as it is today. A new transient
+      message costs some backoff.
+    * allowlist: an unrecognised 400 fails immediately. A new transient message
+      turns uploads that currently succeed into failures.
+
+    Slow is recoverable; spuriously refusing a good upload is not. The retry
+    budget bounds the slow case, so drift degrades rather than breaks.
+    """
+    if not body:
+        return False
+    haystack = body.lower()
+    # Transient wins a tie: "duplicate archive attempt" and the modification
+    # errors can co-occur in one body, and the concurrent case is the one that
+    # clears on its own.
+    if any(sig in haystack for sig in TRANSIENT_400_SIGNATURES):
+        return False
+    return any(sig in haystack for sig in PERMANENT_400_SIGNATURES)
+
+
+class RetryBudget:
+    """A ceiling on total backoff across one upload operation.
+
+    The signature lists above are read off one XNAT version; a future release
+    can word things differently, and an unrecognised permanent 400 would then
+    be retried on every file again. This bounds that worst case regardless of
+    what the server says: once the operation has spent its budget sleeping,
+    further retries are abandoned and the failures reported.
+    """
+
+    __slots__ = ("_lock", "_remaining", "_total")
+
+    def __init__(self, seconds: float = 900.0) -> None:
+        self._total = seconds
+        self._remaining = seconds
+        self._lock = threading.Lock()
+
+    def claim(self, seconds: float) -> bool:
+        """Reserve a backoff sleep. False when the budget is exhausted."""
+        with self._lock:
+            if self._remaining < seconds:
+                return False
+            self._remaining -= seconds
+            return True
+
+    @property
+    def exhausted(self) -> bool:
+        """Whether any budget remains."""
+        with self._lock:
+            return self._remaining <= 0
+
+
 # When running with --verbose, we can log small snippets of retryable HTTP 400
 # response bodies to help diagnose transient XNAT import races. Keep this capped
 # to avoid flooding logs on very large uploads.
@@ -482,6 +582,29 @@ def is_retryable_status(status_code: int) -> bool:
     return status_code in RETRYABLE_STATUS_CODES
 
 
+def _error_signature(error: str) -> str:
+    """Collapse an error message to something comparable across files.
+
+    Two rejections of the same *kind* differ in the file name and any UID the
+    server echoes back, so comparing raw strings would never find them equal.
+    The leading prefix is stable enough to group by and short enough not to
+    reach the variable tail.
+    """
+    return error.strip()[:200]
+
+
+def _safe_body(resp: httpx.Response) -> str:
+    """Response text, or empty if it cannot be read.
+
+    A body that will not decode must not turn a plain HTTP failure into an
+    exception from the retry helper.
+    """
+    try:
+        return resp.text
+    except Exception:
+        return ""
+
+
 def upload_with_retry(
     upload_fn: Callable[[], httpx.Response],
     *,
@@ -489,6 +612,7 @@ def upload_with_retry(
     backoff_base: int = UPLOAD_RETRY_BACKOFF_BASE,
     label: str = "upload",
     cancel_token: CancellationToken = NULL_TOKEN,
+    retry_budget: RetryBudget | None = None,
 ) -> httpx.Response:
     """Execute an upload function with retry on transient HTTP errors.
 
@@ -502,6 +626,9 @@ def upload_with_retry(
             ``time.sleep``. The ladder is 2+4+8+16+32s, so without this a
             cancelled upload sits in a backoff for up to a minute per in-flight
             batch after the user has already asked it to stop.
+        retry_budget: Shared ceiling on total backoff for the whole operation.
+            When it runs out, the last response is returned instead of sleeping
+            again. Bounds the damage if a permanent 400 goes unrecognised.
 
     Returns:
         The httpx.Response from a successful attempt.
@@ -518,6 +645,12 @@ def upload_with_retry(
         try:
             resp = upload_fn()
             if not is_retryable_status(resp.status_code):
+                return resp
+            if resp.status_code == 400 and is_permanent_400(_safe_body(resp)):
+                # A bad project, an unknown subject, a session that needs
+                # --overwrite: the server will say the same thing in 62
+                # seconds. Report it now, on attempt one.
+                logger.debug("%s: permanent HTTP 400, not retrying", label)
                 return resp
             last_resp = resp
             last_exc = None
@@ -549,6 +682,9 @@ def upload_with_retry(
                     max_retries + 1,
                     delay,
                 )
+                if retry_budget is not None and not retry_budget.claim(delay):
+                    logger.warning("%s: retry budget exhausted, giving up", label)
+                    break
                 if cancel_token.sleep(delay):
                     break
         except httpx.ConnectTimeout:
@@ -574,6 +710,9 @@ def upload_with_retry(
                     max_retries + 1,
                     delay,
                 )
+                if retry_budget is not None and not retry_budget.claim(delay):
+                    logger.warning("%s: retry budget exhausted, giving up", label)
+                    break
                 if cancel_token.sleep(delay):
                     break
 
@@ -1876,6 +2015,35 @@ class UploadService(BaseService):
                     f"({succeeded_so_far} ok, {len(failed_paths)} failed)"
                 ),
             )
+
+        # Circuit-breaker. The warmup exists to try a small, deterministic set
+        # before opening the throttle; if the server refused every one of them
+        # for the same reason, the remaining files will be refused for that
+        # reason too. Stopping here is the difference between one round of
+        # errors and hours of them: the wide-parallel phase plus two salvage
+        # passes would otherwise retry every file in a 100k-file directory
+        # before reporting the same message.
+        if warmup_files and len(failed_paths) == len(warmup_files):
+            reasons = {_error_signature(error_by_path.get(p, "")) for p in warmup_files}
+            if len(reasons) == 1:
+                reason = error_by_path.get(warmup_files[0], "").strip()
+                message = (
+                    f"Server rejected all {len(warmup_files)} warmup files with the same "
+                    f"error, so the remaining {total_files - len(warmup_files)} would fail "
+                    f"the same way: {reason}. Check the project, subject and session "
+                    f"labels before retrying."
+                )
+                logger.error("Aborting gradual upload: %s", message)
+                report(OperationPhase.ERROR, message=message, success=False, errors=[message])
+                return UploadSummary(
+                    success=False,
+                    total=total_files,
+                    succeeded=0,
+                    failed=len(warmup_files),
+                    duration=time.time() - start_time,
+                    errors=[message],
+                    session_id=session,
+                )
 
         # Main pass: parallel per-file upload (bounded in-flight window)
         with cancellable_pool(workers) as (executor, gradual_token):
