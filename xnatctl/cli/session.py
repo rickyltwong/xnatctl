@@ -1814,6 +1814,10 @@ def _upload_dicom_store(
     called_aet: str | None,
     calling_aet: str,
     dicom_workers: int,
+    tls: bool = False,
+    tls_ca_bundle: str | None = None,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
 ) -> None:
     """Upload via DICOM C-STORE protocol."""
     if not dicom_host:
@@ -1839,8 +1843,24 @@ def _upload_dicom_store(
         )
         raise SystemExit(1) from e
 
+    if tls_key and not tls_cert:
+        raise click.UsageError("--tls-key requires --tls-cert")
+    if (tls_ca_bundle or tls_cert) and not tls:
+        raise click.UsageError("--tls-ca-bundle/--tls-cert/--tls-key have no effect without --tls")
+
     if not ctx.quiet:
-        click.echo(f"Sending DICOM files to {dicom_host}:{dicom_port} ({called_aet})...", err=True)
+        scheme = "TLS" if tls else "plaintext"
+        click.echo(
+            f"Sending DICOM files to {dicom_host}:{dicom_port} ({called_aet}) over {scheme}...",
+            err=True,
+        )
+        if not tls:
+            # Said once, plainly, on stderr. Sites that mean to do this are not
+            # helped by a warning; sites that did not know need to be told.
+            click.echo(
+                "  Note: DICOM C-STORE is unencrypted. Use --tls if the server supports it.",
+                err=True,
+            )
 
     client = ctx.get_client()
     service = UploadService(client)
@@ -1853,6 +1873,10 @@ def _upload_dicom_store(
         calling_aet=calling_aet,
         workers=dicom_workers,
         cleanup=True,
+        tls=tls,
+        tls_ca_bundle=tls_ca_bundle,
+        tls_cert=tls_cert,
+        tls_key=tls_key,
     )
 
     if ctx.output_format == OutputFormat.JSON:
@@ -1918,6 +1942,30 @@ def _upload_dicom_store(
     show_default="4 (or profile)",
     help="Parallel DICOM C-STORE associations",
 )
+@click.option(
+    "--tls",
+    is_flag=True,
+    envvar="XNAT_DICOM_TLS",
+    help="Encrypt the DICOM association (env: XNAT_DICOM_TLS)",
+)
+@click.option(
+    "--tls-ca-bundle",
+    type=click.Path(exists=True, dir_okay=False),
+    envvar="XNAT_DICOM_TLS_CA_BUNDLE",
+    help="PEM file of CAs to trust for --tls (default: system store)",
+)
+@click.option(
+    "--tls-cert",
+    type=click.Path(exists=True, dir_okay=False),
+    envvar="XNAT_DICOM_TLS_CERT",
+    help="Client certificate, for SCPs requiring mutual TLS",
+)
+@click.option(
+    "--tls-key",
+    type=click.Path(exists=True, dir_okay=False),
+    envvar="XNAT_DICOM_TLS_KEY",
+    help="Private key for --tls-cert",
+)
 @click.option("--dry-run", is_flag=True, help="Preview without sending")
 @global_options
 @handle_errors
@@ -1930,6 +1978,10 @@ def session_upload_dicom(
     port: int,
     calling_aet: str,
     workers: int | None,
+    tls: bool,
+    tls_ca_bundle: str | None,
+    tls_cert: str | None,
+    tls_key: str | None,
     dry_run: bool,
 ) -> None:
     """Upload DICOM files via C-STORE network protocol.
@@ -1956,6 +2008,7 @@ def session_upload_dicom(
         click.echo(f"  Called AET: {called_aet}", err=True)
         click.echo(f"  Calling AET: {calling_aet}", err=True)
         click.echo(f"  Workers: {workers}", err=True)
+        click.echo(f"  Transport: {'TLS' if tls else 'plaintext'}", err=True)
         return
 
     _upload_dicom_store(
@@ -1966,6 +2019,10 @@ def session_upload_dicom(
         called_aet=called_aet,
         calling_aet=calling_aet,
         dicom_workers=workers,
+        tls=tls,
+        tls_ca_bundle=tls_ca_bundle,
+        tls_cert=tls_cert,
+        tls_key=tls_key,
     )
 
 

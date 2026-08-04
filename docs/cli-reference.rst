@@ -380,6 +380,29 @@ Upload via DICOM C-STORE (requires the ``[dicom]`` extra):
 
    $ xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT
 
+.. warning::
+
+   Plain C-STORE is **unencrypted**. Pixel data and the patient identifiers
+   attached to it cross the network in cleartext, so anything that can see the
+   traffic can read the PHI. Pass ``--tls`` when the SCP supports it:
+
+   .. code-block:: console
+
+      $ xnatctl session upload-dicom ./dicoms --host xnat.example.org \
+          --called-aet XNAT --tls
+
+   ``--tls-ca-bundle`` supplies a PEM file of CAs to trust instead of the
+   system store, and ``--tls-cert`` / ``--tls-key`` provide a client
+   certificate for SCPs that require mutual TLS. Each has an environment
+   variable equivalent (``XNAT_DICOM_TLS``, ``XNAT_DICOM_TLS_CA_BUNDLE``,
+   ``XNAT_DICOM_TLS_CERT``, ``XNAT_DICOM_TLS_KEY``).
+
+   There is deliberately no option to skip certificate verification. Such a
+   mode looks encrypted while accepting any certificate presented, which
+   protects nothing and hides that fact. If a deployment cannot verify
+   certificates, send plaintext knowingly -- the command says which transport
+   it used on every run.
+
 .. note::
 
    Use ``--dry-run`` on download and upload commands to preview what would happen

@@ -16,6 +16,7 @@ import contextlib
 import logging
 import os
 import shutil
+import ssl
 import tarfile
 import tempfile
 import threading
@@ -33,7 +34,7 @@ import httpx
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken, cancellable_pool
 from xnatctl.core.client import RETRYABLE_STATUS_CODES as CLIENT_RETRYABLE_STATUS_CODES
 from xnatctl.core.client import XNATClient
-from xnatctl.core.exceptions import OperationCancelledError
+from xnatctl.core.exceptions import OperationCancelledError, UploadError
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
 from xnatctl.models.progress import (
     OperationPhase,
@@ -1118,7 +1119,74 @@ def _ensure_sop_uids(ds) -> None:
             ds.SOPInstanceUID = uid
 
 
-def _c_echo(host: str, port: int, calling_aet: str, called_aet: str) -> bool:
+def _tls_kwargs(tls_context: ssl.SSLContext | None, host: str) -> dict[str, Any]:
+    """Association kwargs for TLS, or nothing at all when plaintext.
+
+    ``host`` is passed as the TLS ``server_hostname`` rather than the ``None``
+    the pynetdicom examples use: with ``check_hostname`` on, omitting it means
+    the certificate is never matched against the host being talked to, which
+    removes most of the protection.
+    """
+    if tls_context is None:
+        return {}
+    return {"tls_args": (tls_context, host)}
+
+
+def build_dicom_tls_context(
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+    client_key: str | None = None,
+) -> ssl.SSLContext:
+    """Build the TLS context for a DICOM association.
+
+    Plain C-STORE puts pixel data and the patient identifiers attached to it on
+    the wire in cleartext. DICOM's own answer is TLS, which pynetdicom supports
+    through ``ae.associate(..., tls_args=...)``.
+
+    There is deliberately no way to switch verification off. An "insecure TLS"
+    mode is the worst of both worlds -- it looks encrypted in the command line
+    and in the logs while accepting any certificate presented, so a
+    man-in-the-middle reads the PHI anyway and nobody notices. A site that
+    genuinely cannot verify certificates should send plaintext knowingly and
+    see the notice that goes with it.
+
+    Args:
+        ca_bundle: PEM file of CAs to trust. Falls back to the system store.
+        client_cert: Client certificate, for SCPs requiring mutual TLS.
+        client_key: Its private key. May be omitted if the cert file holds both.
+
+    Returns:
+        A context with certificate and hostname verification enabled.
+
+    Raises:
+        UploadError: If the certificate material cannot be loaded.
+    """
+    context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_bundle)
+    # create_default_context already sets these; asserted rather than assigned
+    # so a future edit that weakens them fails loudly here.
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+
+    if client_cert:
+        try:
+            context.load_cert_chain(certfile=client_cert, keyfile=client_key)
+        except (OSError, ssl.SSLError) as e:
+            raise UploadError(
+                f"Could not load the DICOM TLS client certificate: {e}",
+                client_cert,
+                {"client_key": client_key},
+            ) from e
+
+    return context
+
+
+def _c_echo(
+    host: str,
+    port: int,
+    calling_aet: str,
+    called_aet: str,
+    tls_context: ssl.SSLContext | None = None,
+) -> bool:
     """Send a C-ECHO to verify connectivity and AE titles.
 
     Args:
@@ -1126,6 +1194,7 @@ def _c_echo(host: str, port: int, calling_aet: str, called_aet: str) -> bool:
         port: DICOM SCP port.
         calling_aet: Our AE title.
         called_aet: Remote AE title.
+        tls_context: When given, the association is encrypted.
 
     Returns:
         True if C-ECHO succeeded.
@@ -1136,7 +1205,7 @@ def _c_echo(host: str, port: int, calling_aet: str, called_aet: str) -> bool:
     ae = AE(ae_title=calling_aet)
     ae.add_requested_context(_get_verification_sop_class())
 
-    assoc = ae.associate(host, port, ae_title=called_aet)
+    assoc = ae.associate(host, port, ae_title=called_aet, **_tls_kwargs(tls_context, host))
     if not assoc.is_established:
         return False
 
@@ -1154,6 +1223,7 @@ def _send_dicom_batch(
     calling_aet: str,
     called_aet: str,
     log_dir: Path,
+    tls_context: ssl.SSLContext | None = None,
 ) -> tuple[int, int]:
     """Send a batch of DICOM files over a single association.
 
@@ -1165,6 +1235,7 @@ def _send_dicom_batch(
         calling_aet: Our AE title.
         called_aet: Remote AE title.
         log_dir: Directory for batch log files.
+        tls_context: When given, the association is encrypted.
 
     Returns:
         Tuple of (sent_count, failed_count).
@@ -1182,7 +1253,7 @@ def _send_dicom_batch(
         ae.requested_contexts = _get_storage_contexts()
         ae.add_requested_context("1.3.12.2.1107.5.9.1")
 
-        assoc = ae.associate(host, port, ae_title=called_aet)
+        assoc = ae.associate(host, port, ae_title=called_aet, **_tls_kwargs(tls_context, host))
         if not assoc.is_established:
             log.write("Association rejected/aborted\n")
             return sent, len(files)
@@ -1539,6 +1610,10 @@ class UploadService(BaseService):
         calling_aet: str = DEFAULT_DICOM_CALLING_AET,
         workers: int = DEFAULT_DICOM_STORE_WORKERS,
         cleanup: bool = True,
+        tls: bool = False,
+        tls_ca_bundle: str | None = None,
+        tls_cert: str | None = None,
+        tls_key: str | None = None,
     ) -> DICOMStoreSummary:
         """Send DICOM files to an SCP using C-STORE.
 
@@ -1556,6 +1631,13 @@ class UploadService(BaseService):
             calling_aet: Our AE title (default: XNATCTL).
             workers: Number of parallel associations (default: 4).
             cleanup: Remove temporary workspace on completion (default: True).
+            tls: Encrypt the associations. Off by default, which matches the
+                DICOM standard's own default and the many deployments that run
+                C-STORE inside a trusted VLAN -- but see the notice logged when
+                it is off, because the alternative is PHI in cleartext.
+            tls_ca_bundle: PEM file of CAs to trust (default: system store).
+            tls_cert: Client certificate, for SCPs requiring mutual TLS.
+            tls_key: Its private key.
 
         Returns:
             DICOMStoreSummary with results.
@@ -1564,8 +1646,22 @@ class UploadService(BaseService):
             ImportError: If pydicom/pynetdicom are not installed.
             ValueError: If dicom_root is not a directory.
             RuntimeError: If C-ECHO fails or no DICOM files found.
+            UploadError: If TLS material is requested but cannot be loaded.
         """
         _check_dicom_deps()
+
+        tls_context = build_dicom_tls_context(tls_ca_bundle, tls_cert, tls_key) if tls else None
+        if tls_context is None:
+            # Informational, not alarming: plenty of sites run C-STORE on a
+            # segregated network on purpose. But it should be a decision
+            # someone made, not one they never knew they had.
+            logger.info(
+                "DICOM C-STORE to %s:%s is unencrypted; use --tls if the server supports it",
+                host,
+                port,
+            )
+        else:
+            logger.info("DICOM C-STORE to %s:%s is TLS-encrypted", host, port)
 
         if not dicom_root.exists() or not dicom_root.is_dir():
             raise ValueError(f"dicom_root is not a directory: {dicom_root}")
@@ -1584,7 +1680,7 @@ class UploadService(BaseService):
                 host,
                 port,
             )
-            if not _c_echo(host, port, calling_aet, called_aet):
+            if not _c_echo(host, port, calling_aet, called_aet, tls_context):
                 raise RuntimeError(
                     f"C-ECHO failed - check host/port/AET settings "
                     f"(host={host}, port={port}, called_aet={called_aet})"
@@ -1614,6 +1710,7 @@ class UploadService(BaseService):
                         calling_aet,
                         called_aet,
                         log_dir,
+                        tls_context,
                     ): i
                     for i, batch in enumerate(batches)
                 }
