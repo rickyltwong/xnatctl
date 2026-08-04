@@ -38,19 +38,45 @@ SESSION_EXPIRY_MINUTES = 15  # XNAT JSESSION expires after 15 minutes of inactiv
 
 @dataclass
 class CachedSession:
-    """Cached session token with metadata."""
+    """Cached session token with metadata.
+
+    Expiry slides with use, because that is what the server does. XNAT retires
+    a JSESSIONID after a period of *inactivity*, so pinning the deadline to
+    creation time threw away tokens that were still perfectly good: a session
+    used every minute for an hour was declared dead at minute 15, forcing a
+    fresh login on a live session.
+
+    ``last_used_at`` is the reference point, and :meth:`touch` moves it. The
+    server remains the authority -- a token it has already retired still comes
+    back 401, which the client handles by re-authenticating -- so sliding can
+    only avoid needless logins, never extend a session past its real life.
+    """
 
     token: str
     url: str
     username: str
     created_at: datetime
     expires_at: datetime | None = None
+    #: When this token was last handed out. Defaults to ``created_at`` for
+    #: caches written before the field existed.
+    last_used_at: datetime | None = None
 
-    def is_expired(self) -> bool:
-        """Check if session has expired."""
-        if self.expires_at:
-            return datetime.now() >= self.expires_at
-        return False
+    @property
+    def idle_since(self) -> datetime:
+        """The point from which the inactivity window is measured."""
+        return self.last_used_at or self.created_at
+
+    def is_expired(self, expiry_minutes: int = SESSION_EXPIRY_MINUTES) -> bool:
+        """Whether the token has gone unused for longer than the window."""
+        if self.expires_at is None:
+            return False
+        return datetime.now() >= self.idle_since + timedelta(minutes=expiry_minutes)
+
+    def touch(self, expiry_minutes: int = SESSION_EXPIRY_MINUTES) -> None:
+        """Record that the token was just used, restarting the idle clock."""
+        now = datetime.now()
+        self.last_used_at = now
+        self.expires_at = now + timedelta(minutes=expiry_minutes)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -60,19 +86,25 @@ class CachedSession:
             "username": self.username,
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "last_used_at": self.idle_since.isoformat(),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> CachedSession:
         """Create from dictionary."""
+        created_at = datetime.fromisoformat(data["created_at"])
+        last_used = data.get("last_used_at")
         return cls(
             token=data["token"],
             url=data["url"],
             username=data["username"],
-            created_at=datetime.fromisoformat(data["created_at"]),
+            created_at=created_at,
             expires_at=(
                 datetime.fromisoformat(data["expires_at"]) if data.get("expires_at") else None
             ),
+            # Caches written before this field existed fall back to creation
+            # time, which is exactly the old behaviour for that one read.
+            last_used_at=datetime.fromisoformat(last_used) if last_used else created_at,
         )
 
 
@@ -174,6 +206,19 @@ class AuthManager:
 
         return session
 
+    def _persist_touch(self, session: CachedSession) -> None:
+        """Write back a slid expiry, best-effort.
+
+        A cache that cannot be refreshed is not worth failing a command over:
+        the token in hand is still valid, and the worst case is the next
+        invocation seeing a staler deadline and logging in again.
+        """
+        try:
+            with atomic_private_write(self.cache_file) as f:
+                json.dump(session.to_dict(), f)
+        except OSError as e:
+            logger.debug("Could not refresh session cache expiry: %s", e)
+
     def load_session(self, url: str | None = None) -> CachedSession | None:
         """Load cached session token.
 
@@ -210,6 +255,12 @@ class AuthManager:
                 )
                 self.clear_session()
                 return None
+
+            # Handing the token out counts as activity, so restart the idle
+            # clock. Without this the "sliding" window would never actually
+            # slide -- the file would keep its original deadline.
+            session.touch()
+            self._persist_touch(session)
 
             logger.debug("Session cache hit for %s (user %s)", session.url, session.username)
             return session

@@ -32,6 +32,7 @@ import httpx
 
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken, cancellable_pool
 from xnatctl.core.client import RETRYABLE_STATUS_CODES as CLIENT_RETRYABLE_STATUS_CODES
+from xnatctl.core.client import XNATClient
 from xnatctl.core.exceptions import OperationCancelledError
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
 from xnatctl.models.progress import (
@@ -103,12 +104,21 @@ class _SessionRefresher:
     re-authenticates; concurrent callers wait on the lock and receive the
     already-refreshed token.
 
+    A refresh here has to reach the *owning client* too. Workers hold their own
+    copy of the token, so without ``owner`` the shared client kept the token it
+    started with: after a multi-hour upload during which workers re-authenticated
+    several times, the phases that run afterwards -- hierarchy resolution and
+    resource attach in ``session upload-exam`` -- went out with a token that had
+    been dead for hours, turning a completed upload into a failure at the last
+    step.
+
     Args:
         base_url: XNAT server URL.
         verify_ssl: Whether to verify SSL certificates.
         token: Initial JSESSIONID token.
         username: Credentials for re-authentication.
         password: Credentials for re-authentication.
+        owner: Client whose ``session_token`` should track refreshes.
     """
 
     def __init__(
@@ -118,13 +128,36 @@ class _SessionRefresher:
         token: str | None,
         username: str | None,
         password: str | None,
+        owner: XNATClient | None = None,
     ) -> None:
         self._base_url = base_url
         self._verify_ssl = verify_ssl
         self._token = token
         self._username = username
         self._password = password
+        self._owner = owner
         self._lock = threading.Lock()
+
+    def _publish(self, token: str) -> None:
+        """Push a fresh token to the owning client and the on-disk cache.
+
+        Called with the lock held. Both writes are best-effort: a worker that
+        just re-authenticated has a usable token in hand, and failing the
+        upload because a *cache* could not be updated would be absurd.
+        """
+        if self._owner is not None:
+            self._owner.session_token = token
+
+        try:
+            # Imported here rather than at module scope: this is the only place
+            # the upload service touches the credential cache, and a top-level
+            # import would tie every upload to the auth module's import cost.
+            from xnatctl.core.auth import AuthManager
+
+            if self._username:
+                AuthManager().save_session(token, self._base_url, self._username)
+        except Exception as e:
+            logger.debug("Could not update the session cache after refresh: %s", e)
 
     @property
     def token(self) -> str | None:
@@ -165,6 +198,7 @@ class _SessionRefresher:
                     )
                     if resp.status_code == 200 and "<html" not in resp.text.lower():
                         self._token = resp.text.strip()
+                        self._publish(self._token)
                         logger.info("Session refreshed successfully")
                     else:
                         logger.error("Session refresh failed: HTTP %d", resp.status_code)
@@ -1699,6 +1733,9 @@ class UploadService(BaseService):
             token=self.client.session_token,
             username=self.client.username,
             password=self.client.password,
+            # So the phases that run after this upload inherit the refreshed
+            # token instead of the one it started with.
+            owner=self.client,
         )
 
         file_list = list(files)

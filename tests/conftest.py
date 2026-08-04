@@ -280,3 +280,23 @@ def isolate_audit_log(
     path = tmp_path_factory.mktemp("audit") / "audit.log"
     monkeypatch.setattr("xnatctl.core.logging.AUDIT_LOG_FILE", path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def isolate_session_cache(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Keep the cached JSESSIONID out of the developer's real home directory.
+
+    ``AuthManager()`` defaults to ``~/.config/xnatctl/.session``, and code that
+    refreshes a token writes through it without being asked -- a worker-thread
+    reauth updates the cache so other processes benefit. A test exercising that
+    path therefore overwrites the developer's live session with a fake token
+    (observed: a test wrote ``token="FRESH", url="https://x"`` over the real
+    cache). Autouse, because the write happens deep inside the refresh path
+    that individual tests never name.
+    """
+    path = tmp_path_factory.mktemp("session") / ".session"
+    monkeypatch.setattr("xnatctl.core.auth.SESSION_CACHE_FILE", path)
+    monkeypatch.setattr("xnatctl.core.config.SESSION_CACHE_FILE", path, raising=False)
+    return path
