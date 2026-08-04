@@ -223,6 +223,14 @@ class TestServiceWiring:
 
 
 class TestCLI:
+    """Guards against believing a transfer was encrypted when it was not.
+
+    These go through the authenticated harness because ``@require_auth`` runs
+    before the command body: without it the tests pass only on a machine that
+    happens to have working credentials configured, and fail everywhere else
+    with "Not authenticated" -- which is exactly what happened in CI.
+    """
+
     def test_the_options_are_documented(self) -> None:
         from click.testing import CliRunner
 
@@ -236,17 +244,14 @@ class TestCLI:
         assert "--tls-key" in result.output
 
     def test_a_key_without_a_cert_is_refused(self, tmp_path: Path) -> None:
-        from click.testing import CliRunner
-
-        from xnatctl.cli.main import cli
+        from conftest import make_authenticated_cli
 
         key = tmp_path / "k.pem"
         key.write_text("x")
         src = tmp_path / "src"
         src.mkdir()
 
-        result = CliRunner().invoke(
-            cli,
+        result = make_authenticated_cli().invoke(
             [
                 "session",
                 "upload-dicom",
@@ -258,7 +263,7 @@ class TestCLI:
                 "--tls",
                 "--tls-key",
                 str(key),
-            ],
+            ]
         )
 
         assert result.exit_code != 0
@@ -266,17 +271,14 @@ class TestCLI:
 
     def test_tls_material_without_tls_is_refused(self, tmp_path: Path) -> None:
         """Silently ignoring a --tls-cert would look like it was in use."""
-        from click.testing import CliRunner
-
-        from xnatctl.cli.main import cli
+        from conftest import make_authenticated_cli
 
         cert = tmp_path / "c.pem"
         cert.write_text("x")
         src = tmp_path / "src"
         src.mkdir()
 
-        result = CliRunner().invoke(
-            cli,
+        result = make_authenticated_cli().invoke(
             [
                 "session",
                 "upload-dicom",
@@ -287,7 +289,7 @@ class TestCLI:
                 "A",
                 "--tls-cert",
                 str(cert),
-            ],
+            ]
         )
 
         assert result.exit_code != 0
