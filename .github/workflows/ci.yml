@@ -113,7 +113,7 @@ jobs:
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         # Keep --cov-fail-under identical to fail_under in pyproject.toml.
-        run: uv run pytest tests/ --cov=xnatctl --cov-report=xml --cov-fail-under=73
+        run: uv run pytest tests/ --cov=xnatctl --cov-report=xml --cov-fail-under=78
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'

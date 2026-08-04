@@ -148,7 +148,7 @@ omit = ["*/tests/*", "*/__pycache__/*"]
 # regressions, not existing debt.
 # Ratchet upward as the upload/download/DICOM test coverage lands.
 # Keep this identical to --cov-fail-under in .github/workflows/ci.yml.
-fail_under = 73
+fail_under = 78
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
