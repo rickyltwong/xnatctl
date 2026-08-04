@@ -592,7 +592,7 @@ class TestSessionHelp:
     """Tests for session subcommand help texts."""
 
     def test_session_list_help(self, runner: CliRunner) -> None:
-        """session list --help shows expected options."""
+        """Session list --help shows expected options."""
         result = runner.invoke(cli, ["session", "list", "--help"])
         assert result.exit_code == 0
         assert "--project" in result.output
@@ -600,14 +600,14 @@ class TestSessionHelp:
         assert "--modality" in result.output
 
     def test_session_show_help(self, runner: CliRunner) -> None:
-        """session show --help shows expected options."""
+        """Session show --help shows expected options."""
         result = runner.invoke(cli, ["session", "show", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
         assert "--project" in result.output
 
     def test_session_download_help(self, runner: CliRunner) -> None:
-        """session download --help shows expected options."""
+        """Session download --help shows expected options."""
         result = runner.invoke(cli, ["session", "download", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
@@ -617,7 +617,7 @@ class TestSessionHelp:
         assert "--extract" in result.output
 
     def test_session_upload_help(self, runner: CliRunner) -> None:
-        """session upload --help shows expected options."""
+        """Session upload --help shows expected options."""
         result = runner.invoke(cli, ["session", "upload", "--help"])
         assert result.exit_code == 0
         assert "--project" in result.output

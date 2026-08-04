@@ -260,7 +260,7 @@ class SubjectService(BaseService):
 
         return results
 
-    def rename_pattern(
+    def rename_pattern(  # noqa: C901  # pre-existing; see pyproject
         self,
         project: str,
         match_pattern: str,

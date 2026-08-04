@@ -85,7 +85,8 @@ def test_files_are_interleaved_across_scans(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Uploading scan 1 to completion before starting scan 2 would leave XNAT
-    building one scan at a time."""
+    building one scan at a time.
+    """
     root = session_tree(tmp_path / "sess", {"1": 4, "2": 4, "3": 4})
     order = record_uploads(monkeypatch)
 
@@ -106,7 +107,8 @@ def test_warmup_takes_one_file_from_each_scan_first(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The warm-up exists to create each scan once, quietly, before the wide
-    phase can pile onto a cold prearchive."""
+    phase can pile onto a cold prearchive.
+    """
     root = session_tree(tmp_path / "sess", {"1": 5, "2": 5})
     order = record_uploads(monkeypatch)
 
@@ -121,7 +123,8 @@ def test_uneven_scans_drain_without_dropping_files(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A short scan empties early; the round-robin must drop that queue and
-    keep cycling the rest rather than stalling or repeating."""
+    keep cycling the rest rather than stalling or repeating.
+    """
     root = session_tree(tmp_path / "sess", {"1": 1, "2": 5, "3": 2})
     order = record_uploads(monkeypatch)
 
@@ -140,7 +143,8 @@ def test_files_outside_the_scan_layout_are_still_uploaded(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Loose files have no scan id; they go in an `_other` queue rather than
-    being silently skipped."""
+    being silently skipped.
+    """
     root = session_tree(tmp_path / "sess", {"1": 2})
     (root / "loose_a.dcm").write_bytes(b"\x00" * 128 + b"DICM")
     (root / "loose_b.dcm").write_bytes(b"\x00" * 128 + b"DICM")
@@ -179,7 +183,8 @@ def test_per_file_failures_are_tallied_not_raised(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One bad file must not abort an upload of thousands -- that is the whole
-    reason to prefer gradual over a single batch archive."""
+    reason to prefer gradual over a single batch archive.
+    """
     root = session_tree(tmp_path / "sess", {"1": 4})
     order = record_uploads(monkeypatch, fail=lambda p: p.name.endswith("_002.dcm"))
 
@@ -201,7 +206,8 @@ def test_a_persistently_failing_file_is_retried_twice_then_given_up_on(
     """Failures get two further passes -- one at reduced concurrency, then a
     sequential one -- because the usual cause is XNAT contention rather than a
     bad file. Three attempts total, and then it is reported, not retried
-    forever."""
+    forever.
+    """
     root = session_tree(tmp_path / "sess", {"1": 2})
     order = record_uploads(monkeypatch, fail=lambda p: p.name.endswith("_001.dcm"))
 
@@ -218,7 +224,8 @@ def test_a_file_that_recovers_on_retry_counts_as_succeeded(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The retry passes exist to absorb transient prearchive 400s; a file that
-    works the second time must not be reported as a failure."""
+    works the second time must not be reported as a failure.
+    """
     root = session_tree(tmp_path / "sess", {"1": 3})
     seen: dict[str, int] = {}
 

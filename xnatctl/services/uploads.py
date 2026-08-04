@@ -606,7 +606,7 @@ def _safe_body(resp: httpx.Response) -> str:
         return ""
 
 
-def upload_with_retry(
+def upload_with_retry(  # noqa: C901  # pre-existing; see pyproject
     upload_fn: Callable[[], httpx.Response],
     *,
     max_retries: int = UPLOAD_MAX_RETRIES,
@@ -1076,7 +1076,7 @@ def _check_dicom_deps() -> None:
         ) from e
 
 
-def _get_verification_sop_class():
+def _get_verification_sop_class() -> Any:
     """Get VerificationSOPClass with compatibility for pynetdicom versions."""
     from pynetdicom import sop_class as _sop_class
 
@@ -1088,7 +1088,7 @@ def _get_verification_sop_class():
     )
 
 
-def _get_storage_contexts():
+def _get_storage_contexts() -> list[Any]:
     """Get storage presentation contexts with version compatibility."""
     try:
         from pynetdicom import StoragePresentationContexts
@@ -1102,7 +1102,7 @@ def _get_storage_contexts():
         return [build_context(uid) for uid in uids]
 
 
-def _ensure_sop_uids(ds) -> None:
+def _ensure_sop_uids(ds: Any) -> None:
     """Populate missing SOP UID attributes from file-meta.
 
     Args:
@@ -1314,11 +1314,15 @@ def _upload_single_file_gradual(
         base_url: XNAT server base URL.
         session_refresher: Thread-safe token manager for reauth on 401.
         verify_ssl: Whether to verify SSL certificates.
+        display_path: Path shown in progress and error messages, when it
+            should differ from ``file_path`` (e.g. relative to the upload root).
         file_path: Path to the DICOM file.
         project: Target project ID.
         subject: Target subject label.
         session: Target session label.
         direct_archive: Use direct archive vs prearchive (default: True).
+        cancel_token: Checked by the retry ladder so an interrupted upload
+            abandons its backoff instead of waiting it out.
 
     Returns:
         Tuple of (filename, success, error_message).
@@ -1518,7 +1522,7 @@ class UploadService(BaseService):
             with cancellable_pool(effective_workers) as (executor, cancel_token):
                 futures: dict[Future[_UploadResult], int] = {}
                 for i, batch in enumerate(batches):
-                    fut: Future[_UploadResult] = executor.submit(  # type: ignore[arg-type]
+                    fut: Future[_UploadResult] = executor.submit(
                         _create_and_upload_batch,
                         batch=batch,
                         archive_path=archive_paths[i],
@@ -1542,8 +1546,8 @@ class UploadService(BaseService):
                     )
                     futures[fut] = i + 1
 
-                for done in as_completed(futures):  # type: ignore[arg-type]
-                    result: _UploadResult = done.result()  # type: ignore[assignment]
+                for done in as_completed(futures):
+                    result: _UploadResult = done.result()
                     results.append(result)
                     total_archive_size += result.archive_size
 
@@ -1932,7 +1936,7 @@ class UploadService(BaseService):
                 start_time=start_time,
             )
 
-    def _upload_dicom_gradual_from_files(
+    def _upload_dicom_gradual_from_files(  # noqa: C901  # pre-existing; see pyproject
         self,
         *,
         files: Sequence[Path],
@@ -2156,7 +2160,7 @@ class UploadService(BaseService):
                 # of the directory one file at a time.
                 if gradual_token.cancelled:
                     raise StopIteration
-                fut: Future[tuple[str, bool, str]] = executor.submit(  # type: ignore[arg-type]
+                fut: Future[tuple[str, bool, str]] = executor.submit(
                     _upload_single_file_gradual,
                     base_url=base_url,
                     session_refresher=session_refresher,
@@ -2237,7 +2241,7 @@ class UploadService(BaseService):
                 retry_future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
 
                 def _submit_retry(path: Path) -> None:
-                    fut: Future[tuple[str, bool, str]] = retry_executor.submit(  # type: ignore[arg-type]
+                    fut: Future[tuple[str, bool, str]] = retry_executor.submit(
                         _upload_single_file_gradual,
                         base_url=base_url,
                         session_refresher=session_refresher,
@@ -2347,7 +2351,7 @@ class UploadService(BaseService):
             session_id=session,
         )
 
-    def upload_resource(
+    def upload_resource(  # noqa: C901  # pre-existing; see pyproject
         self,
         session_id: str,
         resource_label: str,

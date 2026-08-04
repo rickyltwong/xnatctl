@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import click
 
 from xnatctl.cli.common import (
@@ -101,7 +103,7 @@ def pipeline_run(
         if not ctx.quiet:
             click.echo(f"Waiting for job {job_id} to complete...", err=True)
 
-        def progress_callback(status: dict) -> None:
+        def progress_callback(status: dict[str, Any]) -> None:
             """Print pipeline job status updates during wait."""
             if ctx.quiet:
                 return
@@ -154,7 +156,7 @@ def pipeline_status(
         if not ctx.quiet:
             click.echo(f"Watching job {job_id}...", err=True)
 
-        def progress_callback(status: dict) -> None:
+        def progress_callback(status: dict[str, Any]) -> None:
             """Print pipeline job status updates during watch."""
             if ctx.quiet:
                 return

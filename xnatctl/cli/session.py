@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -21,6 +24,11 @@ from xnatctl.cli.common import (
     resolve_workers_from_context,
 )
 from xnatctl.core.cancellation import cancellable_pool
+
+if TYPE_CHECKING:  # import cycle: client imports nothing from cli
+    import httpx
+
+    from xnatctl.core.client import XNATClient
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
@@ -85,13 +93,8 @@ def session_list(
 
         # Filter by modality (case-insensitive)
         if modality:
-            if modality == "MR" and "mrsession" not in xsi_lower:
-                continue
-            elif modality == "PET" and "petsession" not in xsi_lower:
-                continue
-            elif modality == "CT" and "ctsession" not in xsi_lower:
-                continue
-            elif modality == "EEG" and "eegsession" not in xsi_lower:
+            marker = _MODALITY_XSI_MARKERS.get(modality)
+            if marker and marker not in xsi_lower:
                 continue
 
         # Extract modality from xsiType (case-insensitive)
@@ -275,7 +278,7 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             )
 
 
-def _extract_scan_zip(
+def _extract_scan_zip(  # noqa: C901  # pre-existing; see pyproject
     zip_path: Path,
     scan_base: Path,
     *,
@@ -377,8 +380,20 @@ def _extract_scan_zip(
     return files_extracted, duplicates_renamed
 
 
-def _download_session_fast(
-    client,
+#: Substring that identifies each modality inside an experiment's xsiType,
+#: e.g. "xnat:mrSessionData" for MR. Previously four `elif` branches; ruff's
+#: SIM114 autofix collapsed them into one 200-character boolean, which is how
+#: this table came to exist instead.
+_MODALITY_XSI_MARKERS = {
+    "MR": "mrsession",
+    "PET": "petsession",
+    "CT": "ctsession",
+    "EEG": "eegsession",
+}
+
+
+def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
+    client: XNATClient,
     session_project: str,
     subject: str,
     resolved_session_id: str,
@@ -616,7 +631,7 @@ def _download_session_fast(
 @global_options
 @handle_errors
 @require_auth
-def session_download(
+def session_download(  # noqa: C901  # pre-existing; see pyproject
     ctx: Context,
     session_id: str,
     project: str | None,
@@ -1100,9 +1115,7 @@ def session_upload(
     type=click.IntRange(min=0),
     hidden=True,
     expose_value=False,
-    callback=lambda ctx, param, value: (
-        ctx.params.update({"wait": value}) or value  # type: ignore[func-returns-value]
-    )
+    callback=lambda ctx, param, value: (ctx.params.update({"wait": value}) or value)
     if value is not None
     and param.name
     and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
@@ -1114,7 +1127,7 @@ def session_upload(
     hidden=True,
     expose_value=False,
     callback=lambda ctx, param, value: (
-        ctx.params.update({"wait": DEFAULT_ARCHIVE_WAIT_SECONDS if value else 0}) or value  # type: ignore[func-returns-value]
+        ctx.params.update({"wait": DEFAULT_ARCHIVE_WAIT_SECONDS if value else 0}) or value
     )
     if value is not None
     and param.name
@@ -1125,7 +1138,7 @@ def session_upload(
 @global_options
 @handle_errors
 @require_auth
-def session_upload_exam(
+def session_upload_exam(  # noqa: C901  # pre-existing; see pyproject
     ctx: Context,
     exam_root: str,
     project: str | None,
@@ -1149,7 +1162,6 @@ def session_upload_exam(
       resources (label = directory name)
     - Top-level non-DICOM files are treated as misc attachments under --misc-label
     """
-
     from xnatctl.core.exam import classify_exam_root
     from xnatctl.core.exceptions import ResourceNotFoundError
     from xnatctl.core.validation import (
@@ -1252,7 +1264,7 @@ def session_upload_exam(
                         "uploaded": dicom_uploaded,
                     },
                     "resources": {
-                        "skipped": True if skip_resources else False,
+                        "skipped": bool(skip_resources),
                         "resource_dirs": 0,
                         "misc_files": 0,
                         "misc_label": misc_label,
@@ -1549,7 +1561,7 @@ def _upload_single_archive(
 
 
 def _do_single_upload(
-    client,
+    client: XNATClient,
     archive_path: Path,
     project: str,
     subject: str,
@@ -1579,7 +1591,7 @@ def _do_single_upload(
 
     with _maybe_zip_to_tar(archive_path, zip_to_tar) as (upload_path, content_type):
 
-        def _attempt():
+        def _attempt() -> httpx.Response:
             with open(upload_path, "rb") as f:
                 return client.post(
                     "/data/services/import",
@@ -1596,7 +1608,7 @@ def _do_single_upload(
         raise SystemExit(1)
 
 
-def _safe_mtime(date_time: tuple) -> float:
+def _safe_mtime(date_time: tuple[int, ...]) -> float:
     """Convert ZIP date_time tuple to timestamp safely.
 
     Args:
@@ -1612,8 +1624,11 @@ def _safe_mtime(date_time: tuple) -> float:
         # Validate year is in reasonable range (ZIP format supports 1980-2107)
         if year < 1980 or year > 2107:
             return 0.0
-        # Use 0 for DST (let system figure it out) instead of -1
-        return time.mktime(date_time + (0, 0, 0))
+        # mktime wants a full 9-tuple: the ZIP header carries 6 fields, and the
+        # trailing three (weekday, yearday, DST) are filled with 0 -- 0 for DST
+        # rather than -1 so the platform resolves it instead of guessing.
+        y, mo, d, h, mi, sec = date_time[:6]
+        return time.mktime((y, mo, d, h, mi, sec, 0, 0, 0))
     except (ValueError, OverflowError, OSError):
         # Invalid date - use epoch
         return 0.0
@@ -1670,12 +1685,19 @@ def _should_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> bool:
     return zip_to_tar and archive_path.suffix.lower() == ".zip"
 
 
-def _maybe_zip_to_tar(archive_path: Path, zip_to_tar: bool):
+def _maybe_zip_to_tar(
+    archive_path: Path, zip_to_tar: bool
+) -> AbstractContextManager[tuple[Path, str]]:
+    """Yield the path to upload and its content type, converting ZIP to TAR.
+
+    A context manager because the converted archive lives in a temporary
+    directory that must outlive the conversion but not the upload.
+    """
     import tempfile
     from contextlib import contextmanager
 
     @contextmanager
-    def _converter():
+    def _converter() -> Iterator[tuple[Path, str]]:
         if _should_zip_to_tar(archive_path, zip_to_tar):
             with tempfile.TemporaryDirectory() as temp_dir:
                 tar_path = Path(temp_dir) / f"{archive_path.stem}.tar"
@@ -2095,7 +2117,7 @@ def local() -> None:
 @click.option("--recursive", "-r", is_flag=True, help="Process subdirectories")
 @click.option("--dry-run", is_flag=True, help="Preview what would be extracted")
 @handle_errors
-def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool) -> None:
+def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool) -> None:  # noqa: C901  # pre-existing; see pyproject
     """Extract downloaded XNAT session ZIPs.
 
     This command extracts ZIP files from previously downloaded sessions,

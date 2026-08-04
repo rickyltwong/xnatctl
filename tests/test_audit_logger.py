@@ -78,7 +78,8 @@ def test_records_append_rather_than_overwrite(audit_log: Path) -> None:
 )
 def test_log_file_is_owner_only(audit_log: Path) -> None:
     """It records which subjects were deleted from which server; same class of
-    secret as the session cache."""
+    secret as the session cache.
+    """
     AuditLogger().log_operation("subject.delete", subject="SUB001")
 
     assert stat.S_IMODE(audit_log.stat().st_mode) == 0o600
@@ -182,7 +183,8 @@ def test_destructive_command_writes_exactly_one_record(audit_log: Path) -> None:
 
 def test_record_names_the_profile_even_when_it_was_not_passed(audit_log: Path) -> None:
     """profile_name is None whenever the default profile was used -- which is
-    the common case -- so the field falls back to the config's default."""
+    the common case -- so the field falls back to the config's default.
+    """
     harness = make_authenticated_cli(default_project="PROJ")
     harness.client.delete.return_value = MagicMock(status_code=200)
 
@@ -209,7 +211,8 @@ def test_dry_run_command_is_audited_as_a_preview(audit_log: Path) -> None:
 
 def test_failed_command_records_the_real_error_class(audit_log: Path) -> None:
     """handle_errors collapses failures to SystemExit; the record must still
-    name what actually went wrong."""
+    name what actually went wrong.
+    """
     from xnatctl.core.exceptions import PermissionDeniedError
 
     harness = make_authenticated_cli(default_project="PROJ")
@@ -246,7 +249,8 @@ def test_read_only_command_is_not_audited(audit_log: Path) -> None:
 
 def test_secret_flags_never_reach_the_record(audit_log: Path) -> None:
     """The denylist is keyed on parameter name, so a credential flag on a
-    destructive command cannot be recorded even by accident."""
+    destructive command cannot be recorded even by accident.
+    """
     from xnatctl.cli.common import _audit_details
 
     details = _audit_details(

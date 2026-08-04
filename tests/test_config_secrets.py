@@ -104,7 +104,8 @@ def test_password_source_round_trips_through_yaml(tmp_path: Path) -> None:
 
 def test_loaded_profiles_know_their_own_name(tmp_path: Path) -> None:
     """The keyring key is built from the profile name, so the name has to
-    survive deserialization."""
+    survive deserialization.
+    """
     path = tmp_path / "config.yaml"
     path.write_text(yaml.dump({"default_profile": "prod", "profiles": {"prod": {"url": URL}}}))
 
@@ -113,7 +114,8 @@ def test_loaded_profiles_know_their_own_name(tmp_path: Path) -> None:
 
 def test_profile_without_password_source_omits_the_key() -> None:
     """An untouched profile must not gain a new key -- a future change will version the
-    schema, and until then the file should stay as it was."""
+    schema, and until then the file should stay as it was.
+    """
     assert "password_source" not in _profile().to_dict()
 
 
@@ -187,7 +189,8 @@ def test_env_password_wins_and_skips_the_keychain(
     fake_keyring: FakeKeyring, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An env password must short-circuit before the keychain: with no entry
-    stored, consulting it would raise."""
+    stored, consulting it would raise.
+    """
     monkeypatch.setenv("XNAT_PASS", "from-env")
     monkeypatch.delenv("XNAT_USER", raising=False)
     profile = _profile(username="admin", password_source=PASSWORD_SOURCE_KEYRING)

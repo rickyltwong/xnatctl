@@ -234,7 +234,7 @@ def _detect_content_type(
     return "application/octet-stream"
 
 
-def _build_query_string(params: tuple) -> str:
+def _build_query_string(params: tuple[str, ...]) -> str:
     """Build a raw query string preserving special chars in keys.
 
     httpx URL-encodes query parameter keys (e.g. ``xnat:mrSessionData``
@@ -269,7 +269,7 @@ def _build_query_string(params: tuple) -> str:
 _RESOURCE_FILE_RE = re.compile(r"/resources/[^/?]+/files/[^/?]+")
 
 
-def _param_value(params: tuple, key: str) -> str | None:
+def _param_value(params: tuple[str, ...], key: str) -> str | None:
     """Return the value of ``key`` in ``params`` (case-insensitive), or None."""
     for param in params:
         result = _split_param(param)
@@ -287,7 +287,7 @@ def _is_resource_file_path(path: str) -> bool:
     return _RESOURCE_FILE_RE.search(path.split("?", 1)[0]) is not None
 
 
-def _maybe_add_inbody(path: str, params: tuple, *, has_body: bool) -> tuple:
+def _maybe_add_inbody(path: str, params: tuple[str, ...], *, has_body: bool) -> tuple[str, ...]:
     """Add ``inbody=true`` for resource-file writes that need it.
 
     XNAT's ``/resources/<label>/files/<name>`` endpoint drops a raw request
@@ -360,7 +360,7 @@ def api() -> None:
 def api_get(
     ctx: Context,
     path: str,
-    params: tuple,
+    params: tuple[str, ...],
 ) -> None:
     """GET request to any XNAT endpoint.
 
@@ -461,7 +461,7 @@ def api_get(
 def api_post(
     ctx: Context,
     path: str,
-    params: tuple,
+    params: tuple[str, ...],
     data: str | None,
     file_path: str | None,
     content_type: str | None,
@@ -575,7 +575,7 @@ def api_post(
 def api_put(
     ctx: Context,
     path: str,
-    params: tuple,
+    params: tuple[str, ...],
     data: str | None,
     file_path: str | None,
     content_type: str | None,
@@ -677,7 +677,7 @@ def api_put(
 def api_delete(
     ctx: Context,
     path: str,
-    params: tuple,
+    params: tuple[str, ...],
     yes: bool,
 ) -> None:
     """DELETE request to any XNAT endpoint.

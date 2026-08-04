@@ -102,7 +102,7 @@ class TestCreateSubject:
         dest_client.put.return_value = make_response(text="/data/subjects/XNAT_S999")
         result = executor.create_subject("DST", "SUB001")
         dest_client.put.assert_called_once()
-        assert "/data/subjects/XNAT_S999" == result
+        assert result == "/data/subjects/XNAT_S999"
 
 
 class TestCreateExperiment:

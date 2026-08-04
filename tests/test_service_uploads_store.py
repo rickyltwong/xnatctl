@@ -154,7 +154,8 @@ def dicom_root(tmp_path: Path) -> Path:
 
 def test_failed_c_echo_aborts_before_any_store(service: UploadService, dicom_root: Path) -> None:
     """A refused association means wrong host/port/AET; sending anyway would
-    produce a slow pile of failures instead of one clear error."""
+    produce a slow pile of failures instead of one clear error.
+    """
     FakeAE.echo_established = False
 
     with pytest.raises(RuntimeError, match="C-ECHO failed"):
@@ -231,7 +232,8 @@ def test_missing_sop_uids_are_filled_from_file_meta(
     service: UploadService, dicom_root: Path
 ) -> None:
     """Datasets read with force=True can lack top-level SOP UIDs; sending one
-    without them is rejected by the SCP."""
+    without them is rejected by the SCP.
+    """
     service.upload_dicom_store(dicom_root, "host", "XNAT", workers=1)
 
     sent = [ds for ae in FakeAE.instances for a in ae.associations for ds in a.stored]
@@ -319,7 +321,8 @@ def test_workspace_is_removed_after_a_clean_run(service: UploadService, dicom_ro
 
 def test_workspace_is_kept_when_something_failed(service: UploadService, dicom_root: Path) -> None:
     """The per-batch logs are the only record of which files failed, so a
-    failed run must not delete them."""
+    failed run must not delete them.
+    """
     FakeAE.store_status = FAILURE
 
     summary = service.upload_dicom_store(dicom_root, "host", "XNAT", workers=1)
@@ -365,7 +368,8 @@ def test_no_association_is_attempted_without_the_extra(
 def test_patch_target_is_the_module_not_an_attribute() -> None:
     """`AE` is imported inside the function bodies, so
     `xnatctl.services.uploads.AE` never exists -- patching it would silently
-    do nothing. This guards the fixture's approach."""
+    do nothing. This guards the fixture's approach.
+    """
     import xnatctl.services.uploads as uploads_mod
 
     assert not hasattr(uploads_mod, "AE")

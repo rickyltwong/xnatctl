@@ -173,8 +173,7 @@ class TestGradualUpload401Retry:
         def fake_retry(fn: object, **kwargs: object) -> MagicMock:
             """Intercept upload_with_retry to track which token was used."""
             # The fn closure captures cookies; call it to get the response
-            resp = fn()  # type: ignore[operator]
-            return resp
+            return fn()  # type: ignore[operator]
 
         mock_client = MagicMock()
         call_count = 0

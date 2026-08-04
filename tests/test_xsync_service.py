@@ -16,8 +16,7 @@ SECRET: str = "hunter2-supersecret-NEVER-LOG"
 
 def _mock_client() -> MagicMock:
     """Build a MagicMock that mimics XNATClient's get/post surface."""
-    client = MagicMock()
-    return client
+    return MagicMock()
 
 
 def _mock_response(
@@ -106,7 +105,7 @@ class TestWriteEndpoints:
         client.post.assert_called_once_with("/xapi/xsync/syncsubject/XNAT_E00001")
 
     def test_remote_rest_uses_json_body(self) -> None:
-        """remoteREST is sent as application/json with the full credential payload."""
+        """RemoteREST is sent as application/json with the full credential payload."""
         client = _mock_client()
         client.post.return_value = _mock_response(
             json_payload={"alias": "alias-1", "secret": "secret-1", "xdatUserId": 42},
@@ -192,7 +191,7 @@ class TestRefreshCredentialsOrchestration:
         return client
 
     def test_issues_three_posts_in_order(self, primed_client: MagicMock) -> None:
-        """remoteREST -> credentials/save -> credentials/check, in that order."""
+        """RemoteREST -> credentials/save -> credentials/check, in that order."""
         XsyncService(primed_client).refresh_credentials(
             project_id="PROJ",
             remote_url="https://remote.example.org",

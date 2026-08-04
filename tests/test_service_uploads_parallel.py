@@ -181,7 +181,8 @@ def test_import_params_carry_the_target_identifiers(
 
 def test_overwrite_mode_is_forwarded_verbatim(service: UploadService, dicom_tree: Path) -> None:
     """`--overwrite append` is the additive mode; it must reach the server
-    unchanged rather than being normalised away."""
+    unchanged rather than being normalised away.
+    """
     with mock_uploads_http(ok) as seen:
         service.upload_dicom_parallel(
             dicom_tree, "PROJ", "SUB001", "SESS01", upload_workers=1, overwrite="append"
@@ -246,7 +247,8 @@ def test_without_a_token_each_worker_logs_in_and_logs_out(
     service: UploadService, dicom_tree: Path
 ) -> None:
     """Per-thread sessions are the thread-safety design; the important part is
-    that a worker-created session is released rather than leaked."""
+    that a worker-created session is released rather than leaked.
+    """
     service.client.session_token = None
 
     with mock_uploads_http(ok) as seen:
@@ -409,7 +411,8 @@ def test_archives_are_cleaned_up_on_success(
     service: UploadService, dicom_tree: Path, tmp_path: Path
 ) -> None:
     """Archives are a copy of the whole dataset; leaving them behind would
-    double the disk footprint of every upload."""
+    double the disk footprint of every upload.
+    """
     made: list[Path] = []
     real_mkdtemp = tempfile.mkdtemp
 

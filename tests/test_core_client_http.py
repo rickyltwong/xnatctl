@@ -178,7 +178,7 @@ class TestPaginate:
         assert q["columns"] == ["ID,label"]
 
     def test_caller_params_are_not_mutated(self) -> None:
-        """paginate copies its params; the caller's dict stays clean."""
+        """Paginate copies its params; the caller's dict stays clean."""
         client, _ = make_client(lambda _r: httpx.Response(200, json=page(0)))
         params: dict[str, object] = {"columns": "ID"}
 

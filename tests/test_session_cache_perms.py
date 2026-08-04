@@ -93,7 +93,8 @@ def test_created_parent_directory_is_owner_only(tmp_path: Path) -> None:
 )
 def test_existing_parent_directory_permissions_are_left_alone(tmp_path: Path) -> None:
     """Only directories we create are tightened; an existing one may be the
-    user's deliberate choice, and silently changing it would be a surprise."""
+    user's deliberate choice, and silently changing it would be a surprise.
+    """
     parent = tmp_path / "cfgdir"
     parent.mkdir(mode=0o755)
     os.chmod(parent, 0o755)
@@ -109,7 +110,8 @@ def test_existing_parent_directory_permissions_are_left_alone(tmp_path: Path) ->
 def test_rewriting_a_world_readable_cache_tightens_it(tmp_path: Path) -> None:
     """``opener=`` only applies its mode to files it creates, so an in-place
     rewrite of a 0644 file would have stayed 0644. The atomic replace hands the
-    destination the temp file's 0600 instead."""
+    destination the temp file's 0600 instead.
+    """
     cache = tmp_path / ".session"
     cache.write_text("{}")
     os.chmod(cache, 0o644)
@@ -164,7 +166,8 @@ def test_failing_chmod_warns_instead_of_passing_silently(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The old code was ``except OSError: pass`` -- a failed chmod left the
-    token world-readable with no log line at all."""
+    token world-readable with no log line at all.
+    """
     cache = tmp_path / ".session"
     real_chmod = os.chmod
 
@@ -192,7 +195,8 @@ def test_failing_chmod_warns_instead_of_passing_silently(
 @pytest.mark.usefixtures("group_writable_umask")
 def test_config_file_is_owner_only(tmp_path: Path) -> None:
     """config.yaml can carry a plaintext password today, so it gets the same
-    treatment as the session cache."""
+    treatment as the session cache.
+    """
     path = tmp_path / "cfgdir" / "config.yaml"
     config = Config()
     config.profiles["default"] = Profile(url="https://x.example.org")

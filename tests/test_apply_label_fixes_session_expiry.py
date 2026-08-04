@@ -14,7 +14,6 @@ from xnatctl.core.exceptions import SessionExpiredError
 
 def test_apply_subject_patterns_propagates_session_expired(monkeypatch):
     """Session expiry during subject rename should abort the run."""
-
     monkeypatch.setattr(
         alf,
         "_list_subjects",
@@ -34,7 +33,6 @@ def test_apply_subject_patterns_propagates_session_expired(monkeypatch):
 
 def test_apply_experiment_label_fixes_propagates_session_expired(monkeypatch):
     """Session expiry during experiment rename should abort the run."""
-
     monkeypatch.setattr(
         alf,
         "_list_subjects",

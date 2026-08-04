@@ -33,7 +33,6 @@ class _RenameRule:
 
 def _apply_template(*, template: str, project: str, groups: tuple[str | None, ...]) -> str:
     """Apply {project} and {1}/{2}/... substitutions to a template string."""
-
     target = template.replace("{project}", project)
     for i, g in enumerate(groups, start=1):
         target = target.replace(f"{{{i}}}", g or "")
@@ -288,7 +287,7 @@ def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: 
 @global_options
 @handle_errors
 @require_auth
-def subject_rename(
+def subject_rename(  # noqa: C901  # pre-existing; see pyproject
     ctx: Context,
     project: str | None,
     patterns_file: str | None,

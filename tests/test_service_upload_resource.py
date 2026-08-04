@@ -84,7 +84,8 @@ def test_temp_zip_removed_when_upload_fails(
     service: UploadService, source_dir: Path, temp_zips: list[Path]
 ) -> None:
     """The broad `except` returns a failure summary rather than raising, so the
-    cleanup has to live in a `finally`, not on the success path."""
+    cleanup has to live in a `finally`, not on the success path.
+    """
     with patch(
         "xnatctl.services.uploads.httpx.Client",
         side_effect=RuntimeError("connection exploded"),

@@ -75,7 +75,6 @@ def _validate_resource_list_scope(
     session_id: str | None,
 ) -> str | None:
     """Validate resource-list scope during Click parsing, before auth runs."""
-
     del param
     project_id = ctx.params.get("project_id")
     subject = ctx.params.get("subject")

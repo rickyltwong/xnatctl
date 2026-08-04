@@ -110,7 +110,7 @@ def print_key_value(
         console.print(f"[bold]{title}[/bold]")
 
     labels = key_labels or {}
-    max_key_len = max(len(labels.get(k, k)) for k in data.keys()) if data else 0
+    max_key_len = max(len(labels.get(k, k)) for k in data) if data else 0
 
     for key, value in data.items():
         label = labels.get(key, key.replace("_", " ").title())

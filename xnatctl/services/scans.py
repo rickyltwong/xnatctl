@@ -18,7 +18,6 @@ from .hierarchy import HierarchyService
 
 def _scan_collection_path(session_id: str, project: str | None) -> str:
     """Build the scans listing path for a session."""
-
     return HierarchyService.build_scan_collection_path(
         ExperimentRef(experiment=session_id, project_id=project)
     )
@@ -34,7 +33,6 @@ def _scan_item_path(session_id: str, scan_id: str, project: str | None, *parts: 
     a subject segment the flat form is the only one that routes; access is
     enforced server-side either way. See ``routable_scan_parent``.
     """
-
     return HierarchyService.build_scan_path(
         ScanRef(
             experiment=ExperimentRef(experiment=session_id, project_id=project),

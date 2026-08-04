@@ -43,7 +43,8 @@ def test_success_keeps_square_brackets(capsys: pytest.CaptureFixture[str]) -> No
 
 def test_unclosed_bracket_does_not_raise(capsys: pytest.CaptureFixture[str]) -> None:
     """Exception text is arbitrary; an unbalanced bracket must not blow up the
-    error path itself."""
+    error path itself.
+    """
     print_error("Unexpected token [ in response")
 
     assert "[ in response" in plain(capsys.readouterr().err)

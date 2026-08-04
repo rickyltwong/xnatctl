@@ -129,7 +129,6 @@ pass_context = click.make_pass_decorator(Context, ensure=True)
 
 def get_profile(ctx: Context) -> Profile | None:
     """Return the active profile, if configured and resolvable."""
-
     if ctx.config is None:
         return None
 
@@ -141,14 +140,12 @@ def get_profile(ctx: Context) -> Profile | None:
 
 def default_project_from_context(ctx: Context) -> str | None:
     """Return the profile default project if available."""
-
     profile = get_profile(ctx)
     return profile.default_project if profile else None
 
 
 def require_project_from_context(ctx: Context, project: str | None) -> str:
     """Return an explicit or default project, or raise a Click error."""
-
     resolved_project = project or default_project_from_context(ctx)
     if resolved_project:
         return resolved_project
@@ -161,7 +158,6 @@ def require_project_from_context(ctx: Context, project: str | None) -> str:
 
 def resolve_workers_from_context(ctx: Context, workers: int | None, default: int = 4) -> int:
     """Resolve worker count from explicit option, profile, or a default."""
-
     if workers is not None:
         return workers
 
@@ -368,7 +364,9 @@ def _audit_details(params: dict[str, Any]) -> dict[str, Any]:
     return details
 
 
-def _record_audit(*, dry_run: bool, confirmed: bool, params: dict[str, Any], error: str | None):
+def _record_audit(
+    *, dry_run: bool, confirmed: bool, params: dict[str, Any], error: str | None
+) -> None:
     """Append one audit record for a destructive command. Never raises."""
     try:
         click_ctx = click.get_current_context(silent=True)
@@ -727,7 +725,7 @@ def reject_argv_password(
                 f"Refusing to read {option} from argv (visible in ps, "
                 f"/proc/*/cmdline, and shell history). {alternatives}"
             )
-        return None
+        return
 
     return callback
 
@@ -817,14 +815,13 @@ def create_dest_client(
             timeout=profile.timeout,
             verify_ssl=profile.verify_ssl,
         )
-    elif dest_url:
+    if dest_url:
         return XNATClient(
             base_url=dest_url,
             username=dest_user,
             password=dest_pass,
         )
-    else:
-        raise ConfigurationError("Destination not specified. Use --dest-profile or --dest-url.")
+    raise ConfigurationError("Destination not specified. Use --dest-profile or --dest-url.")
 
 
 # =============================================================================

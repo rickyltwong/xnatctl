@@ -511,7 +511,7 @@ def scan_delete(
 @global_options
 @handle_errors
 @require_auth
-def scan_download(
+def scan_download(  # noqa: C901  # pre-existing; see pyproject
     ctx: Context,
     session_id: str,
     project: str | None,
@@ -594,11 +594,10 @@ def scan_download(
     service = DownloadService(client)
 
     def progress_cb(progress: DownloadProgress) -> None:
-        if progress.phase == OperationPhase.DOWNLOADING and not ctx.quiet:
-            if progress.total_bytes:
-                pct = progress.bytes_received * 100 // progress.total_bytes
-                mb = progress.bytes_received / (1024 * 1024)
-                click.echo(f"\r  Downloading: {pct}% ({mb:.1f} MB)", nl=False, err=True)
+        if progress.phase == OperationPhase.DOWNLOADING and not ctx.quiet and progress.total_bytes:
+            pct = progress.bytes_received * 100 // progress.total_bytes
+            mb = progress.bytes_received / (1024 * 1024)
+            click.echo(f"\r  Downloading: {pct}% ({mb:.1f} MB)", nl=False, err=True)
 
     from xnatctl.core.exceptions import ResourceNotFoundError
 

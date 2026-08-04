@@ -20,7 +20,7 @@ def runner() -> CliRunner:
 
 def _mock_config() -> Config:
     """Build a mock Config with a default profile."""
-    cfg = Config(
+    return Config(
         default_profile="default",
         profiles={
             "default": Profile(
@@ -31,7 +31,6 @@ def _mock_config() -> Config:
             )
         },
     )
-    return cfg
 
 
 class TestProjectList:

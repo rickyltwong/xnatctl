@@ -1,5 +1,4 @@
-"""
-apply_label_fixes.py
+"""Automated subject and experiment label corrections across XNAT projects.
 
 Automated subject + experiment label corrections across XNAT projects.
 
@@ -195,6 +194,7 @@ def apply_subject_patterns(
     execute: bool = False,
     verbose: bool = False,
 ) -> dict[str, Any]:
+    """Rename subjects whose labels match the configured patterns."""
     if not patterns:
         log.info("No subject rename patterns for project %s", project)
         return {
@@ -360,6 +360,7 @@ def apply_experiment_label_fixes(
     execute: bool = False,
     verbose: bool = False,
 ) -> dict[str, Any]:
+    """Rename experiment labels to match their corrected subject labels."""
     if modalities is None:
         modalities = sorted(set(XSI_MODALITY_MAP.values()))
     modalities_set = {m.upper() for m in modalities}
@@ -573,6 +574,7 @@ def apply_label_fixes(
     execute: bool = False,
     verbose: bool = False,
 ) -> dict[str, Any]:
+    """Apply both the subject and experiment label passes for one project."""
     config = load_patterns_config(config_path)
     patterns = cast(list[dict[str, Any]], config.get("patterns", []))
 
@@ -657,6 +659,7 @@ def apply_label_fixes(
 
 
 def main() -> None:
+    """Parse arguments and run the label-fix passes."""
     import argparse
 
     # Ensure repo root import works when running as a script.

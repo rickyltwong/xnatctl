@@ -257,7 +257,7 @@ class TestSessionShare:
     """Tests for SessionService.share."""
 
     def test_share(self, service: SessionService, mock_client: MagicMock) -> None:
-        """share issues PUT to target project path."""
+        """Share issues PUT to target project path."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
 
         assert service.share("XNAT_E00001", "PROJ02", label="MR_SHARED") is True
@@ -267,7 +267,7 @@ class TestSessionShare:
         assert put_params["label"] == "MR_SHARED"
 
     def test_share_primary(self, service: SessionService, mock_client: MagicMock) -> None:
-        """share with primary flag."""
+        """Share with primary flag."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
 
         service.share("XNAT_E00001", "PROJ02", primary=True)

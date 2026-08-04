@@ -261,8 +261,7 @@ class TestDownloadResourcePathConstruction:
     @pytest.fixture
     def mock_client(self):
         """Create a mock XNAT client."""
-        client = MagicMock()
-        return client
+        return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):

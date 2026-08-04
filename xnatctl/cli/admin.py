@@ -38,11 +38,11 @@ def admin() -> None:
 @global_options
 @handle_errors
 @require_auth
-def admin_refresh_catalogs(
+def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
     ctx: Context,
     project: str,
-    option: tuple,
-    experiment: tuple,
+    option: tuple[str, ...],
+    experiment: tuple[str, ...],
     limit: int | None,
     workers: int | None,
 ) -> None:
@@ -114,7 +114,7 @@ def admin_refresh_catalogs(
     refreshed = []
     failed = []
 
-    def refresh_one(exp: tuple) -> tuple[str, bool, str]:
+    def refresh_one(exp: tuple[str, str]) -> tuple[str, bool, str]:
         """Refresh a single experiment catalog and return status."""
         subject_id, exp_id = exp
         resource_path = f"/archive/projects/{project}/subjects/{subject_id}/experiments/{exp_id}"
@@ -186,7 +186,7 @@ def user() -> None:
 def user_add(
     ctx: Context,
     username: str,
-    groups: tuple,
+    groups: tuple[str, ...],
     projects: str | None,
     role: str,
 ) -> None:
