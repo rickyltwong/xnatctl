@@ -22,7 +22,7 @@ import threading
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, Future, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,7 +30,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
 
+from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken, cancellable_pool
 from xnatctl.core.client import RETRYABLE_STATUS_CODES as CLIENT_RETRYABLE_STATUS_CODES
+from xnatctl.core.exceptions import OperationCancelledError
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
 from xnatctl.models.progress import (
     OperationPhase,
@@ -275,6 +277,10 @@ class _UploadResult:
     file_count: int
     archive_size: int
     error: str = ""
+    # A batch dropped because the user interrupted the run. Distinct from a
+    # failure: nothing went wrong with it, so it must not be reported as an
+    # error the server rejected.
+    cancelled: bool = False
 
 
 # =============================================================================
@@ -448,6 +454,7 @@ def upload_with_retry(
     max_retries: int = UPLOAD_MAX_RETRIES,
     backoff_base: int = UPLOAD_RETRY_BACKOFF_BASE,
     label: str = "upload",
+    cancel_token: CancellationToken = NULL_TOKEN,
 ) -> httpx.Response:
     """Execute an upload function with retry on transient HTTP errors.
 
@@ -457,6 +464,10 @@ def upload_with_retry(
         max_retries: Maximum number of retries (default: 5).
         backoff_base: Base for exponential backoff in seconds (default: 2).
         label: Label for log messages.
+        cancel_token: Checked before each attempt, and slept against instead of
+            ``time.sleep``. The ladder is 2+4+8+16+32s, so without this a
+            cancelled upload sits in a backoff for up to a minute per in-flight
+            batch after the user has already asked it to stop.
 
     Returns:
         The httpx.Response from a successful attempt.
@@ -468,6 +479,8 @@ def upload_with_retry(
     last_exc: Exception | None = None
 
     for attempt in range(max_retries + 1):
+        if cancel_token.cancelled:
+            break
         try:
             resp = upload_fn()
             if not is_retryable_status(resp.status_code):
@@ -502,7 +515,8 @@ def upload_with_retry(
                     max_retries + 1,
                     delay,
                 )
-                time.sleep(delay)
+                if cancel_token.sleep(delay):
+                    break
         except httpx.ConnectTimeout:
             # Fail fast: a connect-phase timeout means the host is
             # unreachable and will not recover within the backoff window -- unlike
@@ -526,12 +540,17 @@ def upload_with_retry(
                     max_retries + 1,
                     delay,
                 )
-                time.sleep(delay)
+                if cancel_token.sleep(delay):
+                    break
 
     if last_resp is not None:
         return last_resp
     if last_exc is not None:
         raise last_exc
+    if cancel_token.cancelled:
+        # Cancelled before any attempt produced a response. Saying "all retries
+        # exhausted" here would blame the server for the user's Ctrl+C.
+        raise OperationCancelledError(label)
     raise RuntimeError(f"{label}: all retries exhausted with no response")
 
 
@@ -606,6 +625,7 @@ def _upload_single_archive(
     ignore_unparsable: bool,
     overwrite: str,
     direct_archive: bool,
+    cancel_token: CancellationToken = NULL_TOKEN,
 ) -> tuple[bool, str]:
     """Upload a single archive file to XNAT.
 
@@ -674,7 +694,11 @@ def _upload_single_archive(
                     )
 
             try:
-                resp = upload_with_retry(_attempt, label=f"batch {archive_path.name}")
+                resp = upload_with_retry(
+                    _attempt,
+                    label=f"batch {archive_path.name}",
+                    cancel_token=cancel_token,
+                )
             finally:
                 if created_session:
                     try:
@@ -775,6 +799,7 @@ def _create_and_upload_batch(
     ignore_unparsable: bool,
     overwrite: str,
     direct_archive: bool,
+    cancel_token: CancellationToken = NULL_TOKEN,
 ) -> _UploadResult:
     """Create archive, upload it, then delete the archive immediately.
 
@@ -782,9 +807,24 @@ def _create_and_upload_batch(
     disk and memory usage. The archive is deleted as soon as the upload
     completes (or fails), preventing all archives from existing on disk
     simultaneously.
+
+    Checks for cancellation before doing any work: ``cancel_futures`` drops the
+    queue, but a worker that has already picked up a batch would otherwise go
+    on to build and upload an archive the user asked it to abandon.
     """
     start_time = time.time()
     archive_size = 0
+
+    if cancel_token.cancelled:
+        return _UploadResult(
+            batch_id=batch_id,
+            success=False,
+            duration=0.0,
+            file_count=len(batch),
+            archive_size=0,
+            error="cancelled",
+            cancelled=True,
+        )
 
     try:
         archive_size = _create_archive(batch, archive_path, source_path, archive_format)
@@ -804,6 +844,7 @@ def _create_and_upload_batch(
             ignore_unparsable=ignore_unparsable,
             overwrite=overwrite,
             direct_archive=direct_archive,
+            cancel_token=cancel_token,
         )
 
         return _UploadResult(
@@ -813,6 +854,16 @@ def _create_and_upload_batch(
             file_count=len(batch),
             archive_size=archive_size,
             error=error,
+        )
+    except OperationCancelledError:
+        return _UploadResult(
+            batch_id=batch_id,
+            success=False,
+            duration=time.time() - start_time,
+            file_count=len(batch),
+            archive_size=archive_size,
+            error="cancelled",
+            cancelled=True,
         )
     except Exception as e:
         return _UploadResult(
@@ -1008,6 +1059,7 @@ def _upload_single_file_gradual(
     subject: str,
     session: str,
     direct_archive: bool = True,
+    cancel_token: CancellationToken = NULL_TOKEN,
 ) -> tuple[str, bool, str]:
     """Upload a single file via the gradual-DICOM import handler.
 
@@ -1052,7 +1104,9 @@ def _upload_single_file_gradual(
                         cookies=cookies,
                     )
 
-            return upload_with_retry(_attempt, label=f"gradual-DICOM {name}")
+            return upload_with_retry(
+                _attempt, label=f"gradual-DICOM {name}", cancel_token=cancel_token
+            )
 
         token = session_refresher.token
         resp = _do_upload(token)
@@ -1217,7 +1271,7 @@ class UploadService(BaseService):
 
             results: list[_UploadResult] = []
 
-            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            with cancellable_pool(effective_workers) as (executor, cancel_token):
                 futures: dict[Future[_UploadResult], int] = {}
                 for i, batch in enumerate(batches):
                     fut: Future[_UploadResult] = executor.submit(  # type: ignore[arg-type]
@@ -1240,6 +1294,7 @@ class UploadService(BaseService):
                         ignore_unparsable=ignore_unparsable,
                         overwrite=overwrite,
                         direct_archive=direct_archive,
+                        cancel_token=cancel_token,
                     )
                     futures[fut] = i + 1
 
@@ -1375,7 +1430,7 @@ class UploadService(BaseService):
 
             sent_total = 0
 
-            with ThreadPoolExecutor(max_workers=len(batches)) as pool:
+            with cancellable_pool(len(batches)) as (pool, _cstore_token):
                 futures = {
                     pool.submit(
                         _send_dicom_batch,
@@ -1786,7 +1841,7 @@ class UploadService(BaseService):
             )
 
         # Main pass: parallel per-file upload (bounded in-flight window)
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        with cancellable_pool(workers) as (executor, gradual_token):
             prefetch = max(1, workers * 2)
             file_iter = iter(remaining_files)
 
@@ -1794,6 +1849,11 @@ class UploadService(BaseService):
             future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
 
             def _submit_one(path: Path) -> None:
+                # This pass refills its window as files complete, so without
+                # this check a cancelled run would keep feeding itself the rest
+                # of the directory one file at a time.
+                if gradual_token.cancelled:
+                    raise StopIteration
                 fut: Future[tuple[str, bool, str]] = executor.submit(  # type: ignore[arg-type]
                     _upload_single_file_gradual,
                     base_url=base_url,
@@ -1805,6 +1865,7 @@ class UploadService(BaseService):
                     subject=subject,
                     session=session,
                     direct_archive=direct_archive,
+                    cancel_token=gradual_token,
                 )
                 in_flight.add(fut)
                 future_to_path[fut] = path
@@ -1867,7 +1928,7 @@ class UploadService(BaseService):
             to_retry = sorted(failed_paths, key=display)
             remaining_failed: set[Path] = set(failed_paths)
 
-            with ThreadPoolExecutor(max_workers=retry_workers) as retry_executor:
+            with cancellable_pool(retry_workers, gradual_token) as (retry_executor, _):
                 prefetch = max(1, retry_workers * 2)
                 retry_iter = iter(to_retry)
                 retry_in_flight: set[Future[tuple[str, bool, str]]] = set()

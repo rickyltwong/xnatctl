@@ -74,8 +74,15 @@ def params_of(request: httpx.Request) -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The upload retry ladder sleeps 2+4+8+16+32s per failing batch."""
-    monkeypatch.setattr("xnatctl.services.uploads.time.sleep", lambda _s: None)
+    """The upload retry ladder sleeps 2+4+8+16+32s per failing batch.
+
+    The wait is ``CancellationToken.sleep`` rather than ``time.sleep`` so an
+    interrupt does not have to be waited out; patch it at that seam, or the
+    backoff is real and this file takes a minute per failing batch.
+    """
+    monkeypatch.setattr(
+        "xnatctl.core.cancellation.CancellationToken.sleep", lambda _self, _s: False
+    )
 
 
 @pytest.fixture

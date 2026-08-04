@@ -20,6 +20,7 @@ from xnatctl.cli.common import (
     require_project_from_context,
     resolve_workers_from_context,
 )
+from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
@@ -410,7 +411,7 @@ def _download_session_fast(
         {session_dir}/scans/{scan_id}/resources/{label}/files/{files...}
     """
     import tempfile
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
 
     import httpx
 
@@ -512,7 +513,7 @@ def _download_session_fast(
     failed = []
 
     pool_size = min(len(download_tasks), workers)
-    with ThreadPoolExecutor(max_workers=pool_size) as executor:
+    with cancellable_pool(pool_size) as (executor, _token):
         futures = {
             executor.submit(download_and_extract, sid, res): (sid, res)
             for sid, res in download_tasks

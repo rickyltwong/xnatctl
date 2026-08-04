@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from typing import Any
 
+from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 from xnatctl.models.scan import Scan
@@ -188,7 +189,7 @@ class ScanService(BaseService):
                 return (scan_id, False, str(e))
 
         if parallel and len(scan_ids) > 1:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
+            with cancellable_pool(workers) as (executor, _token):
                 futures = {executor.submit(delete_scan, scan_id): scan_id for scan_id in scan_ids}
 
                 for i, future in enumerate(as_completed(futures)):

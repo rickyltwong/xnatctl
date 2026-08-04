@@ -86,6 +86,7 @@ def _cmd(exc: BaseException | None) -> click.Command:
         (PermissionDeniedError("p", "delete"), 6),
         (NetworkError("https://x"), 4),
         (click.Abort(), 7),
+        (KeyboardInterrupt(), 7),
         (ValueError("boom"), 1),
     ],
 )
@@ -239,3 +240,24 @@ def test_main_guard_shows_traceback_under_debug_env(monkeypatch, capsys) -> None
     captured = capsys.readouterr()
     assert code == 1
     assert "Traceback (most recent call last)" in (captured.out + captured.err)
+
+
+def test_interrupt_is_distinguishable_from_a_general_error() -> None:
+    """Ctrl+C exits 7, not 1.
+
+    Click converts KeyboardInterrupt to Abort and exits 1 in standalone mode,
+    which made a user-cancelled run indistinguishable from a genuine failure --
+    despite the taxonomy defining USER_CANCELLED for exactly this. handle_errors
+    catches it inside the command body, before Click sees it.
+    """
+    result = CliRunner().invoke(_cmd(KeyboardInterrupt()))
+
+    assert result.exit_code == ExitCode.USER_CANCELLED
+    assert result.exit_code != ExitCode.GENERAL_ERROR
+    assert "Cancelled." in result.output
+
+
+def test_keyboard_interrupt_is_not_an_exception_subclass() -> None:
+    """Documents why the broad ``except Exception`` never caught it."""
+    assert not isinstance(KeyboardInterrupt(), Exception)
+    assert isinstance(KeyboardInterrupt(), BaseException)

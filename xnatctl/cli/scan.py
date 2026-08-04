@@ -18,6 +18,7 @@ from xnatctl.cli.common import (
     require_auth,
     resolve_workers_from_context,
 )
+from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
@@ -375,7 +376,7 @@ def scan_delete(
         xnatctl scan delete -E XNAT_E00001 --scans 1,2 --dry-run
         xnatctl scan delete -E SESSION_LABEL --scans 1,2,3 -P MYPROJ
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
 
     from xnatctl.core.validation import validate_scan_ids_input, validate_session_id
 
@@ -419,7 +420,7 @@ def scan_delete(
             return scan_id, False, str(e)
 
     if workers > 1 and len(scan_ids) > 1:
-        with ThreadPoolExecutor(max_workers=min(workers, len(scan_ids))) as executor:
+        with cancellable_pool(min(workers, len(scan_ids))) as (executor, _token):
             futures = {executor.submit(delete_scan, sid): sid for sid in scan_ids}
             for future in as_completed(futures):
                 scan_id, success, error = future.result()
