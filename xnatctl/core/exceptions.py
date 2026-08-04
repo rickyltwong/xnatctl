@@ -535,3 +535,17 @@ class TransferConfigError(TransferError):
             details["field"] = field
         super().__init__(message, details)
         self.field = field
+
+
+class OperationCancelledError(XNATCtlError):
+    """The user interrupted the operation.
+
+    Not a failure: nothing went wrong, the run was stopped on request. Kept
+    distinct so a cancelled batch is never reported as data the server
+    rejected, and so it maps to the user-cancelled exit code rather than a
+    general error.
+    """
+
+    def __init__(self, operation: str = "operation"):
+        super().__init__(f"Cancelled: {operation}", {"operation": operation})
+        self.operation = operation

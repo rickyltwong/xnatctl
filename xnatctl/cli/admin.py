@@ -13,6 +13,7 @@ from xnatctl.cli.common import (
     parallel_options,
     require_auth,
 )
+from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
 
 
@@ -60,7 +61,7 @@ def admin_refresh_catalogs(
         xnatctl admin refresh-catalogs MYPROJ --option checksum --option delete
         xnatctl admin refresh-catalogs MYPROJ --experiment XNAT_E00001 --experiment XNAT_E00002
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
 
     from xnatctl.core.output import create_progress
     from xnatctl.core.validation import validate_project_id
@@ -131,7 +132,7 @@ def admin_refresh_catalogs(
         task = progress.add_task("Refreshing catalogs...", total=len(experiments))
 
         if workers > 1 and len(experiments) > 1:
-            with ThreadPoolExecutor(max_workers=min(workers, len(experiments))) as executor:
+            with cancellable_pool(min(workers, len(experiments))) as (executor, _token):
                 futures = {executor.submit(refresh_one, exp): exp for exp in experiments}
                 for future in as_completed(futures):
                     exp_id, success, error = future.result()

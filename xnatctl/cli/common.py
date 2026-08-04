@@ -19,6 +19,7 @@ from xnatctl.core.config import Config, Profile, get_credentials
 from xnatctl.core.exceptions import (
     AuthenticationError,
     ConfigurationError,
+    OperationCancelledError,
     PermissionDeniedError,
     ProfileNotFoundError,
     ResourceNotFoundError,
@@ -672,6 +673,17 @@ def handle_errors(f: F) -> F:
             # User declined a destructive-op confirmation (Ctrl+C / "n").
             click.echo("Aborted!", err=True)
             sys.exit(ExitCode.USER_CANCELLED)
+        except KeyboardInterrupt:
+            # Ctrl+C mid-operation. Caught here rather than left to Click,
+            # which converts it to Abort and exits 1 -- indistinguishable from
+            # a general error, despite the taxonomy defining a code for exactly
+            # this. Catching it inside the command body also keeps the exit
+            # code consistent with the confirmation-prompt Abort above.
+            #
+            # KeyboardInterrupt is not an Exception subclass, so the broad
+            # handler below would never have seen it.
+            click.echo("Cancelled.", err=True)
+            sys.exit(ExitCode.USER_CANCELLED)
         except click.ClickException:
             raise
         except Exception as e:
@@ -845,7 +857,7 @@ def exit_code_for(exc: BaseException) -> int:
     Order matters: ``PermissionDeniedError`` and ``SessionExpiredError`` subclass
     ``AuthenticationError``, so the most specific classes are checked first.
     """
-    if isinstance(exc, click.Abort):
+    if isinstance(exc, click.Abort | OperationCancelledError):
         return ExitCode.USER_CANCELLED
     if isinstance(exc, PermissionDeniedError):
         return ExitCode.PERMISSION_ERROR
