@@ -321,7 +321,9 @@ def verifying_handler(zip_bytes: bytes, checksums: dict[str, str]) -> Handler:
     """Serve the archive, then the per-file checksum listing."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/scans/ALL/files"):
+        # The download and the scan-file listing share an endpoint; the
+        # listing is requested with format=json.
+        if dict(request.url.params).get("format") != "json":
             return httpx.Response(200, content=zip_bytes)
         return httpx.Response(
             200,
@@ -363,25 +365,17 @@ def test_a_mismatched_checksum_is_reported(tmp_path: Path) -> None:
     assert summary.verified is False
 
 
-def test_same_named_files_in_different_scans_defeat_verification(tmp_path: Path) -> None:
-    """KNOWN LIMITATION, pinned so the behaviour is not mistaken for working.
-
-    The checksum map is keyed on basename, but XNAT numbers DICOM files per
-    scan, so `00001.dcm` normally appears in every scan of a session. The
-    entries collide, each local file is compared against whichever digest won,
-    and a byte-perfect download reports verified=False.
-
-    Fixing it needs the server listing's full-path field rather than `Name`;
-    until then `verify=True` is unreliable for any multi-scan session. There
-    is no CLI caller for this path today, which is why it has gone unnoticed.
-    """
+def test_same_named_files_in_different_scans_both_verify(tmp_path: Path) -> None:
+    """XNAT sites that number DICOM files per scan repeat `00001.dcm` in every
+    scan. A basename->single-digest map reported those byte-perfect downloads
+    as corrupt; the map holds a set of digests per name instead."""
     collide = {
         "scans/1/DICOM/00001.dcm": b"scan-one-data",
         "scans/2/DICOM/00001.dcm": b"scan-two-data",
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/scans/ALL/files"):
+        if dict(request.url.params).get("format") != "json":
             return httpx.Response(200, content=build_zip(collide))
         return httpx.Response(
             200,
@@ -397,9 +391,9 @@ def test_same_named_files_in_different_scans_defeat_verification(tmp_path: Path)
 
     summary = make_service(handler).download_session("XNAT_E00001", tmp_path, verify=True)
 
-    assert summary.success is True, "the download itself is fine"
+    assert summary.success is True
     assert summary.total_files == 2
-    assert summary.verified is False, "both files are byte-perfect; this is the bug"
+    assert summary.verified is True, "both files are byte-perfect"
 
 
 def test_verification_is_skipped_unless_asked_for(tmp_path: Path) -> None:
@@ -415,28 +409,33 @@ def test_verification_is_skipped_unless_asked_for(tmp_path: Path) -> None:
     assert len(seen) == 1, "no checksum listing should be fetched"
 
 
-def test_files_the_server_does_not_list_do_not_fail_verification(tmp_path: Path) -> None:
-    """The server's listing is authoritative for what it knows about; a local
-    file absent from it is not evidence of corruption."""
+def test_verifying_nothing_is_not_a_pass(tmp_path: Path) -> None:
+    """The original defect: when the listing covered none of the downloaded
+    files, every comparison was skipped and verification reported success
+    without checking anything."""
     service = make_service(verifying_handler(build_zip(SCAN_FILES), {}))
 
     summary = service.download_session("XNAT_E00001", tmp_path, verify=True)
 
-    assert summary.verified is True
+    assert summary.success is True, "the download itself is fine"
+    assert summary.verified is False
 
 
-def test_verify_download_uses_the_project_scoped_listing(tmp_path: Path) -> None:
+def test_verify_download_consults_both_listings_project_scoped(tmp_path: Path) -> None:
+    """Scan files and session-level resources live behind different endpoints;
+    checking only one left the other unverified."""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request.url.path)
         return httpx.Response(200, json={"ResultSet": {"Result": []}})
 
-    service = make_service(handler)
-    (tmp_path / "f.dcm").write_bytes(b"data")
+    make_service(handler)._verify_download("XNAT_E00001", tmp_path, project="MYPROJ")
 
-    assert service._verify_download("XNAT_E00001", tmp_path, project="MYPROJ") is True
-    assert seen == ["/data/projects/MYPROJ/experiments/XNAT_E00001/files"]
+    assert seen == [
+        "/data/projects/MYPROJ/experiments/XNAT_E00001/scans/ALL/files",
+        "/data/projects/MYPROJ/experiments/XNAT_E00001/files",
+    ]
 
 
 def test_verify_download_falls_back_to_the_global_listing(tmp_path: Path) -> None:
@@ -448,7 +447,31 @@ def test_verify_download_falls_back_to_the_global_listing(tmp_path: Path) -> Non
 
     make_service(handler)._verify_download("XNAT_E00001", tmp_path)
 
-    assert seen == ["/data/experiments/XNAT_E00001/files"]
+    assert seen == [
+        "/data/experiments/XNAT_E00001/scans/ALL/files",
+        "/data/experiments/XNAT_E00001/files",
+    ]
+
+
+def test_a_session_with_no_scans_still_verifies_its_resources(tmp_path: Path) -> None:
+    """The scans listing 404s for a resource-only session; that must not
+    abort verification of what the other listing does cover."""
+    data = b"physio-recording"
+    (tmp_path / "rest1.pmu").write_bytes(data)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/scans/ALL/files"):
+            return httpx.Response(404, text="no scans")
+        return httpx.Response(
+            200,
+            json={
+                "ResultSet": {
+                    "Result": [{"Name": "rest1.pmu", "digest": hashlib.md5(data).hexdigest()}]
+                }
+            },
+        )
+
+    assert make_service(handler)._verify_download("XNAT_E00001", tmp_path) is True
 
 
 def test_verify_download_detects_a_corrupted_local_file(tmp_path: Path) -> None:
@@ -468,9 +491,10 @@ def test_verify_download_detects_a_corrupted_local_file(tmp_path: Path) -> None:
     assert make_service(handler)._verify_download("XNAT_E00001", tmp_path) is False
 
 
-def test_verify_download_ignores_entries_without_a_digest(tmp_path: Path) -> None:
-    """XNAT omits `digest` for some file types; a blank must not be compared
-    against a real hash and reported as corruption."""
+def test_entries_without_a_digest_are_not_treated_as_a_mismatch(tmp_path: Path) -> None:
+    """XNAT omits `digest` for some file types. A blank must not be compared
+    against a real hash -- but nor can it count as a verified file, so a
+    listing of only such entries verifies nothing."""
     (tmp_path / "scan.dcm").write_bytes(b"whatever")
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -479,4 +503,4 @@ def test_verify_download_ignores_entries_without_a_digest(tmp_path: Path) -> Non
             json={"ResultSet": {"Result": [{"Name": "scan.dcm", "digest": ""}]}},
         )
 
-    assert make_service(handler)._verify_download("XNAT_E00001", tmp_path) is True
+    assert make_service(handler)._verify_download("XNAT_E00001", tmp_path) is False

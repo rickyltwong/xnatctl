@@ -523,42 +523,63 @@ class DownloadService(BaseService):
     ) -> bool:
         """Verify downloaded files against server checksums.
 
+        Both file listings are consulted. ``/files`` returns only the
+        session-level resources, while the scan files this method is usually
+        asked to verify live under ``/scans/ALL/files`` -- checking just the
+        former meant nothing downloaded was ever compared, and verification
+        reported success without doing any (verified live: a session whose
+        ``/files`` listed 12 resource files and whose ``/scans/ALL/files``
+        listed 3112).
+
+        Names are matched on basename against the *set* of digests recorded
+        for that name. XNAT sites that number DICOM files per scan repeat
+        names like ``00001.dcm`` in every scan, so a single-digest map would
+        report a byte-perfect download as corrupt.
+
         Args:
             session_id: Session ID
             download_dir: Directory with downloaded files
             project: Project ID
 
         Returns:
-            True if all checksums match
+            True if every file that could be checked matched, and at least one
+            file was checked. Verifying nothing is not a pass.
         """
-        # Get file list with checksums from server
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/files"
-        else:
-            path = f"/data/experiments/{session_id}/files"
+        base = (
+            f"/data/projects/{project}/experiments/{session_id}"
+            if project
+            else f"/data/experiments/{session_id}"
+        )
 
-        params = {"format": "json"}
-        data = self._get(path, params=params)
-        results = self._extract_results(data)
+        server_checksums: dict[str, set[str]] = {}
+        for path in (f"{base}/scans/ALL/files", f"{base}/files"):
+            try:
+                results = self._extract_results(self._get(path, params={"format": "json"}))
+            except Exception:
+                # A session with no scans 404s on the scans listing; the other
+                # listing may still cover what was downloaded.
+                continue
+            for r in results:
+                name = r.get("Name", "")
+                digest = r.get("digest", "")
+                if name and digest:
+                    server_checksums.setdefault(name, set()).add(digest)
 
-        # Build checksum map
-        server_checksums: dict[str, str] = {}
-        for r in results:
-            name = r.get("Name", "")
-            digest = r.get("digest", "")
-            if name and digest:
-                server_checksums[name] = digest
+        if not server_checksums:
+            return False
 
-        # Verify local files
+        checked = 0
         all_valid = True
         for file_path in download_dir.rglob("*"):
             if not file_path.is_file():
                 continue
 
-            name = file_path.name
-            if name in server_checksums:
-                local_hash = _md5_file(file_path)
-                if local_hash != server_checksums[name]:
-                    all_valid = False
+            digests = server_checksums.get(file_path.name)
+            if not digests:
+                continue
 
-        return all_valid
+            checked += 1
+            if _md5_file(file_path) not in digests:
+                all_valid = False
+
+        return all_valid and checked > 0
