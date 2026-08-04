@@ -104,17 +104,54 @@ class HierarchyService(BaseService):
             )
         return join_api_path("data", "experiments", ref.experiment, *parts)
 
+    @staticmethod
+    def routable_scan_parent(ref: ExperimentRef) -> ExperimentRef:
+        """Return an experiment ref whose ``/scans`` suffix XNAT will route.
+
+        XNAT ignores sub-resource suffixes on
+        ``/data/projects/{P}/experiments/{E}``. It answers ``/scans``,
+        ``/scans/{id}``, ``/scans/ALL/files`` -- and equally a nonsense suffix
+        -- with 200 and the *parent experiment document*. Verified live: on one
+        session ``/scans`` returned a single ``items[]`` record for the
+        experiment, while the subject-scoped and flat forms both returned a
+        23-row ``ResultSet``.
+
+        Two consequences make this worth normalizing centrally rather than at
+        each call site: a listing silently yields zero rows (``extract_rows``
+        finds no ``ResultSet``), and a DELETE resolves to the experiment rather
+        than the scan.
+
+        Routing needs either the subject segment or the flat
+        ``/data/experiments/{E}`` form. When the caller has no subject, fall
+        back to the flat form -- permissions are enforced server-side, so
+        dropping the project from the URL costs nothing but ambiguity. A
+        genuine *label* cannot drop its project, so it is left alone; callers
+        must resolve it to an accession ID first.
+
+        ``experiment_is_label`` means "may be a label" -- callers set it
+        whenever a project is in scope, including for accession IDs -- so the
+        accession-ID shape is what decides, not the flag alone.
+        """
+
+        if not ref.project_id or ref.subject:
+            return ref
+        if ref.experiment_is_label and not _ACCESSION_ID_PATTERN.match(ref.experiment):
+            return ref
+        return ExperimentRef(experiment=ref.experiment)
+
     @classmethod
     def build_scan_collection_path(cls, ref: ExperimentRef) -> str:
         """Build a scan collection path."""
 
-        return cls.build_experiment_path(ref, "scans")
+        return cls.build_experiment_path(cls.routable_scan_parent(ref), "scans")
 
     @classmethod
     def build_scan_path(cls, ref: ScanRef, *parts: str) -> str:
         """Build a scan item path."""
 
-        return cls.build_experiment_path(ref.experiment, "scans", ref.scan_id, *parts)
+        return cls.build_experiment_path(
+            cls.routable_scan_parent(ref.experiment), "scans", ref.scan_id, *parts
+        )
 
     def list_scan_rows(
         self, ref: ExperimentRef, session_xsi_type: str | None

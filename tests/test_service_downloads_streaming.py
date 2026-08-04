@@ -109,7 +109,13 @@ def test_output_directory_is_created_when_missing(tmp_path: Path) -> None:
     assert target.exists()
 
 
-def test_project_scoping_changes_the_endpoint(tmp_path: Path) -> None:
+def test_a_project_does_not_put_the_download_on_an_unrouted_url(tmp_path: Path) -> None:
+    """Passing a project must not move the download off the routed endpoint.
+
+    XNAT ignores the /scans/ALL/files suffix under
+    /data/projects/{P}/experiments/{E} and answers with the experiment
+    document, so the project-scoped variant fetched a ZIP of nothing.
+    """
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -118,7 +124,7 @@ def test_project_scoping_changes_the_endpoint(tmp_path: Path) -> None:
 
     make_service(handler).download_session("XNAT_E00001", tmp_path, project="MYPROJ")
 
-    assert seen[0] == "/data/projects/MYPROJ/experiments/XNAT_E00001/scans/ALL/files"
+    assert seen[0] == "/data/experiments/XNAT_E00001/scans/ALL/files"
 
 
 def test_without_a_project_the_global_endpoint_is_used(tmp_path: Path) -> None:
@@ -432,9 +438,12 @@ def test_verify_download_consults_both_listings_project_scoped(tmp_path: Path) -
 
     make_service(handler)._verify_download("XNAT_E00001", tmp_path, project="MYPROJ")
 
+    # Both listings, and both on the flat form: neither suffix routes under
+    # /data/projects/{P}/experiments/{E}, so a project-scoped verify collected
+    # zero checksums and reported a good download as unverifiable.
     assert seen == [
-        "/data/projects/MYPROJ/experiments/XNAT_E00001/scans/ALL/files",
-        "/data/projects/MYPROJ/experiments/XNAT_E00001/files",
+        "/data/experiments/XNAT_E00001/scans/ALL/files",
+        "/data/experiments/XNAT_E00001/files",
     ]
 
 

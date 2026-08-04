@@ -101,7 +101,8 @@ class DownloadService(BaseService):
         Args:
             session_id: Session ID
             output_dir: Output directory path
-            project: Project ID
+            project: Kept for call compatibility; not used to build the URL,
+                because the project-scoped file listing does not route.
             include_resources: Include session-level resources
             include_assessors: Include assessor data
             pattern: File pattern filter
@@ -118,11 +119,14 @@ class DownloadService(BaseService):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Build download URL
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/scans/ALL/files"
-        else:
-            path = f"/data/experiments/{session_id}/scans/ALL/files"
+        # Build download URL. The flat form is the only one that routes: XNAT
+        # answers /data/projects/{P}/experiments/{E}/scans/ALL/files with the
+        # experiment document instead of the file listing, so the project-scoped
+        # variant downloaded a ZIP of nothing.
+        path = HierarchyService.build_scan_path(
+            ScanRef(experiment=ExperimentRef(experiment=session_id), scan_id="ALL"),
+            "files",
+        )
 
         params: dict[str, Any] = {"format": "zip"}
         if pattern:
@@ -537,19 +541,22 @@ class DownloadService(BaseService):
         report a byte-perfect download as corrupt.
 
         Args:
-            session_id: Session ID
+            session_id: Session ID (accession ID; a label cannot be listed here)
             download_dir: Directory with downloaded files
-            project: Project ID
+            project: Accepted for call compatibility but deliberately not used
+                to build the listing URL -- see below.
 
         Returns:
             True if every file that could be checked matched, and at least one
             file was checked. Verifying nothing is not a pass.
         """
-        base = (
-            f"/data/projects/{project}/experiments/{session_id}"
-            if project
-            else f"/data/experiments/{session_id}"
-        )
+        # Always the flat form. XNAT does not route file listings under
+        # /data/projects/{P}/experiments/{E}: both /files and /scans/ALL/files
+        # return 200 with the experiment document there (verified live -- the
+        # flat URLs returned 12 and 3112 rows, the project-scoped ones a single
+        # items[] record). Building the project-scoped URL would yield zero
+        # checksums and report a byte-perfect download as unverifiable.
+        base = f"/data/experiments/{session_id}"
 
         server_checksums: dict[str, set[str]] = {}
         for path in (f"{base}/scans/ALL/files", f"{base}/files"):

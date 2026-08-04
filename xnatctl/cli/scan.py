@@ -34,11 +34,18 @@ from xnatctl.services.hierarchy import HierarchyService
 def _inspect_experiment(
     hierarchy: HierarchyService, experiment_ref: ExperimentRef
 ) -> tuple[ExperimentRef, str | None]:
-    """Inspect the parent experiment and derive canonical ID and xsiType.
+    """Inspect the parent experiment and derive canonical ID, subject and xsiType.
 
     Nested scan endpoints are most reliable when addressed with the canonical
     experiment ID. This helper also extracts the experiment xsiType so scan list
     queries can request the correct non-imaging scan subtype when needed.
+
+    The owning subject is carried forward too, because XNAT does not route
+    sub-resource suffixes on ``/data/projects/{P}/experiments/{E}``: it answers
+    ``/scans`` -- or any other suffix -- with the parent experiment document
+    instead of the sub-resource. Inserting the subject segment yields
+    ``/data/projects/{P}/subjects/{S}/experiments/{E}/scans``, which routes
+    correctly and still enforces the project ACL.
 
     Args:
         hierarchy: Hierarchy service.
@@ -55,6 +62,7 @@ def _inspect_experiment(
         return experiment_ref, None
 
     resolved_id: str | None = None
+    resolved_subject: str | None = None
     session_xsi: str | None = None
 
     def _looks_like_experiment(fields: dict[str, Any]) -> bool:
@@ -75,27 +83,60 @@ def _inspect_experiment(
         session_xsi = str(fields.get("xsiType") or meta.get("xsi:type") or "") or None
         if _looks_like_experiment(fields) or "xsi:type" in meta:
             resolved_id = str(fields.get("ID") or fields.get("id") or "") or None
+            resolved_subject = str(fields.get("subject_ID") or "") or None
     else:
         rows = hierarchy.extract_rows(data)
         if rows:
             session_xsi = str(rows[0].get("xsiType") or "") or None
             if _looks_like_experiment(rows[0]):
                 resolved_id = str(rows[0].get("ID") or "") or None
+                resolved_subject = str(rows[0].get("subject_ID") or "") or None
 
     # Carry project/subject scope forward so nested scan/resource calls stay
     # on project-scoped URLs (respects project ACLs, matches old behavior).
     # Use the resolved accession ID as the experiment with experiment_is_label=False.
-    if resolved_id:
+    subject = experiment_ref.subject
+    subject_is_label = experiment_ref.subject_is_label
+    # The subject segment is what makes the nested suffix route at all (see the
+    # docstring), but XNAT only accepts it under a project.
+    if experiment_ref.project_id and not subject and resolved_subject:
+        subject = resolved_subject
+        subject_is_label = False
+
+    if resolved_id or subject != experiment_ref.subject:
         canonical_ref = ExperimentRef(
-            experiment=resolved_id,
+            experiment=resolved_id or experiment_ref.experiment,
             project_id=experiment_ref.project_id,
-            subject=experiment_ref.subject,
-            experiment_is_label=False,
-            subject_is_label=experiment_ref.subject_is_label,
+            subject=subject,
+            experiment_is_label=(False if resolved_id else experiment_ref.experiment_is_label),
+            subject_is_label=subject_is_label,
         )
     else:
         canonical_ref = experiment_ref
     return canonical_ref, session_xsi
+
+
+def _require_scan_addressable(ref: ExperimentRef) -> None:
+    """Refuse to issue a scan request that XNAT would apply to the experiment.
+
+    ``HierarchyService.routable_scan_parent`` rewrites a project-scoped
+    experiment *ID* to the flat form so its ``/scans`` suffix routes. A genuine
+    *label* has no such escape: it cannot drop the project, so the URL stays on
+    the prefix XNAT answers with the experiment document. Failing here beats
+    reporting an empty scan list, or aiming a DELETE at the session.
+
+    Reached only when inspection could not resolve the label to an accession
+    ID -- on the happy path ``_inspect_experiment`` has already done so.
+    """
+    # Unroutable exactly when the builder could not rewrite it to a form
+    # that addresses a scan.
+    if ref.project_id and not ref.subject and HierarchyService.routable_scan_parent(ref) == ref:
+        raise click.ClickException(
+            f"Could not resolve experiment '{ref.experiment}' in project "
+            f"'{ref.project_id}' to an accession ID, and scans cannot be "
+            "addressed by experiment label alone. Retry with -S/--subject, or "
+            "pass the accession ID to -E."
+        )
 
 
 def _build_experiment_ref(
@@ -174,6 +215,7 @@ def scan_list(ctx: Context, session_id: str, project: str | None, subject: str |
     hierarchy = HierarchyService(client)
     source_ref = _build_experiment_ref(project, subject, session_id)
     experiment_ref, session_xsi = _inspect_experiment(hierarchy, source_ref)
+    _require_scan_addressable(experiment_ref)
 
     results = hierarchy.list_scan_rows(experiment_ref, session_xsi)
 
@@ -250,6 +292,7 @@ def scan_show(
     hierarchy = HierarchyService(client)
     source_ref = _build_experiment_ref(project, subject, session_id)
     experiment_ref, _session_xsi = _inspect_experiment(hierarchy, source_ref)
+    _require_scan_addressable(experiment_ref)
     scan_ref = ScanRef(experiment=experiment_ref, scan_id=scan_id)
     resp = client.get_json(hierarchy.build_scan_path(scan_ref))
     scan_data: dict[str, Any] | None
@@ -343,6 +386,7 @@ def scan_delete(
     hierarchy = HierarchyService(client)
     source_ref = _build_experiment_ref(project, subject, session_id)
     experiment_ref, session_xsi = _inspect_experiment(hierarchy, source_ref)
+    _require_scan_addressable(experiment_ref)
 
     # If wildcard, get all scan IDs
     if scan_ids is None:
