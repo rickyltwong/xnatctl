@@ -118,6 +118,7 @@ Trigger a catalog refresh for a specific project (admin operation):
    workflows
    administration
    xnat-compatibility
+   stability
 
 .. toctree::
    :maxdepth: 2

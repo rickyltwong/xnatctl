@@ -451,7 +451,12 @@ class TestSessionDownloadResourceFlags:
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """--include-resources emits DeprecationWarning and maps to --session-resources."""
+        """--include-resources warns on stderr and maps to --session-resources.
+
+        It used to warn through ``warnings.warn(DeprecationWarning)``, which
+        Python hides by default -- so the deprecation was invisible to the
+        people who needed to act on it.
+        """
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
@@ -465,13 +470,7 @@ class TestSessionDownloadResourceFlags:
             }
         }
 
-        with (
-            authenticated_seams(ctx, mock_client),
-            pytest.warns(
-                DeprecationWarning,
-                match="--include-resources is deprecated",
-            ),
-        ):
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -489,6 +488,9 @@ class TestSessionDownloadResourceFlags:
             )
 
         assert result.exit_code == 0
+        assert "--include-resources is deprecated" in result.stderr
+        assert "will be removed in 0.5.0" in result.stderr
+        assert "use --session-resources instead" in result.stderr
         # --include-resources maps to session_resources=True
         assert "Session resources: True" in result.output
 

@@ -9,7 +9,7 @@ import sys
 import traceback
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 import click
 
@@ -485,33 +485,90 @@ def batch_option(f: F) -> F:
     return wrapper  # type: ignore
 
 
+class DeprecatedFlag(NamedTuple):
+    """A CLI flag that still works but is scheduled for removal."""
+
+    replacement: str
+    """What to use instead. Empty when the flag simply no longer does anything."""
+
+    removed_in: str
+    """The release that deletes the flag."""
+
+
+DEPRECATED_FLAGS: dict[str, DeprecatedFlag] = {
+    "--no-parallel": DeprecatedFlag("--workers 1", "0.5.0"),
+    "--parallel": DeprecatedFlag("", "0.5.0"),
+    "--unzip": DeprecatedFlag("--extract", "0.5.0"),
+    "--no-unzip": DeprecatedFlag("--no-extract", "0.5.0"),
+    "--cleanup": DeprecatedFlag("", "0.5.0"),
+    "--no-cleanup": DeprecatedFlag("--extract --keep-zips", "0.5.0"),
+    "--include-resources": DeprecatedFlag("--session-resources", "0.5.0"),
+    "--session": DeprecatedFlag("--experiment", "0.5.0"),
+    "--gradual": DeprecatedFlag("--mode gradual", "0.5.0"),
+    "--archive-format": DeprecatedFlag("--mode", "0.5.0"),
+}
+"""Every deprecated flag, what replaces it, and when it goes away.
+
+Registering a flag here is what dates the deprecation: the warning text names
+the removal release from this table, so nobody has to read the changelog to
+find out how long their script has. ``tests/test_deprecation_policy.py`` walks
+the whole command tree and fails on any deprecated option missing from it,
+which is what stops a flag being quietly retired without notice.
+
+The removal release is at least two MINOR releases out from the one that
+deprecated the flag -- see ``docs/stability.rst``.
+"""
+
+
+def deprecation_message(old_flag: str) -> str:
+    """Build the stderr warning for a deprecated flag.
+
+    Args:
+        old_flag: The deprecated flag name, as registered in DEPRECATED_FLAGS.
+
+    Returns:
+        The full warning line.
+
+    Raises:
+        KeyError: If the flag is not registered.
+    """
+    entry = DEPRECATED_FLAGS[old_flag]
+    guidance = f"use {entry.replacement} instead" if entry.replacement else "it has no effect"
+    return (
+        f"Warning: {old_flag} is deprecated and will be removed in {entry.removed_in}; {guidance}"
+    )
+
+
+def _flag_given(ctx: click.Context, param: click.Parameter) -> bool:
+    """Report whether the user actually typed this option."""
+    return bool(
+        param.name
+        and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
+    )
+
+
 def _make_alias_cb(
     old_flag: str,
-    new_flag: str,
     target_param: str,
     target_value: Any,
 ) -> Callable[[click.Context, click.Parameter, Any], Any]:
-    """Create a Click callback that warns on deprecated flag and sets a fixed value.
+    """Create a Click callback that warns on a deprecated flag and sets a fixed value.
 
     Args:
-        old_flag: The deprecated flag name (e.g., "--unzip").
-        new_flag: The replacement flag name (e.g., "--extract").
+        old_flag: The deprecated flag name (e.g., "--unzip"). Must be registered
+            in DEPRECATED_FLAGS; the lookup happens here, at import time, so an
+            unregistered flag breaks the test suite instead of a user's command.
         target_param: The Click parameter name to set on ctx.params.
         target_value: The fixed value to set (NOT the raw flag value).
 
     Returns:
         A Click callback function.
     """
+    message = deprecation_message(old_flag)
 
     def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
-        if (
-            param.name
-            and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
-        ):
-            click.echo(
-                f"Warning: {old_flag} is deprecated, use {new_flag} instead",
-                err=True,
-            )
+        if _flag_given(ctx, param):
+            click.echo(message, err=True)
             ctx.params[target_param] = target_value
         return value
 
@@ -520,7 +577,6 @@ def _make_alias_cb(
 
 def _make_forwarding_alias_cb(
     old_flag: str,
-    new_flag: str,
     target_param: str,
 ) -> Callable[[click.Context, click.Parameter, Any], Any]:
     """Create a Click callback that warns and forwards the user's raw value.
@@ -529,25 +585,39 @@ def _make_forwarding_alias_cb(
     the user provided (useful for value-taking options like ``--session LABEL``).
 
     Args:
-        old_flag: The deprecated flag name.
-        new_flag: The replacement flag name.
+        old_flag: The deprecated flag name. Must be registered in DEPRECATED_FLAGS.
         target_param: The Click parameter name to set on ctx.params.
 
     Returns:
         A Click callback function.
     """
+    message = deprecation_message(old_flag)
 
     def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
-        if (
-            value is not None
-            and param.name
-            and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
-        ):
-            click.echo(
-                f"Warning: {old_flag} is deprecated, use {new_flag} instead",
-                err=True,
-            )
+        if value is not None and _flag_given(ctx, param):
+            click.echo(message, err=True)
             ctx.params[target_param] = value
+        return value
+
+    return callback
+
+
+def _make_noop_cb(old_flag: str) -> Callable[[click.Context, click.Parameter, Any], Any]:
+    """Create a Click callback for a deprecated flag that no longer does anything.
+
+    Accepting the flag in silence looks like it still works. Warning says so.
+
+    Args:
+        old_flag: The deprecated flag name. Must be registered in DEPRECATED_FLAGS.
+
+    Returns:
+        A Click callback function.
+    """
+    message = deprecation_message(old_flag)
+
+    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
+        if _flag_given(ctx, param):
+            click.echo(message, err=True)
         return value
 
     return callback
@@ -573,13 +643,14 @@ def parallel_options(f: F) -> F:
         is_flag=True,
         hidden=True,
         expose_value=False,
-        callback=_make_alias_cb("--no-parallel", "--workers 1", "workers", 1),
+        callback=_make_alias_cb("--no-parallel", "workers", 1),
     )
     @click.option(
         "--parallel",
         is_flag=True,
         hidden=True,
         expose_value=False,
+        callback=_make_noop_cb("--parallel"),
         help="Deprecated: parallel is the default",
     )
     @wraps(f)
