@@ -10,6 +10,7 @@ import click
 from xnatctl.cli.common import (
     Context,
     _make_alias_cb,
+    _make_noop_cb,
     confirm_destructive,
     default_project_from_context,
     global_options,
@@ -490,22 +491,29 @@ def scan_delete(
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--unzip", "--extract", "extract", True),
+    callback=_make_alias_cb("--unzip", "extract", True),
 )
 @click.option(
     "--no-unzip",
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--no-unzip", "--no-extract", "extract", False),
+    callback=_make_alias_cb("--no-unzip", "extract", False),
 )
-@click.option("--cleanup", is_flag=True, hidden=True, expose_value=False, help="Deprecated: noop")
+@click.option(
+    "--cleanup",
+    is_flag=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_noop_cb("--cleanup"),
+    help="Deprecated: noop",
+)
 @click.option(
     "--no-cleanup",
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--no-cleanup", "--extract --keep-zips", "keep_zips", True),
+    callback=_make_alias_cb("--no-cleanup", "keep_zips", True),
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options

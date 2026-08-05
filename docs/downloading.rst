@@ -142,7 +142,8 @@ focused on imaging data.
 .. note::
 
    ``--session-resources`` replaces the deprecated ``--include-resources`` flag.
-   The old flag still works but will be removed in a future release.
+   The old flag still works, warns on stderr, and is removed in 0.5.0. See
+   :doc:`stability`.
 
 Extracting ZIPs automatically
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

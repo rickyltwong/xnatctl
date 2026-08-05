@@ -14,6 +14,7 @@ from xnatctl.cli.common import (
     Context,
     _make_alias_cb,
     _make_forwarding_alias_cb,
+    _make_noop_cb,
     default_project_from_context,
     global_options,
     handle_errors,
@@ -591,7 +592,9 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     "--include-resources",
     is_flag=True,
     hidden=True,
-    help="[Deprecated] Use --session-resources instead",
+    expose_value=False,
+    callback=_make_alias_cb("--include-resources", "session_resources", True),
+    help="Deprecated: use --session-resources instead",
 )
 @click.option(
     "--extract/--no-extract", default=False, help="Extract ZIPs and remove archives after download"
@@ -604,20 +607,21 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--unzip", "--extract", "extract", True),
+    callback=_make_alias_cb("--unzip", "extract", True),
 )
 @click.option(
     "--no-unzip",
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--no-unzip", "--no-extract", "extract", False),
+    callback=_make_alias_cb("--no-unzip", "extract", False),
 )
 @click.option(
     "--cleanup",
     is_flag=True,
     hidden=True,
     expose_value=False,
+    callback=_make_noop_cb("--cleanup"),
     help="Deprecated: noop (cleanup is implicit with --extract)",
 )
 @click.option(
@@ -625,7 +629,7 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--no-cleanup", "--extract --keep-zips", "keep_zips", True),
+    callback=_make_alias_cb("--no-cleanup", "keep_zips", True),
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
@@ -641,7 +645,6 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     resource: tuple[str, ...],
     exclude_resource: tuple[str, ...],
     session_resources: bool,
-    include_resources: bool,
     extract: bool,
     keep_zips: bool,
     dry_run: bool,
@@ -665,22 +668,11 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         xnatctl session download -E XNAT_E00001 --out ./data --session-resources
         xnatctl session download -E XNAT_E00001 --out ./data --dry-run
     """
-    import warnings
-
     from xnatctl.core.validation import validate_path_writable
 
     # Map extract/keep_zips to internal unzip/cleanup
     unzip = extract or keep_zips
     cleanup = extract and not keep_zips
-
-    # Handle deprecated --include-resources
-    if include_resources:
-        warnings.warn(
-            "--include-resources is deprecated, use --session-resources instead",
-            DeprecationWarning,
-            stacklevel=1,
-        )
-        session_resources = True
 
     # Validate mutual exclusion
     if resource and exclude_resource:
@@ -844,7 +836,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     "--session",
     hidden=True,
     expose_value=False,
-    callback=_make_forwarding_alias_cb("--session", "--experiment", "experiment"),
+    callback=_make_forwarding_alias_cb("--session", "experiment"),
 )
 @click.option("--username", "-u", hidden=True, help="XNAT username (REST upload)")
 @click.option(
@@ -875,14 +867,14 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--gradual", "--mode gradual", "mode", "gradual"),
+    callback=_make_alias_cb("--gradual", "mode", "gradual"),
 )
 @click.option(
     "--archive-format",
     type=click.Choice(["tar", "zip"]),
     hidden=True,
     expose_value=False,
-    callback=_make_forwarding_alias_cb("--archive-format", "--mode", "mode"),
+    callback=_make_forwarding_alias_cb("--archive-format", "mode"),
 )
 @click.option(
     "--zip-to-tar/--no-zip-to-tar",
@@ -1062,7 +1054,7 @@ def session_upload(
     "--session",
     hidden=True,
     expose_value=False,
-    callback=_make_forwarding_alias_cb("--session", "--experiment", "experiment"),
+    callback=_make_forwarding_alias_cb("--session", "experiment"),
 )
 @click.option(
     "--workers",
