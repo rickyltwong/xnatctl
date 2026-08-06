@@ -125,6 +125,7 @@ Trigger a catalog refresh for a specific project (admin operation):
    :caption: Development
 
    debugging
+   performance
    contributing
    adr/README
    changelog
