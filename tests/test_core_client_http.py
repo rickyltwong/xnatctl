@@ -647,3 +647,39 @@ class TestNoHttpxExceptionEscapes:
             client.get_json("/data/projects")
 
         assert len(calls) == 1
+
+
+class TestPaginateTruncationIsAudible:
+    """Stopping early is a guess, and the guess must be visible.
+
+    The stop condition cannot tell "this endpoint does not paginate" (right to
+    stop) from "this server honours limit but ignores offset" (stopping
+    truncates). Logging that at DEBUG hid the difference from everyone who was
+    not already debugging, so a short listing that should have been long would
+    simply be believed.
+    """
+
+    def test_it_warns_rather_than_whispering(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        client, _ = make_client(lambda _r: httpx.Response(200, json=page(7)))
+
+        with caplog.at_level(logging.WARNING, logger="xnatctl.core.client"):
+            list(client.paginate("/data/projects", page_size=2))
+
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings, "an early stop was not surfaced above DEBUG"
+        assert "incomplete" in warnings[0].getMessage()
+
+    def test_a_normal_walk_stays_quiet(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The warning must not cry wolf on every ordinary listing."""
+        import logging
+
+        pages = [page(2, start=0), page(2, start=2), page(1, start=4)]
+        seq = iter(pages)
+        client, _ = make_client(lambda _r: httpx.Response(200, json=next(seq)))
+
+        with caplog.at_level(logging.WARNING, logger="xnatctl.core.client"):
+            list(client.paginate("/data/projects", page_size=2))
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

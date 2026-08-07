@@ -241,3 +241,106 @@ class TestRefreshPropagation:
         assert refresher.refresh("OLD") == "FRESH"
 
         assert len(calls) == 1, "re-authenticated twice for one expiry"
+
+
+class TestTheBatchPathAlsoReauthenticates:
+    """A 401 mid-upload used to kill the batch.
+
+    Only the gradual path re-authenticated; ``_upload_single_archive`` returned
+    "Authentication failed: invalid or expired session" even with credentials
+    in hand. XNAT evicts sessions when an account exceeds its concurrent-session
+    limit -- routine when several workers share a service account -- so a long
+    parallel upload failed batch by batch against a healthy server.
+    """
+
+    @staticmethod
+    def _run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, refresher: object | None):
+        """Upload one archive whose first attempt 401s, and report the calls."""
+        import httpx
+
+        import xnatctl.services.uploads as uploads
+
+        archive = tmp_path / "batch_1.tar"
+        archive.write_bytes(b"tar-ish")
+        posts: list[dict[str, str]] = []
+
+        real_client = httpx.Client
+
+        class FakeClient:
+            def __init__(self, *a: object, **k: object) -> None:
+                pass
+
+            def __enter__(self) -> FakeClient:
+                return self
+
+            def __exit__(self, *a: object) -> None:
+                return None
+
+            def post(self, url: str, **kw: object) -> httpx.Response:
+                jar = dict(kw.get("cookies") or {})
+                posts.append(jar)
+                token = jar.get("JSESSIONID")
+                status = 200 if token == "FRESH" else 401
+                return httpx.Response(status, request=httpx.Request("POST", "https://x" + url))
+
+            def delete(self, *a: object, **k: object) -> None:
+                return None
+
+        assert real_client
+        monkeypatch.setattr(uploads.httpx, "Client", FakeClient)
+
+        ok, err = uploads._upload_single_archive(
+            base_url="https://xnat.example.org",
+            username="u",
+            password="p",
+            session_token="STALE",
+            verify_ssl=True,
+            timeout=30,
+            archive_path=archive,
+            project="P",
+            subject="S",
+            session="E",
+            import_handler="DICOM-zip",
+            ignore_unparsable=True,
+            overwrite="delete",
+            direct_archive=True,
+            session_refresher=refresher,
+        )
+        return ok, err, posts
+
+    def test_a_stale_token_is_refreshed_and_the_batch_retried(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        refresher = MagicMock()
+        refresher.refresh.return_value = "FRESH"
+
+        ok, err, posts = self._run(monkeypatch, tmp_path, refresher)
+
+        assert ok, f"the batch failed instead of reauthenticating: {err}"
+        refresher.refresh.assert_called_once_with("STALE")
+        assert [p.get("JSESSIONID") for p in posts] == ["STALE", "FRESH"]
+
+    def test_without_a_refresher_the_old_behaviour_stands(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Credential-only workers log in per batch; there is nothing to refresh."""
+        ok, err, posts = self._run(monkeypatch, tmp_path, None)
+
+        assert not ok
+        assert "expired" in err.lower()
+        assert len(posts) == 1
+
+    def test_a_refresh_that_returns_the_same_token_does_not_loop(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        refresher = MagicMock()
+        refresher.refresh.return_value = "STALE"  # reauth got us nowhere
+
+        ok, _err, posts = self._run(monkeypatch, tmp_path, refresher)
+
+        assert not ok
+        assert len(posts) == 1, "retried with a token already known to be dead"

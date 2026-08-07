@@ -29,6 +29,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -50,10 +51,41 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(name) or default
 
 
+#: Hosts this tier will point at without an explicit acknowledgement.
+LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"})
+
+#: Set to "yes" to allow a non-local XNATCTL_TEST_URL.
+ACK_ENV = "XNATCTL_TEST_I_KNOW_THIS_IS_NOT_PRODUCTION"
+
+
+def _require_ack_for_remote(url: str) -> None:
+    """Refuse to run destructive fixtures against a remote host by accident.
+
+    This tier creates projects and deletes them with ``removeFiles=true``. One
+    mistyped or left-over ``XNATCTL_TEST_URL`` in a shell -- or a CI variable
+    inherited by a job nobody meant to point anywhere -- is all it takes to run
+    that against a server holding real imaging data. Localhost needs no
+    ceremony; anything else has to be said out loud.
+    """
+    host = urlparse(url).hostname or ""
+    if host in LOCAL_HOSTS:
+        return
+    if os.environ.get(ACK_ENV, "").strip().lower() in {"yes", "1", "true"}:
+        return
+    pytest.exit(
+        f"Refusing to run the integration tier against '{host}': it creates and "
+        f"deletes projects, and that host is not local. If {url} really is a "
+        f"throwaway server, set {ACK_ENV}=yes.",
+        returncode=2,
+    )
+
+
 @pytest.fixture(scope="session")
 def server_url() -> str:
     """Base URL of the XNAT under test."""
-    return _env("XNATCTL_TEST_URL", DEFAULT_URL).rstrip("/")
+    url = _env("XNATCTL_TEST_URL", DEFAULT_URL).rstrip("/")
+    _require_ack_for_remote(url)
+    return url
 
 
 @pytest.fixture(scope="session")
