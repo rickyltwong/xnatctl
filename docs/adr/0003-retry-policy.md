@@ -1,6 +1,6 @@
 # 0003. Retry only what retrying can fix
 
-- **Status:** Accepted
+- **Status:** Accepted, amended by [ADR-0011](0011-idempotency-gated-server-error-retries.md)
 - **Date:** 2026-08-04
 
 ## Context

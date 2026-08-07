@@ -15,7 +15,7 @@ records stay, marked as superseded and pointing at what replaced them.
 |---|---|---|
 | [0001](0001-http-timeout-policy.md) | Split the HTTP timeout into phases rather than one scalar | Accepted |
 | [0002](0002-pure-http-no-pyxnat.md) | Talk to XNAT over plain HTTP, not pyxnat | Accepted |
-| [0003](0003-retry-policy.md) | Retry only what retrying can fix | Accepted |
+| [0003](0003-retry-policy.md) | Retry only what retrying can fix | Accepted (amended by 0011) |
 | [0004](0004-reauthentication.md) | Re-authenticate transparently, and propagate the new token | Accepted |
 | [0005](0005-thread-local-http-clients.md) | Give each upload worker its own httpx client | Accepted |
 | [0006](0006-session-token-cache.md) | Cache the session token in an owner-private file, expiring on idleness | Accepted |
@@ -23,6 +23,7 @@ records stay, marked as superseded and pointing at what replaced them.
 | [0008](0008-lazy-imports.md) | Import inside functions where it breaks a cycle or defers a cost | Accepted |
 | [0009](0009-cooperative-cancellation.md) | Cancel parallel work cooperatively, and make the wait interruptible | Accepted |
 | [0010](0010-scan-url-routing.md) | Address scans through the subject, or through the flat experiment URL | Accepted |
+| [0011](0011-idempotency-gated-server-error-retries.md) | Retry 500/502/504 only where a repeat is safe | Accepted |
 
 ## Related
 
