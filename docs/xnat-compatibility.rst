@@ -17,10 +17,18 @@ area rather than as a single minimum version number.
 Compatibility model
 -------------------
 
-``xnatctl`` is designed and tested against XNAT 1.8.x. It relies on the stable
-REST API surface that XNAT exposes under ``/data/`` and ``/xapi/``, using
-standard session-cookie authentication. No XNAT-specific client libraries are
-used -- all communication is plain HTTP through ``httpx``.
+``xnatctl`` is designed for XNAT 1.8.x and later. It relies on the stable REST
+API surface that XNAT exposes under ``/data/`` and ``/xapi/``, using standard
+session-cookie authentication. No XNAT-specific client libraries are used --
+all communication is plain HTTP through ``httpx``.
+
+**What is actually tested.** An integration suite runs against a real XNAT
+**1.9.2.1** in CI: it uploads a synthetic two-scan DICOM session, waits for it
+to archive, downloads it back, and checks the image data survived. That version
+is pinned because it is what the maintainers run in production. Earlier 1.8.x
+servers are supported and used in practice, but are not exercised
+automatically -- if something breaks on one, please report it. See
+:doc:`contributing` for how to point the suite at your own server.
 
 Where a feature requires a specific minimum XNAT version or server-side
 configuration, the relevant section below calls it out explicitly. If you are
@@ -32,7 +40,25 @@ Feature notes
 
 The subsections below break down compatibility by feature area. If a command
 family is not listed here, it uses the same stable REST endpoints as the core
-operations and is expected to work on any supported XNAT 1.8.x server.
+operations and is expected to work on any supported XNAT 1.8.x or 1.9.x server.
+
+.. note::
+
+   Two server behaviours surprise people often enough to state up front, both
+   confirmed against a live 1.9.2.1 server:
+
+   **Downloaded files are not byte-identical to what you uploaded.** XNAT
+   ships with a site-wide anonymization script enabled, so it rewrites every
+   DICOM as it archives. The image data is preserved; the file bytes and many
+   identifiers are not. Checksumming downloads against your originals will
+   report a mismatch for every file, and that is the server working as
+   designed rather than data loss.
+
+   **A project set to auto-archive overrides the upload destination.** No
+   import flag -- neither ``--prearchive`` nor the direct-archive default --
+   can hold a session in the prearchive of a project whose prearchive setting
+   is "auto-archive". To require manual review, change the setting on the
+   project itself.
 
 Core REST operations
 ^^^^^^^^^^^^^^^^^^^^
