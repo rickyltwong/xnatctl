@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.3.0 - 2026-08-07
 
 A large hardening release. The themes: credentials stop leaking, failures stop
 lying, and Ctrl+C works.
