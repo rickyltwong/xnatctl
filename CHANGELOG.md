@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+A large hardening release. The themes: credentials stop leaking, failures stop
+lying, and Ctrl+C works.
+
 **Breaking**
 
 - `auth login --password <value>`, `session upload --password <value>`, and
@@ -12,6 +15,112 @@ All notable changes to this project will be documented in this file.
   shell history). Passing a value is now a usage error (exit 2). Use
   `--password-stdin` / `--dest-pass-stdin`, the `XNAT_PASS` env var, stored
   profile credentials, or the interactive prompt.
+- **stdout is data only.** Success lines, progress bars, confirmation prompts,
+  dry-run previews, and the "No results" notice now go to stderr. Piping
+  `-o json` no longer interleaves status text with the JSON, and redirecting
+  stdout no longer kills the progress bar. A script that captured progress
+  text from stdout must read stderr instead.
+- **Exit codes are differentiated.** Failures used to exit 1 uniformly; they
+  now exit 3 (auth), 4 (network), 5 (not found), 6 (permission), 7 (cancelled),
+  or 1 (general). Click keeps 2 for usage errors. Codes only ever became *more*
+  specific, so `!= 0` tests are unaffected — `== 1` tests are not.
+
+**Features**
+
+- **TLS for DICOM C-STORE.** `session upload-dicom` sent pixel data and its
+  identifiers in cleartext with no way to encrypt them. `--tls` turns on
+  verified TLS; `--tls-ca-bundle`, `--tls-cert`, and `--tls-key` cover private
+  CAs and mutual TLS, each with an `XNAT_DICOM_TLS*` environment equivalent.
+  There is deliberately no "skip verification" mode. Plaintext transfers now
+  log that they were unencrypted.
+- **Passwords can live in the OS keychain.** `xnatctl config set-password`
+  stores the password via `keyring` and writes `password_source: keyring` to
+  the profile instead of a plaintext `password`. Needs the `xnatctl[keyring]`
+  extra.
+- **Ctrl+C stops a parallel transfer.** It previously had to wait out every
+  in-flight retry backoff first — up to ~50 seconds. Workers now share a
+  cancellation token and stop within a fraction of a second.
+- **A local audit trail.** Destructive commands append a JSON line to
+  `~/.config/xnatctl/audit.log` (mode 0600, rotates once at 10 MB) recording
+  the command, its targets, and whether it was a dry run.
+- **`--verbose` diagnoses things.** The client, auth, and service layers emit
+  structured diagnostics, and `XNATCTL_DEBUG=1` adds full tracebacks plus an
+  httpx wire trace. Secrets are redacted on the way out.
+- **`resource` commands work at every hierarchy level.** `resource
+  download|upload|list` were experiment-only and returned a 500 when handed a
+  project ID. They now take `-P/--project` and `-S/--subject`.
+- **Actionable errors.** Failures print one line plus a suggested next step
+  instead of a traceback — including on the `auth` commands, which previously
+  bypassed the shared error path entirely and so never showed the hints.
+- **Deprecated flags now say when they die.** Warnings name the removal
+  release (`--unzip is deprecated and will be removed in 0.5.0; use --extract
+  instead`) and go to stderr. Three flags that were accepted in total silence
+  now warn, and `--include-resources` — which warned through a
+  `DeprecationWarning` Python hides by default — is visible at last. The
+  policy is documented in the new Stability page.
+- Shell completion emits Click's own scripts, so `xnatctl proj<TAB>` completes
+  to `project` rather than `plain,project`.
+- New documentation: a Stability and Deprecation Policy page (what scripts may
+  bind to, and for how long), a Performance page (measured throughput and peak
+  RSS for the transfer paths), and `docs/adr/` recording ten decisions that
+  look like mistakes without their context.
+
+**Fixes**
+
+- **`scan` commands on a project-scoped URL addressed the session, not the
+  scan.** XNAT ignores sub-resource suffixes under
+  `/data/projects/{P}/experiments/{E}`, answering with the parent experiment
+  document — so `scan list -P` reported nothing and `scan delete -P` aimed its
+  DELETE at the whole session. Scan URLs are now built in a form XNAT routes,
+  and a request that cannot be made safe is refused with an explanation.
+- **Download checksum verification never compared anything.** It fetched the
+  session-level file listing while the download took scan files; the two sets
+  do not overlap, so every file was skipped and the function returned its
+  initial `True`. Verified against a live server: 12 files listed against 3112
+  downloaded.
+- **`prearchive archive|rebuild|move` claimed success regardless.** XNAT
+  reports these failures in the body of an HTTP 200, so all three now inspect
+  the body before reporting success.
+- **Pagination could loop forever.** `XNATClient.paginate()` on an endpoint
+  XNAT does not paginate — `/data/projects` among them — advanced the offset
+  indefinitely and re-yielded every row each pass. Found by the new integration
+  tier at offset 151450.
+- **No httpx exception escapes the client.** Raw `httpx` errors used to reach
+  users as tracebacks. Every failure is now an `XNATCtlError` subtype, checked
+  by walking httpx's whole exception tree rather than spot-checking names —
+  which is how `TooManyRedirects`, `LocalProtocolError`, and `CloseError` were
+  found still leaking.
+- **Retries got smarter.** 429 and `Retry-After` (both delta-seconds and
+  HTTP-date) are honoured with a 300s cap; backoff has full jitter so parallel
+  workers stop re-stampeding a struggling server; and a request that failed
+  *after* being sent is only retried when the method is idempotent.
+- **Uploads stop retrying 400s that retrying cannot fix.** A misconfigured
+  upload burned 403 attempts over half an hour before failing; permanent
+  import errors are now recognised and fail in about 5 attempts and under a
+  second, while genuinely transient ones still retry.
+- **A session that expires mid-transfer no longer fails the transfer.** Worker
+  threads propagate a refreshed token back to the shared client, and cached
+  sessions expire on idle time rather than from creation — matching how XNAT
+  actually retires a JSESSIONID.
+- **Connect failures fail in ~10 seconds, not 6 hours.** The single timeout
+  covering both connect and read is split; the generous ceiling now applies
+  only to reads, where large DICOM transfers need it.
+- **Credentials stop leaking into files and logs.** The session cache and
+  `config.yaml` are created owner-private (0600) atomically rather than
+  world-readable-then-fixed, URL userinfo and query secrets are redacted
+  everywhere including logger output, and a world-readable config holding a
+  plaintext password now warns.
+- **Disabled TLS is impossible to miss.** `verify_ssl: false` prints a warning,
+  `XNAT_VERIFY_SSL` is parsed strictly instead of treating any value as true,
+  and a new `ca_bundle` profile field offers the secure alternative for
+  self-signed certificates.
+- Failed uploads and downloads exit non-zero under `-o json` instead of
+  reporting failure in the payload and success in the exit code.
+- `whoami` and `health ping` honour `--profile`, `-o`, and `-q`.
+- Temporary archives are no longer left behind by `resource upload`.
+- Windows: file modes are no longer treated as meaningful there, where
+  `os.stat` reports 0666/0777 regardless of the actual ACL.
+- Help text no longer rewraps example blocks into unreadable paragraphs.
 
 ## 0.2.11 - 2026-07-21
 

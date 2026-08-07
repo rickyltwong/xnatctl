@@ -193,15 +193,21 @@ profiles:
   production:
     url: https://xnat.example.org
     username: myuser          # optional -- can also use env vars
-    password: mypassword      # optional -- can also use env vars
+    password_source: keyring  # password lives in the OS keychain
     verify_ssl: true
     timeout: 30
     default_project: MYPROJECT
 
   development:
     url: https://xnat-dev.example.org
-    verify_ssl: false
+    ca_bundle: /etc/ssl/dev-ca.pem   # trust a private CA, rather than
+                                     # switching verification off
 ```
+
+Store the password in your OS keychain with `xnatctl config set-password
+production` (needs the `xnatctl[keyring]` extra); that is what writes
+`password_source: keyring`. An inline `password:` still works, but xnatctl
+warns when the file holding it is readable by other users.
 
 ### Working with Profiles
 
@@ -237,12 +243,17 @@ xnatctl whoami
 
 Credential priority (highest to lowest):
 
-1. CLI arguments (`--username`, `--password`)
+1. `--username` on the command line, and `--password-stdin` for the password
 2. Environment variables (`XNAT_USER`, `XNAT_PASS`)
-3. Profile config (`username`, `password` in config.yaml)
+3. Profile config (`username`, plus `password` or the OS keychain)
 4. Interactive prompt
 
-Session tokens are cached at `~/.config/xnatctl/.session` and used
+> **Passwords are never accepted as a command-line value.** `--password secret`
+> is a usage error, because argv is visible in `ps`, `/proc/*/cmdline`, and
+> your shell history. Use `--password-stdin`, `XNAT_PASS`, a stored profile
+> credential, or the prompt.
+
+Session tokens are cached at `~/.config/xnatctl/.session` (mode 0600) and used
 automatically until they expire.
 
 ### Environment Variables
@@ -257,6 +268,9 @@ especially useful for CI pipelines and non-interactive scripts:
 | `XNAT_PASS`    | Password                                             |
 | `XNAT_TOKEN`   | Session token (highest auth priority)                |
 | `XNAT_PROFILE` | Config profile name                                  |
+| `XNAT_VERIFY_SSL` | Override TLS verification (`true`/`false`)        |
+| `XNAT_TIMEOUT` | HTTP timeout in seconds                              |
+| `XNATCTL_DEBUG` | `1` enables debug logging, an httpx wire trace, and tracebacks |
 
 Notes:
 
