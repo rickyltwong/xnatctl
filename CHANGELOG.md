@@ -67,6 +67,19 @@ lying, and Ctrl+C works.
 
 **Fixes**
 
+- **Single-archive `session upload` could not tell a transient import 400 from
+  a permanent one.** It wrapped the core client -- which raises a typed error
+  on 400 before the upload retry helper can inspect the body -- so one
+  concurrent-modification 400 (routine when two uploads race the same session)
+  failed the command immediately instead of being retried. The path now uses
+  the same raw uploader as batch uploads: transient 400s retry,
+  misconfigurations fail on the first attempt, failures keep the
+  differentiated exit codes, and a session evicted mid-upload is refreshed and
+  retried instead of failing.
+- **A `ca_bundle` profile only protected the core client.** The raw HTTP
+  clients behind uploads and parallel session download fell back to plain
+  verification, so a self-signed XNAT that worked for listings failed TLS on
+  transfers. All raw clients now inherit the profile's CA bundle.
 - **`scan` commands on a project-scoped URL addressed the session, not the
   scan.** XNAT ignores sub-resource suffixes under
   `/data/projects/{P}/experiments/{E}`, answering with the parent experiment

@@ -1,4 +1,4 @@
-"""Tests for _SessionRefresher and 401-retry in gradual-DICOM uploads."""
+"""Tests for SessionRefresher and 401-retry in gradual-DICOM uploads."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from xnatctl.services.uploads import _SessionRefresher
+from xnatctl.services.uploads import SessionRefresher
 
 
 class TestSessionRefresher:
-    """Tests for _SessionRefresher token management."""
+    """Tests for SessionRefresher token management."""
 
     def test_returns_initial_token(self) -> None:
-        refresher = _SessionRefresher(
+        refresher = SessionRefresher(
             base_url="https://xnat.example.org",
             verify_ssl=True,
             token="initial-token",
@@ -25,7 +25,7 @@ class TestSessionRefresher:
         assert refresher.token == "initial-token"
 
     def test_refresh_acquires_new_token(self) -> None:
-        refresher = _SessionRefresher(
+        refresher = SessionRefresher(
             base_url="https://xnat.example.org",
             verify_ssl=True,
             token="stale-token",
@@ -51,7 +51,7 @@ class TestSessionRefresher:
 
     def test_refresh_skips_when_already_refreshed(self) -> None:
         """If another thread already refreshed, return the new token without hitting the server."""
-        refresher = _SessionRefresher(
+        refresher = SessionRefresher(
             base_url="https://xnat.example.org",
             verify_ssl=True,
             token="already-fresh",
@@ -66,7 +66,7 @@ class TestSessionRefresher:
         assert result == "already-fresh"
 
     def test_refresh_without_credentials_returns_stale_token(self) -> None:
-        refresher = _SessionRefresher(
+        refresher = SessionRefresher(
             base_url="https://xnat.example.org",
             verify_ssl=True,
             token="stale-token",
@@ -77,7 +77,7 @@ class TestSessionRefresher:
         assert result == "stale-token"
 
     def test_refresh_on_auth_failure_keeps_old_token(self) -> None:
-        refresher = _SessionRefresher(
+        refresher = SessionRefresher(
             base_url="https://xnat.example.org",
             verify_ssl=True,
             token="stale-token",
@@ -102,7 +102,7 @@ class TestSessionRefresher:
 
     def test_concurrent_refresh_only_authenticates_once(self) -> None:
         """Multiple threads hitting 401 simultaneously should result in a single reauth."""
-        refresher = _SessionRefresher(
+        refresher = SessionRefresher(
             base_url="https://xnat.example.org",
             verify_ssl=True,
             token="stale-token",
@@ -152,7 +152,7 @@ class TestGradualUpload401Retry:
         dcm = tmp_path / "test.dcm"
         dcm.write_bytes(b"\x00" * 128)
 
-        refresher = _SessionRefresher(
+        refresher = SessionRefresher(
             base_url="https://xnat.example.org",
             verify_ssl=True,
             token="stale-token",

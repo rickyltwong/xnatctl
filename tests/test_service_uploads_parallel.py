@@ -37,7 +37,7 @@ Handler = Callable[[httpx.Request], httpx.Response]
 def mock_uploads_http(handler: Handler) -> Iterator[list[httpx.Request]]:
     """Route the transport's own httpx.Client through a MockTransport.
 
-    `_upload_single_archive` constructs its client inside the worker thread
+    `upload_single_archive` constructs its client inside the worker thread
     (that is the thread-safety design), so there is no injection point on the
     service. Wrapping the constructor is the least invasive seam that still
     exercises real request building.

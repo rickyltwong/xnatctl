@@ -5,11 +5,15 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
 from xnatctl.cli.main import cli
 from xnatctl.cli.session import _do_single_upload, _safe_mtime, _zip_to_tar
+from xnatctl.core.cancellation import CancellationToken
+from xnatctl.core.exceptions import PermissionDeniedError, SessionExpiredError, UploadError
+from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.progress import UploadSummary
 from xnatctl.services.uploads import archive_destination_params
@@ -24,32 +28,76 @@ class _FakeAuthClient:
         return {"username": "tester"}
 
 
-def test_do_single_upload_sets_import_params(tmp_path) -> None:
+class _FakeXNATClient:
+    """Connection details only -- the fixed path never calls XNATClient.post.
+
+    Deliberately has no ``post`` method: a regression back to posting through
+    ``XNATClient`` (and its second retry ladder) fails these tests with an
+    AttributeError instead of silently passing.
+    """
+
+    base_url = "https://xnat.example.org"
+    username = "u"
+    password = "p"
+    session_token = "TOKEN"
+    verify_ssl = True
+
+    def httpx_verify(self) -> bool:
+        return True
+
+
+def _wire(monkeypatch, responses):
+    """Capture the raw POSTs the services-layer uploader makes.
+
+    ``_do_single_upload`` must reach XNAT through the services uploader -- one
+    retry ladder, raw responses -- so these tests assert at the wire level.
+    Returns (posts, clients): the recorded POST calls and the kwargs each
+    ``httpx.Client`` was constructed with. The last response repeats once the
+    list is consumed.
+    """
+    import xnatctl.services.uploads as uploads
+
+    posts: list[dict] = []
+    clients: list[dict] = []
+    queue = list(responses)
+
+    class FakeHTTPClient:
+        def __init__(self, *a, **kw) -> None:
+            clients.append(kw)
+
+        def __enter__(self) -> FakeHTTPClient:
+            return self
+
+        def __exit__(self, *a) -> None:
+            return None
+
+        def post(self, url, **kw) -> httpx.Response:
+            body = kw.get("content")
+            posts.append(
+                {
+                    "url": url,
+                    "params": kw.get("params"),
+                    "headers": kw.get("headers"),
+                    "cookies": kw.get("cookies"),
+                    "body": body.read() if body is not None else None,
+                }
+            )
+            return queue.pop(0) if len(queue) > 1 else queue[0]
+
+        def delete(self, *a, **kw) -> None:
+            return None
+
+    monkeypatch.setattr(uploads.httpx, "Client", FakeHTTPClient)
+    return posts, clients
+
+
+def test_do_single_upload_sets_import_params(tmp_path, monkeypatch) -> None:
     archive_path = tmp_path / "sample.zip"
     archive_path.write_bytes(b"zip-data")
-
-    class FakeResponse:
-        status_code = 200
-        text = ""
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.path = None
-            self.params = None
-            self.headers = None
-            self.timeout = None
-
-        def post(self, path, params, data, headers, timeout):
-            self.path = path
-            self.params = params
-            self.headers = headers
-            self.timeout = timeout
-            return FakeResponse()
-
-    client = FakeClient()
+    posts, clients = _wire(monkeypatch, [httpx.Response(200)])
 
     _do_single_upload(
-        client,
+        _FakeXNATClient(),
         archive_path,
         project="PROJ",
         subject="SUBJ",
@@ -60,12 +108,14 @@ def test_do_single_upload_sets_import_params(tmp_path) -> None:
         zip_to_tar=False,
     )
 
-    assert client.path == "/data/services/import"
-    assert client.timeout == DEFAULT_HTTP_TIMEOUT_SECONDS
-    assert client.headers == {"Content-Type": "application/zip"}
+    (call,) = posts
+    assert call["url"] == "/data/services/import"
+    assert call["headers"] == {"Content-Type": "application/zip"}
+    assert call["cookies"] == {"JSESSIONID": "TOKEN"}
+    assert call["body"] == b"zip-data"
+    assert clients[0]["timeout"].read == DEFAULT_HTTP_TIMEOUT_SECONDS
 
-    params = client.params
-    assert params is not None
+    params = call["params"]
     assert params["import-handler"] == "DICOM-zip"
     assert params["project"] == "PROJ"
     assert params["subject"] == "SUBJ"
@@ -81,7 +131,7 @@ def test_do_single_upload_sets_import_params(tmp_path) -> None:
     assert params["rename"] == "false"
 
 
-def test_do_single_upload_prearchive_sets_dest(tmp_path) -> None:
+def test_do_single_upload_prearchive_sets_dest(tmp_path, monkeypatch) -> None:
     """--prearchive must send dest=/prearchive/projects/{project}, not
     Direct-Archive=false.
 
@@ -92,23 +142,10 @@ def test_do_single_upload_prearchive_sets_dest(tmp_path) -> None:
     """
     archive_path = tmp_path / "sample.zip"
     archive_path.write_bytes(b"zip-data")
-
-    class FakeResponse:
-        status_code = 200
-        text = ""
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.params = None
-
-        def post(self, path, params, data, headers, timeout):
-            self.params = params
-            return FakeResponse()
-
-    client = FakeClient()
+    posts, _clients = _wire(monkeypatch, [httpx.Response(200)])
 
     _do_single_upload(
-        client,
+        _FakeXNATClient(),
         archive_path,
         project="PROJ",
         subject="SUBJ",
@@ -119,10 +156,150 @@ def test_do_single_upload_prearchive_sets_dest(tmp_path) -> None:
         zip_to_tar=False,
     )
 
-    params = client.params
-    assert params is not None
+    (call,) = posts
+    params = call["params"]
     assert params["dest"] == "/prearchive/projects/PROJ"
     assert "Direct-Archive" not in params
+
+
+def test_do_single_upload_retries_a_transient_400(tmp_path, monkeypatch) -> None:
+    """A transient import 400 must be retried, not fatal on first sight.
+
+    The regression this pins: ``_do_single_upload`` used to wrap
+    ``XNATClient.post`` -- whose ``_request`` raises a typed error on 400 --
+    in ``upload_with_retry``, so the transient-vs-permanent 400 discrimination
+    never saw a raw response and one concurrent-modification 400 killed the
+    upload immediately.
+    """
+    monkeypatch.setattr(CancellationToken, "sleep", lambda self, seconds: False)
+    archive_path = tmp_path / "sample.zip"
+    archive_path.write_bytes(b"zip-data")
+    posts, _clients = _wire(
+        monkeypatch,
+        [httpx.Response(400, text="Duplicate archive attempt"), httpx.Response(200)],
+    )
+
+    _do_single_upload(
+        _FakeXNATClient(),
+        archive_path,
+        project="PROJ",
+        subject="SUBJ",
+        session="SESS",
+        overwrite="delete",
+        direct_archive=True,
+        ignore_unparsable=False,
+        zip_to_tar=False,
+    )
+
+    assert len(posts) == 2, "the transient 400 was not retried"
+
+
+def test_do_single_upload_permanent_400_fails_on_first_attempt(tmp_path, monkeypatch) -> None:
+    """A permanent 400 (misconfigured upload) fails once, without retries."""
+    archive_path = tmp_path / "sample.zip"
+    archive_path.write_bytes(b"zip-data")
+    posts, _clients = _wire(
+        monkeypatch,
+        [httpx.Response(400, text="Unable to identify destination project: PROJ")],
+    )
+
+    with pytest.raises(UploadError, match="Unable to identify destination project"):
+        _do_single_upload(
+            _FakeXNATClient(),
+            archive_path,
+            project="PROJ",
+            subject="SUBJ",
+            session="SESS",
+            overwrite="delete",
+            direct_archive=True,
+            ignore_unparsable=False,
+            zip_to_tar=False,
+        )
+
+    assert len(posts) == 1, "a permanent 400 burned retries"
+
+
+def _upload_one(archive_path):
+    """Run _do_single_upload with fixed arguments; failures raise typed errors."""
+    _do_single_upload(
+        _FakeXNATClient(),
+        archive_path,
+        project="PROJ",
+        subject="SUBJ",
+        session="SESS",
+        overwrite="delete",
+        direct_archive=True,
+        ignore_unparsable=False,
+        zip_to_tar=False,
+    )
+
+
+class TestSingleUploadKeepsTheExitCodeTaxonomy:
+    """Failures must raise the typed exceptions @handle_errors maps to exit codes.
+
+    The old path let ``XNATClient.post`` raise these; the delegation to the
+    services uploader returns strings, so without this mapping every failure
+    collapsed to a general exit 1 -- a regression on a documented Stable
+    surface (auth 3, network 4, permission 6).
+    """
+
+    def test_a_401_raises_session_expired(self, tmp_path, monkeypatch) -> None:
+        archive_path = tmp_path / "sample.zip"
+        archive_path.write_bytes(b"zip-data")
+        # The refresher's reauth POST also lands on the fake client and gets
+        # the same 401, so the refresh fails and the 401 stands.
+        _wire(monkeypatch, [httpx.Response(401, text="<html>login</html>")])
+
+        with pytest.raises(SessionExpiredError):
+            _upload_one(archive_path)
+
+    def test_a_403_raises_permission_denied(self, tmp_path, monkeypatch) -> None:
+        archive_path = tmp_path / "sample.zip"
+        archive_path.write_bytes(b"zip-data")
+        _wire(monkeypatch, [httpx.Response(403, text="<html>forbidden</html>")])
+
+        with pytest.raises(PermissionDeniedError):
+            _upload_one(archive_path)
+
+    def test_exhausted_503_retries_raise_retry_exhausted(self, tmp_path, monkeypatch) -> None:
+        """A 5xx that survives every retry is a connection-class failure (exit 4)."""
+        from xnatctl.core.exceptions import RetryExhaustedError
+
+        monkeypatch.setattr(CancellationToken, "sleep", lambda self, seconds: False)
+        archive_path = tmp_path / "sample.zip"
+        archive_path.write_bytes(b"zip-data")
+        posts, _clients = _wire(monkeypatch, [httpx.Response(503, text="down for maintenance")])
+
+        with pytest.raises(RetryExhaustedError):
+            _upload_one(archive_path)
+
+        assert len(posts) > 1, "the 503 was not retried before giving up"
+
+    def test_a_connect_timeout_raises_timeout(self, tmp_path, monkeypatch) -> None:
+        archive_path = tmp_path / "sample.zip"
+        archive_path.write_bytes(b"zip-data")
+        import xnatctl.services.uploads as uploads
+
+        class TimingOutClient:
+            def __init__(self, *a, **kw) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a) -> None:
+                return None
+
+            def post(self, url, **kw):
+                raise httpx.ConnectTimeout("connect phase timed out")
+
+            def delete(self, *a, **kw) -> None:
+                return None
+
+        monkeypatch.setattr(uploads.httpx, "Client", TimingOutClient)
+
+        with pytest.raises(XNATTimeoutError):
+            _upload_one(archive_path)
 
 
 def test_archive_destination_params_direct() -> None:
@@ -271,30 +448,16 @@ def test_session_upload_mode_gradual_default_is_direct_archive(
     assert captured.get("direct_archive") is True
 
 
-def test_do_single_upload_converts_zip_to_tar(tmp_path) -> None:
+def test_do_single_upload_converts_zip_to_tar(tmp_path, monkeypatch) -> None:
     archive_path = tmp_path / "sample.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("alpha/first.dcm", b"file-1")
         zf.writestr("beta/second.dcm", b"file-2")
 
-    class FakeResponse:
-        status_code = 200
-        text = ""
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.headers = None
-            self.body = None
-
-        def post(self, path, params, data, headers, timeout):
-            self.headers = headers
-            self.body = data.read()
-            return FakeResponse()
-
-    client = FakeClient()
+    posts, _clients = _wire(monkeypatch, [httpx.Response(200)])
 
     _do_single_upload(
-        client,
+        _FakeXNATClient(),
         archive_path,
         project="PROJ",
         subject="SUBJ",
@@ -305,9 +468,10 @@ def test_do_single_upload_converts_zip_to_tar(tmp_path) -> None:
         zip_to_tar=True,
     )
 
-    assert client.headers == {"Content-Type": "application/x-tar"}
-    assert client.body is not None
-    with tarfile.open(fileobj=BytesIO(client.body), mode="r") as tf:
+    (call,) = posts
+    assert call["headers"] == {"Content-Type": "application/x-tar"}
+    assert call["body"] is not None
+    with tarfile.open(fileobj=BytesIO(call["body"]), mode="r") as tf:
         assert set(tf.getnames()) == {"alpha/first.dcm", "beta/second.dcm"}
 
 

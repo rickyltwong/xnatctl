@@ -146,9 +146,9 @@ class TestRefreshPropagation:
 
     @staticmethod
     def _refresher(owner: object | None, token: str = "OLD"):
-        from xnatctl.services.uploads import _SessionRefresher
+        from xnatctl.services.uploads import SessionRefresher
 
-        return _SessionRefresher(
+        return SessionRefresher(
             base_url="https://x",
             verify_ssl=True,
             token=token,
@@ -246,7 +246,7 @@ class TestRefreshPropagation:
 class TestTheBatchPathAlsoReauthenticates:
     """A 401 mid-upload used to kill the batch.
 
-    Only the gradual path re-authenticated; ``_upload_single_archive`` returned
+    Only the gradual path re-authenticated; ``upload_single_archive`` returned
     "Authentication failed: invalid or expired session" even with credentials
     in hand. XNAT evicts sessions when an account exceeds its concurrent-session
     limit -- routine when several workers share a service account -- so a long
@@ -289,7 +289,7 @@ class TestTheBatchPathAlsoReauthenticates:
         assert real_client
         monkeypatch.setattr(uploads.httpx, "Client", FakeClient)
 
-        ok, err = uploads._upload_single_archive(
+        result = uploads.upload_single_archive(
             base_url="https://xnat.example.org",
             username="u",
             password="p",
@@ -306,7 +306,7 @@ class TestTheBatchPathAlsoReauthenticates:
             direct_archive=True,
             session_refresher=refresher,
         )
-        return ok, err, posts
+        return result.success, result.error, posts
 
     def test_a_stale_token_is_refreshed_and_the_batch_retried(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

@@ -26,7 +26,7 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
@@ -197,7 +197,7 @@ _gradual_scope_lock = threading.Lock()
 _gradual_scope_refcount = 0
 
 
-class _SessionRefresher:
+class SessionRefresher:
     """Thread-safe XNAT session token manager.
 
     When any worker thread encounters a 401 (expired session), it calls
@@ -215,7 +215,8 @@ class _SessionRefresher:
 
     Args:
         base_url: XNAT server URL.
-        verify_ssl: Whether to verify SSL certificates.
+        verify_ssl: TLS verification: a bool, or an SSLContext carrying a
+            profile's ``ca_bundle`` (``XNATClient.httpx_verify()``).
         token: Initial JSESSIONID token.
         username: Credentials for re-authentication.
         password: Credentials for re-authentication.
@@ -225,7 +226,7 @@ class _SessionRefresher:
     def __init__(
         self,
         base_url: str,
-        verify_ssl: bool,
+        verify_ssl: bool | ssl.SSLContext,
         token: str | None,
         username: str | None,
         password: str | None,
@@ -309,11 +310,13 @@ class _SessionRefresher:
             return self._token
 
 
-def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client:
+def _get_gradual_http_client(*, base_url: str, verify_ssl: bool | ssl.SSLContext) -> httpx.Client:
     """Get a thread-local httpx.Client for gradual-DICOM uploads."""
     key = (base_url, verify_ssl)
     client: httpx.Client | None = getattr(_gradual_client_local, "client", None)
-    client_key: tuple[str, bool] | None = getattr(_gradual_client_local, "key", None)
+    client_key: tuple[str, bool | ssl.SSLContext] | None = getattr(
+        _gradual_client_local, "key", None
+    )
 
     if client is None or client_key != key or client.is_closed:
         if client is not None:
@@ -779,17 +782,50 @@ def _create_archive(
 
 
 # =============================================================================
-# Parallel Upload Helpers (private, thread-safe standalone functions)
+# Archive upload (shared by the parallel batch path and `session upload`)
 # =============================================================================
 
 
-def _upload_single_archive(
+class ArchiveUploadResult(NamedTuple):
+    """Outcome of one archive upload, with enough context to classify it.
+
+    ``status_code`` and ``exception`` exist so the CLI can map a failure to the
+    documented exit-code taxonomy (auth 3, network 4, permission 6) instead of
+    flattening everything to a string and exiting 1.
+    """
+
+    success: bool
+    error: str
+    status_code: int | None = None
+    exception: BaseException | None = None
+
+
+def _classify_import_response(resp: httpx.Response) -> ArchiveUploadResult:
+    """Turn the import service's final response into an ArchiveUploadResult."""
+    if resp.status_code == 200:
+        return ArchiveUploadResult(True, "")
+    if resp.status_code in (401, 403):
+        # No body snippet here on purpose: XNAT answers both with an HTML
+        # login page, which is noise in a one-line error.
+        return ArchiveUploadResult(
+            False,
+            "Authentication failed: invalid or expired session",
+            status_code=resp.status_code,
+        )
+    return ArchiveUploadResult(
+        False,
+        f"HTTP {resp.status_code}: {resp.text[:500]}",
+        status_code=resp.status_code,
+    )
+
+
+def upload_single_archive(
     *,
     base_url: str,
     username: str | None,
     password: str | None,
     session_token: str | None,
-    verify_ssl: bool,
+    verify_ssl: bool | ssl.SSLContext,
     timeout: int,
     archive_path: Path,
     project: str,
@@ -800,8 +836,8 @@ def _upload_single_archive(
     overwrite: str,
     direct_archive: bool,
     cancel_token: CancellationToken = NULL_TOKEN,
-    session_refresher: _SessionRefresher | None = None,
-) -> tuple[bool, str]:
+    session_refresher: SessionRefresher | None = None,
+) -> ArchiveUploadResult:
     """Upload a single archive file to XNAT.
 
     Creates a fresh httpx client for thread-safety in parallel execution.
@@ -816,12 +852,14 @@ def _upload_single_archive(
     hitting the same eviction do not answer it with N more logins.
 
     Returns:
-        Tuple of (success, error_message).
+        ArchiveUploadResult; on failure it carries the final HTTP status or the
+        transport exception so callers can classify the error.
     """
     name = archive_path.name.lower()
-    content_type = (
-        "application/x-tar" if name.endswith((".tar", ".tar.gz", ".tgz")) else "application/zip"
-    )
+    # Anything that is not a ZIP defaults to tar: the CLI accepts arbitrary
+    # archive names (data.tar.bz2, extensionless), and tar was the historical
+    # default for those. The batch path only ever generates .tar/.zip names.
+    content_type = "application/zip" if name.endswith(".zip") else "application/x-tar"
 
     params = {
         "import-handler": import_handler,
@@ -851,17 +889,21 @@ def _upload_single_archive(
                 cookies = {"JSESSIONID": session_token}
             else:
                 if not username or not password:
-                    return False, "Authentication failed: missing credentials"
+                    return ArchiveUploadResult(False, "Authentication failed: missing credentials")
 
                 auth_resp = client.post(
                     "/data/JSESSION",
                     auth=(str(username), str(password)),
                 )
                 if auth_resp.status_code != 200:
-                    return False, f"Authentication failed: HTTP {auth_resp.status_code}"
+                    return ArchiveUploadResult(
+                        False,
+                        f"Authentication failed: HTTP {auth_resp.status_code}",
+                        status_code=auth_resp.status_code,
+                    )
 
                 if "<html" in auth_resp.text.lower():
-                    return False, "Authentication failed: invalid credentials"
+                    return ArchiveUploadResult(False, "Authentication failed: invalid credentials")
 
                 session_token = auth_resp.text.strip()
                 cookies = {"JSESSIONID": session_token}
@@ -905,18 +947,20 @@ def _upload_single_archive(
                     except Exception:
                         pass
 
-            if resp.status_code == 200:
-                return True, ""
-            if resp.status_code in (401, 403):
-                return False, "Authentication failed: invalid or expired session"
-            return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            return _classify_import_response(resp)
 
-        except httpx.TimeoutException:
-            return False, "Upload timed out (after retries)"
+        except httpx.ConnectTimeout as e:
+            # upload_with_retry re-raises this without retrying (fail fast on
+            # an unreachable host), so do not claim retries happened.
+            return ArchiveUploadResult(False, "Connection timed out; not retried", exception=e)
+        except httpx.TimeoutException as e:
+            return ArchiveUploadResult(False, "Upload timed out (after retries)", exception=e)
         except httpx.ConnectError as e:
-            return False, f"Connection failed (after retries): {e}"
+            return ArchiveUploadResult(
+                False, f"Connection failed (after retries): {e}", exception=e
+            )
         except Exception as e:
-            return False, str(e)
+            return ArchiveUploadResult(False, str(e), exception=e)
 
 
 def _create_and_upload_batch(
@@ -929,7 +973,7 @@ def _create_and_upload_batch(
     username: str | None,
     password: str | None,
     session_token: str | None,
-    verify_ssl: bool,
+    verify_ssl: bool | ssl.SSLContext,
     timeout: int,
     batch_id: int,
     project: str,
@@ -940,7 +984,7 @@ def _create_and_upload_batch(
     overwrite: str,
     direct_archive: bool,
     cancel_token: CancellationToken = NULL_TOKEN,
-    session_refresher: _SessionRefresher | None = None,
+    session_refresher: SessionRefresher | None = None,
 ) -> _UploadResult:
     """Create archive, upload it, then delete the archive immediately.
 
@@ -970,7 +1014,7 @@ def _create_and_upload_batch(
     try:
         archive_size = _create_archive(batch, archive_path, source_path, archive_format)
 
-        success, error = _upload_single_archive(
+        upload_result = upload_single_archive(
             base_url=base_url,
             username=username,
             password=password,
@@ -991,11 +1035,11 @@ def _create_and_upload_batch(
 
         return _UploadResult(
             batch_id=batch_id,
-            success=success,
+            success=upload_result.success,
             duration=time.time() - start_time,
             file_count=len(batch),
             archive_size=archive_size,
-            error=error,
+            error=upload_result.error,
         )
     except OperationCancelledError:
         return _UploadResult(
@@ -1263,8 +1307,8 @@ def _send_dicom_batch(
 def _upload_single_file_gradual(
     *,
     base_url: str,
-    session_refresher: _SessionRefresher,
-    verify_ssl: bool,
+    session_refresher: SessionRefresher,
+    verify_ssl: bool | ssl.SSLContext,
     file_path: Path,
     display_path: str | None = None,
     project: str,
@@ -1421,7 +1465,7 @@ class UploadService(BaseService):
 
         base_url = self.client.base_url
         session_token = self.client.session_token
-        verify_ssl = self.client.verify_ssl
+        verify_ssl = self.client.httpx_verify()
         effective_username = username or self.client.username
         effective_password = password or self.client.password
 
@@ -1492,7 +1536,7 @@ class UploadService(BaseService):
             # a token is in play: workers given bare credentials already log in
             # per batch and have nothing to refresh.
             batch_refresher = (
-                _SessionRefresher(
+                SessionRefresher(
                     base_url=base_url,
                     verify_ssl=verify_ssl,
                     token=session_token,
@@ -1952,8 +1996,8 @@ class UploadService(BaseService):
             UploadSummary with results.
         """
         base_url = self.client.base_url
-        verify_ssl = self.client.verify_ssl
-        session_refresher = _SessionRefresher(
+        verify_ssl = self.client.httpx_verify()
+        session_refresher = SessionRefresher(
             base_url=base_url,
             verify_ssl=verify_ssl,
             token=self.client.session_token,
@@ -2437,7 +2481,7 @@ class UploadService(BaseService):
 
             base_url = self.client.base_url
             session_token = self.client.session_token
-            verify_ssl = self.client.verify_ssl
+            verify_ssl = self.client.httpx_verify()
             res_timeout = self.client.timeout
             cookies = {"JSESSIONID": session_token} if session_token else {}
 

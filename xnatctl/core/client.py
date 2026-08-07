@@ -202,6 +202,7 @@ class XNATClient:
     # cycles through httpx.MockTransport instead of mocking the client.
     transport: httpx.BaseTransport | None = None
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
+    _ssl_context: ssl.SSLContext | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Validate and normalize URL."""
@@ -211,29 +212,42 @@ class XNATClient:
     # Client Management
     # =========================================================================
 
+    def httpx_verify(self) -> ssl.SSLContext | bool:
+        """TLS verification value for any httpx client that speaks for this one.
+
+        The upload and fast-download paths build raw ``httpx.Client`` instances
+        (per-thread, or to keep the upload retry ladder outside ``_request``);
+        they call this so a ``ca_bundle`` profile carries its trust decisions
+        there too instead of silently degrading to the bare bool. A custom CA
+        bundle is a secure alternative to disabling verification for
+        self-signed sites: build an SSLContext from it (httpx 0.28 deprecates
+        passing a bare path as ``verify``). The context is built once and
+        shared -- loading the bundle per call would also defeat the gradual
+        path's per-thread client cache, which keys on this value.
+        """
+        if self.ca_bundle:
+            # Unlocked memoization: callers grab this on the main thread before
+            # spawning workers, and the worst race builds the context twice.
+            if self._ssl_context is None:
+                self._ssl_context = ssl.create_default_context(cafile=self.ca_bundle)
+            return self._ssl_context
+        return self.verify_ssl
+
     def _get_client(self) -> httpx.Client:
         """Get or create HTTP client."""
         if self._client is None:
-            # A custom CA bundle is a secure alternative to disabling
-            # verification for self-signed sites. Build an SSLContext from it
-            # (httpx 0.28 deprecates passing a bare path as ``verify``).
-            verify: ssl.SSLContext | bool
-            if self.ca_bundle:
-                verify = ssl.create_default_context(cafile=self.ca_bundle)
-            else:
-                verify = self.verify_ssl
-                if not self.verify_ssl:
-                    logger.warning(
-                        "TLS certificate verification is DISABLED for %s",
-                        redact_url_query(self.base_url),
-                    )
+            if not self.verify_ssl and not self.ca_bundle:
+                logger.warning(
+                    "TLS certificate verification is DISABLED for %s",
+                    redact_url_query(self.base_url),
+                )
             self._client = httpx.Client(
                 base_url=self.base_url,
                 # Structured timeout: a short connect phase so a
                 # blackholed host fails in seconds, with the long read ceiling
                 # preserved for large transfers.
                 timeout=build_httpx_timeout(self.timeout),
-                verify=verify,
+                verify=self.httpx_verify(),
                 follow_redirects=True,
                 transport=self.transport,
             )
