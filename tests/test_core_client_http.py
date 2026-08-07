@@ -576,3 +576,74 @@ class TestSessionWiring:
             c.get("/data/projects")
 
         assert client._client is None
+
+
+# =============================================================================
+# The exception contract, enumerated
+# =============================================================================
+
+
+class TestNoHttpxExceptionEscapes:
+    """No httpx exception may leave XNATClient. Checked by enumeration.
+
+    The individual mappings are covered elsewhere. What is checked here is the
+    *closure* of the contract, because the failure mode is an omission rather
+    than a wrong answer: httpx.TooManyRedirects was missing from both transport
+    tuples and escaped raw, past the typed dispatch in cli/common.py, and
+    reached the user as a traceback. Every test naming a specific exception
+    passed the whole time -- nothing was asserting that the list was complete.
+
+    A redirect loop is not a hypothetical for this tool: an uninitialized XNAT
+    bounces essentially every request to /setup, and so does a login-wall proxy
+    or a misconfigured siteUrl.
+
+    Discovered by walking httpx's exception tree rather than by listing names,
+    so an exception added by a future httpx release fails here instead of in
+    somebody's terminal.
+    """
+
+    @staticmethod
+    def _transport_exceptions() -> list[type[httpx.HTTPError]]:
+        """Every concrete httpx error a transport can raise during a request."""
+
+        def leaves(cls: type) -> list[type]:
+            subs = cls.__subclasses__()
+            return [cls] if not subs else [leaf for sub in subs for leaf in leaves(sub)]
+
+        # Rooted at RequestError, not TransportError: TooManyRedirects and
+        # DecodingError sit outside TransportError, and rooting the walk there
+        # is what let the original leak hide. HTTPStatusError is excluded
+        # because raise_for_status() raises it, never a transport.
+        return [c for c in leaves(httpx.RequestError) if not issubclass(c, httpx.HTTPStatusError)]
+
+    def test_the_enumeration_is_not_empty(self) -> None:
+        """Guards the test itself: a bad walk would vacuously pass everything."""
+        found = self._transport_exceptions()
+
+        assert len(found) >= 8, f"only found {[c.__name__ for c in found]}"
+        assert httpx.TooManyRedirects in found, "the regression case must be covered"
+
+    @pytest.mark.parametrize("exc_type", _transport_exceptions.__func__(), ids=lambda c: c.__name__)
+    def test_it_is_translated(self, exc_type: type[httpx.HTTPError]) -> None:
+        from xnatctl.core.exceptions import XNATCtlError
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            raise exc_type("simulated")
+
+        client, _ = make_client(handler, max_retries=1)
+
+        with pytest.raises(XNATCtlError):
+            client.get_json("/data/projects")
+
+    def test_a_redirect_loop_is_not_retried(self) -> None:
+        """Retrying a loop just makes the user wait to see the same failure."""
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            raise httpx.TooManyRedirects("simulated")
+
+        client, calls = make_client(handler, max_retries=3)
+
+        with pytest.raises(NetworkError):
+            client.get_json("/data/projects")
+
+        assert len(calls) == 1
