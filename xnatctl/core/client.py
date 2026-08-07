@@ -658,6 +658,7 @@ class XNATClient:
         offset = 0
         base_params = params.copy() if params else {}
         base_params["format"] = "json"
+        previous_page: list[Any] | None = None
 
         while True:
             page_params = {
@@ -688,7 +689,34 @@ class XNATClient:
             if not results:
                 break
 
+            # Not every XNAT endpoint paginates. XNAT 1.9.2.1 ignores `limit`
+            # and `offset` on /data/projects entirely and answers every
+            # request with the full result set -- so the loop below advanced
+            # the offset forever, re-yielding the same rows, and callers hung.
+            # Verified against a live server; the integration tier reached
+            # offset 151450 before it was stopped.
+            #
+            # Two shapes of that, and the first alone is not enough: a server
+            # returning more rows than `limit` asked for is obviously not
+            # honouring it, but when the collection is smaller than a page
+            # the counts look perfectly normal and only the repetition shows
+            # it. Both are checked before the offset advances.
+            ignores_limit = len(results) > page_size
+            repeats_page = results == previous_page
+            if ignores_limit or repeats_page:
+                if not repeats_page:
+                    yield from results
+                logger.debug(
+                    "paginate %s: %s at offset=%d limit=%d; endpoint does not paginate, stopping",
+                    path,
+                    "returned more rows than requested" if ignores_limit else "repeated a page",
+                    offset,
+                    page_size,
+                )
+                break
+
             yield from results
+            previous_page = results
             offset += page_size
 
             if len(results) < page_size:
