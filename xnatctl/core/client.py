@@ -52,7 +52,25 @@ RETRY_BACKOFF_BASE = 2
 # 502/503/504; 400 stays upload-only (it encodes a transient XNAT
 # import-race quirk handled in services/uploads.py), so it is NOT listed here.
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+# Of those, the ones safe to retry on ANY method: both are refusals the server
+# issues *before* running the work, so no side effect can exist yet. That they
+# are also exactly the two codes carrying Retry-After semantics is not a
+# coincidence -- both say "I did not do this; come back later".
+_METHOD_AGNOSTIC_RETRY_CODES = {429, 503}
 _RETRY_AFTER_STATUS_CODES = {429, 503}
+# The rest are ambiguous, so they follow the same idempotency rule as a
+# send-phase transport failure. A 500 means the handler ran and crashed, which
+# may have left side effects behind. A 502 is a dropped connection mid-response
+# with a proxy in front of it, and a 504 is a read timeout with a proxy in
+# front of it -- and the client already refuses to retry both of those raw
+# forms on a POST. Without this the same wire event behaved differently
+# depending on whether nginx was in the path, which is not a policy anyone
+# chose. See docs/adr/0011.
+#
+# Derived, not written out, so the two sets cannot drift apart when a status is
+# added to RETRYABLE_STATUS_CODES: anything new is ambiguous until someone
+# deliberately declares it a pre-execution refusal.
+_AMBIGUOUS_RETRY_CODES = RETRYABLE_STATUS_CODES - _METHOD_AGNOSTIC_RETRY_CODES
 # Cap on how long an explicit Retry-After is honoured: 300 is
 # what shipped and what the tests pin. A server asking for longer than 5 minutes
 # is telling us to give up, so we fall back to normal backoff and let the retry
@@ -460,13 +478,27 @@ class XNATClient:
                 # RetryExhaustedError rather than leaking httpx.HTTPStatusError.
                 if resp.status_code in RETRYABLE_STATUS_CODES:
                     last_error = ServerError(resp.status_code, method, path, _body_snippet(resp))
+
+                    # 429/503 retry on any method; 500/502/504 only where a
+                    # repeat is safe, because the request may already have run.
+                    if resp.status_code in _AMBIGUOUS_RETRY_CODES and not may_retry_after_send:
+                        ambiguous = ServerError(resp.status_code, method, path, _body_snippet(resp))
+                        # The reason goes in the hint, not the message: the
+                        # message is the one line CLI-09 always prints, and the
+                        # hint is where it puts the next step. Without it the
+                        # operator sees "HTTP 504" and reasonably assumes the
+                        # request did nothing.
+                        ambiguous.hint = (
+                            f"The server sent {resp.status_code} after receiving the "
+                            f"{method.upper()}, so it may have partially executed. It was "
+                            "not retried automatically -- check server state before "
+                            "repeating it."
+                        )
+                        raise ambiguous
+
                     if attempt < self.max_retries:
                         # An explicit Retry-After is an instruction, so it is used
-                        # verbatim; only our own backoff gets jitter. Status-based
-                        # retries keep applying to every method: the server
-                        # answered, and 429/503 mean it refused the work. (The
-                        # send-phase idempotency rule above covers the ambiguous
-                        # case, where we never learn whether it ran.)
+                        # verbatim; only our own backoff gets jitter.
                         retry_after = _retry_after_seconds(resp)
                         delay = retry_after if retry_after is not None else _backoff_delay(attempt)
                         # WARNING, not DEBUG: a retry storm is the single most

@@ -513,3 +513,107 @@ def test_retry_after_ignored_on_statuses_that_do_not_define_it(sleeps: list[floa
 
     assert client._request("GET", "/data/projects").status_code == 200
     assert_jittered_backoff(sleeps, 1)
+
+
+# =============================================================================
+# Idempotency gating for ambiguous 5xx (ADR-0011)
+# =============================================================================
+
+
+class TestAmbiguous5xxRespectsIdempotency:
+    """500/502/504 may arrive after the work has already started.
+
+    These retried on every method, which contradicted the rule three lines
+    above their own comment. The asymmetry was the giveaway: a dropped
+    connection mid-response is ``RemoteProtocolError`` and already refused a
+    POST retry, but put nginx in front and the identical wire event becomes a
+    502 and was retried. Same for a read timeout versus a 504. Whether a POST
+    got retried depended on whether a proxy was in the path -- not a policy
+    anyone chose.
+
+    429 and 503 stay method-agnostic: both are refusals issued before the work
+    runs, which is why they are also the two that carry Retry-After.
+    """
+
+    @pytest.mark.parametrize("status", [500, 502, 504])
+    @pytest.mark.parametrize("method", ["POST", "PATCH"])
+    def test_it_is_not_retried_on_a_non_idempotent_method(
+        self, status: int, method: str, sleeps: list[float]
+    ) -> None:
+        client, calls = _client(_status_sequence(status), max_retries=3)
+
+        with pytest.raises(ServerError) as exc:
+            client._request(method, "/data/services/import")
+
+        assert len(calls) == 1, f"{method} was repeated after a {status}"
+        assert sleeps == []
+        # The warning belongs where the CLI actually shows it: the hint line,
+        # not details, which nothing prints by default.
+        assert exc.value.hint is not None
+        assert "may have partially executed" in exc.value.hint
+
+    @pytest.mark.parametrize("status", [500, 502, 504])
+    def test_it_is_still_retried_on_an_idempotent_method(
+        self, status: int, sleeps: list[float]
+    ) -> None:
+        client, calls = _client(_status_sequence(status, status, status), max_retries=2)
+
+        with pytest.raises(RetryExhaustedError):
+            client._request("GET", "/data/projects")
+
+        assert len(calls) == 3, "idempotent retries must be unaffected"
+
+    @pytest.mark.parametrize("status", [429, 503])
+    @pytest.mark.parametrize("method", ["POST", "PATCH"])
+    def test_pre_execution_refusals_still_retry_on_any_method(
+        self, status: int, method: str, sleeps: list[float]
+    ) -> None:
+        """The server said it did not do the work; repeating it is safe."""
+        client, calls = _client(_status_sequence(status, status, status), max_retries=2)
+
+        with pytest.raises(RetryExhaustedError):
+            client._request(method, "/data/services/import")
+
+        assert len(calls) == 3
+
+    @pytest.mark.parametrize("status", [500, 502, 504])
+    def test_the_escape_hatch_still_works(self, status: int, sleeps: list[float]) -> None:
+        """A caller that knows its POST is safe to repeat can still opt in."""
+        client, calls = _client(_status_sequence(status, status, status), max_retries=2)
+
+        with pytest.raises(RetryExhaustedError):
+            client._request("POST", "/data/services/refresh", retry_non_idempotent=True)
+
+        assert len(calls) == 3
+
+    def test_a_gated_failure_names_the_status_and_route(self) -> None:
+        """The error has to be actionable: which call, against what."""
+        client, _calls = _client(_status_sequence(504), max_retries=3)
+
+        with pytest.raises(ServerError) as exc:
+            client._request("POST", "/data/services/import")
+
+        assert exc.value.status_code == 504
+        assert exc.value.method == "POST"
+        assert exc.value.path == "/data/services/import"
+
+    def test_the_two_sets_partition_the_retryable_ones(self) -> None:
+        """Derived, so a status added later cannot fall through both checks."""
+        from xnatctl.core.client import (
+            _AMBIGUOUS_RETRY_CODES,
+            _METHOD_AGNOSTIC_RETRY_CODES,
+        )
+
+        assert _METHOD_AGNOSTIC_RETRY_CODES | _AMBIGUOUS_RETRY_CODES == (
+            CLIENT_RETRYABLE_STATUS_CODES
+        )
+        assert not (_METHOD_AGNOSTIC_RETRY_CODES & _AMBIGUOUS_RETRY_CODES)
+
+    def test_retry_after_applies_to_exactly_the_method_agnostic_set(self) -> None:
+        """Not a coincidence worth letting drift: both mean "I did not run it"."""
+        from xnatctl.core.client import (
+            _METHOD_AGNOSTIC_RETRY_CODES,
+            _RETRY_AFTER_STATUS_CODES,
+        )
+
+        assert _RETRY_AFTER_STATUS_CODES == _METHOD_AGNOSTIC_RETRY_CODES
