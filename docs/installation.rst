@@ -153,6 +153,18 @@ pathway. See :doc:`dicom` for full command documentation:
 
    $ pip install "xnatctl[dicom]"
 
+**With keychain support:**
+
+The ``keyring`` extra lets xnatctl store profile passwords in your operating
+system's keychain (macOS Keychain, GNOME Keyring/KWallet, Windows Credential
+Manager) instead of plaintext in ``config.yaml``, via
+``xnatctl config set-password``. See :doc:`configuration` for the migration
+walkthrough:
+
+.. code-block:: console
+
+   $ pip install "xnatctl[keyring]"
+
 **Install from source:**
 
 If you want to track the development branch or contribute to xnatctl, you can

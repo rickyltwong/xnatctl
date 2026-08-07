@@ -6,8 +6,13 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from conftest import make_response
 
-from xnatctl.core.exceptions import OperationError, ResourceNotFoundError
+from xnatctl.core.exceptions import (
+    OperationError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+)
 from xnatctl.services.prearchive import PrearchiveService
 
 
@@ -25,15 +30,6 @@ def service(mock_client: MagicMock) -> PrearchiveService:
     return PrearchiveService(mock_client)
 
 
-def _resp(json_data: dict | list | str, content_type: str = "application/json") -> MagicMock:
-    """Build a mock httpx.Response."""
-    resp = MagicMock(spec=httpx.Response)
-    resp.json.return_value = json_data
-    resp.text = str(json_data)
-    resp.headers = {"content-type": content_type}
-    return resp
-
-
 SAMPLE_PREARCHIVE = {
     "ID": "PRE001",
     "label": "session_01",
@@ -49,7 +45,7 @@ class TestPrearchiveList:
 
     def test_list_all(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """List without project uses /data/prearchive."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_PREARCHIVE]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_PREARCHIVE]}})
 
         result = service.list()
 
@@ -59,7 +55,7 @@ class TestPrearchiveList:
 
     def test_list_by_project(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """List by project uses project-scoped path."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_PREARCHIVE]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_PREARCHIVE]}})
 
         service.list(project="PROJ01")
 
@@ -72,7 +68,7 @@ class TestPrearchiveGet:
 
     def test_get(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """Get returns prearchive session dict."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": [SAMPLE_PREARCHIVE]}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_PREARCHIVE]}})
 
         result = service.get("PROJ01", "20240115_120000", "session_01")
 
@@ -80,7 +76,7 @@ class TestPrearchiveGet:
 
     def test_get_not_found(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """Get raises ResourceNotFoundError on empty results."""
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": []}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         with pytest.raises(ResourceNotFoundError):
             service.get("PROJ01", "20240115_120000", "missing")
@@ -98,7 +94,9 @@ class TestPrearchiveArchive:
 
     def test_archive(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """Archive uses the archive service with a prearchive src path."""
-        mock_client.post.return_value = _resp("/data/experiments/E001", content_type="text/plain")
+        mock_client.post.return_value = make_response(
+            "/data/experiments/E001", content_type="text/plain"
+        )
 
         result = service.archive("PROJ01", "20240115_120000", "session_01")
 
@@ -111,7 +109,7 @@ class TestPrearchiveArchive:
 
     def test_archive_with_options(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """Archive passes subject, label, overwrite via archive-service form data."""
-        mock_client.post.return_value = _resp("", content_type="text/plain")
+        mock_client.post.return_value = make_response("", content_type="text/plain")
 
         service.archive(
             "PROJ01",
@@ -130,10 +128,10 @@ class TestPrearchiveArchive:
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
         """Archive can infer the subject from prearchive metadata when relabeling."""
-        mock_client.get.return_value = _resp(
+        mock_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"subject": "SUB01", **SAMPLE_PREARCHIVE}]}}
         )
-        mock_client.post.return_value = _resp("", content_type="text/plain")
+        mock_client.post.return_value = make_response("", content_type="text/plain")
 
         service.archive(
             "PROJ01",
@@ -149,7 +147,7 @@ class TestPrearchiveArchive:
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
         """Archive service request should encode dot and slash path segments."""
-        mock_client.post.return_value = _resp("", content_type="text/plain")
+        mock_client.post.return_value = make_response("", content_type="text/plain")
 
         service.archive(
             "..",
@@ -233,7 +231,7 @@ class TestPrearchiveDelete:
 
     def test_delete(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """Delete returns True."""
-        mock_client.delete.return_value = _resp("")
+        mock_client.delete.return_value = make_response("")
 
         assert service.delete("PROJ01", "20240115_120000", "session_01") is True
 
@@ -243,7 +241,7 @@ class TestPrearchiveRebuild:
 
     def test_rebuild(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """Rebuild issues POST with rebuild action."""
-        mock_client.post.return_value = _resp("", content_type="text/plain")
+        mock_client.post.return_value = make_response("", content_type="text/plain")
 
         result = service.rebuild("PROJ01", "20240115_120000", "session_01")
 
@@ -257,7 +255,7 @@ class TestPrearchiveMove:
 
     def test_move(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """Move issues POST with move action and target project."""
-        mock_client.post.return_value = _resp("", content_type="text/plain")
+        mock_client.post.return_value = make_response("", content_type="text/plain")
 
         result = service.move("PROJ01", "20240115_120000", "session_01", "PROJ02")
 
@@ -274,7 +272,7 @@ class TestPrearchiveGetScans:
     def test_get_scans(self, service: PrearchiveService, mock_client: MagicMock) -> None:
         """get_scans returns raw dicts."""
         rows = [{"ID": "1", "type": "T1w"}]
-        mock_client.get.return_value = _resp({"ResultSet": {"Result": rows}})
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.get_scans("PROJ01", "20240115_120000", "session_01")
 
@@ -282,3 +280,146 @@ class TestPrearchiveGetScans:
         assert result[0]["type"] == "T1w"
         call_path = mock_client.get.call_args[0][0]
         assert "/scans" in call_path
+
+
+# =============================================================================
+# Response inspection
+#
+# XNAT's prearchive services answer HTTP 200 with an error-shaped body instead
+# of a 4xx, so these verbs used to return {"success": True} regardless.
+# =============================================================================
+
+
+class TestArchiveResponseInspection:
+    def test_experiment_uri_is_surfaced(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.post.return_value = make_response(
+            "/data/experiments/XNAT_E00042", content_type="text/plain"
+        )
+
+        result = service.archive("PROJ01", "20240115_120000", "session_01")
+
+        assert result["success"] is True
+        assert result["experiment_uri"] == "/data/experiments/XNAT_E00042"
+
+    def test_archive_prefixed_uri_is_recognised(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.post.return_value = make_response(
+            "/data/archive/experiments/XNAT_E00042", content_type="text/plain"
+        )
+
+        result = service.archive("PROJ01", "20240115_120000", "session_01")
+
+        assert result["experiment_uri"] == "/data/archive/experiments/XNAT_E00042"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Conflict: session already exists in the archive",
+            "The experiment already exists",
+        ],
+    )
+    def test_conflict_body_raises_resource_exists(
+        self, body: str, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.post.return_value = make_response(body, content_type="text/plain")
+
+        with pytest.raises(ResourceExistsError) as exc:
+            service.archive("PROJ01", "20240115_120000", "session_01")
+
+        assert body[:40] in str(exc.value)
+
+    def test_error_body_raises_operation_error_with_snippet(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.post.return_value = make_response(
+            "java.lang.NullPointerException: archive failed", content_type="text/plain"
+        )
+
+        with pytest.raises(OperationError) as exc:
+            service.archive("PROJ01", "20240115_120000", "session_01")
+
+        assert "NullPointerException" in str(exc.value)
+        assert exc.value.details["project"] == "PROJ01"
+
+    def test_empty_body_is_still_success(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        """Some deployments answer with a bare 200; that must not become a failure."""
+        mock_client.post.return_value = make_response("", content_type="text/plain")
+
+        result = service.archive("PROJ01", "20240115_120000", "session_01")
+
+        assert result["success"] is True
+        assert result["experiment_uri"] is None
+
+    def test_uri_body_wins_over_incidental_error_word(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        """A success report naming an experiment is not an error, whatever the prose."""
+        mock_client.post.return_value = make_response(
+            "Archived with 0 errors: /data/experiments/XNAT_E00042",
+            content_type="text/plain",
+        )
+
+        result = service.archive("PROJ01", "20240115_120000", "session_01")
+
+        assert result["success"] is True
+        assert result["experiment_uri"] == "/data/experiments/XNAT_E00042"
+
+
+class TestRebuildMoveResponseInspection:
+    def test_rebuild_error_body_raises(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.post.return_value = make_response(
+            "Rebuild failed: session locked", content_type="text/plain"
+        )
+
+        with pytest.raises(OperationError):
+            service.rebuild("PROJ01", "20240115_120000", "session_01")
+
+    def test_move_error_body_raises_with_target_in_details(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.post.return_value = make_response(
+            "Error: destination project not found", content_type="text/plain"
+        )
+
+        with pytest.raises(OperationError) as exc:
+            service.move("PROJ01", "20240115_120000", "session_01", "PROJ02")
+
+        assert exc.value.details["target_project"] == "PROJ02"
+
+    def test_rebuild_clean_body_still_succeeds(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.post.return_value = make_response("OK", content_type="text/plain")
+
+        assert service.rebuild("PROJ01", "20240115_120000", "session_01")["success"] is True
+
+
+class TestGetNotFoundScoping:
+    def test_typed_404_is_rescoped_to_the_prearchive_session(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get.side_effect = ResourceNotFoundError("resource", "/data/prearchive/...")
+
+        with pytest.raises(ResourceNotFoundError) as exc:
+            service.get("PROJ01", "20240115_120000", "session_01")
+
+        assert "PROJ01/20240115_120000/session_01" in str(exc.value)
+
+    def test_unrelated_error_containing_404_propagates_unchanged(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        """Regression: `if "404" in str(e)` also fired on a session labelled SUB404."""
+        boom = OperationError("get", "upstream exploded for subject SUB404")
+        mock_client.get.side_effect = boom
+
+        with pytest.raises(OperationError) as exc:
+            service.get("PROJ01", "20240115_120000", "SUB404")
+
+        assert exc.value is boom, "must propagate unchanged, not become a 404"

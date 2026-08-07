@@ -13,8 +13,13 @@ from xnatctl.core.exceptions import (
 
 class TestTransferExceptions:
     def test_transfer_error_is_operation_error(self) -> None:
+        """str() is the message alone; details survive for verbose output.
+
+        The details dict used to be appended to every message, which
+        made user-facing errors restate themselves as debug noise.
+        """
         err = TransferError("something broke")
-        assert str(err) == "something broke (operation=transfer)"
+        assert str(err) == "something broke"
         assert err.details.get("operation") == "transfer"
 
     def test_conflict_error_has_entity_info(self) -> None:

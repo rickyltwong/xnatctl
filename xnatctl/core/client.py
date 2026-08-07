@@ -5,10 +5,15 @@ Provides retry logic, pagination, and session-based authentication.
 
 from __future__ import annotations
 
+import logging
+import random
 import re
+import ssl
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -16,14 +21,24 @@ import httpx
 
 from xnatctl.core.exceptions import (
     AuthenticationError,
+    ClientRequestError,
     NetworkError,
     PermissionDeniedError,
     ResourceNotFoundError,
     RetryExhaustedError,
+    ServerError,
     ServerUnreachableError,
     SessionExpiredError,
 )
-from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
+from xnatctl.core.exceptions import (
+    TimeoutError as XNATTimeoutError,
+)
+from xnatctl.core.redact import redact_url_query
+from xnatctl.core.timeouts import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_HTTP_TIMEOUT_SECONDS,
+    build_httpx_timeout,
+)
 from xnatctl.core.validation import validate_server_url
 
 # =============================================================================
@@ -33,8 +48,135 @@ from xnatctl.core.validation import validate_server_url
 DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
 DEFAULT_MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2
-RETRYABLE_STATUS_CODES = {502, 503, 504}
+# Statuses safe to retry on the core client path. 429/500 join the original
+# 502/503/504; 400 stays upload-only (it encodes a transient XNAT
+# import-race quirk handled in services/uploads.py), so it is NOT listed here.
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+# Of those, the ones safe to retry on ANY method: both are refusals the server
+# issues *before* running the work, so no side effect can exist yet. That they
+# are also exactly the two codes carrying Retry-After semantics is not a
+# coincidence -- both say "I did not do this; come back later".
+_METHOD_AGNOSTIC_RETRY_CODES = {429, 503}
+_RETRY_AFTER_STATUS_CODES = {429, 503}
+# The rest are ambiguous, so they follow the same idempotency rule as a
+# send-phase transport failure. A 500 means the handler ran and crashed, which
+# may have left side effects behind. A 502 is a dropped connection mid-response
+# with a proxy in front of it, and a 504 is a read timeout with a proxy in
+# front of it -- and the client already refuses to retry both of those raw
+# forms on a POST. Without this the same wire event behaved differently
+# depending on whether nginx was in the path, which is not a policy anyone
+# chose. See docs/adr/0011.
+#
+# Derived, not written out, so the two sets cannot drift apart when a status is
+# added to RETRYABLE_STATUS_CODES: anything new is ambiguous until someone
+# deliberately declares it a pre-execution refusal.
+_AMBIGUOUS_RETRY_CODES = RETRYABLE_STATUS_CODES - _METHOD_AGNOSTIC_RETRY_CODES
+# Cap on how long an explicit Retry-After is honoured: 300 is
+# what shipped and what the tests pin. A server asking for longer than 5 minutes
+# is telling us to give up, so we fall back to normal backoff and let the retry
+# budget drain instead of sleeping for an unbounded time.
+_MAX_RETRY_AFTER_SECONDS = 300
+
+# Methods whose retry after a READ-phase failure is safe. The request reached the
+# server, so a retry re-executes it; only methods XNAT treats as idempotent may
+# be repeated. POST/PATCH are excluded -- retrying them risks a double archive or
+# a double pipeline launch.
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS"})
+
+# Transport failures that are NOT ConnectError/TimeoutException but are still
+# transient: the socket died mid-exchange, or a proxy hiccupped. These are the
+# classic long-transfer failure mode for this tool (a dropped connection during
+# a multi-GB DICOM read), so they retry like a read timeout rather than escaping
+# raw (contract: no httpx exception may leave XNATClient).
+RETRYABLE_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+    httpx.ProxyError,
+    # Failure tearing the connection down. Harmless on its own, but it aborts
+    # the request that was in flight, so it needs the same treatment.
+    httpx.CloseError,
+)
+# Permanent transport failures: a bad scheme or an undecodable body will not fix
+# itself, so they raise immediately instead of burning the retry budget.
+PERMANENT_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
+    httpx.UnsupportedProtocol,
+    httpx.DecodingError,
+    httpx.InvalidURL,
+    # A redirect loop is not hypothetical here: an uninitialized XNAT bounces
+    # essentially every request to /setup, and a misconfigured siteUrl or a
+    # login-wall proxy does the same.
+    httpx.TooManyRedirects,
+    # We built a malformed request. That is a bug rather than a network event,
+    # and repeating it produces the same bug, so it fails immediately -- but it
+    # still leaves as a typed error rather than a traceback.
+    httpx.LocalProtocolError,
+)
+_BODY_SNIPPET_CHARS = 200
 _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
+
+logger = logging.getLogger(__name__)
+
+# Module-level RNG for backoff jitter. Separate from the global `random` state so
+# seeding it in a test cannot be perturbed by unrelated code.
+_RNG = random.Random()
+
+
+def _body_snippet(resp: httpx.Response) -> str:
+    """Return a short, redacted snippet of a response body for error details."""
+    try:
+        return redact_url_query(resp.text[:_BODY_SNIPPET_CHARS])
+    except Exception:
+        return ""
+
+
+def _retry_after_seconds(resp: httpx.Response) -> float | None:
+    """Return a bounded Retry-After delay in seconds, or None to use backoff.
+
+    RFC 9110 allows both forms of the header and real proxies emit both:
+    delta-seconds (``120``) and an HTTP-date (``Wed, 21 Oct 2026 07:28:00 GMT``).
+    Anything unparseable, negative, or beyond the cap returns None so the caller
+    falls back to exponential backoff.
+    """
+    if resp.status_code not in _RETRY_AFTER_STATUS_CODES:
+        return None
+    raw = resp.headers.get("Retry-After")
+    if raw is None:
+        return None
+
+    raw = raw.strip()
+    seconds: float | None = None
+    try:
+        seconds = float(int(raw))
+    except (ValueError, TypeError):
+        # HTTP-date form: convert to a delay relative to now.
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - datetime.now(UTC)).total_seconds()
+
+    if seconds is None:
+        return None
+    # A date already in the past means "retry now", not "sleep negative".
+    seconds = max(seconds, 0.0)
+    if seconds <= _MAX_RETRY_AFTER_SECONDS:
+        return seconds
+    return None
+
+
+def _backoff_delay(attempt: int, rng: random.Random = _RNG) -> float:
+    """Full-jitter exponential backoff for retry ``attempt`` (0-based).
+
+    Without jitter every parallel worker retries on the same tick and
+    re-stampedes a server that is already struggling -- the exact failure mode
+    behind concurrent-session exhaustion under ``--workers``.
+    """
+    return rng.uniform(0.0, float(RETRY_BACKOFF_BASE ** (attempt + 1)))
 
 
 # =============================================================================
@@ -53,8 +195,14 @@ class XNATClient:
     timeout: int = DEFAULT_TIMEOUT
     max_retries: int = DEFAULT_MAX_RETRIES
     verify_ssl: bool = True
+    ca_bundle: str | None = None
     auto_reauth: bool = False
+    # Injection seam for the underlying HTTP transport. Standard httpx practice
+    # for library consumers, and what lets tests drive real request/response
+    # cycles through httpx.MockTransport instead of mocking the client.
+    transport: httpx.BaseTransport | None = None
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
+    _ssl_context: ssl.SSLContext | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Validate and normalize URL."""
@@ -64,14 +212,44 @@ class XNATClient:
     # Client Management
     # =========================================================================
 
+    def httpx_verify(self) -> ssl.SSLContext | bool:
+        """TLS verification value for any httpx client that speaks for this one.
+
+        The upload and fast-download paths build raw ``httpx.Client`` instances
+        (per-thread, or to keep the upload retry ladder outside ``_request``);
+        they call this so a ``ca_bundle`` profile carries its trust decisions
+        there too instead of silently degrading to the bare bool. A custom CA
+        bundle is a secure alternative to disabling verification for
+        self-signed sites: build an SSLContext from it (httpx 0.28 deprecates
+        passing a bare path as ``verify``). The context is built once and
+        shared -- loading the bundle per call would also defeat the gradual
+        path's per-thread client cache, which keys on this value.
+        """
+        if self.ca_bundle:
+            # Unlocked memoization: callers grab this on the main thread before
+            # spawning workers, and the worst race builds the context twice.
+            if self._ssl_context is None:
+                self._ssl_context = ssl.create_default_context(cafile=self.ca_bundle)
+            return self._ssl_context
+        return self.verify_ssl
+
     def _get_client(self) -> httpx.Client:
         """Get or create HTTP client."""
         if self._client is None:
+            if not self.verify_ssl and not self.ca_bundle:
+                logger.warning(
+                    "TLS certificate verification is DISABLED for %s",
+                    redact_url_query(self.base_url),
+                )
             self._client = httpx.Client(
                 base_url=self.base_url,
-                timeout=self.timeout,
-                verify=self.verify_ssl,
+                # Structured timeout: a short connect phase so a
+                # blackholed host fails in seconds, with the long read ceiling
+                # preserved for large transfers.
+                timeout=build_httpx_timeout(self.timeout),
+                verify=self.httpx_verify(),
                 follow_redirects=True,
+                transport=self.transport,
             )
         return self._client
 
@@ -115,10 +293,17 @@ class XNATClient:
                 "/data/JSESSION",
                 auth=(self.username, self.password),
             )
+        except httpx.ConnectTimeout as e:
+            # Connect-phase timeout: same typed, fail-fast contract as _request.
+            raise XNATTimeoutError(self.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
         except httpx.ConnectError as e:
             raise ServerUnreachableError(self.base_url) from e
         except httpx.TimeoutException as e:
             raise NetworkError(self.base_url, f"Timeout: {e}") from e
+        except (*RETRYABLE_TRANSPORT_ERRORS, *PERMANENT_TRANSPORT_ERRORS) as e:
+            # Same contract as _request: no raw httpx error escapes. Login is a
+            # single attempt, so transient and permanent collapse to one branch.
+            raise NetworkError(self.base_url, f"{type(e).__name__}: {e}") from e
 
         if resp.status_code != 200:
             raise AuthenticationError(self.base_url, f"HTTP {resp.status_code}")
@@ -128,6 +313,8 @@ class XNATClient:
             raise AuthenticationError(self.base_url, "Invalid credentials or password expired")
 
         self.session_token = resp.text.strip()
+        # Never the token itself -- only that one was obtained.
+        logger.debug("Authenticated as %s at %s", self.username, redact_url_query(self.base_url))
         return self.session_token
 
     def invalidate_session(self) -> None:
@@ -135,14 +322,17 @@ class XNATClient:
         if self.session_token:
             try:
                 client = self._get_client()
-                client.delete(
-                    "/data/JSESSION",
-                    cookies={"JSESSIONID": self.session_token},
-                )
+                # Cookie on the client instance, not per-request: httpx 0.28
+                # deprecates `cookies=` on individual calls.
+                client.cookies.set("JSESSIONID", self.session_token)
+                client.delete("/data/JSESSION")
             except Exception:
                 pass  # Best effort
             finally:
                 self.session_token = None
+                # Do not leave the dead credential sitting on the client.
+                if self._client is not None:
+                    self._client.cookies.delete("JSESSIONID")
 
     # =========================================================================
     # HTTP Methods
@@ -160,7 +350,7 @@ class XNATClient:
             return (self.username, self.password)
         return None
 
-    def _request(
+    def _request(  # noqa: C901  # pre-existing; see pyproject
         self,
         method: str,
         path: str,
@@ -172,7 +362,7 @@ class XNATClient:
         files: Any | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
-        stream: bool = False,
+        retry_non_idempotent: bool = False,
     ) -> httpx.Response:
         """Execute HTTP request with retry logic.
 
@@ -187,26 +377,48 @@ class XNATClient:
             files: Files to upload.
             headers: Additional headers.
             timeout: Request timeout override.
-            stream: Whether to stream response.
+            retry_non_idempotent: Allow read-phase retries for a method outside
+                :data:`IDEMPOTENT_METHODS`. Opt in per call site, only where the
+                operation is provably safe to repeat -- a retried POST can mean a
+                double archive or a double pipeline launch.
 
         Returns:
-            HTTP response.
+            HTTP response (2xx only; error statuses raise typed exceptions).
 
         Raises:
-            AuthenticationError: If authentication fails.
-            NetworkError: If network error occurs.
-            RetryExhaustedError: If all retries fail.
+            SessionExpiredError: On 401 when reauth is unavailable/exhausted.
+            PermissionDeniedError: On 403.
+            ResourceNotFoundError: On 404.
+            ClientRequestError: On any other 4xx.
+            ServerError: On a 5xx that is not retryable or after retries drain.
+            TimeoutError: On a connect-phase timeout (fails fast, not retried),
+                or on a read-phase timeout for a non-idempotent method.
+            RetryExhaustedError: When retryable statuses or connect/read-timeout
+                failures exhaust ``max_retries``.
         """
         client = self._get_client()
 
-        request_timeout = timeout or self.timeout
+        # Read/write ceiling for this call (int, also used in error messages).
+        # Wrapped in a structured httpx.Timeout so a per-request override cannot
+        # re-flatten connect back to the multi-hour scalar.
+        read_timeout = timeout or self.timeout
+        request_timeout = build_httpx_timeout(read_timeout)
         last_error: Exception | None = None
         did_reauth = False
+        may_retry_after_send = method.upper() in IDEMPOTENT_METHODS or retry_non_idempotent
 
         attempt = 0
         while attempt <= self.max_retries:
-            cookies = self._get_cookies()
+            # Set the session cookie on the client instance rather than passing
+            # ``cookies=`` per request (httpx 0.28 deprecates per-request
+            # cookies). Refreshed each iteration so a mid-loop reauth is picked
+            # up on the retry.
+            if self.session_token:
+                client.cookies.set("JSESSIONID", self.session_token)
+            else:
+                client.cookies.delete("JSESSIONID")
             auth = self._get_auth()
+            started = time.monotonic()
             try:
                 resp = client.request(
                     method,
@@ -217,17 +429,43 @@ class XNATClient:
                     content=content,
                     files=files,
                     headers=headers,
-                    cookies=cookies,
                     auth=auth,
                     timeout=request_timeout,
+                )
+
+                # One line per attempt is the backbone of `-v` diagnostics: it
+                # is what tells a user whether a slow command is stuck on one
+                # request or grinding through retries. The full URL
+                # goes through redaction -- query strings carry tokens.
+                logger.debug(
+                    "%s %s -> %d in %dms (attempt %d/%d)",
+                    method.upper(),
+                    redact_url_query(str(resp.request.url)),
+                    resp.status_code,
+                    (time.monotonic() - started) * 1000,
+                    attempt + 1,
+                    self.max_retries + 1,
                 )
 
                 # Handle auth errors
                 if resp.status_code == 401:
                     if self.auto_reauth and not did_reauth and self.username and self.password:
+                        logger.debug(
+                            "401 on %s %s; re-authenticating and retrying once", method, path
+                        )
                         self.authenticate()
                         did_reauth = True
                         continue
+
+                    logger.debug(
+                        "401 on %s %s; not re-authenticating (auto_reauth=%s, "
+                        "already_retried=%s, credentials=%s)",
+                        method,
+                        path,
+                        self.auto_reauth,
+                        did_reauth,
+                        bool(self.username and self.password),
+                    )
 
                     expired_err = SessionExpiredError(self.base_url)
                     expired_err.details.update(
@@ -250,31 +488,118 @@ class XNATClient:
                 if resp.status_code == 404:
                     raise ResourceNotFoundError("resource", path)
 
-                # Retry on server errors
+                # Retry on retryable statuses; on exhaustion raise a typed
+                # RetryExhaustedError rather than leaking httpx.HTTPStatusError.
                 if resp.status_code in RETRYABLE_STATUS_CODES:
-                    last_error = NetworkError(
-                        self.base_url,
-                        f"HTTP {resp.status_code}",
-                    )
+                    last_error = ServerError(resp.status_code, method, path, _body_snippet(resp))
+
+                    # 429/503 retry on any method; 500/502/504 only where a
+                    # repeat is safe, because the request may already have run.
+                    if resp.status_code in _AMBIGUOUS_RETRY_CODES and not may_retry_after_send:
+                        ambiguous = ServerError(resp.status_code, method, path, _body_snippet(resp))
+                        # The reason goes in the hint, not the message: the
+                        # message is the one line CLI-09 always prints, and the
+                        # hint is where it puts the next step. Without it the
+                        # operator sees "HTTP 504" and reasonably assumes the
+                        # request did nothing.
+                        ambiguous.hint = (
+                            f"The server sent {resp.status_code} after receiving the "
+                            f"{method.upper()}, so it may have partially executed. It was "
+                            "not retried automatically -- check server state before "
+                            "repeating it."
+                        )
+                        raise ambiguous
+
                     if attempt < self.max_retries:
-                        time.sleep(RETRY_BACKOFF_BASE ** (attempt + 1))
+                        # An explicit Retry-After is an instruction, so it is used
+                        # verbatim; only our own backoff gets jitter.
+                        retry_after = _retry_after_seconds(resp)
+                        delay = retry_after if retry_after is not None else _backoff_delay(attempt)
+                        # WARNING, not DEBUG: a retry storm is the single most
+                        # common cause of "xnatctl is hanging", and it used to
+                        # be completely invisible.
+                        logger.warning(
+                            "HTTP %d on %s %s; retrying in %.1fs%s (attempt %d/%d)",
+                            resp.status_code,
+                            method.upper(),
+                            path,
+                            delay,
+                            " per Retry-After" if retry_after is not None else "",
+                            attempt + 1,
+                            self.max_retries + 1,
+                        )
+                        time.sleep(delay)
                         attempt += 1
                         continue
+                    raise RetryExhaustedError("request", self.max_retries + 1, last_error)
 
-                # Success or non-retryable error
-                resp.raise_for_status()
+                # Non-retryable error status: surface a typed error, never a raw
+                # httpx.HTTPStatusError (401/403/404 are already handled above).
+                if resp.status_code >= 400:
+                    if resp.status_code < 500:
+                        raise ClientRequestError(
+                            resp.status_code, method, path, _body_snippet(resp)
+                        )
+                    raise ServerError(resp.status_code, method, path, _body_snippet(resp))
+
                 return resp
 
+            except httpx.ConnectTimeout as e:
+                # Fail fast: the connect phase timed out (host blackholed /
+                # firewall-DROPped). A typed TimeoutError instead of the generic
+                # NetworkError bucket, and NOT retried -- an unreachable host will
+                # not recover within the backoff window, and the whole point of
+                # the split timeout is failing in seconds, not hours. (A future
+                # revision may add
+                # idempotency-aware connect retries.)
+                raise XNATTimeoutError(self.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
             except httpx.ConnectError:
+                # Connect phase: the request never reached the server, so a retry
+                # cannot duplicate a side effect regardless of method.
                 last_error = ServerUnreachableError(self.base_url)
-            except httpx.TimeoutException:
-                last_error = NetworkError(self.base_url, f"Timeout after {request_timeout}s")
+            except httpx.TimeoutException as e:
+                # Read/write/pool phase: the server HAS seen the request. Retrying
+                # a non-idempotent method here risks executing it twice.
+                if not may_retry_after_send:
+                    raise XNATTimeoutError(
+                        self.base_url,
+                        read_timeout,
+                        f"{method.upper()} {path} timed out after the request was sent; "
+                        "it may have partially executed on the server. Not retried "
+                        "automatically - check server state before repeating it.",
+                    ) from e
+                last_error = NetworkError(self.base_url, f"Timeout after {read_timeout}s")
+            except PERMANENT_TRANSPORT_ERRORS as e:
+                # Wrong scheme, malformed URL, undecodable body: retrying cannot
+                # help, so fail now with a typed error rather than after backoff.
+                raise NetworkError(self.base_url, f"{type(e).__name__}: {e}") from e
+            except RETRYABLE_TRANSPORT_ERRORS as e:
+                # Socket died mid-exchange / proxy hiccup. Same send-phase hazard
+                # as a read timeout, so it obeys the same idempotency rule.
+                if not may_retry_after_send:
+                    raise NetworkError(
+                        self.base_url,
+                        f"{type(e).__name__} on {method.upper()} {path} after the request "
+                        "was sent; it may have partially executed on the server. "
+                        "Not retried automatically.",
+                    ) from e
+                last_error = NetworkError(self.base_url, f"{type(e).__name__}: {e}")
             except (AuthenticationError, ResourceNotFoundError):
                 raise
 
-            # Retry with backoff
+            # Retry with full-jitter backoff.
             if attempt < self.max_retries:
-                time.sleep(RETRY_BACKOFF_BASE ** (attempt + 1))
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    "%s on %s %s; retrying in %.1fs (attempt %d/%d)",
+                    type(last_error).__name__ if last_error else "Transport error",
+                    method.upper(),
+                    path,
+                    delay,
+                    attempt + 1,
+                    self.max_retries + 1,
+                )
+                time.sleep(delay)
 
             attempt += 1
 
@@ -287,7 +612,6 @@ class XNATClient:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
-        stream: bool = False,
     ) -> httpx.Response:
         """GET request."""
         return self._request(
@@ -296,7 +620,6 @@ class XNATClient:
             params=params,
             headers=headers,
             timeout=timeout,
-            stream=stream,
         )
 
     def post(
@@ -392,6 +715,7 @@ class XNATClient:
         offset = 0
         base_params = params.copy() if params else {}
         base_params["format"] = "json"
+        previous_page: list[Any] | None = None
 
         while True:
             page_params = {
@@ -408,10 +732,57 @@ class XNATClient:
             for key in result_key.split("."):
                 results = results.get(key, []) if isinstance(results, dict) else []
 
+            # Per-page visibility turns "the list command is slow" into a
+            # number of pages and items. Logged in the client rather
+            # than BaseService._paginate, which only delegates here.
+            logger.debug(
+                "paginate %s: offset=%d limit=%d -> %d items",
+                path,
+                offset,
+                page_size,
+                len(results),
+            )
+
             if not results:
                 break
 
+            # Not every XNAT endpoint paginates. XNAT 1.9.2.1 ignores `limit`
+            # and `offset` on /data/projects entirely and answers every
+            # request with the full result set -- so the loop below advanced
+            # the offset forever, re-yielding the same rows, and callers hung.
+            # Verified against a live server; the integration tier reached
+            # offset 151450 before it was stopped.
+            #
+            # Two shapes of that, and the first alone is not enough: a server
+            # returning more rows than `limit` asked for is obviously not
+            # honouring it, but when the collection is smaller than a page
+            # the counts look perfectly normal and only the repetition shows
+            # it. Both are checked before the offset advances.
+            ignores_limit = len(results) > page_size
+            repeats_page = results == previous_page
+            if ignores_limit or repeats_page:
+                if not repeats_page:
+                    yield from results
+                # WARNING, not DEBUG. Stopping is right for a server that
+                # ignores these parameters, but it is indistinguishable from
+                # one that honours `limit` while ignoring `offset` -- where
+                # stopping truncates the listing instead. Nobody runs this at
+                # DEBUG, and a short result set that should have been long is
+                # exactly the kind of wrong answer that gets believed.
+                logger.warning(
+                    "paginate %s: %s at offset=%d limit=%d. Treating the endpoint as "
+                    "unpaginated and stopping after %d row(s); if the server does "
+                    "paginate, this listing may be incomplete.",
+                    path,
+                    "returned more rows than requested" if ignores_limit else "repeated a page",
+                    offset,
+                    page_size,
+                    len(results),
+                )
+                break
+
             yield from results
+            previous_page = results
             offset += page_size
 
             if len(results) < page_size:

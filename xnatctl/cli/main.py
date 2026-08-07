@@ -8,7 +8,7 @@ from xnatctl import __version__
 from xnatctl.cli.admin import admin
 from xnatctl.cli.api import api
 from xnatctl.cli.auth import auth
-from xnatctl.cli.common import Context
+from xnatctl.cli.common import Context, global_options, handle_errors
 
 # Import command groups
 from xnatctl.cli.config_cmd import config
@@ -68,7 +68,7 @@ def cli(
     quiet: bool,
     verbose: bool,
 ) -> None:
-    """xnatctl - A CLI for standardized XNAT REST workflows.
+    """Xnatctl - A CLI for standardized XNAT REST workflows.
 
     Manage XNAT projects, subjects, sessions, scans, and resources.
     Supports parallel uploads/downloads, batch operations, and admin tasks.
@@ -82,6 +82,13 @@ def cli(
       xnatctl project list       # List projects
 
     Use --help on any command for more information.
+
+    \b
+    Exit codes:
+      0  success             4  network error
+      1  general error       5  not found
+      2  usage error (Click) 6  permission denied
+      3  auth error          7  user cancelled
     """
     cli_ctx = ctx.ensure_object(Context)
 
@@ -137,60 +144,58 @@ cli.add_command(xsync)
 
 
 @cli.command()
-@click.pass_context
-def whoami(ctx: click.Context) -> None:
-    """Show current user and authentication context."""
-    from xnatctl.cli.common import Context
-    from xnatctl.core.output import OutputFormat, print_error, print_output
+@global_options
+@handle_errors
+def whoami(ctx: Context) -> None:
+    """Show current user and authentication context.
 
-    # Create context manually since we're not using decorators
-    cli_ctx = Context()
-    cli_ctx.config = (
-        cli_ctx.config or __import__("xnatctl.core.config", fromlist=["Config"]).Config.load()
-    )
-    cfg = cli_ctx.config
+    Honors the global --profile/-o/-q flags, so `xnatctl -p prod whoami`
+    reports prod's server and user (not the default profile's).
+    """
+    from xnatctl.cli.common import ExitCode
+    from xnatctl.core.output import print_error, print_output
+
+    cfg = ctx.config
     assert cfg is not None
 
-    try:
-        client = cli_ctx.get_client()
+    client = ctx.get_client()
 
-        # Try to get user info
-        if client.is_authenticated or (client.username and client.password):
-            if not client.is_authenticated:
-                client.authenticate()
+    if client.is_authenticated or (client.username and client.password):
+        if not client.is_authenticated:
+            client.authenticate()
 
-            user_info = client.whoami()
-            profile = cfg.get_profile(cli_ctx.profile_name)
+        user_info = client.whoami()
+        profile = cfg.get_profile(ctx.profile_name)
 
-            output = {
-                "username": user_info.get("username", "unknown"),
-                "server": client.base_url,
-                "profile": cli_ctx.profile_name or cfg.default_profile,
-                "default_project": profile.default_project or "-",
-                "auth_mode": "session" if client.session_token else "basic",
-            }
+        output = {
+            "username": user_info.get("username", "unknown"),
+            "server": client.base_url,
+            "profile": ctx.profile_name or cfg.default_profile,
+            "default_project": profile.default_project or "-",
+            "auth_mode": "session" if client.session_token else "basic",
+        }
 
-            print_output(
-                output,
-                format=OutputFormat.TABLE,
-                column_labels={
-                    "username": "User",
-                    "server": "Server",
-                    "profile": "Profile",
-                    "default_project": "Default Project",
-                    "auth_mode": "Auth Mode",
-                },
-            )
-        else:
-            print_error(
-                "Not authenticated. Run 'xnatctl auth login', set XNAT_USER/XNAT_PASS, "
-                "or set username/password in the profile config."
-            )
-            ctx.exit(2)
-
-    except Exception as e:
-        print_error(str(e))
-        ctx.exit(1)
+        print_output(
+            output,
+            format=ctx.output_format,
+            column_labels={
+                "username": "User",
+                "server": "Server",
+                "profile": "Profile",
+                "default_project": "Default Project",
+                "auth_mode": "Auth Mode",
+            },
+            quiet=ctx.quiet,
+            id_field="username",
+        )
+    else:
+        print_error(
+            "Not authenticated. Run 'xnatctl auth login', set XNAT_USER/XNAT_PASS, "
+            "or set username/password in the profile config."
+        )
+        # AUTH_ERROR (not Click's usage-error code 2). SystemExit is a
+        # BaseException, so @handle_errors (except Exception) passes it through.
+        raise SystemExit(ExitCode.AUTH_ERROR)
 
 
 @cli.group()
@@ -200,49 +205,60 @@ def health() -> None:
 
 
 @health.command("ping")
-@click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
-@click.pass_context
-def health_ping(ctx: click.Context, output: str) -> None:
-    """Check server connectivity and authentication."""
-    from xnatctl.cli.common import Context
-    from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
+@global_options
+@handle_errors
+def health_ping(ctx: Context) -> None:
+    """Check server connectivity and authentication.
 
-    cli_ctx = Context()
-    cli_ctx.config = (
-        cli_ctx.config or __import__("xnatctl.core.config", fromlist=["Config"]).Config.load()
-    )
+    Honors the global --profile/-o flags; unauthenticated pings still report
+    reachability (auth status is a field, not a precondition).
+    """
+    from xnatctl.core.output import print_output, print_success
 
-    try:
-        client = cli_ctx.get_client()
-        result = client.ping()
+    client = ctx.get_client()
+    result = client.ping()
 
-        result["authenticated"] = client.is_authenticated or bool(
-            client.username and client.password
+    result["authenticated"] = client.is_authenticated or bool(client.username and client.password)
+
+    if ctx.output_format == OutputFormat.JSON:
+        print_output(result, format=OutputFormat.JSON)
+    elif ctx.quiet:
+        # Minimal: just the reachable URL on stdout; the exit code carries health.
+        print_output(result, format=OutputFormat.TABLE, quiet=True, id_field="url")
+    else:
+        print_success(f"Server reachable: {result['url']}")
+        print_output(
+            {
+                "status": result["status"],
+                "version": result["version"],
+                "latency": f"{result['latency_ms']}ms",
+                "authenticated": result["authenticated"],
+            },
+            format=OutputFormat.TABLE,
         )
-
-        if output == "json":
-            print_output(result, format=OutputFormat.JSON)
-        else:
-            print_success(f"Server reachable: {result['url']}")
-            print_output(
-                {
-                    "status": result["status"],
-                    "version": result["version"],
-                    "latency": f"{result['latency_ms']}ms",
-                    "authenticated": result["authenticated"],
-                },
-                format=OutputFormat.TABLE,
-            )
-
-    except Exception as e:
-        print_error(str(e))
-        ctx.exit(1)
 
 
 @cli.group()
 def completion() -> None:
     """Generate shell completion scripts."""
     pass
+
+
+def _render_completion(shell: str) -> str:
+    """Render Click's official completion script for *shell*.
+
+    Generated from the INSTALLED Click version so the emitted completion protocol
+    always matches the runtime. The old hand-rolled bash script emitted the
+    Click 7 raw-``COMPREPLY`` form, which under Click 8 produced literal
+    ``plain,project`` completions instead of ``project``; delegating to Click's
+    own generator fixes that and removes the drift risk for zsh/fish too.
+    """
+    from click.shell_completion import get_completion_class
+
+    comp_cls = get_completion_class(shell)
+    if comp_cls is None:  # pragma: no cover - bash/zsh/fish all ship with Click
+        raise click.ClickException(f"No completion support for shell: {shell}")
+    return comp_cls(cli, {}, "xnatctl", "_XNATCTL_COMPLETE").source()
 
 
 @completion.command("bash")
@@ -252,21 +268,7 @@ def completion_bash() -> None:
     Install with:
       xnatctl completion bash > ~/.local/share/bash-completion/completions/xnatctl
     """
-
-    # Get the completion script using Click's built-in support
-    prog_name = "xnatctl"
-    source = f"""
-_xnatctl_completion() {{
-    local IFS=$'\\n'
-    COMPREPLY=( $( env COMP_WORDS="${{COMP_WORDS[*]}}" \\
-                   COMP_CWORD=$COMP_CWORD \\
-                   _{prog_name.upper()}_COMPLETE=bash_complete $1 ) )
-    return 0
-}}
-
-complete -o default -F _xnatctl_completion {prog_name}
-"""
-    click.echo(source.strip())
+    click.echo(_render_completion("bash"))
 
 
 @completion.command("zsh")
@@ -276,40 +278,7 @@ def completion_zsh() -> None:
     Install with:
       xnatctl completion zsh > ~/.zfunc/_xnatctl
     """
-    prog_name = "xnatctl"
-    source = f"""
-#compdef {prog_name}
-
-_{prog_name}_completion() {{
-    local -a completions
-    local -a completions_with_descriptions
-    local -a response
-    (( ! $+commands[{prog_name}] )) && return 1
-
-    response=("${{(@f)$( env COMP_WORDS="${{words[*]}}" \\
-                        COMP_CWORD=$((CURRENT-1)) \\
-                        _{prog_name.upper()}_COMPLETE=zsh_complete {prog_name} )}}")
-
-    for key descr in ${{(kv)response}}; do
-      if [[ "$descr" == "_" ]]; then
-          completions+=("$key")
-      else
-          completions_with_descriptions+=("$key":"$descr")
-      fi
-    done
-
-    if [ -n "$completions_with_descriptions" ]; then
-        _describe -V unsorted completions_with_descriptions -U
-    fi
-
-    if [ -n "$completions" ]; then
-        compadd -U -V unsorted -a completions
-    fi
-}}
-
-compdef _{prog_name}_completion {prog_name}
-"""
-    click.echo(source.strip())
+    click.echo(_render_completion("zsh"))
 
 
 @completion.command("fish")
@@ -319,27 +288,7 @@ def completion_fish() -> None:
     Install with:
       xnatctl completion fish > ~/.config/fish/completions/xnatctl.fish
     """
-    prog_name = "xnatctl"
-    source = f"""
-function _xnatctl_completion
-    set -l response (env _{prog_name.upper()}_COMPLETE=fish_complete COMP_WORDS=(commandline -cp) COMP_CWORD=(commandline -t) {prog_name})
-
-    for completion in $response
-        set -l metadata (string split "," -- $completion)
-
-        if [ $metadata[1] = "dir" ]
-            __fish_complete_directories $metadata[2]
-        else if [ $metadata[1] = "file" ]
-            __fish_complete_path $metadata[2]
-        else if [ $metadata[1] = "plain" ]
-            echo $metadata[2]
-        end
-    end
-end
-
-complete --no-files --command {prog_name} --arguments "(_xnatctl_completion)"
-"""
-    click.echo(source.strip())
+    click.echo(_render_completion("fish"))
 
 
 # =============================================================================
@@ -348,8 +297,26 @@ complete --no-files --command {prog_name} --arguments "(_xnatctl_completion)"
 
 
 def main() -> None:
-    """Main entry point."""
-    cli()
+    """Main entry point.
+
+    Last-resort guard so no expected failure class (bad profile, unreachable
+    server, expired session) ever reaches the user as a raw Python traceback.
+    Commands normally render these via ``@handle_errors``; this catches anything
+    raised OUTSIDE a decorated command body too -- notably setup-phase failures
+    inside ``@global_options`` (config load, ``XNAT_TIMEOUT`` parsing), which the
+    per-command ``@handle_errors`` wrapper never sees. Uses the same
+    ``render_cli_error`` policy so ``XNATCTL_DEBUG=1`` yields a traceback here as
+    well. Click's own ``ClickException``/``Abort`` are handled by ``cli()`` in
+    standalone mode and surface as ``SystemExit``, which passes straight through.
+    """
+    import sys
+
+    from xnatctl.cli.common import render_cli_error
+
+    try:
+        cli()
+    except Exception as e:
+        sys.exit(render_cli_error(e))
 
 
 if __name__ == "__main__":

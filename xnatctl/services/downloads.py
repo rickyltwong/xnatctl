@@ -57,7 +57,6 @@ class DownloadService(BaseService):
         subject: str | None = None,
     ) -> ExperimentRef:
         """Resolve label-based experiment references to a canonical experiment ID."""
-
         if project and not session_id.startswith("XNAT_E"):
             source_ref = ExperimentRef(
                 experiment=session_id,
@@ -93,10 +92,16 @@ class DownloadService(BaseService):
     ) -> DownloadSummary:
         """Download session data.
 
+        TODO: currently has no CLI caller -- ``session download`` runs
+        the inline fast path in ``cli/session.py``. A planned refactor folds that engine
+        into this method (routed through the client for retry/auth) rather than
+        deleting it; kept intentionally per the M1 dead-code carve-out.
+
         Args:
             session_id: Session ID
             output_dir: Output directory path
-            project: Project ID
+            project: Kept for call compatibility; not used to build the URL,
+                because the project-scoped file listing does not route.
             include_resources: Include session-level resources
             include_assessors: Include assessor data
             pattern: File pattern filter
@@ -113,11 +118,14 @@ class DownloadService(BaseService):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Build download URL
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/scans/ALL/files"
-        else:
-            path = f"/data/experiments/{session_id}/scans/ALL/files"
+        # Build download URL. The flat form is the only one that routes: XNAT
+        # answers /data/projects/{P}/experiments/{E}/scans/ALL/files with the
+        # experiment document instead of the file listing, so the project-scoped
+        # variant downloaded a ZIP of nothing.
+        path = HierarchyService.build_scan_path(
+            ScanRef(experiment=ExperimentRef(experiment=session_id), scan_id="ALL"),
+            "files",
+        )
 
         params: dict[str, Any] = {"format": "zip"}
         if pattern:
@@ -518,42 +526,66 @@ class DownloadService(BaseService):
     ) -> bool:
         """Verify downloaded files against server checksums.
 
+        Both file listings are consulted. ``/files`` returns only the
+        session-level resources, while the scan files this method is usually
+        asked to verify live under ``/scans/ALL/files`` -- checking just the
+        former meant nothing downloaded was ever compared, and verification
+        reported success without doing any (verified live: a session whose
+        ``/files`` listed 12 resource files and whose ``/scans/ALL/files``
+        listed 3112).
+
+        Names are matched on basename against the *set* of digests recorded
+        for that name. XNAT sites that number DICOM files per scan repeat
+        names like ``00001.dcm`` in every scan, so a single-digest map would
+        report a byte-perfect download as corrupt.
+
         Args:
-            session_id: Session ID
+            session_id: Session ID (accession ID; a label cannot be listed here)
             download_dir: Directory with downloaded files
-            project: Project ID
+            project: Accepted for call compatibility but deliberately not used
+                to build the listing URL -- see below.
 
         Returns:
-            True if all checksums match
+            True if every file that could be checked matched, and at least one
+            file was checked. Verifying nothing is not a pass.
         """
-        # Get file list with checksums from server
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/files"
-        else:
-            path = f"/data/experiments/{session_id}/files"
+        # Always the flat form. XNAT does not route file listings under
+        # /data/projects/{P}/experiments/{E}: both /files and /scans/ALL/files
+        # return 200 with the experiment document there (verified live -- the
+        # flat URLs returned 12 and 3112 rows, the project-scoped ones a single
+        # items[] record). Building the project-scoped URL would yield zero
+        # checksums and report a byte-perfect download as unverifiable.
+        base = f"/data/experiments/{session_id}"
 
-        params = {"format": "json"}
-        data = self._get(path, params=params)
-        results = self._extract_results(data)
+        server_checksums: dict[str, set[str]] = {}
+        for path in (f"{base}/scans/ALL/files", f"{base}/files"):
+            try:
+                results = self._extract_results(self._get(path, params={"format": "json"}))
+            except Exception:
+                # A session with no scans 404s on the scans listing; the other
+                # listing may still cover what was downloaded.
+                continue
+            for r in results:
+                name = r.get("Name", "")
+                digest = r.get("digest", "")
+                if name and digest:
+                    server_checksums.setdefault(name, set()).add(digest)
 
-        # Build checksum map
-        server_checksums: dict[str, str] = {}
-        for r in results:
-            name = r.get("Name", "")
-            digest = r.get("digest", "")
-            if name and digest:
-                server_checksums[name] = digest
+        if not server_checksums:
+            return False
 
-        # Verify local files
+        checked = 0
         all_valid = True
         for file_path in download_dir.rglob("*"):
             if not file_path.is_file():
                 continue
 
-            name = file_path.name
-            if name in server_checksums:
-                local_hash = _md5_file(file_path)
-                if local_hash != server_checksums[name]:
-                    all_valid = False
+            digests = server_checksums.get(file_path.name)
+            if not digests:
+                continue
 
-        return all_valid
+            checked += 1
+            if _md5_file(file_path) not in digests:
+                all_valid = False
+
+        return all_valid and checked > 0

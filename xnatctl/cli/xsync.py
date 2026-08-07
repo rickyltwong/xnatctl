@@ -21,7 +21,6 @@ Secret-handling notes (load-bearing — do not relax without updating
 from __future__ import annotations
 
 import os
-import sys
 from typing import Any
 
 import click
@@ -31,6 +30,8 @@ from xnatctl.cli.common import (
     confirm_destructive,
     global_options,
     handle_errors,
+    read_password_stdin,
+    reject_argv_password,
     require_auth,
     require_project_from_context,
 )
@@ -48,47 +49,18 @@ from xnatctl.services.xsync import XsyncService
 _REMOTE_PASS_ENV: str = "XNAT_XSYNC_REMOTE_PASS"
 
 
-def _reject_argv_password(
-    ctx: click.Context,
-    param: click.Parameter,
-    value: str | None,
-) -> None:
-    """Reject ``--remote-pass <secret>`` at parse time.
-
-    Wired as the ``callback=`` for the ``--remote-pass`` option so the
-    failure mode is a :class:`click.UsageError` (exit 2) before any
-    authentication, configuration, or context decorator runs. The
-    deterrent flag exists only to surface the secret-sourcing contract
-    in ``--help``; supplying a value on argv is unconditionally a usage
-    error.
-
-    Args:
-        ctx: Click parsing context (unused).
-        param: The ``--remote-pass`` parameter (unused).
-        value: The argv-supplied value, or ``None`` if the flag was
-            omitted.
-
-    Returns:
-        ``None``. The callback never propagates a value into the
-        command body; only the absence-of-value case is permitted, and
-        the command signature treats the parameter as always-``None``.
-
-    Raises:
-        click.UsageError: If ``value`` is not ``None``.
-    """
-    del ctx, param  # Unused; the rejection is unconditional.
-    if value is not None:
-        raise click.UsageError(
-            "Refusing to read remote password from argv. "
-            "Use --remote-pass-stdin or set the XNAT_XSYNC_REMOTE_PASS env var."
-        )
-    return None
+# Canonical implementation lives in cli/common.py; this module was
+# the pattern's origin and now just parameterizes it.
+_reject_argv_password = reject_argv_password(
+    f"Use --remote-pass-stdin or set the {_REMOTE_PASS_ENV} env var."
+)
 
 
 @click.group("xsync")
 def xsync() -> None:
     """Manage XNAT XSync (cross-site federation) projects and credentials.
 
+    \b
     Examples:
 
         xnatctl xsync list
@@ -114,8 +86,8 @@ def xsync() -> None:
 
 @xsync.command("list")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_list(ctx: Context) -> None:
     """List XSync-bound projects on the local XNAT."""
     client = ctx.get_client()
@@ -151,8 +123,8 @@ def xsync_list(ctx: Context) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_setup(ctx: Context, project_id: str | None) -> None:
     """Show the XSync setup record for a project."""
     resolved = require_project_from_context(ctx, project_id)
@@ -170,8 +142,8 @@ def xsync_setup(ctx: Context, project_id: str | None) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_status(ctx: Context, project_id: str | None) -> None:
     """Show the XSync status record for a project."""
     resolved = require_project_from_context(ctx, project_id)
@@ -189,8 +161,8 @@ def xsync_status(ctx: Context, project_id: str | None) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_history(ctx: Context, project_id: str | None) -> None:
     """Show the XSync run history for a project."""
     resolved = require_project_from_context(ctx, project_id)
@@ -208,8 +180,8 @@ def xsync_history(ctx: Context, project_id: str | None) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def xsync_progress(ctx: Context, project_id: str | None) -> None:
     """Stream the current XSync progress log (plain text) to stdout."""
     resolved = require_project_from_context(ctx, project_id)
@@ -231,8 +203,8 @@ def xsync_progress(ctx: Context, project_id: str | None) -> None:
     help="Local project id (falls back to profile default_project).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 @confirm_destructive("Trigger an XSync run for this project?")
 def xsync_sync(ctx: Context, project_id: str | None, dry_run: bool) -> None:
     """Trigger an XSync run for the given project."""
@@ -261,8 +233,8 @@ def xsync_sync(ctx: Context, project_id: str | None, dry_run: bool) -> None:
     help="Local project id (informational; falls back to profile default).",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 @confirm_destructive("Trigger an XSync run for this subject/experiment?")
 def xsync_sync_subject(
     ctx: Context,
@@ -301,14 +273,7 @@ def _resolve_remote_password(*, pass_stdin: bool) -> str:
         The remote password as a string. Never logged by this helper.
     """
     if pass_stdin:
-        # ``readline`` so a trailing newline (common with ``echo``) is
-        # stripped without consuming any further stdin bytes.
-        secret = sys.stdin.readline()
-        if secret.endswith("\n"):
-            secret = secret[:-1]
-        if not secret:
-            raise click.UsageError("--remote-pass-stdin was set but stdin was empty.")
-        return secret
+        return read_password_stdin("--remote-pass-stdin")
 
     env_value = os.environ.get(_REMOTE_PASS_ENV)
     if env_value:
@@ -444,8 +409,8 @@ def _enumerate_bound_projects(service: XsyncService, remote_url: str) -> list[st
     help="Rotate every XSync-bound project that matches --remote-url.",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 @confirm_destructive("Rotate XSync credentials for this project?")
 def xsync_refresh_credentials(
     ctx: Context,
@@ -465,6 +430,7 @@ def xsync_refresh_credentials(
     runs entirely inside this command; operators no longer need to script
     against raw curl.
 
+    \b
     Examples:
 
         xnatctl xsync refresh-credentials -P PROJ \\

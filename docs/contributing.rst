@@ -44,6 +44,18 @@ use case you are trying to solve. Explaining *why* you need the feature -- not j
 *what* -- helps maintainers evaluate and prioritize the request.
 
 
+Architecture Decisions
+----------------------
+
+A change that constrains future code -- a retry policy, a URL convention, a
+lint rule deliberately left off -- needs an Architecture Decision Record in
+``docs/adr/``. Copy ``docs/adr/template.md``, number it sequentially, and link
+it from ``docs/adr/README.md``.
+
+The test is whether the decision would surprise someone reading only the code.
+If it would, the reasoning belongs somewhere it will be found before it is
+"cleaned up".
+
 Development Setup
 -----------------
 
@@ -107,6 +119,68 @@ To run a single test function:
 
    Use ``-k`` to run tests matching a keyword expression, e.g.
    ``uv run pytest tests/ -k "upload and not dicom" -v``.
+
+.. note::
+
+   CI enforces a coverage floor (see ``fail_under`` in ``pyproject.toml``), so
+   substantial new code needs tests to keep the gate green.
+
+
+The Integration Tier
+--------------------
+
+Everything above runs against mocks. That proves xnatctl sends what we think
+it sends; it cannot prove XNAT answers the way we think it answers. The tests
+in ``tests/integration/`` talk to a real server, and they are where beliefs
+about XNAT's behaviour get checked -- whether an import lands in the archive
+or the prearchive, what a scan ZIP's internal layout really is, whether the
+files come back byte-identical.
+
+These tests are marked ``integration`` and **deselected by default**, so a
+normal ``pytest`` run never waits on any of it.
+
+Start a throwaway XNAT and run them:
+
+.. code-block:: console
+
+   $ docker compose -f docker-compose.integration.yml up -d --wait
+   $ uv run pytest tests/integration -m integration -v
+   $ docker compose -f docker-compose.integration.yml down -v
+
+The first ``up`` builds the image, which downloads the official XNAT WAR
+(around 250 MB). Later runs reuse it. Startup takes roughly 90 seconds once
+built, and ``--wait`` blocks until the server answers.
+
+The stack listens on ``127.0.0.1:8104`` -- not 8080, which is the port most
+likely to already be taken -- with credentials ``admin``/``admin``. The
+fixtures complete XNAT's first-run setup wizard automatically; without that,
+even ``POST /data/JSESSION`` is redirected to ``/setup``.
+
+To point the tier at a server of your own instead:
+
+.. code-block:: console
+
+   $ XNATCTL_TEST_URL=https://xnat.example.org \
+       XNATCTL_TEST_USER=me XNATCTL_TEST_PASS=secret \
+       XNATCTL_TEST_I_KNOW_THIS_IS_NOT_PRODUCTION=yes \
+       uv run pytest tests/integration -m integration -v
+
+**Use a scratch server.** The tier creates projects and deletes them with
+``removeFiles=true``. Because a stale ``XNATCTL_TEST_URL`` in a shell or a CI
+variable is all it would take to run that against real imaging data, any host
+other than localhost is refused unless
+``XNATCTL_TEST_I_KNOW_THIS_IS_NOT_PRODUCTION=yes`` is also set.
+
+If nothing is listening, the whole tier skips with a message saying so rather
+than failing. In CI it runs nightly and on demand through the ``Integration``
+workflow, not on pull requests -- see ``.github/workflows/integration.yml``.
+
+To change the XNAT version under test, set ``XNAT_VERSION`` (it defaults to
+the version the maintainers run in production) and rebuild:
+
+.. code-block:: console
+
+   $ XNAT_VERSION=1.9.3.6 docker compose -f docker-compose.integration.yml build
 
 
 Linting, Formatting, and Type Checking
@@ -198,10 +272,14 @@ models and raw API responses. For example, ``ProjectService.list()`` calls
 ``Project`` model instances.
 
 **Core layer** (``xnatctl/core/``). The ``XNATClient`` wraps httpx with retry
-logic (exponential backoff on 502/503/504), automatic re-authentication on 401,
-pagination support, and session token management. The config module handles
-YAML-based profiles and environment variable overrides. The output module uses Rich
-to render tables, JSON, and quiet (ID-only) formats.
+logic (jittered exponential backoff on 429/500/502/503/504, honoring
+``Retry-After``; transport failures such as a dropped connection are retried
+only for idempotent methods, since a retried POST could execute twice),
+automatic re-authentication on 401, pagination support, and session token
+management. The config module handles YAML-based profiles and environment
+variable overrides. The output module uses Rich to render tables, JSON, and
+quiet (ID-only) formats; log output passes through a redaction filter that
+scrubs secret-shaped URL values.
 
 The CLI decorator stack composes behavior declaratively. A typical command looks
 like this:

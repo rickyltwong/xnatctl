@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    """Drop Rich's colour codes so assertions can see the literal message."""
+    return _ANSI_RE.sub("", text)
 
 
 @pytest.fixture
@@ -120,7 +129,7 @@ class TestConfigShow:
         cfg = Config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+            with config_seam(cfg):
                 result = runner.invoke(cli, ["config", "show"])
 
         assert result.exit_code != 0
@@ -130,7 +139,7 @@ class TestConfigShow:
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+            with config_seam(cfg):
                 result = runner.invoke(cli, ["config", "show", "-p", "dev"])
 
         assert result.exit_code == 0
@@ -145,7 +154,7 @@ class TestConfigShow:
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+            with config_seam(cfg):
                 result = runner.invoke(cli, ["config", "show", "-p", "dev", "-o", "json"])
 
         assert result.exit_code == 0
@@ -160,7 +169,7 @@ class TestConfigShow:
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
-            with patch("xnatctl.cli.common.Config.load", return_value=cfg):
+            with config_seam(cfg):
                 result = runner.invoke(cli, ["config", "show", "-p", "nonexist"])
 
         assert result.exit_code != 0
@@ -303,3 +312,208 @@ class TestConfigRemoveProfile:
             result = runner.invoke(cli, ["config", "remove-profile", "dev"], input="n\n")
 
         assert result.exit_code != 0
+
+
+class TestConfigSetPassword:
+    """Tests for `config set-password`.
+
+    The command exists because nothing else could put a password into a
+    profile: `add-profile` has no password option and `auth login` only caches
+    a session token, so before this the only route was hand-editing the YAML.
+    """
+
+    def _config(self) -> Config:
+        return Config(
+            default_profile="prod",
+            profiles={"prod": Profile(url="https://xnat.example.org", name="prod")},
+        )
+
+    def test_password_is_stored_in_the_keychain_not_the_file(self, runner: CliRunner) -> None:
+        cfg = self._config()
+        fake_keyring = MagicMock()
+
+        with (
+            core_config_seam(cfg),
+            patch.dict("sys.modules", {"keyring": fake_keyring}),
+            patch.object(Config, "save") as save,
+        ):
+            result = runner.invoke(
+                cli, ["config", "set-password", "prod"], input="s3cret\ns3cret\n"
+            )
+
+        assert result.exit_code == 0
+        fake_keyring.set_password.assert_called_once_with(
+            "xnatctl", "prod@https://xnat.example.org", "s3cret"
+        )
+        save.assert_called_once()
+        assert cfg.profiles["prod"].password_source == "keyring"
+        assert cfg.profiles["prod"].password is None
+
+    def test_inline_password_is_dropped_on_migration(self, runner: CliRunner) -> None:
+        """The migration path for a profile that already holds plaintext."""
+        cfg = self._config()
+        cfg.profiles["prod"].password = "old-plaintext"
+
+        with (
+            core_config_seam(cfg),
+            patch.dict("sys.modules", {"keyring": MagicMock()}),
+            patch.object(Config, "save"),
+        ):
+            result = runner.invoke(
+                cli, ["config", "set-password", "prod"], input="s3cret\ns3cret\n"
+            )
+
+        assert result.exit_code == 0
+        assert cfg.profiles["prod"].password is None
+        assert "password" not in cfg.profiles["prod"].to_dict()
+
+    def test_password_is_never_echoed(self, runner: CliRunner) -> None:
+        with (
+            core_config_seam(self._config()),
+            patch.dict("sys.modules", {"keyring": MagicMock()}),
+            patch.object(Config, "save"),
+        ):
+            result = runner.invoke(
+                cli, ["config", "set-password", "prod"], input="s3cret\ns3cret\n"
+            )
+
+        assert "s3cret" not in result.output
+
+    def test_unknown_profile_fails(self, runner: CliRunner) -> None:
+        with core_config_seam(self._config()):
+            result = runner.invoke(cli, ["config", "set-password", "nope"])
+
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_missing_keyring_package_reports_the_install_hint(self, runner: CliRunner) -> None:
+        with core_config_seam(self._config()), patch.dict("sys.modules", {"keyring": None}):
+            result = runner.invoke(cli, ["config", "set-password", "prod"])
+
+        assert result.exit_code == 1
+        # Rich colourises inside the message, so compare on the plain text.
+        assert "xnatctl[keyring]" in _strip_ansi(result.output)
+
+    def test_keychain_write_failure_does_not_rewrite_the_config(self, runner: CliRunner) -> None:
+        """A failed keychain write must not leave the profile claiming its
+        password lives somewhere it does not.
+        """
+        cfg = self._config()
+        fake_keyring = MagicMock()
+        fake_keyring.set_password.side_effect = RuntimeError("no backend available")
+
+        with (
+            core_config_seam(cfg),
+            patch.dict("sys.modules", {"keyring": fake_keyring}),
+            patch.object(Config, "save") as save,
+        ):
+            result = runner.invoke(
+                cli, ["config", "set-password", "prod"], input="s3cret\ns3cret\n"
+            )
+
+        assert result.exit_code == 1
+        save.assert_not_called()
+        assert cfg.profiles["prod"].password_source is None
+
+    def test_password_is_never_accepted_as_an_argument(self, runner: CliRunner) -> None:
+        """Prompt-only by design, so it cannot reach shell history or the
+        process table (the remaining argv password flags are likewise refused).
+        """
+        with core_config_seam(self._config()):
+            result = runner.invoke(cli, ["config", "set-password", "prod", "--password", "s3cret"])
+
+        assert result.exit_code != 0
+        assert "no such option" in result.output.lower()
+
+
+class TestConfigInitGuidedLogin:
+    """`config init` continues into a login.
+
+    Onboarding used to be two commands with a cliff between them: init wrote a
+    profile and stopped, and the natural next command failed with a
+    profile-not-found error that pointed nowhere.
+    """
+
+    def test_login_is_invoked_with_the_new_profile(self, runner: CliRunner, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        login = MagicMock(return_value={"status": "authenticated", "username": "admin"})
+
+        with (
+            patch("xnatctl.cli.config_cmd.CONFIG_FILE", config_file),
+            patch("xnatctl.core.config.CONFIG_FILE", config_file),
+            patch("xnatctl.cli.auth.do_login", login),
+            patch("xnatctl.cli.auth.report_login"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["config", "init", "--url", "https://xnat.example.org", "--login"],
+            )
+
+        assert result.exit_code == 0
+        login.assert_called_once()
+        assert login.call_args.kwargs["profile_name"] == "default"
+        assert login.call_args.args[1].url == "https://xnat.example.org"
+
+    def test_no_login_skips_and_says_what_to_run(self, runner: CliRunner, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        login = MagicMock()
+
+        with (
+            patch("xnatctl.cli.config_cmd.CONFIG_FILE", config_file),
+            patch("xnatctl.core.config.CONFIG_FILE", config_file),
+            patch("xnatctl.cli.auth.do_login", login),
+        ):
+            result = runner.invoke(
+                cli,
+                ["config", "init", "--url", "https://xnat.example.org", "--no-login"],
+            )
+
+        assert result.exit_code == 0
+        login.assert_not_called()
+        assert "auth login" in result.output
+
+    def test_non_tty_does_not_prompt(self, runner: CliRunner, tmp_path: Path) -> None:
+        """An unanswered prompt in a pipeline is a hang, so the prompt only
+        appears on a real terminal.
+        """
+        config_file = tmp_path / "config.yaml"
+        login = MagicMock()
+
+        with (
+            patch("xnatctl.cli.config_cmd.CONFIG_FILE", config_file),
+            patch("xnatctl.core.config.CONFIG_FILE", config_file),
+            patch("xnatctl.cli.config_cmd.sys.stdin.isatty", return_value=False),
+            patch("xnatctl.cli.auth.do_login", login),
+        ):
+            result = runner.invoke(cli, ["config", "init", "--url", "https://xnat.example.org"])
+
+        assert result.exit_code == 0
+        login.assert_not_called()
+
+    def test_failed_login_keeps_the_profile_and_exits_zero(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """The profile was written and is valid; only the login failed. Saying
+        `config init` failed would be wrong, and would invite a rerun.
+        """
+        from xnatctl.core.exceptions import AuthenticationError
+
+        config_file = tmp_path / "config.yaml"
+
+        with (
+            patch("xnatctl.cli.config_cmd.CONFIG_FILE", config_file),
+            patch("xnatctl.core.config.CONFIG_FILE", config_file),
+            patch(
+                "xnatctl.cli.auth.do_login",
+                side_effect=AuthenticationError("https://xnat.example.org", "bad password"),
+            ),
+        ):
+            result = runner.invoke(
+                cli,
+                ["config", "init", "--url", "https://xnat.example.org", "--login"],
+            )
+
+        assert result.exit_code == 0
+        assert config_file.exists(), "the profile must survive a failed login"
+        assert "Profile saved" in result.output
+        assert "auth login" in result.output

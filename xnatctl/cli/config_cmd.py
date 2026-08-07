@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import click
 
 from xnatctl.cli.common import Context, confirm_destructive, global_options, handle_errors
-from xnatctl.core.config import CONFIG_FILE, Config
+from xnatctl.core.config import (
+    CONFIG_FILE,
+    KEYRING_SERVICE,
+    PASSWORD_SOURCE_KEYRING,
+    Config,
+    keyring_key,
+    load_keyring,
+)
+from xnatctl.core.exceptions import ConfigurationError, XNATCtlError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
+    print_hint,
     print_key_value,
     print_output,
     print_success,
@@ -30,11 +40,29 @@ def config() -> None:
 @click.option("--profile", default="default", help="Profile name")
 @click.option("--project", default=None, help="Default project ID")
 @click.option("--force", is_flag=True, help="Overwrite existing config")
-def config_init(url: str, profile: str, project: str | None, force: bool) -> None:
+@click.option(
+    "--login/--no-login",
+    "login",
+    default=None,
+    help="Log in after writing the profile (prompts when not specified)",
+)
+def config_init(
+    url: str,
+    profile: str,
+    project: str | None,
+    force: bool,
+    login: bool | None,
+) -> None:
     """Create configuration file with a new profile.
 
+    Offers to log in straight afterwards, so a fresh machine gets from nothing
+    to an authenticated session in one command. Pass --no-login to skip the
+    prompt in scripts.
+
+    \b
     Example:
         xnatctl config init --url https://xnat.example.org
+        xnatctl config init --url https://xnat.example.org --no-login
     """
     # Validate URL
     try:
@@ -74,6 +102,34 @@ def config_init(url: str, profile: str, project: str | None, force: bool) -> Non
             "default_project": project or "-",
         }
     )
+
+    # Continue into a login rather than stopping at a cliff between two
+    # commands. Only prompt on a real terminal: in a pipeline an
+    # unanswered prompt is a hang, and --login/--no-login covers scripts.
+    if login is None:
+        login = sys.stdin.isatty() and click.confirm("Log in now?", default=True)
+    if not login:
+        click.echo("Run 'xnatctl auth login' when you are ready.", err=True)
+        return
+
+    from xnatctl.cli.auth import do_login, report_login
+
+    ctx = Context()
+    ctx.config = cfg
+    ctx.profile_name = profile
+
+    try:
+        result = do_login(ctx, cfg.get_profile(profile), profile_name=profile)
+    except XNATCtlError as e:
+        # The profile is written and valid; only the login failed. Say so
+        # rather than implying init itself failed, and keep exit 0.
+        print_error(str(e))
+        if e.hint:
+            print_hint(e.hint)
+        click.echo("Profile saved. Retry with 'xnatctl auth login'.", err=True)
+        return
+
+    report_login(ctx, result)
 
 
 @config.command("show")
@@ -140,6 +196,7 @@ def config_show(ctx: Context) -> None:
 def config_use_context(profile: str) -> None:
     """Switch the active profile.
 
+    \b
     Example:
         xnatctl config use-context production
     """
@@ -151,7 +208,7 @@ def config_use_context(profile: str) -> None:
 
     if not cfg.has_profile(profile):
         print_error(f"Profile '{profile}' not found.")
-        click.echo(f"Available profiles: {', '.join(cfg.profiles.keys())}")
+        click.echo(f"Available profiles: {', '.join(cfg.profiles.keys())}", err=True)
         raise SystemExit(1)
 
     cfg.set_default_profile(profile)
@@ -186,16 +243,27 @@ def config_current_context() -> None:
     default=DEFAULT_HTTP_TIMEOUT_SECONDS,
     help="Request timeout in seconds",
 )
-@click.option("--no-verify-ssl", is_flag=True, help="Disable SSL verification")
+@click.option(
+    "--no-verify-ssl",
+    is_flag=True,
+    help="Disable SSL verification (INSECURE; prefer --ca-bundle for self-signed certs)",
+)
+@click.option(
+    "--ca-bundle",
+    default=None,
+    help="Path to a custom CA bundle for TLS verification (secure alternative to --no-verify-ssl)",
+)
 def config_add_profile(
     name: str,
     url: str,
     project: str | None,
     timeout: int,
     no_verify_ssl: bool,
+    ca_bundle: str | None,
 ) -> None:
     """Add a new profile.
 
+    \b
     Example:
         xnatctl config add-profile dev --url https://xnat-dev.example.org
     """
@@ -217,6 +285,7 @@ def config_add_profile(
         default_project=project,
         timeout=timeout,
         verify_ssl=not no_verify_ssl,
+        ca_bundle=ca_bundle,
     )
     cfg.save()
 
@@ -230,6 +299,7 @@ def config_add_profile(
 def config_remove_profile(name: str, dry_run: bool) -> None:
     """Remove a profile.
 
+    \b
     Example:
         xnatctl config remove-profile dev
         xnatctl config remove-profile dev --dry-run
@@ -245,10 +315,54 @@ def config_remove_profile(name: str, dry_run: bool) -> None:
         raise SystemExit(1)
 
     if dry_run:
-        click.echo(f"[DRY-RUN] Would remove profile '{name}'")
+        click.echo(f"[DRY-RUN] Would remove profile '{name}'", err=True)
         return
 
     cfg.remove_profile(name)
     cfg.save()
 
     print_success(f"Profile '{name}' removed")
+
+
+@config.command("set-password")
+@click.argument("name")
+def config_set_password(name: str) -> None:
+    """Store a profile's password in the OS keychain.
+
+    Prompts for the password. It is never accepted as an argument, so it cannot
+    leak into shell history or the process table. On success the profile records
+    only ``password_source: keyring``, and any inline plaintext password is
+    dropped from config.yaml.
+
+    Requires the optional keyring extra: pip install 'xnatctl[keyring]'
+
+    \b
+    Example:
+        xnatctl config set-password prod
+    """
+    cfg = Config.load()
+
+    if not cfg.has_profile(name):
+        print_error(f"Profile '{name}' not found.")
+        raise SystemExit(1)
+
+    try:
+        keyring = load_keyring()
+    except ConfigurationError as e:
+        print_error(str(e))
+        raise SystemExit(1) from e
+
+    profile = cfg.get_profile(name)
+    password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
+
+    try:
+        keyring.set_password(KEYRING_SERVICE, keyring_key(name, profile.url), password)
+    except Exception as e:
+        print_error(f"Could not write to the OS keychain: {e}")
+        raise SystemExit(1) from e
+
+    profile.password_source = PASSWORD_SOURCE_KEYRING
+    profile.password = None
+    cfg.save()
+
+    print_success(f"Password for profile '{name}' stored in the OS keychain")

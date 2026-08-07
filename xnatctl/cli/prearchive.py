@@ -24,14 +24,15 @@ def prearchive() -> None:
 @prearchive.command("list")
 @click.option("--project", help="Filter by project ID")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_list(
     ctx: Context,
     project: str | None,
 ) -> None:
     """List prearchive sessions.
 
+    \b
     Example:
         xnatctl prearchive list
         xnatctl prearchive list --project MYPROJ
@@ -58,8 +59,8 @@ def prearchive_list(
 @click.option("--label", help="Target session label")
 @click.option("--overwrite", is_flag=True, help="Overwrite existing data")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_archive(
     ctx: Context,
     project: str,
@@ -71,6 +72,7 @@ def prearchive_archive(
 ) -> None:
     """Archive a session from prearchive.
 
+    \b
     Example:
         xnatctl prearchive archive MYPROJ 20240115_120000 Session1
         xnatctl prearchive archive MYPROJ 20240115_120000 Session1 --subject SUB001
@@ -99,8 +101,8 @@ def prearchive_archive(
 @click.argument("session_name")
 @confirm_destructive("Delete session from prearchive? This cannot be undone.")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_delete(
     ctx: Context,
     project: str,
@@ -110,12 +112,13 @@ def prearchive_delete(
 ) -> None:
     """Delete a session from prearchive.
 
+    \b
     Example:
         xnatctl prearchive delete MYPROJ 20240115_120000 Session1 --yes
         xnatctl prearchive delete MYPROJ 20240115_120000 Session1 --dry-run
     """
     if dry_run:
-        click.echo(f"[DRY-RUN] Would delete {session_name} from prearchive")
+        click.echo(f"[DRY-RUN] Would delete {session_name} from prearchive", err=True)
         return
 
     client = ctx.get_client()
@@ -135,8 +138,8 @@ def prearchive_delete(
 @click.argument("timestamp")
 @click.argument("session_name")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_rebuild(
     ctx: Context,
     project: str,
@@ -145,6 +148,7 @@ def prearchive_rebuild(
 ) -> None:
     """Rebuild/refresh a prearchive session.
 
+    \b
     Example:
         xnatctl prearchive rebuild MYPROJ 20240115_120000 Session1
     """
@@ -166,8 +170,8 @@ def prearchive_rebuild(
 @click.argument("session_name")
 @click.argument("target_project")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def prearchive_move(
     ctx: Context,
     project: str,
@@ -177,6 +181,7 @@ def prearchive_move(
 ) -> None:
     """Move a prearchive session to another project.
 
+    \b
     Example:
         xnatctl prearchive move MYPROJ 20240115_120000 Session1 OTHERPROJ
     """

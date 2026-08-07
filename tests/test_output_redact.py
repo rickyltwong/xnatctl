@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from xnatctl.core.redact import SECRET_QUERY_KEYS, redact_url_query
+from xnatctl.core.redact import SECRET_QUERY_KEYS, redact_url_query, redact_url_userinfo
 
 
 def test_redacts_password_query_value() -> None:
@@ -78,6 +78,65 @@ def test_url_embedded_in_error_message_redacted() -> None:
     assert out.endswith("(check your credentials).")
 
 
+# =============================================================================
+# URL userinfo
+# =============================================================================
+
+
+def test_userinfo_password_redacted_without_query_string() -> None:
+    """The motivating gap: credentials in the authority passed straight
+    through, because the helper only ever looked at query strings.
+    """
+    out = redact_url_query("https://admin:s3cret@xnat.example.org/data/projects")
+    assert "s3cret" not in out
+    assert out == "https://admin:***@xnat.example.org/data/projects"
+
+
+def test_userinfo_and_query_secret_both_redacted() -> None:
+    out = redact_url_query("https://admin:s3cret@xnat.example.org/x?token=abc")
+    assert "s3cret" not in out
+    assert "abc" not in out
+    assert out == "https://admin:***@xnat.example.org/x?token=***"
+
+
+def test_userinfo_password_containing_at_sign_fully_redacted() -> None:
+    """The authority runs to its *last* ``@``; a naive split would leave the
+    tail of the password in place.
+    """
+    out = redact_url_query("https://u:p@ss@host/x")
+    assert "p@ss" not in out
+    assert "ss@host" not in out
+    assert out == "https://u:***@host/x"
+
+
+def test_bare_username_in_url_is_preserved() -> None:
+    """``user@host`` carries no password, and usernames are not secrets here --
+    the query pass keeps ``username=admin`` for the same reason.
+    """
+    text = "https://user@xnat.example.org/x"
+    assert redact_url_query(text) == text
+
+
+def test_userinfo_redacted_inside_a_longer_message() -> None:
+    msg = "Connection to https://admin:s3cret@xnat.example.org failed, retrying."
+    out = redact_url_query(msg)
+    assert "s3cret" not in out
+    assert out.startswith("Connection to ")
+    assert out.endswith(" failed, retrying.")
+
+
+def test_redact_url_userinfo_is_scheme_agnostic() -> None:
+    """``redact_url_query`` only scans http(s); validation errors can carry a
+    rejected value of any scheme.
+    """
+    assert redact_url_userinfo("ftp://admin:s3cret@host/x") == "ftp://admin:***@host/x"
+
+
+def test_redact_url_userinfo_leaves_credential_free_urls_alone() -> None:
+    for url in ("https://xnat.example.org/x", "https://user@host/x", "not a url at all"):
+        assert redact_url_userinfo(url) == url
+
+
 def test_secret_query_keys_membership() -> None:
     """The canonical set matches the contract exactly."""
     expected = {
@@ -91,4 +150,4 @@ def test_secret_query_keys_membership() -> None:
         "authorization",
         "auth",
     }
-    assert SECRET_QUERY_KEYS == expected
+    assert expected == SECRET_QUERY_KEYS

@@ -1,6 +1,6 @@
 [project]
 name = "xnatctl"
-version = "0.2.11"
+version = "0.3.0"
 description = "Modern CLI for XNAT neuroimaging server administration"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,14 +42,26 @@ dicom = [
     "pydicom>=2.4.0",
     "pynetdicom>=2.0.0",
 ]
+keyring = [
+    "keyring>=24",
+]
 dev = [
-    "pytest>=8.0.0",
+    "pytest>=9.0.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.12.0",
+    "pytest-timeout>=2.0",
+    "pytest-xdist>=3.0",
     "ruff>=0.4.0",
     "mypy>=1.8.0",
     "pre-commit>=3.7.0",
     "types-PyYAML>=6.0.0",
+    "types-defusedxml>=0.7",
+    # Dev-only so the keychain code path is type-checked rather than
+    # suppressed; it stays an optional extra for users.
+    "keyring>=24",
+    # Generates throwaway certs for the DICOM TLS tests. Without it those
+    # tests skip, which is how the DICOM tier went years without running.
+    "cryptography>=42",
 ]
 docs = [
     "sphinx>=7.0",
@@ -75,13 +87,20 @@ package = true
 
 [dependency-groups]
 dev = [
+    "cryptography>=42",
     "mypy>=1.8.0",
     "pre-commit>=3.7.0",
-    "pytest>=8.0.0",
+    "pytest>=9.0.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.12.0",
+    "pytest-timeout>=2.0",
+    "pytest-xdist>=3.0",
     "ruff>=0.4.0",
     "types-PyYAML>=6.0.0",
+    "types-defusedxml>=0.7",
+    # Dev-only so the keychain code path is type-checked rather than
+    # suppressed; it stays an optional extra for users.
+    "keyring>=24",
 ]
 
 [tool.ruff]
@@ -89,30 +108,125 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP"]
-ignore = ["E501"]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RET", "C90", "D"]
+ignore = [
+    "E501",
+    # -- SIM ------------------------------------------------------------
+    # Both are style preferences whose fixes ruff itself marks unsafe, and
+    # both trade a clear block for a denser one. Not worth churning 16 call
+    # sites to satisfy.
+    "SIM105",  # contextlib.suppress instead of try/except/pass
+    "SIM108",  # ternary instead of if/else
+    # -- D --------------------------------------------------------------
+    # D301 wants r""" on any docstring containing a backslash escape. Do NOT
+    # enable it: Click's no-rewrap marker is a literal \b, which in a normal
+    # docstring becomes the 0x08 byte Click looks for. Making those raw turns
+    # it into two characters and every Example block in --help rewraps into a
+    # paragraph -- the exact defect CLI-05 fixed. Verified: the compiled help
+    # text for `scan list` contains 0x08 and renders unwrapped.
+    "D301",
+    # Constructor arguments are documented on the class, per Google style.
+    "D107",
+    "D105",  # magic methods
+]
+
+[tool.ruff.lint.mccabe]
+# New code is held to 15. The 20 functions already above it carry an explicit
+# `# noqa: C901` rather than being hidden behind a lax ceiling -- the worst is
+# 54 -- so the debt is enumerated in the source and M3's extraction work
+# removes the markers as it splits them.
+max-complexity = 15
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# A test's name is its documentation -- `test_a_permanent_400_costs_exactly_one
+# _attempt` says more than a docstring would, and requiring one on all 865 of
+# them would produce 865 restatements of the name. Docstrings are still used
+# here, but for the *why*, where there is one worth writing.
+"tests/**" = [
+    "D100",  # module
+    "D101",  # class
+    "D102",  # method
+    "D103",  # function
+    "D104",  # package
+    "D105",
+    "D107",
+    "D205",  # summary/description blank line
+    "D415",  # summary ends with a period
+    "SIM117",  # nested `with` -- deliberate in tests, each layer is a distinct seam
+    "C901",  # a table-driven test is long, not complex
+]
+# One-off maintenance helpers, not part of the shipped CLI.
+"scripts/**" = ["C901"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["xnatctl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+# Makes `from conftest import make_response` work from test modules regardless
+# of pytest's import mode (shared test harness).
+pythonpath = ["tests"]
+# -q keeps CI logs readable at 1000+ tests; pass -v per-run when debugging.
+# The integration tier is deselected by default.
+addopts = "-q --tb=short -m 'not integration'"
+# NOTE: use the ini options, not `--strict-markers`/`--strict-config` in
+# addopts. Under pytest 9 those flags are only honoured on the command line and
+# are silently ignored from addopts (verified against pytest 9.0.2).
+# A marker not listed below is a collection error.
+strict_markers = true
+# An unparseable/unknown key in this section is an error, not a silent no-op.
+strict_config = true
+markers = [
+    "integration: requires a live XNAT server (deselected by default; run with -m integration)",
+]
+filterwarnings = [
+    # Own-code deprecations are bugs, not notices. The module field matches the
+    # frame the warning is attributed to (i.e. the `stacklevel` target), so this
+    # fires when xnatctl calls a deprecated API and stays quiet for warnings a
+    # test module raises about itself.
+    "error::DeprecationWarning:xnatctl.*",
+]
+# Per-test hang backstop, far above any legitimate test duration.
+timeout = 120
 
 [tool.mypy]
 python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-check_untyped_defs = true
-ignore_missing_imports = true
+strict = true
 show_error_codes = true
+# NOT ignore_missing_imports: a blanket setting hides a genuinely missing
+# annotation as readily as a missing stub. Leniency is per-module below, so
+# adding a dependency without stubs is a deliberate line in this file rather
+# than something that silently widens.
+#
+# The gate invocations must carry no flags of their own -- a command-line
+# --ignore-missing-imports overrides everything here, which is how this config
+# came to be stricter than what CI actually ran.
+
+[[tool.mypy.overrides]]
+# pydicom/pynetdicom ship no type information. They are in the dev install so
+# the code that uses them is checked, but their own surface is untyped, so
+# `Any` crosses the boundary here by necessity rather than by omission. This is
+# the only leniency in the config, and it is a list someone extends on purpose.
+# keyring and defusedxml are NOT here: real stubs exist, so they are installed
+# for development instead of suppressed.
+module = ["pydicom.*", "pynetdicom.*"]
+ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["xnatctl"]
 omit = ["*/tests/*", "*/__pycache__/*"]
 
 [tool.coverage.report]
+# Coverage gate. Set just below the measured baseline so it catches
+# regressions, not existing debt.
+# Ratchet upward as the upload/download/DICOM test coverage lands.
+# Keep this identical to --cov-fail-under in .github/workflows/ci.yml.
+# 78 -> 82 once the DICOM tier actually ran in CI: installing the `dicom`
+# extra took cli/dicom_cmd.py from 16% to 88% on its own.
+fail_under = 82
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",

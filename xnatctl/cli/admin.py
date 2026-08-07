@@ -13,6 +13,7 @@ from xnatctl.cli.common import (
     parallel_options,
     require_auth,
 )
+from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
 
 
@@ -35,30 +36,32 @@ def admin() -> None:
 @click.option("--limit", type=int, help="Limit number of experiments")
 @parallel_options
 @global_options
-@require_auth
 @handle_errors
-def admin_refresh_catalogs(
+@require_auth
+def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
     ctx: Context,
     project: str,
-    option: tuple,
-    experiment: tuple,
+    option: tuple[str, ...],
+    experiment: tuple[str, ...],
     limit: int | None,
     workers: int | None,
 ) -> None:
     """Refresh catalog XMLs for project experiments.
 
+    \b
     Options:
     - checksum: Generate missing checksums
     - delete: Remove entries without files
     - append: Add entries for new files
     - populateStats: Update resource statistics
 
+    \b
     Example:
         xnatctl admin refresh-catalogs MYPROJ
         xnatctl admin refresh-catalogs MYPROJ --option checksum --option delete
         xnatctl admin refresh-catalogs MYPROJ --experiment XNAT_E00001 --experiment XNAT_E00002
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
 
     from xnatctl.core.output import create_progress
     from xnatctl.core.validation import validate_project_id
@@ -84,7 +87,7 @@ def admin_refresh_catalogs(
             experiments.append((subject_id, exp_id))
 
     if not experiments:
-        click.echo(f"No experiments found for project {project}")
+        click.echo(f"No experiments found for project {project}", err=True)
         return
 
     # Filter by specific IDs
@@ -97,7 +100,7 @@ def admin_refresh_catalogs(
         experiments = experiments[:limit]
 
     if not experiments:
-        click.echo("No experiments matched selection")
+        click.echo("No experiments matched selection", err=True)
         return
 
     # Resolve workers from profile
@@ -111,7 +114,7 @@ def admin_refresh_catalogs(
     refreshed = []
     failed = []
 
-    def refresh_one(exp: tuple) -> tuple[str, bool, str]:
+    def refresh_one(exp: tuple[str, str]) -> tuple[str, bool, str]:
         """Refresh a single experiment catalog and return status."""
         subject_id, exp_id = exp
         resource_path = f"/archive/projects/{project}/subjects/{subject_id}/experiments/{exp_id}"
@@ -129,7 +132,7 @@ def admin_refresh_catalogs(
         task = progress.add_task("Refreshing catalogs...", total=len(experiments))
 
         if workers > 1 and len(experiments) > 1:
-            with ThreadPoolExecutor(max_workers=min(workers, len(experiments))) as executor:
+            with cancellable_pool(min(workers, len(experiments))) as (executor, _token):
                 futures = {executor.submit(refresh_one, exp): exp for exp in experiments}
                 for future in as_completed(futures):
                     exp_id, success, error = future.result()
@@ -163,7 +166,7 @@ def admin_refresh_catalogs(
         if failed:
             print_error(f"Failed to refresh {len(failed)} experiments")
             for exp_id, error in failed[:5]:
-                click.echo(f"  - {exp_id}: {error}")
+                click.echo(f"  - {exp_id}: {error}", err=True)
 
 
 @admin.group()
@@ -178,12 +181,12 @@ def user() -> None:
 @click.option("--projects", help="Comma-separated project IDs to generate group names")
 @click.option("--role", default="member", help="Role for project groups (default: member)")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def user_add(
     ctx: Context,
     username: str,
-    groups: tuple,
+    groups: tuple[str, ...],
     projects: str | None,
     role: str,
 ) -> None:
@@ -191,6 +194,7 @@ def user_add(
 
     Groups can be specified directly or generated from project IDs.
 
+    \b
     Example:
         xnatctl admin user add jsmith PROJ1_member PROJ2_owner
         xnatctl admin user add jsmith --projects PROJ1,PROJ2 --role member
@@ -252,8 +256,8 @@ def user_add(
 @click.option("--since", help="Time range (e.g., '7d', '2024-01-01')")
 @click.option("--limit", type=int, default=50, help="Max results")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def admin_audit(
     ctx: Context,
     project: str | None,
@@ -266,6 +270,7 @@ def admin_audit(
 
     Note: Audit log availability depends on XNAT server configuration.
 
+    \b
     Example:
         xnatctl admin audit --project MYPROJ --limit 20
         xnatctl admin audit --user admin --since 7d
@@ -291,7 +296,7 @@ def admin_audit(
             entries = resp.get("ResultSet", {}).get("Result", resp.get("items", []))
 
         if not entries:
-            click.echo("No audit entries found")
+            click.echo("No audit entries found", err=True)
             return
 
         print_output(
@@ -304,5 +309,5 @@ def admin_audit(
     except Exception as e:
         # Audit API may not be available
         print_error(f"Audit log not available: {e}")
-        click.echo("Note: Audit logging may not be enabled on this XNAT server")
+        click.echo("Note: Audit logging may not be enabled on this XNAT server", err=True)
         raise SystemExit(1) from e

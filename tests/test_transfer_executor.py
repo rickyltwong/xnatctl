@@ -8,25 +8,10 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
+from conftest import make_response
 
 from xnatctl.services.transfer.executor import TransferExecutor
-
-
-def _make_response(
-    json_data: dict | str | None = None,
-    status_code: int = 200,
-    text: str = "",
-) -> MagicMock:
-    """Build a mock httpx.Response."""
-    resp = MagicMock(spec=httpx.Response)
-    resp.status_code = status_code
-    if json_data is not None:
-        resp.json.return_value = json_data
-    resp.text = text or str(json_data or "")
-    resp.headers = {"content-type": "application/json"}
-    return resp
 
 
 def _make_valid_zip() -> bytes:
@@ -114,17 +99,17 @@ class TestCreateSubject:
     def test_create_subject_puts_to_dest(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.put.return_value = _make_response(text="/data/subjects/XNAT_S999")
+        dest_client.put.return_value = make_response(text="/data/subjects/XNAT_S999")
         result = executor.create_subject("DST", "SUB001")
         dest_client.put.assert_called_once()
-        assert "/data/subjects/XNAT_S999" == result
+        assert result == "/data/subjects/XNAT_S999"
 
 
 class TestCreateExperiment:
     def test_create_experiment_puts_with_xsi_type(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.put.return_value = _make_response(text="/data/experiments/XNAT_E001")
+        dest_client.put.return_value = make_response(text="/data/experiments/XNAT_E001")
         result = executor.create_experiment("DST", "SUB001", "EXP001", "xnat:mrSessionData")
         dest_client.put.assert_called_once()
         call_args = dest_client.put.call_args
@@ -139,7 +124,7 @@ class TestCreateScan:
     def test_create_scan_puts_with_type(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.put.return_value = _make_response(text="")
+        dest_client.put.return_value = make_response(text="")
         executor.create_scan("DST", "SUB001", "EXP001", "22", "TEAvg_se")
         dest_client.put.assert_called_once()
         call_args = dest_client.put.call_args
@@ -152,7 +137,7 @@ class TestCheckExperimentExists:
     def test_returns_id_when_found(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.get.return_value = _make_response(
+        dest_client.get.return_value = make_response(
             json_data={"ResultSet": {"Result": [{"ID": "XNAT_E001", "label": "EXP001"}]}}
         )
         result = executor.check_experiment_exists("DST", "EXP001")
@@ -161,14 +146,14 @@ class TestCheckExperimentExists:
     def test_returns_none_when_not_found(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.get.return_value = _make_response(json_data={"ResultSet": {"Result": []}})
+        dest_client.get.return_value = make_response(json_data={"ResultSet": {"Result": []}})
         result = executor.check_experiment_exists("DST", "EXP001")
         assert result is None
 
 
 class TestDiscoverScans:
     def test_returns_scan_list(self, executor: TransferExecutor, source_client: MagicMock) -> None:
-        source_client.get.return_value = _make_response(
+        source_client.get.return_value = make_response(
             json_data={
                 "ResultSet": {
                     "Result": [
@@ -187,7 +172,7 @@ class TestDiscoverScanResources:
     def test_returns_resource_list(
         self, executor: TransferExecutor, source_client: MagicMock
     ) -> None:
-        source_client.get.return_value = _make_response(
+        source_client.get.return_value = make_response(
             json_data={
                 "ResultSet": {
                     "Result": [
@@ -206,7 +191,7 @@ class TestDiscoverSessionResources:
     def test_returns_session_resource_list(
         self, executor: TransferExecutor, source_client: MagicMock
     ) -> None:
-        source_client.get.return_value = _make_response(
+        source_client.get.return_value = make_response(
             json_data={"ResultSet": {"Result": [{"label": "QC", "file_count": "1"}]}}
         )
         resources = executor.discover_session_resources("XNAT_E001")
@@ -223,7 +208,7 @@ class TestTransferScanDicom:
     ) -> None:
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
-        dest_client.post.return_value = _make_response(text="/data/experiments/E999")
+        dest_client.post.return_value = make_response(text="/data/experiments/E999")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = executor.transfer_scan_dicom(
@@ -249,7 +234,7 @@ class TestTransferScanDicom:
         # First import fails, second succeeds
         dest_client.post.side_effect = [
             RuntimeError("import failed"),
-            _make_response(text="/data/experiments/E999"),
+            make_response(text="/data/experiments/E999"),
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -320,7 +305,7 @@ class TestTransferResource:
     ) -> None:
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
-        dest_client.put.return_value = _make_response(text="OK")
+        dest_client.put.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             total = executor.transfer_resource(
@@ -340,7 +325,7 @@ class TestTransferResource:
     ) -> None:
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
-        dest_client.put.return_value = _make_response(text="OK")
+        dest_client.put.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             executor.transfer_resource(
@@ -366,7 +351,7 @@ class TestTransferResource:
             filenames=["qc_image.gif", "montage.gif"],
         )
         _mock_stream_download(source_client, nested_zip)
-        dest_client.put.return_value = _make_response(text="OK")
+        dest_client.put.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             executor.transfer_resource(
@@ -491,7 +476,7 @@ class TestUploadScanDicom:
         dest_client: MagicMock,
     ) -> None:
         """POSTs the ZIP to /data/services/import and returns response text."""
-        dest_client.post.return_value = _make_response(text="/data/experiments/E999")
+        dest_client.post.return_value = make_response(text="/data/experiments/E999")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
@@ -513,7 +498,7 @@ class TestUploadScanDicom:
         dest_client: MagicMock,
     ) -> None:
         """ZIP is deleted after successful import."""
-        dest_client.post.return_value = _make_response(text="OK")
+        dest_client.post.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
@@ -638,7 +623,7 @@ class TestUploadResource:
         dest_client: MagicMock,
     ) -> None:
         """PUTs the flat ZIP with extract=true."""
-        dest_client.put.return_value = _make_response(text="OK")
+        dest_client.put.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             flat_path = Path(tmpdir) / "NII_flat.zip"
@@ -659,7 +644,7 @@ class TestUploadResource:
         dest_client: MagicMock,
     ) -> None:
         """Flat ZIP is deleted after successful upload."""
-        dest_client.put.return_value = _make_response(text="OK")
+        dest_client.put.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             flat_path = Path(tmpdir) / "NII_flat.zip"
@@ -771,7 +756,7 @@ class TestFindPrearchiveEntry:
     def test_returns_matching_entry(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.get.return_value = _make_response(
+        dest_client.get.return_value = make_response(
             json_data={
                 "ResultSet": {
                     "Result": [
@@ -788,11 +773,11 @@ class TestFindPrearchiveEntry:
     def test_returns_none_when_not_found(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.get.return_value = _make_response(json_data={"ResultSet": {"Result": []}})
+        dest_client.get.return_value = make_response(json_data={"ResultSet": {"Result": []}})
         assert executor.find_prearchive_entry("DST", "EXP001") is None
 
     def test_matches_folder_name(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
-        dest_client.get.return_value = _make_response(
+        dest_client.get.return_value = make_response(
             json_data={
                 "ResultSet": {
                     "Result": [
@@ -809,7 +794,7 @@ class TestArchivePrearchive:
     def test_posts_archive_service_request(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.post.return_value = _make_response(text="OK")
+        dest_client.post.return_value = make_response(text="OK")
         executor.archive_prearchive(
             dest_project="DST",
             timestamp="20260101_100000",
@@ -829,7 +814,7 @@ class TestArchivePrearchive:
     def test_posts_overwrite_when_specified(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.post.return_value = _make_response(text="OK")
+        dest_client.post.return_value = make_response(text="OK")
         executor.archive_prearchive(
             dest_project="DST",
             timestamp="20260101_100000",
@@ -844,7 +829,7 @@ class TestArchivePrearchive:
     def test_encodes_archive_service_path_segments(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.post.return_value = _make_response(text="OK")
+        dest_client.post.return_value = make_response(text="OK")
 
         executor.archive_prearchive(
             dest_project="..",
@@ -867,7 +852,7 @@ class TestArchivePrearchive:
 
 class TestCountDestScans:
     def test_returns_scan_count(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
-        dest_client.get.return_value = _make_response(
+        dest_client.get.return_value = make_response(
             json_data={
                 "ResultSet": {
                     "Result": [
@@ -884,7 +869,7 @@ class TestCountDestScans:
     def test_returns_zero_when_empty(
         self, executor: TransferExecutor, dest_client: MagicMock
     ) -> None:
-        dest_client.get.return_value = _make_response(json_data={"ResultSet": {"Result": []}})
+        dest_client.get.return_value = make_response(json_data={"ResultSet": {"Result": []}})
         assert executor.count_dest_scans("DST", "SUB001", "EXP001") == 0
 
 
@@ -900,8 +885,8 @@ class TestWaitForArchive:
         # find_prearchive_entry returns None (no entry)
         # count_dest_scans returns 5
         dest_client.get.side_effect = [
-            _make_response(json_data={"ResultSet": {"Result": []}}),  # prearchive
-            _make_response(  # scan count
+            make_response(json_data={"ResultSet": {"Result": []}}),  # prearchive
+            make_response(  # scan count
                 json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}}
             ),
         ]
@@ -919,7 +904,7 @@ class TestWaitForArchive:
         """Prearchive entry READY -> archive it -> next poll finds scans."""
         dest_client.get.side_effect = [
             # Poll 1: find_prearchive_entry -> READY
-            _make_response(
+            make_response(
                 json_data={
                     "ResultSet": {
                         "Result": [
@@ -929,11 +914,11 @@ class TestWaitForArchive:
                 }
             ),
             # Poll 2: find_prearchive_entry -> empty (archived)
-            _make_response(json_data={"ResultSet": {"Result": []}}),
+            make_response(json_data={"ResultSet": {"Result": []}}),
             # Poll 2: count_dest_scans -> 3
-            _make_response(json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(3)]}}),
+            make_response(json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(3)]}}),
         ]
-        dest_client.post.return_value = _make_response(text="OK")
+        dest_client.post.return_value = make_response(text="OK")
 
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 3, timeout=60, interval=0.01)
         assert actual == 3
@@ -955,7 +940,7 @@ class TestWaitForArchive:
 
         dest_client.get.side_effect = [
             # Loop 1: find_prearchive_entry -> RECEIVING
-            _make_response(
+            make_response(
                 json_data={
                     "ResultSet": {
                         "Result": [{"name": "EXP001", "status": "RECEIVING", "timestamp": "ts"}]
@@ -963,7 +948,7 @@ class TestWaitForArchive:
                 }
             ),
             # Loop 2: find_prearchive_entry -> still RECEIVING
-            _make_response(
+            make_response(
                 json_data={
                     "ResultSet": {
                         "Result": [{"name": "EXP001", "status": "RECEIVING", "timestamp": "ts"}]
@@ -971,7 +956,7 @@ class TestWaitForArchive:
                 }
             ),
             # Timeout branch: count_dest_scans -> 1
-            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
+            make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
 
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5, timeout=10, interval=0.01)
@@ -987,7 +972,7 @@ class TestWaitForArchive:
         """CONFLICT prearchive entry -> archive with overwrite=append."""
         dest_client.get.side_effect = [
             # Poll 1: find_prearchive_entry -> CONFLICT
-            _make_response(
+            make_response(
                 json_data={
                     "ResultSet": {
                         "Result": [
@@ -1001,11 +986,11 @@ class TestWaitForArchive:
                 }
             ),
             # Poll 2: find_prearchive_entry -> empty (archived)
-            _make_response(json_data={"ResultSet": {"Result": []}}),
+            make_response(json_data={"ResultSet": {"Result": []}}),
             # Poll 2: count_dest_scans -> 5
-            _make_response(json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}}),
+            make_response(json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}}),
         ]
-        dest_client.post.return_value = _make_response(text="OK")
+        dest_client.post.return_value = make_response(text="OK")
 
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5, timeout=60, interval=0.01)
         assert actual == 5
@@ -1065,7 +1050,7 @@ class TestFetchExperimentXml:
     def test_fetches_xml_from_source(
         self, executor: TransferExecutor, source_client: MagicMock
     ) -> None:
-        source_client.get.return_value = _make_response(text=_SAMPLE_XML)
+        source_client.get.return_value = make_response(text=_SAMPLE_XML)
         result = executor.fetch_experiment_xml("XNAT_E001")
         assert result == _SAMPLE_XML
         source_client.get.assert_called_once_with(
@@ -1208,11 +1193,11 @@ class TestApplyXmlOverlay:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        source_client.get.return_value = _make_response(text=_SAMPLE_XML)
-        dest_client.get.return_value = _make_response(
+        source_client.get.return_value = make_response(text=_SAMPLE_XML)
+        dest_client.get.return_value = make_response(
             json_data={"ResultSet": {"Result": [{"ID": "XNAT_E999"}]}}
         )
-        dest_client.put.return_value = _make_response(text="OK")
+        dest_client.put.return_value = make_response(text="OK")
 
         executor.apply_xml_overlay(
             source_experiment_id="XNAT_E001",
@@ -1246,9 +1231,9 @@ class TestApplyXmlOverlay:
         dest_client: MagicMock,
     ) -> None:
         """When dest experiment not found, ID is preserved from source."""
-        source_client.get.return_value = _make_response(text=_SAMPLE_XML)
-        dest_client.get.return_value = _make_response(json_data={"ResultSet": {"Result": []}})
-        dest_client.put.return_value = _make_response(text="OK")
+        source_client.get.return_value = make_response(text=_SAMPLE_XML)
+        dest_client.get.return_value = make_response(json_data={"ResultSet": {"Result": []}})
+        dest_client.put.return_value = make_response(text="OK")
 
         executor.apply_xml_overlay(
             source_experiment_id="XNAT_E001",
@@ -1266,7 +1251,7 @@ class TestApplyXmlOverlay:
 class TestListPrearchiveEntries:
     def test_returns_all_entries(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
         """Returns full list of prearchive entries."""
-        dest_client.get.return_value = _make_response(
+        dest_client.get.return_value = make_response(
             json_data={
                 "ResultSet": {
                     "Result": [
@@ -1297,7 +1282,7 @@ class TestListPrearchiveEntries:
 
     def test_returns_empty_list(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
         """Returns empty list when no prearchive entries exist."""
-        dest_client.get.return_value = _make_response(json_data={"ResultSet": {"Result": []}})
+        dest_client.get.return_value = make_response(json_data={"ResultSet": {"Result": []}})
         entries = executor.list_prearchive_entries("DST")
         assert entries == []
 
@@ -1313,7 +1298,7 @@ class TestWaitForArchiveFolderName:
         """archive_prearchive uses folderName, not name, as session_name."""
         dest_client.get.side_effect = [
             # find_prearchive_entry -> READY; name matches label but folderName differs
-            _make_response(
+            make_response(
                 json_data={
                     "ResultSet": {
                         "Result": [
@@ -1328,11 +1313,11 @@ class TestWaitForArchiveFolderName:
                 }
             ),
             # After archive: no prearchive entry
-            _make_response(json_data={"ResultSet": {"Result": []}}),
+            make_response(json_data={"ResultSet": {"Result": []}}),
             # count_dest_scans
-            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
+            make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
-        dest_client.post.return_value = _make_response(text="OK")
+        dest_client.post.return_value = make_response(text="OK")
 
         executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
 
@@ -1349,7 +1334,7 @@ class TestWaitForArchiveFolderName:
         """CONFLICT branch also uses folderName for session_name."""
         dest_client.get.side_effect = [
             # find_prearchive_entry -> CONFLICT; name matches label but folderName differs
-            _make_response(
+            make_response(
                 json_data={
                     "ResultSet": {
                         "Result": [
@@ -1364,11 +1349,11 @@ class TestWaitForArchiveFolderName:
                 }
             ),
             # After archive: no prearchive entry
-            _make_response(json_data={"ResultSet": {"Result": []}}),
+            make_response(json_data={"ResultSet": {"Result": []}}),
             # count_dest_scans
-            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
+            make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
-        dest_client.post.return_value = _make_response(text="OK")
+        dest_client.post.return_value = make_response(text="OK")
 
         executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
 
@@ -1386,7 +1371,7 @@ class TestWaitForArchiveFolderName:
         """Falls back to name when folderName is absent."""
         dest_client.get.side_effect = [
             # find_prearchive_entry -> READY; matched by name, no folderName key
-            _make_response(
+            make_response(
                 json_data={
                     "ResultSet": {
                         "Result": [
@@ -1400,11 +1385,11 @@ class TestWaitForArchiveFolderName:
                 }
             ),
             # After archive: no prearchive entry
-            _make_response(json_data={"ResultSet": {"Result": []}}),
+            make_response(json_data={"ResultSet": {"Result": []}}),
             # count_dest_scans
-            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
+            make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
-        dest_client.post.return_value = _make_response(text="OK")
+        dest_client.post.return_value = make_response(text="OK")
 
         executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
 
@@ -1421,7 +1406,7 @@ class TestWaitForArchiveExceptionGuard:
         dest_client: MagicMock,
     ) -> None:
         """READY archive failures should surface immediately."""
-        dest_client.get.return_value = _make_response(
+        dest_client.get.return_value = make_response(
             json_data={
                 "ResultSet": {"Result": [{"name": "EXP001", "status": "READY", "timestamp": "ts"}]}
             }
@@ -1443,9 +1428,9 @@ class TestWaitForArchiveExceptionGuard:
             # First cycle: find_prearchive_entry raises
             RuntimeError("network error"),
             # Second cycle: no prearchive entry
-            _make_response(json_data={"ResultSet": {"Result": []}}),
+            make_response(json_data={"ResultSet": {"Result": []}}),
             # count_dest_scans
-            _make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
+            make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
 
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
@@ -1468,7 +1453,7 @@ class TestWaitForArchiveExceptionGuard:
             # First cycle: error
             RuntimeError("network error"),
             # Timeout branch: count_dest_scans -> 0
-            _make_response(json_data={"ResultSet": {"Result": []}}),
+            make_response(json_data={"ResultSet": {"Result": []}}),
         ]
 
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5, timeout=10, interval=0.01)

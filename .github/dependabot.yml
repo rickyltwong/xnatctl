@@ -1,0 +1,38 @@
+# Supply-chain update automation.
+# PRs target `dev` per the branching strategy in CLAUDE.md.
+version: 2
+updates:
+  # Python runtime + dev dependencies (pyproject.toml / uv.lock).
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "dev"
+    open-pull-requests-limit: 5
+    # Group minor/patch bumps into one PR to cut review noise; majors stay
+    # separate so breaking changes are reviewed on their own.
+    groups:
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions used by the workflows (SHA-pinned; keeps pins fresh).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "dev"
+    open-pull-requests-limit: 5
+    groups:
+      actions-all:
+        patterns:
+          - "*"
+
+  # Base image for the published Docker artifact.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "dev"
+    open-pull-requests-limit: 5

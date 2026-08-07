@@ -8,7 +8,13 @@ neuroimaging data servers, supporting common workflows like:
 - Administrative operations (catalogs, users, renaming)
 """
 
-__version__ = "0.2.11"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("xnatctl")
+except PackageNotFoundError:  # source checkout without an installed distribution
+    __version__ = "0.0.0.dev0"
+
 __author__ = "Ricky Wong"
 
 from xnatctl.core.client import XNATClient

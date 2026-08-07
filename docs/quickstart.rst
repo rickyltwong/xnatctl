@@ -36,21 +36,25 @@ Run the following command, replacing the URL with your own XNAT server address:
 
    $ xnatctl config init --url https://xnat.example.org
 
-The command prompts you for your username and password, then writes a
-configuration file at ``~/.config/xnatctl/config.yaml``. The resulting file
-looks like this:
+The command writes a configuration file at ``~/.config/xnatctl/config.yaml``
+and then offers to log you in right away (``Log in now? [Y/n]``), prompting
+for your username and password. Answer yes and you are authenticated in one
+step -- Step 2 below just verifies the result. The resulting file looks like
+this:
 
 .. code-block:: yaml
 
-   active_profile: default
+   default_profile: default
+   output_format: table
    profiles:
      default:
        url: https://xnat.example.org
-       username: youruser
        verify_ssl: true
 
-Your password is not stored in the configuration file. xnatctl will prompt for
-it when needed, or you can supply it through environment variables.
+Your password is not stored in the configuration file. xnatctl caches a
+short-lived session token instead, prompts again when it expires, or reads
+credentials from environment variables or the OS keychain (see
+:doc:`configuration`).
 
 .. tip::
 
@@ -76,14 +80,15 @@ it locally, and reuses it for subsequent commands. If the token expires, xnatctl
 re-authenticates automatically so you can run long sequences of commands without
 interruption.
 
-Log in and verify your identity:
+If you skipped the login prompt during ``config init``, log in now:
 
 .. code-block:: console
 
    $ xnatctl auth login
+   Authenticating with https://xnat.example.org...
+   ✓ Logged in to https://xnat.example.org as youruser
 
-You should see a confirmation that authentication succeeded. Then confirm which
-user is associated with the current session:
+Then confirm which user is associated with the current session:
 
 .. code-block:: console
 

@@ -46,6 +46,49 @@ sub-command path. For example:
    ``local``, ``health``, and ``dicom`` expose their own options and do not
    universally support ``--quiet`` or ``--verbose``.
 
+Exit Codes
+----------
+
+Failures exit with a differentiated code, so scripts can branch on *why* a
+command failed rather than parsing stderr. Codes only ever became more
+specific than the old blanket ``1``, so existing ``!= 0`` checks keep working.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 10 25 65
+
+   * - Code
+     - Meaning
+     - Typical cause
+   * - 0
+     - Success
+     -
+   * - 1
+     - General error
+     - Server-side errors, upload/download failures, anything unclassified
+   * - 2
+     - Usage error
+     - Reserved by Click: wrong flags or arguments (including a refused argv
+       password)
+   * - 3
+     - Authentication error
+     - Bad credentials, expired session that could not be refreshed
+   * - 4
+     - Network error
+     - Server unreachable, timeout, retries exhausted
+   * - 5
+     - Not found
+     - Project/subject/session/resource does not exist
+   * - 6
+     - Permission denied
+     - Authenticated, but the account lacks the required role
+   * - 7
+     - User cancelled
+     - A confirmation prompt was declined or interrupted
+
+Failed uploads and downloads exit nonzero under ``-o json`` too -- machine
+output does not swallow the failure signal.
+
 Command Summary
 ---------------
 
@@ -103,8 +146,12 @@ different XNAT environments without re-entering connection details.
 - ``config show`` -- Display the current configuration and all profiles
 - ``config current-context`` -- Print the name of the active profile
 - ``config remove-profile`` -- Remove a named profile
+- ``config set-password`` -- Store a profile's password in the OS keychain
+  (prompts; requires the ``xnatctl[keyring]`` extra)
 
-Set up xnatctl for the first time with your server URL:
+Set up xnatctl for the first time with your server URL -- after writing the
+profile it offers to log in right away (``--login``/``--no-login`` decide up
+front in scripts):
 
 .. code-block:: console
 
@@ -140,18 +187,23 @@ after 15 minutes of inactivity; xnatctl re-authenticates automatically.
 - ``auth status`` -- Show the current authentication state (cached session, env vars)
 - ``auth test`` -- Test connectivity by making a live request to the server
 
-Log in interactively (credentials are prompted if not provided):
+Log in interactively (credentials are prompted if not provided), or pipe the
+password in for scripts:
 
 .. code-block:: console
 
    $ xnatctl auth login
+   $ echo "$PASS" | xnatctl auth login -u admin --password-stdin
    $ xnatctl auth status
 
 .. note::
 
    Credentials resolve in priority order: CLI arguments > environment variables
-   (``XNAT_USER``, ``XNAT_PASS``) > profile configuration > interactive prompt.
-   Set ``XNAT_TOKEN`` to skip credential-based authentication entirely.
+   (``XNAT_USER``, ``XNAT_PASS``) > profile configuration (inline or OS
+   keychain) > interactive prompt. Set ``XNAT_TOKEN`` to skip credential-based
+   authentication entirely. A password *value* on argv
+   (``--password <secret>``) is refused -- it would be visible in ``ps`` and
+   shell history; use ``--password-stdin`` instead.
 
 xnatctl also provides two top-level utility commands:
 
@@ -328,6 +380,29 @@ Upload via DICOM C-STORE (requires the ``[dicom]`` extra):
 
    $ xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT
 
+.. warning::
+
+   Plain C-STORE is **unencrypted**. Pixel data and the patient identifiers
+   attached to it cross the network in cleartext, so anything that can see the
+   traffic can read the PHI. Pass ``--tls`` when the SCP supports it:
+
+   .. code-block:: console
+
+      $ xnatctl session upload-dicom ./dicoms --host xnat.example.org \
+          --called-aet XNAT --tls
+
+   ``--tls-ca-bundle`` supplies a PEM file of CAs to trust instead of the
+   system store, and ``--tls-cert`` / ``--tls-key`` provide a client
+   certificate for SCPs that require mutual TLS. Each has an environment
+   variable equivalent (``XNAT_DICOM_TLS``, ``XNAT_DICOM_TLS_CA_BUNDLE``,
+   ``XNAT_DICOM_TLS_CERT``, ``XNAT_DICOM_TLS_KEY``).
+
+   There is deliberately no option to skip certificate verification. Such a
+   mode looks encrypted while accepting any certificate presented, which
+   protects nothing and hides that fact. If a deployment cannot verify
+   certificates, send plaintext knowingly -- the command says which transport
+   it used on every run.
+
 .. note::
 
    Use ``--dry-run`` on download and upload commands to preview what would happen
@@ -377,30 +452,36 @@ For more download patterns, see :doc:`downloading`.
 resource
 --------
 
-The ``resource`` commands manage file collections attached to sessions or scans.
-Resources are labeled containers (e.g., ``DICOM``, ``NIFTI``, ``BIDS``) that hold
-files.
+The ``resource`` commands manage file collections attached to projects,
+subjects, sessions, or scans. Resources are labeled containers (e.g.,
+``DICOM``, ``NIFTI``, ``BIDS``) that hold files.
 
-- ``resource list`` -- List resources at session or scan level
+- ``resource list`` -- List resources at project, subject, session, or scan level
 - ``resource show`` -- Display resource details and file listing
 - ``resource upload`` -- Upload a file or directory to a resource
 - ``resource download`` -- Download a resource as a ZIP archive
 
-List resources at session and scan level:
+The scope is chosen by what you pass: ``-P`` alone targets the project,
+``-P`` with ``-S`` the subject, a session ID the session, and ``--scan``
+narrows to one scan:
 
 .. code-block:: console
 
+   $ xnatctl resource list -P MYPROJ
+   $ xnatctl resource list -P MYPROJ -S SUB001
    $ xnatctl resource list XNAT_E00001
    $ xnatctl resource list XNAT_E00001 --scan 1
 
-Upload files and download resources:
+Upload and download work at every level too -- project-scope resources are
+how shared templates or QC outputs are stored:
 
 .. code-block:: console
 
    $ xnatctl resource upload XNAT_E00001 NIFTI ./file.nii.gz
    $ xnatctl resource upload XNAT_E00001 DICOM ./dicoms --scan 1
    $ xnatctl resource download XNAT_E00001 DICOM --file ./dicom.zip
-   $ xnatctl resource download XNAT_E00001 DICOM --file ./scan1.zip --scan 1
+   $ xnatctl resource download -P MYPROJ TEMPLATEFLOW --file ./tf.zip
+   $ xnatctl resource download -P MYPROJ -S SUB001 QC --file ./qc.zip
 
 .. note::
 

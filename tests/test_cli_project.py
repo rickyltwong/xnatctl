@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -19,7 +20,7 @@ def runner() -> CliRunner:
 
 def _mock_config() -> Config:
     """Build a mock Config with a default profile."""
-    cfg = Config(
+    return Config(
         default_profile="default",
         profiles={
             "default": Profile(
@@ -30,7 +31,6 @@ def _mock_config() -> Config:
             )
         },
     )
-    return cfg
 
 
 class TestProjectList:
@@ -51,8 +51,8 @@ class TestProjectList:
             }
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "list"])
 
@@ -83,8 +83,8 @@ class TestProjectList:
             }
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "list"])
 
@@ -109,8 +109,8 @@ class TestProjectList:
             }
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "list", "--output", "json"])
 
@@ -135,8 +135,8 @@ class TestProjectList:
             }
         }
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "list", "--quiet"])
 
@@ -150,8 +150,8 @@ class TestProjectList:
         mock_client.whoami.return_value = {"username": "testuser"}
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "list"])
 
@@ -183,8 +183,8 @@ class TestProjectShow:
             {"ResultSet": {"Result": [{"ID": "EXP1"}]}},
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "show", "PROJ1"])
 
@@ -215,8 +215,8 @@ class TestProjectShow:
             {"ResultSet": {"Result": [{"ID": "EXP1"}]}},
         ]
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "show", "PROJ1"])
 
@@ -230,8 +230,8 @@ class TestProjectShow:
         mock_client.whoami.return_value = {"username": "testuser"}
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "show", "NONEXIST"])
 
@@ -250,8 +250,8 @@ class TestProjectCreate:
         mock_resp.status_code = 200
         mock_client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(
                         cli,
@@ -279,8 +279,8 @@ class TestProjectCreate:
         mock_resp.text = "Project already exists"
         mock_client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(cli, ["project", "create", "EXISTING"])
 
@@ -295,8 +295,8 @@ class TestProjectCreate:
         mock_resp.status_code = 201
         mock_client.post.return_value = mock_resp
 
-        with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-            with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
                 with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
                     result = runner.invoke(
                         cli,

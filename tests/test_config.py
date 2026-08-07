@@ -191,12 +191,26 @@ class TestConfig:
         assert profile.url == "https://test.example.org"
 
     def test_get_profile_not_found(self):
+        """A named profile that is missing from a populated config."""
         from xnatctl.core.exceptions import ProfileNotFoundError
 
-        config = Config(profiles={})
+        config = Config(profiles={"default": Profile(url="https://xnat.example.org")})
 
         with pytest.raises(ProfileNotFoundError):
             config.get_profile("nonexistent")
+
+    def test_empty_config_reports_the_first_run_state(self):
+        """With nothing configured, "profile 'default' not found" would send
+        the user hunting for a typo that does not exist.
+        """
+        from xnatctl.core.exceptions import NoConfigurationError
+
+        config = Config(profiles={})
+
+        with pytest.raises(NoConfigurationError) as exc_info:
+            config.get_profile()
+
+        assert "xnatctl config init" in (exc_info.value.hint or "")
 
     def test_env_var_override(self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch):
         # Set environment variable

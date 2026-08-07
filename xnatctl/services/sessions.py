@@ -6,6 +6,7 @@ import builtins
 from typing import Any
 
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.models.hierarchy import ExperimentRef
 from xnatctl.models.session import Session
 
 from .base import BaseService
@@ -189,10 +190,13 @@ class SessionService(BaseService):
         Returns:
             List of scan data dicts
         """
-        if project:
-            path = f"/data/projects/{project}/experiments/{session_id}/scans"
-        else:
-            path = f"/data/experiments/{session_id}/scans"
+        # Built rather than interpolated: the project-scoped form is not a scan
+        # listing. XNAT answers /data/projects/{P}/experiments/{E}/scans with
+        # the experiment document, so this returned zero rows for every session
+        # that had a project. See ``HierarchyService.routable_scan_parent``.
+        path = HierarchyService.build_scan_collection_path(
+            ExperimentRef(experiment=session_id, project_id=project)
+        )
 
         params = {"format": "json"}
         data = self._get(path, params=params)

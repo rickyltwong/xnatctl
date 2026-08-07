@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 from xnatctl.core.state import EntityStatus, SyncStatus, TransferStateStore
 
 
 @pytest.fixture
-def store(tmp_path) -> TransferStateStore:
+def store(tmp_path) -> Iterator[TransferStateStore]:
     """Create a TransferStateStore backed by a temporary database."""
     db_path = tmp_path / "transfer.db"
-    return TransferStateStore(db_path)
+    store = TransferStateStore(db_path)
+    try:
+        yield store
+    finally:
+        store.close()
 
 
 class TestStateStoreInit:
@@ -25,7 +31,11 @@ class TestStateStoreInit:
         db_path = tmp_path / "transfer.db"
         s1 = TransferStateStore(db_path)
         s2 = TransferStateStore(db_path)
-        assert s1._get_tables() == s2._get_tables()
+        try:
+            assert s1._get_tables() == s2._get_tables()
+        finally:
+            s1.close()
+            s2.close()
 
 
 class TestSyncHistory:

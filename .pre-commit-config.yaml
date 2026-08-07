@@ -3,21 +3,30 @@ repos:
     hooks:
       - id: ruff-check
         name: ruff check (uv)
-        entry: uv run --no-sync --frozen ruff check xnatctl
+        entry: uv run --no-sync --frozen ruff check xnatctl tests scripts
         language: system
         pass_filenames: false
         always_run: true
 
       - id: ruff-format
         name: ruff format --check (uv)
-        entry: uv run --no-sync --frozen ruff format --check xnatctl
+        entry: uv run --no-sync --frozen ruff format --check xnatctl tests scripts
         language: system
         pass_filenames: false
         always_run: true
 
       - id: mypy
         name: mypy (uv)
-        entry: uv run --no-sync --frozen mypy xnatctl --ignore-missing-imports
+        entry: uv run --no-sync --frozen mypy xnatctl
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: claude-md-drift
+        name: CLAUDE.md drift check (MAINT-03)
+        # Skips cleanly when CLAUDE.md is absent (it is gitignored); catches
+        # missing modules/commands when a contributor has it locally.
+        entry: uv run --no-sync --frozen python scripts/check_claude_md_drift.py
         language: system
         pass_filenames: false
         always_run: true

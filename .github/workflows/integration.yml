@@ -1,0 +1,72 @@
+name: Integration
+
+# Deliberately not on push or pull_request. Standing up XNAT costs several
+# minutes and needs a database, so gating every PR on it would make the common
+# case slow to punish a rare kind of breakage. Nightly plus on-demand catches
+# the same regressions a day later, which is the right trade for a tier whose
+# job is verifying real server semantics rather than our own logic.
+#
+# NOTE: neither trigger fires until this file reaches the default branch.
+# GitHub reads workflow_dispatch and schedule only from the default branch --
+# `gh workflow run integration.yml --ref dev` answers 404 while it lives on
+# dev alone. Nothing here is broken; it activates on the next release merge.
+# Until then the tier is a local command:
+#   docker compose -f docker-compose.integration.yml up -d --wait
+#   uv run pytest tests/integration -m integration
+on:
+  workflow_dispatch:
+  schedule:
+    # 04:30 UTC daily, off the hour to avoid the scheduling stampede.
+    - cron: "30 4 * * *"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_FROZEN: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    # First boot builds the entire XNAT schema. Measured at ~90s locally;
+    # 45 minutes leaves room for a slow runner and the upload round trip.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        # The dicom extra is required: the round-trip test builds real
+        # datasets with pydicom, and XNAT drops anything it cannot parse.
+        run: uv sync --dev --extra dicom
+
+      - name: Start XNAT
+        run: docker compose -f docker-compose.integration.yml up -d --wait
+
+      - name: Run the integration tier
+        run: uv run pytest tests/integration -m integration -v
+
+      - name: XNAT logs
+        # The most useful artifact when this job fails is what the server said.
+        if: failure()
+        run: docker compose -f docker-compose.integration.yml logs --tail=300 xnat-web
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.integration.yml down -v

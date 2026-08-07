@@ -12,7 +12,6 @@ from xnatctl.core.output import (
     print_json,
     print_success,
     print_table,
-    print_warning,
 )
 
 
@@ -36,8 +35,14 @@ def dicom() -> None:
 
     Install with: pip install xnatctl[dicom]
     """
-    if not check_pydicom():
-        print_warning("pydicom not installed. Install with: pip install xnatctl[dicom]")
+    # No warning here: every subcommand already refuses with the same sentence
+    # and a non-zero exit. Emitting it at group level too printed the identical
+    # line twice, once as a warning and once as an error, which reads like two
+    # separate problems.
+    #
+    # The group body still runs for `xnatctl dicom --help`, where a bare
+    # warning would be noise -- the docstring above already says what to
+    # install.
 
 
 @dicom.command("validate")
@@ -45,7 +50,7 @@ def dicom() -> None:
 @click.option("--recursive", "-r", is_flag=True, help="Search recursively")
 @click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
 @click.option("--quiet", "-q", is_flag=True, help="Only output invalid files")
-def dicom_validate(
+def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
     path: str,
     recursive: bool,
     output: str,
@@ -53,6 +58,7 @@ def dicom_validate(
 ) -> None:
     """Validate DICOM files.
 
+    \b
     Example:
         xnatctl dicom validate /path/to/dicom
         xnatctl dicom validate /path/to/dicom -r
@@ -198,6 +204,7 @@ def dicom_inspect(
 ) -> None:
     """Inspect DICOM file headers.
 
+    \b
     Example:
         xnatctl dicom inspect /path/to/file.dcm
         xnatctl dicom inspect /path/to/file.dcm --tag PatientID --tag Modality
@@ -285,6 +292,7 @@ def dicom_list_tags(
 ) -> None:
     """List all tags in a DICOM file.
 
+    \b
     Example:
         xnatctl dicom list-tags /path/to/file.dcm
     """
@@ -339,7 +347,7 @@ def dicom_list_tags(
 @click.option("--remove-private", is_flag=True, help="Remove private tags")
 @click.option("--recursive", "-r", is_flag=True, help="Process directory recursively")
 @click.option("--dry-run", is_flag=True, help="Preview without saving")
-def dicom_anonymize(
+def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
     input_path: str,
     output_path: str,
     patient_id: str | None,
@@ -350,6 +358,7 @@ def dicom_anonymize(
 ) -> None:
     """Anonymize DICOM files.
 
+    \b
     Example:
         xnatctl dicom anonymize input.dcm output.dcm --patient-id ANON001
         xnatctl dicom anonymize /input/dir /output/dir -r --remove-private
@@ -488,7 +497,7 @@ def _collect_dicom_files(path: Path, recursive: bool) -> list[Path]:
     default="table",
 )
 @click.option("--dry-run", is_flag=True, help="Preview changes without writing")
-def dicom_modify(
+def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
     path: str,
     tags: tuple[str, ...],
     recursive: bool,
@@ -501,6 +510,7 @@ def dicom_modify(
     Accepts one or more --tag KEYWORD=VALUE pairs. Keywords use standard
     pydicom names (e.g. PatientID, StudyDescription).
 
+    \b
     Example:
         xnatctl dicom modify scan.dcm -t PatientID=ANON001
         xnatctl dicom modify ./dicoms -r -t PatientID=ANON -t StudyDescription=Demo

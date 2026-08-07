@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from typing import Any, cast
+
+from xnatctl.core.cancellation import cancellable_pool
 
 from .base import BaseService
 
@@ -72,7 +74,7 @@ class AdminService(BaseService):
                 return (exp_id, False, str(e))
 
         if parallel and total > 1:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
+            with cancellable_pool(workers) as (executor, _token):
                 futures = {
                     executor.submit(refresh_experiment, exp_id): exp_id for exp_id in experiments
                 }

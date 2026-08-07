@@ -234,7 +234,7 @@ def _detect_content_type(
     return "application/octet-stream"
 
 
-def _build_query_string(params: tuple) -> str:
+def _build_query_string(params: tuple[str, ...]) -> str:
     """Build a raw query string preserving special chars in keys.
 
     httpx URL-encodes query parameter keys (e.g. ``xnat:mrSessionData``
@@ -269,7 +269,7 @@ def _build_query_string(params: tuple) -> str:
 _RESOURCE_FILE_RE = re.compile(r"/resources/[^/?]+/files/[^/?]+")
 
 
-def _param_value(params: tuple, key: str) -> str | None:
+def _param_value(params: tuple[str, ...], key: str) -> str | None:
     """Return the value of ``key`` in ``params`` (case-insensitive), or None."""
     for param in params:
         result = _split_param(param)
@@ -287,7 +287,7 @@ def _is_resource_file_path(path: str) -> bool:
     return _RESOURCE_FILE_RE.search(path.split("?", 1)[0]) is not None
 
 
-def _maybe_add_inbody(path: str, params: tuple, *, has_body: bool) -> tuple:
+def _maybe_add_inbody(path: str, params: tuple[str, ...], *, has_body: bool) -> tuple[str, ...]:
     """Add ``inbody=true`` for resource-file writes that need it.
 
     XNAT's ``/resources/<label>/files/<name>`` endpoint drops a raw request
@@ -335,6 +335,7 @@ def api() -> None:
 
     Execute requests directly against XNAT REST endpoints.
 
+    \b
     Examples:
 
         xnatctl api get /data/projects
@@ -354,15 +355,16 @@ def api() -> None:
     help=_PARAMS_HELP,
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def api_get(
     ctx: Context,
     path: str,
-    params: tuple,
+    params: tuple[str, ...],
 ) -> None:
     """GET request to any XNAT endpoint.
 
+    \b
     Examples:
 
         xnatctl api get /data/projects
@@ -454,12 +456,12 @@ def api_get(
     ),
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def api_post(
     ctx: Context,
     path: str,
-    params: tuple,
+    params: tuple[str, ...],
     data: str | None,
     file_path: str | None,
     content_type: str | None,
@@ -476,6 +478,7 @@ def api_post(
     respond with ``415 Unsupported Media Type`` unless the request is sent
     as ``text/plain``.
 
+    \b
     Examples:
 
         xnatctl api post /data/projects --data '{"ID": "NEWPROJ"}'
@@ -484,8 +487,8 @@ def api_post(
 
         echo '{"k":"v"}' | xnatctl api post /data/endpoint -d -
 
-        xnatctl api post /xapi/xsync/credentials/check/projects/PROJ \\
-            -d 'user:pass' -t text/plain
+        printf 'user:pass' | xnatctl api post \\
+            /xapi/xsync/credentials/check/projects/PROJ -d - -t text/plain
     """
     client = ctx.get_client()
 
@@ -567,12 +570,12 @@ def api_post(
     ),
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def api_put(
     ctx: Context,
     path: str,
-    params: tuple,
+    params: tuple[str, ...],
     data: str | None,
     file_path: str | None,
     content_type: str | None,
@@ -595,6 +598,7 @@ def api_put(
     raw body; xnatctl adds it automatically when a body is supplied (a note
     is printed to stderr). Pass ``--params inbody=false`` to opt out.
 
+    \b
     Examples:
 
         xnatctl api put /data/projects/MYPROJ --data '{"description": "Updated"}'
@@ -668,22 +672,23 @@ def api_put(
     help="Skip confirmation",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def api_delete(
     ctx: Context,
     path: str,
-    params: tuple,
+    params: tuple[str, ...],
     yes: bool,
 ) -> None:
     """DELETE request to any XNAT endpoint.
 
+    \b
     Examples:
 
         xnatctl api delete /data/projects/MYPROJ/subjects/SUB001 --yes
     """
     if not yes:
-        click.confirm(f"Delete {path}?", abort=True)
+        click.confirm(f"Delete {path}?", abort=True, err=True)
 
     client = ctx.get_client()
 
@@ -693,7 +698,7 @@ def api_delete(
     resp = client.delete(url)
 
     if resp.status_code in (200, 204):
-        click.echo(f"Deleted: {path}")
+        click.echo(f"Deleted: {path}", err=True)
     else:
         try:
             result = resp.json()

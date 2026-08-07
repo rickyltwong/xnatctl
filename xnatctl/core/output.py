@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
@@ -62,7 +63,9 @@ def print_table(
         column_labels: Optional mapping of column keys to display labels.
     """
     if not rows:
-        console.print("[dim]No results[/dim]")
+        # Stderr so an empty `-o table` pipe stays clean. Scripts
+        # should use `-o json` for emptiness checks, not parse this line.
+        err_console.print("[dim]No results[/dim]")
         return
 
     table = Table(title=title, show_header=True, header_style="bold")
@@ -107,7 +110,7 @@ def print_key_value(
         console.print(f"[bold]{title}[/bold]")
 
     labels = key_labels or {}
-    max_key_len = max(len(labels.get(k, k)) for k in data.keys()) if data else 0
+    max_key_len = max(len(labels.get(k, k)) for k in data) if data else 0
 
     for key, value in data.items():
         label = labels.get(key, key.replace("_", " ").title())
@@ -213,28 +216,46 @@ def print_error(message: str) -> None:
     """Print error message to stderr.
 
     The message is routed through :func:`redact_url_query` so that URLs
-    embedded in the error never leak secret-shaped query values.
+    embedded in the error never leak secret-shaped query values, and escaped so
+    that square brackets in it are shown rather than parsed as Rich markup --
+    an install hint like ``pip install 'xnatctl[keyring]'`` otherwise renders
+    with the extra silently deleted.
     """
-    err_console.print(f"[red]Error:[/red] {redact_url_query(message)}")
+    err_console.print(f"[red]Error:[/red] {escape(redact_url_query(message))}")
 
 
 def print_warning(message: str) -> None:
     """Print warning message to stderr.
 
     The message is routed through :func:`redact_url_query` so that URLs
-    embedded in the warning never leak secret-shaped query values.
+    embedded in the warning never leak secret-shaped query values, and escaped
+    so that square brackets survive (see :func:`print_error`).
     """
-    err_console.print(f"[yellow]Warning:[/yellow] {redact_url_query(message)}")
+    err_console.print(f"[yellow]Warning:[/yellow] {escape(redact_url_query(message))}")
+
+
+def print_hint(hint: str) -> None:
+    """Print a dimmed next-step line to stderr, below an error.
+
+    Dimmed and prefixed so it reads as guidance rather than a second failure,
+    and on stderr so it travels with the error it belongs to rather than
+    contaminating piped data.
+    """
+    err_console.print(f"[dim]Try: {escape(redact_url_query(hint))}[/dim]")
 
 
 def print_success(message: str) -> None:
-    """Print success message."""
-    console.print(f"[green]\u2713[/green] {message}")
+    """Print success message to stderr.
+
+    Stderr so it never interleaves with data being piped from stdout:
+    a success line is commentary about the run, not part of its output.
+    """
+    err_console.print(f"[green]\u2713[/green] {escape(message)}")
 
 
 def print_info(message: str) -> None:
-    """Print info message."""
-    console.print(f"[blue]Info:[/blue] {message}")
+    """Print info message to stderr (commentary, not data)."""
+    err_console.print(f"[blue]Info:[/blue] {escape(message)}")
 
 
 # =============================================================================
@@ -253,7 +274,11 @@ def create_progress() -> Progress:
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
-        console=console,
+        # Stderr, so `xnatctl session download ... > log` still shows a live
+        # bar: Rich disables live display when its console is a non-tty, and
+        # with stdout redirected that used to kill the bar even though stderr
+        # was an interactive terminal.
+        console=err_console,
     )
 
 
@@ -266,5 +291,5 @@ def create_spinner() -> Progress:
     return Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
-        console=console,
+        console=err_console,
     )

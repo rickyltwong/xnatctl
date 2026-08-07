@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import authenticated_seams, make_authenticated_context
 
-from xnatctl.cli.common import Context
 from xnatctl.cli.main import cli
-from xnatctl.core.config import Config, Profile
 from xnatctl.models.progress import DownloadSummary
 
 
@@ -20,45 +19,30 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
-def _make_authenticated_context(
-    default_project: str | None = "TESTPROJ",
-) -> tuple[Context, MagicMock]:
-    """Build a Context with a mocked authenticated client.
-
-    Args:
-        default_project: Default project for the profile.
-
-    Returns:
-        Tuple of (Context, mock_client).
-    """
-    ctx = Context()
-    ctx.config = Config(
-        profiles={
-            "default": Profile(
-                url="https://xnat.example.org",
-                username="user",
-                password="pass",
-                default_project=default_project,
-            ),
-        },
-    )
-    mock_client = MagicMock()
-    mock_client.is_authenticated = True
-    mock_client.base_url = "https://xnat.example.org"
-    mock_client.whoami.return_value = {"login": "user"}
-    ctx.client = cast(Any, mock_client)
-    ctx.auth_manager = MagicMock()
-    return ctx, mock_client
-
-
 # =============================================================================
 # Scan List
 # =============================================================================
 
 
-def _exp_metadata(xsi_type: str = "xnat:mrSessionData") -> dict[str, Any]:
-    """Build a minimal experiment metadata response."""
-    return {"ResultSet": {"Result": [{"xsiType": xsi_type}]}}
+def _exp_metadata(
+    xsi_type: str = "xnat:mrSessionData",
+    *,
+    experiment_id: str | None = "XNAT_E00001",
+    subject_id: str | None = "XNAT_S00001",
+) -> dict[str, Any]:
+    """Build an experiment metadata response.
+
+    Real XNAT experiment documents always carry ``ID`` and ``subject_ID``. Both
+    matter: the accession ID makes nested calls canonical, and the subject is
+    what makes the nested URL route at all under a project (see
+    ``TestScanNestedUrlRouting``). Pass ``None`` to model a sparse response.
+    """
+    row: dict[str, Any] = {"xsiType": xsi_type}
+    if experiment_id:
+        row["ID"] = experiment_id
+    if subject_id:
+        row["subject_ID"] = subject_id
+    return {"ResultSet": {"Result": [row]}}
 
 
 def _scan_results(scans: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -71,7 +55,7 @@ class TestScanList:
 
     def test_scan_list_happy_path(self, runner: CliRunner) -> None:
         """List scans for a session returns table output."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:mrSessionData"),
             _scan_results(
@@ -96,12 +80,7 @@ class TestScanList:
             ),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
@@ -110,39 +89,34 @@ class TestScanList:
 
     def test_scan_list_with_project(self, runner: CliRunner) -> None:
         """List scans with -P scopes to project endpoint."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
 
         assert result.exit_code == 0
-        # Second call is the scans listing
+        # Second call is the scans listing. It stays inside the project (ACLs
+        # apply) and goes through the subject, which is what makes XNAT route
+        # the /scans suffix instead of echoing the experiment document.
         scan_call_url = mock_client.get_json.call_args_list[1][0][0]
-        assert "/data/projects/TESTPROJ/experiments/SESS001/scans" in scan_call_url
+        assert (
+            "/data/projects/TESTPROJ/subjects/XNAT_S00001/experiments/XNAT_E00001/scans"
+            in scan_call_url
+        )
 
     def test_scan_list_without_project_uses_direct_endpoint(self, runner: CliRunner) -> None:
         """Without -P uses /data/experiments endpoint."""
-        ctx, mock_client = _make_authenticated_context(default_project=None)
+        ctx, mock_client = make_authenticated_context(default_project=None)
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
@@ -160,18 +134,13 @@ class TestScanList:
 
         # Case A: ResourceNotFoundError on the inspect probe is swallowed; the
         # scan list call still runs and returns the same output as before.
-        ctx, mock_client = _make_authenticated_context(default_project=None)
+        ctx, mock_client = make_authenticated_context(default_project=None)
         mock_client.get_json.side_effect = [
             ResourceNotFoundError("session", "XNAT_E00001"),
             _scan_results(),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
@@ -179,15 +148,10 @@ class TestScanList:
         assert mock_client.get_json.call_count == 2
 
         # Case B: a non-404 (network) error must propagate, not be swallowed.
-        ctx2, mock_client2 = _make_authenticated_context(default_project=None)
+        ctx2, mock_client2 = make_authenticated_context(default_project=None)
         mock_client2.get_json.side_effect = NetworkError("upstream timeout")
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx2.config),
-            patch.object(Context, "get_client", return_value=mock_client2),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx2.auth_manager
+        with authenticated_seams(ctx2, mock_client2):
             result2 = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result2.exit_code != 0
@@ -196,18 +160,13 @@ class TestScanList:
 
     def test_scan_list_default_project_fallback(self, runner: CliRunner) -> None:
         """Falls back to profile default_project for label resolution."""
-        ctx, mock_client = _make_authenticated_context(default_project="FALLBACK")
+        ctx, mock_client = make_authenticated_context(default_project="FALLBACK")
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "SESS_LABEL"])
 
         assert result.exit_code == 0
@@ -216,7 +175,7 @@ class TestScanList:
 
     def test_scan_list_json_output(self, runner: CliRunner) -> None:
         """JSON output returns scan data."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results(
@@ -233,12 +192,7 @@ class TestScanList:
             ),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001", "-o", "json"])
 
         assert result.exit_code == 0
@@ -246,7 +200,7 @@ class TestScanList:
 
     def test_scan_list_quiet(self, runner: CliRunner) -> None:
         """Quiet mode outputs IDs only."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results(
@@ -263,12 +217,7 @@ class TestScanList:
             ),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001", "-q"])
 
         assert result.exit_code == 0
@@ -276,19 +225,14 @@ class TestScanList:
 
     def test_scan_list_empty(self, runner: CliRunner) -> None:
         """A session with genuinely no scans does not error (fallback also empty)."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results(),  # unfiltered listing empty
             _scan_results(),  # xsiType fallback also empty
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
@@ -302,7 +246,7 @@ class TestScanList:
         xsiType (which would drop every scan). The unfiltered listing returns
         all three scans and no fallback call is needed.
         """
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:optSessionData"),
             _scan_results(
@@ -314,12 +258,7 @@ class TestScanList:
             ),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
@@ -333,7 +272,7 @@ class TestScanList:
 
     def test_scan_list_mr_session_lists_unfiltered(self, runner: CliRunner) -> None:
         """Imaging (MR) sessions list scans without a guessed xsiType filter."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:mrSessionData"),
             _scan_results(
@@ -341,12 +280,7 @@ class TestScanList:
             ),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
@@ -363,19 +297,14 @@ class TestScanList:
         ``/scans`` request; for those, ``scan list`` retries with the matching
         scan xsiType (``xnat:eegScanData``) rather than reporting no scans.
         """
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:eegSessionData"),
             _scan_results(),  # unfiltered listing returns nothing
             _scan_results([{"ID": "1", "type": "EEG", "series_description": "", "quality": ""}]),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
@@ -397,7 +326,7 @@ class TestScanShow:
 
     def test_scan_show_happy_path(self, runner: CliRunner) -> None:
         """Show scan details by scan ID."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
         def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
             if url.endswith("/resources"):
@@ -419,19 +348,14 @@ class TestScanShow:
 
         mock_client.get_json.side_effect = _get_json_side
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "show", "-E", "XNAT_E00001", "1"])
 
         assert result.exit_code == 0
 
     def test_scan_show_items_response(self, runner: CliRunner) -> None:
         """Show scan details from an `items[]` response shape."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             {
                 "items": [
@@ -466,12 +390,7 @@ class TestScanShow:
             {"ResultSet": {"Result": [{"label": "DICOM"}]}},
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "show", "-E", "XNAT_E00001", "12", "-o", "json"])
 
         assert result.exit_code == 0
@@ -479,7 +398,7 @@ class TestScanShow:
 
     def test_scan_show_with_project(self, runner: CliRunner) -> None:
         """Show scan with -P resolves to the canonical experiment ID for nested calls."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             {
                 "ResultSet": {
@@ -488,6 +407,7 @@ class TestScanShow:
                             "ID": "XNAT_E00001",
                             "label": "SESS001",
                             "project": "TESTPROJ",
+                            "subject_ID": "XNAT_S00001",
                             "xsiType": "xnat:mrSessionData",
                         }
                     ]
@@ -510,32 +430,26 @@ class TestScanShow:
             {"ResultSet": {"Result": []}},
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "show", "-E", "SESS001", "-P", "TESTPROJ", "1"])
 
         assert result.exit_code == 0
         resolve_url = mock_client.get_json.call_args_list[0][0][0]
         assert "/data/projects/TESTPROJ/experiments/SESS001" in resolve_url
-        # After inspection, nested calls preserve project scope so ACLs apply.
+        # After inspection, nested calls preserve project scope so ACLs apply,
+        # and address the scan through the subject so XNAT routes the suffix.
         scan_url = mock_client.get_json.call_args_list[1][0][0]
-        assert "/data/projects/TESTPROJ/experiments/XNAT_E00001/scans/1" in scan_url
+        assert (
+            "/data/projects/TESTPROJ/subjects/XNAT_S00001/experiments/XNAT_E00001/scans/1"
+            in scan_url
+        )
 
     def test_scan_show_not_found(self, runner: CliRunner) -> None:
         """Non-existent scan prints error and exits 1."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(cli, ["scan", "show", "-E", "XNAT_E00001", "999"])
 
         assert result.exit_code == 1
@@ -551,14 +465,9 @@ class TestScanDelete:
 
     def test_scan_delete_dry_run(self, runner: CliRunner) -> None:
         """Dry run lists scans to delete without deleting."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -579,17 +488,12 @@ class TestScanDelete:
 
     def test_scan_delete_with_confirmation(self, runner: CliRunner) -> None:
         """Delete scans with -y skips prompt."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_client.delete.return_value = mock_response
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -608,18 +512,13 @@ class TestScanDelete:
 
     def test_scan_delete_wildcard_dry_run(self, runner: CliRunner) -> None:
         """Wildcard '*' fetches all scan IDs in dry run."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
             _scan_results([{"ID": "1"}, {"ID": "2"}, {"ID": "3"}]),
         ]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -638,18 +537,20 @@ class TestScanDelete:
         assert "3 scans" in result.output
 
     def test_scan_delete_with_project(self, runner: CliRunner) -> None:
-        """Delete with -P uses project-scoped endpoint."""
-        ctx, mock_client = _make_authenticated_context()
+        """Delete with -P targets the scan under its subject, not the experiment.
+
+        ``/data/projects/{P}/experiments/{E}/scans/1`` does not address a scan:
+        XNAT ignores the suffix and the URL resolves to the experiment itself,
+        so a DELETE there risks removing the whole session. The subject segment
+        is what makes it address the scan.
+        """
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.return_value = _exp_metadata()
         mock_response = MagicMock()
         mock_response.status_code = 204
         mock_client.delete.return_value = mock_response
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -667,19 +568,19 @@ class TestScanDelete:
 
         assert result.exit_code == 0
         delete_url = mock_client.delete.call_args[0][0]
-        assert "/data/projects/TESTPROJ/experiments/SESS001/scans/1" in delete_url
+        assert (
+            "/data/projects/TESTPROJ/subjects/XNAT_S00001/experiments/XNAT_E00001/scans/1"
+            in delete_url
+        )
+        # The unrouted prefix must not be what gets DELETEd.
+        assert "/data/projects/TESTPROJ/experiments/" not in delete_url
 
     def test_scan_delete_failure(self, runner: CliRunner) -> None:
         """Failed delete reports error and exits 1."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_client.delete.side_effect = Exception("Server error")
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -697,17 +598,12 @@ class TestScanDelete:
 
     def test_scan_delete_partial_failure(self, runner: CliRunner) -> None:
         """Mixed success/failure reports both and exits 1."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_ok = MagicMock()
         mock_ok.status_code = 200
         mock_client.delete.side_effect = [mock_ok, Exception("fail")]
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -736,14 +632,9 @@ class TestScanDownload:
 
     def test_scan_download_dry_run(self, runner: CliRunner, tmp_path) -> None:
         """Dry run previews download without fetching data."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -765,14 +656,9 @@ class TestScanDownload:
 
     def test_scan_download_dry_run_all(self, runner: CliRunner, tmp_path) -> None:
         """Dry run with '*' shows 'all scans'."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -794,14 +680,9 @@ class TestScanDownload:
 
     def test_scan_download_dry_run_with_resource(self, runner: CliRunner, tmp_path) -> None:
         """Dry run with --resource shows resource type."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -824,14 +705,9 @@ class TestScanDownload:
 
     def test_scan_download_name_with_path_separator(self, runner: CliRunner, tmp_path) -> None:
         """Name with path separator is rejected."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -853,14 +729,9 @@ class TestScanDownload:
 
     def test_scan_download_multiple_resources_rejected(self, runner: CliRunner, tmp_path) -> None:
         """Multiple --resource values are rejected."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
 
-        with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
-        ):
-            mock_auth_cls.return_value = ctx.auth_manager
+        with authenticated_seams(ctx, mock_client):
             result = runner.invoke(
                 cli,
                 [
@@ -884,7 +755,7 @@ class TestScanDownload:
 
     def test_scan_download_happy_path(self, runner: CliRunner, tmp_path) -> None:
         """Successful download produces success message."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
             total=1,
@@ -898,12 +769,9 @@ class TestScanDownload:
         )
 
         with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            authenticated_seams(ctx, mock_client),
             patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
         ):
-            mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
                 cli,
@@ -924,7 +792,7 @@ class TestScanDownload:
 
     def test_scan_download_failure(self, runner: CliRunner, tmp_path) -> None:
         """Failed download exits 1."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=False,
             total=1,
@@ -939,12 +807,9 @@ class TestScanDownload:
         )
 
         with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            authenticated_seams(ctx, mock_client),
             patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
         ):
-            mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
                 cli,
@@ -962,9 +827,49 @@ class TestScanDownload:
 
         assert result.exit_code == 1
 
+    def test_scan_download_failure_json_exits_nonzero(self, runner: CliRunner, tmp_path) -> None:
+        """A failed download must exit 1 under -o json, not just table."""
+        ctx, mock_client = make_authenticated_context()
+        mock_summary = DownloadSummary(
+            success=False,
+            total=1,
+            succeeded=0,
+            failed=1,
+            duration=1.0,
+            total_files=0,
+            total_size_mb=0.0,
+            output_path=str(tmp_path / "XNAT_E00001"),
+            session_id="XNAT_E00001",
+            errors=["Connection timed out"],
+        )
+
+        with (
+            authenticated_seams(ctx, mock_client),
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
+            mock_dl_cls.return_value.download_scans.return_value = mock_summary
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "-o",
+                    "json",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert '"success"' in result.output  # JSON summary still emitted
+
     def test_scan_download_json_output(self, runner: CliRunner, tmp_path) -> None:
         """JSON output includes structured download summary."""
-        ctx, mock_client = _make_authenticated_context()
+        ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
             total=1,
@@ -978,12 +883,9 @@ class TestScanDownload:
         )
 
         with (
-            patch("xnatctl.cli.common.Config.load", return_value=ctx.config),
-            patch.object(Context, "get_client", return_value=mock_client),
-            patch("xnatctl.cli.common.AuthManager") as mock_auth_cls,
+            authenticated_seams(ctx, mock_client),
             patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
         ):
-            mock_auth_cls.return_value = ctx.auth_manager
             mock_dl_cls.return_value.download_scans.return_value = mock_summary
             result = runner.invoke(
                 cli,
@@ -1015,21 +917,21 @@ class TestScanHelp:
     """Tests for scan subcommand help texts."""
 
     def test_scan_list_help(self, runner: CliRunner) -> None:
-        """scan list --help shows expected options."""
+        """Scan list --help shows expected options."""
         result = runner.invoke(cli, ["scan", "list", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
         assert "--project" in result.output
 
     def test_scan_show_help(self, runner: CliRunner) -> None:
-        """scan show --help shows expected options."""
+        """Scan show --help shows expected options."""
         result = runner.invoke(cli, ["scan", "show", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
         assert "SCAN_ID" in result.output
 
     def test_scan_delete_help(self, runner: CliRunner) -> None:
-        """scan delete --help shows expected options."""
+        """Scan delete --help shows expected options."""
         result = runner.invoke(cli, ["scan", "delete", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
@@ -1038,7 +940,7 @@ class TestScanHelp:
         assert "--yes" in result.output
 
     def test_scan_download_help(self, runner: CliRunner) -> None:
-        """scan download --help shows expected options."""
+        """Scan download --help shows expected options."""
         result = runner.invoke(cli, ["scan", "download", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
@@ -1047,3 +949,147 @@ class TestScanHelp:
         assert "--dry-run" in result.output
         assert "--resource" in result.output
         assert "--extract" in result.output
+
+
+# =============================================================================
+# Nested URL routing
+# =============================================================================
+
+
+class TestScanNestedUrlRouting:
+    """Regression tests for the URL prefix used by nested scan calls.
+
+    XNAT does not route sub-resource suffixes on
+    ``/data/projects/{P}/experiments/{E}``. It answers ``/scans`` -- or any
+    other suffix, including nonsense ones -- with the parent experiment
+    document. ``extract_rows`` finds no ``ResultSet`` there and returns an empty
+    list, so ``scan list -P`` reported "no scans" for sessions that had them,
+    ``scan show -P`` printed session fields under a scan heading, and
+    ``scan delete -P`` aimed a DELETE at the experiment.
+
+    Routing the call through the subject fixes all three at once.
+    """
+
+    def test_project_scoped_listing_goes_through_the_subject(self, runner: CliRunner) -> None:
+        """With -P, the scans URL carries the subject from the experiment doc."""
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata(subject_id="XNAT_S00042"),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/subjects/XNAT_S00042/" in scan_url
+
+    def test_explicit_subject_is_not_overwritten(self, runner: CliRunner) -> None:
+        """A user-supplied -S wins over the subject_ID in the experiment doc."""
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata(subject_id="XNAT_S00042"),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli, ["scan", "list", "-P", "TESTPROJ", "-S", "SUB_LABEL", "-E", "SESS001"]
+            )
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/subjects/SUB_LABEL/" in scan_url
+        assert "XNAT_S00042" not in scan_url
+
+    def test_no_project_keeps_the_flat_experiment_url(self, runner: CliRunner) -> None:
+        """Without a project there is no subject segment to add.
+
+        ``/data/experiments/{E}/scans`` routes correctly on its own, and XNAT
+        rejects a subject segment outside a project.
+        """
+        ctx, mock_client = make_authenticated_context(default_project=None)
+        mock_client.get_json.side_effect = [
+            _exp_metadata(subject_id="XNAT_S00042"),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert scan_url == "/data/experiments/XNAT_E00001/scans"
+        assert "/subjects/" not in scan_url
+
+    def test_missing_subject_id_falls_back_to_the_flat_url(self, runner: CliRunner) -> None:
+        """With no subject to insert, the URL drops the project rather than
+        keeping the prefix XNAT refuses to route.
+        """
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata(subject_id=None),
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert scan_url == "/data/experiments/XNAT_E00001/scans"
+
+    def test_items_response_subject_is_carried_forward(self, runner: CliRunner) -> None:
+        """The subject is read from an `items[]` experiment document too."""
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            {
+                "items": [
+                    {
+                        "data_fields": {
+                            "ID": "XNAT_E00001",
+                            "label": "SESS001",
+                            "project": "TESTPROJ",
+                            "subject_ID": "XNAT_S00042",
+                        },
+                        "meta": {"xsi:type": "xnat:mrSessionData"},
+                        "children": [],
+                    }
+                ]
+            },
+            _scan_results([{"ID": "1", "type": "T1", "series_description": "", "quality": ""}]),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "list", "-E", "SESS001", "-P", "TESTPROJ"])
+
+        assert result.exit_code == 0
+        scan_url = mock_client.get_json.call_args_list[1][0][0]
+        assert "/subjects/XNAT_S00042/" in scan_url
+
+    def test_unresolvable_label_refuses_rather_than_guessing(self, runner: CliRunner) -> None:
+        """A label that inspection cannot resolve fails closed on every verb.
+
+        The URL would stay on the prefix XNAT answers with the experiment
+        document, so a listing would report no scans and a DELETE would target
+        the session. `-E` here is label-shaped, so the flat form is not an
+        option.
+        """
+        from xnatctl.core.exceptions import ResourceNotFoundError
+
+        for argv in (
+            ["scan", "list", "-P", "TESTPROJ", "-E", "SESS_LABEL"],
+            ["scan", "show", "-P", "TESTPROJ", "-E", "SESS_LABEL", "1"],
+            ["scan", "delete", "-P", "TESTPROJ", "-E", "SESS_LABEL", "--scans", "1", "-y"],
+        ):
+            ctx, mock_client = make_authenticated_context()
+            mock_client.get_json.side_effect = ResourceNotFoundError("session", "SESS_LABEL")
+
+            with authenticated_seams(ctx, mock_client):
+                result = runner.invoke(cli, argv)
+
+            assert result.exit_code != 0, argv
+            assert "SESS_LABEL" in result.output
+            # Nothing was issued against the unrouted URL.
+            mock_client.delete.assert_not_called()

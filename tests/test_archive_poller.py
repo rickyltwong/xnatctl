@@ -14,7 +14,10 @@ from xnatctl.services.transfer.executor import TransferExecutor
 from xnatctl.services.transfer.poller import ArchivePoller, DeferredExperiment
 
 FAST_POLL = 0.05
-WAIT_TIMEOUT = 2.0
+# Deadline-based waits, so a generous timeout is free: the happy path still
+# finishes in milliseconds and only genuine failures wait the full duration.
+# pytest-timeout (120s, pyproject.toml) is the real hang backstop.
+WAIT_TIMEOUT = 10.0
 
 
 @pytest.fixture
@@ -205,14 +208,20 @@ class TestArchivePoller:
             poller.stop()
 
     def test_poller_stop_exits_cleanly(self, mock_executor: MagicMock) -> None:
-        """Thread joins within poll_interval * 2."""
-        poller = ArchivePoller(mock_executor, poll_interval=FAST_POLL)
+        """stop() interrupts the poll wait instead of blocking for a full cycle."""
+        # A long poll_interval makes this assertion mean something: the run loop
+        # waits on _stop_event, so stop() must return immediately. A busy-sleep
+        # implementation would block for the interval instead.
+        # Asserting against a small interval only measured scheduler jitter and
+        # flaked on loaded runners.
+        long_interval = 30.0
+        poller = ArchivePoller(mock_executor, poll_interval=long_interval)
         poller.start()
         assert poller.is_alive
         start = time.monotonic()
         poller.stop()
         elapsed = time.monotonic() - start
-        assert elapsed < FAST_POLL * 4
+        assert elapsed < long_interval / 10
         assert not poller.is_alive
 
     def test_poller_zero_scan_recheck(self, mock_executor: MagicMock) -> None:

@@ -30,11 +30,12 @@ def project() -> None:
 
 @project.command("list")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_list(ctx: Context) -> None:
     """List accessible projects.
 
+    \b
     Example:
         xnatctl project list
         xnatctl project list -o json
@@ -74,11 +75,12 @@ def project_list(ctx: Context) -> None:
 @project.command("show")
 @click.argument("project_id")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_show(ctx: Context, project_id: str) -> None:
     """Show project details.
 
+    \b
     Example:
         xnatctl project show MYPROJECT
     """
@@ -147,8 +149,8 @@ def project_show(ctx: Context, project_id: str) -> None:
     "--accessibility", type=click.Choice(["public", "protected", "private"]), default="private"
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_create(
     ctx: Context,
     project_id: str,
@@ -159,6 +161,7 @@ def project_create(
 ) -> None:
     """Create a new project.
 
+    \b
     Example:
         xnatctl project create NEWPROJ --name "New Project" --pi Smith
     """
@@ -205,8 +208,8 @@ def project_create(
 @click.option("--config", "config_path", type=click.Path(exists=True), help="Transfer config YAML")
 @dest_profile_options
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 @confirm_destructive("Transfer data to destination XNAT?")
 @parallel_options
 def project_transfer(
@@ -226,6 +229,7 @@ def project_transfer(
     Incrementally syncs subjects, experiments, and resources from the source
     project to the destination, tracking state in a local SQLite database.
 
+    \b
     Example:
         xnatctl project transfer -P SRC --dest-profile staging --dest-project DST
         xnatctl project transfer -P SRC --dest-profile staging --dest-project DST --dry-run
@@ -312,11 +316,12 @@ def project_transfer(
 @project.command("transfer-status")
 @click.option("-P", "--project", "source_project", required=True, help="Source project ID")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_transfer_status(ctx: Context, source_project: str) -> None:
     """Show status of the last transfer run.
 
+    \b
     Example:
         xnatctl project transfer-status -P MYPROJECT
     """
@@ -361,11 +366,12 @@ def project_transfer_status(ctx: Context, source_project: str) -> None:
 @project.command("transfer-history")
 @click.option("-P", "--project", "source_project", required=True, help="Source project ID")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_transfer_history(ctx: Context, source_project: str) -> None:
     """Show transfer history for a project.
 
+    \b
     Example:
         xnatctl project transfer-history -P MYPROJECT
         xnatctl project transfer-history -P MYPROJECT -o json
@@ -424,8 +430,8 @@ def project_transfer_history(ctx: Context, source_project: str) -> None:
 @click.option("--dest-project", required=True, help="Destination project ID")
 @dest_profile_options
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def project_transfer_check(
     ctx: Context,
     source_project: str,
@@ -440,6 +446,7 @@ def project_transfer_check(
     Verifies that both source and destination are reachable, authenticated,
     and that the user has sufficient permissions.
 
+    \b
     Example:
         xnatctl project transfer-check -P SRC --dest-profile staging --dest-project DST
     """
@@ -542,6 +549,7 @@ def project_transfer_init(
 ) -> None:
     """Generate a starter transfer configuration YAML.
 
+    \b
     Example:
         xnatctl project transfer-init -P SRC --dest-project DST
         xnatctl project transfer-init -P SRC --dest-project DST -f transfer.yaml

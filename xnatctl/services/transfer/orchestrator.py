@@ -11,13 +11,14 @@ import tempfile
 import time
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.state import EntityStatus, SyncStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.conflicts import ConflictChecker
@@ -35,7 +36,6 @@ logger = logging.getLogger(__name__)
 
 def _is_dicom_resource(resource: dict[str, Any]) -> bool:
     """Return True when a scan resource contains DICOM data."""
-
     label = str(resource.get("label") or "")
     resource_format = str(resource.get("format") or "")
     return label == "DICOM" or resource_format.upper() == "DICOM"
@@ -417,7 +417,7 @@ class TransferOrchestrator:
 
         return result
 
-    def _transfer_subject(
+    def _transfer_subject(  # noqa: C901  # pre-existing; see pyproject
         self,
         subject: DiscoveredEntity,
         sync_id: int,
@@ -1303,18 +1303,15 @@ class TransferOrchestrator:
         resource: dict[str, Any],
     ) -> bool:
         """Check scan-resource filters, mapping DICOM-format aliases to DICOM."""
-
         label = str(resource.get("label") or "")
         if _is_dicom_resource(resource):
             return self.filter_engine.should_include_scan_resource(
                 session_xsi_type,
                 "DICOM",
             )
-        if self.filter_engine.should_include_scan_resource(session_xsi_type, label):
-            return True
-        return False
+        return self.filter_engine.should_include_scan_resource(session_xsi_type, label)
 
-    def _transfer_scans(
+    def _transfer_scans(  # noqa: C901  # pre-existing; see pyproject
         self,
         scans: list[dict[str, Any]],
         exp: DiscoveredEntity,
@@ -1391,7 +1388,7 @@ class TransferOrchestrator:
                 return scan_id, None, str(e)
 
         if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
+            with cancellable_pool(workers) as (pool, _token):
                 futures = {pool.submit(do_download, s): s.get("ID", "") for s in filtered_scans}
                 for future in as_completed(futures):
                     scan_id, items, error = future.result()
@@ -1430,7 +1427,7 @@ class TransferOrchestrator:
                 return item.scan_id, False, str(e)
 
         if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as upload_pool:
+            with cancellable_pool(workers) as (upload_pool, _upload_token):
                 upload_futures = {upload_pool.submit(do_upload, d): d.scan_id for d in downloaded}
                 for fut in as_completed(upload_futures):
                     uid, ok, uerr = fut.result()

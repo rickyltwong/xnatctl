@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
@@ -89,8 +90,8 @@ def _patched_invoke(
     env: dict[str, str] | None = None,
 ):
     """Invoke the CLI with the mock client + config patched in."""
-    with patch("xnatctl.core.config.Config.load", return_value=_mock_config()):
-        with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+    with core_config_seam(_mock_config()):
+        with config_seam(_mock_config()):
             with patch("xnatctl.cli.common.XNATClient", return_value=client):
                 return runner.invoke(cli, args, input=input_, env=env)
 
@@ -186,7 +187,11 @@ class TestRefreshCredentialsSecretSourcing:
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
         )
         combined = result.stdout + result.stderr
-        assert "Refusing to read remote password from argv" in combined
+        # Wording comes from the shared reject_argv_password helper in
+        # cli/common.py; assert the invariants, not the
+        # exact sentence.
+        assert "Refusing to read --remote-pass from argv" in combined
+        assert "--remote-pass-stdin" in combined
         # Critical: the secret must not appear anywhere in the captured output.
         assert SECRET not in combined
         # And no HTTP call may have been issued.

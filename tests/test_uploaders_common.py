@@ -357,6 +357,18 @@ class TestUploadWithRetry:
         assert result.status_code == 200
         assert fn.call_count == 2
 
+    def test_connect_timeout_fails_fast_without_retry(self):
+        """A connect-phase timeout must not burn retries (fail on attempt 1).
+
+        Contrast with the transient ConnectError above, which stays retryable.
+        """
+        fn = MagicMock(side_effect=httpx.ConnectTimeout("connect timed out"))
+
+        with pytest.raises(httpx.ConnectTimeout):
+            upload_with_retry(fn, max_retries=5, backoff_base=0)
+
+        assert fn.call_count == 1
+
     def test_raises_timeout_after_all_retries_exhausted(self):
         fn = MagicMock(side_effect=httpx.TimeoutException("timed out"))
 

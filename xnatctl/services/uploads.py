@@ -16,21 +16,26 @@ import contextlib
 import logging
 import os
 import shutil
+import ssl
 import tarfile
 import tempfile
 import threading
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, Future, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
 
-from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
+from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken, cancellable_pool
+from xnatctl.core.client import RETRYABLE_STATUS_CODES as CLIENT_RETRYABLE_STATUS_CODES
+from xnatctl.core.client import XNATClient
+from xnatctl.core.exceptions import OperationCancelledError, UploadError
+from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
 from xnatctl.models.progress import (
     OperationPhase,
     UploadProgress,
@@ -60,7 +65,119 @@ DICOM_EXTENSIONS = {".dcm", ".ima", ".img", ".dicom"}
 
 UPLOAD_MAX_RETRIES = 5
 UPLOAD_RETRY_BACKOFF_BASE = 2  # seconds: 2, 4, 8, 16, 32
-RETRYABLE_STATUS_CODES = {400, 429, 500, 502, 503, 504}
+
+# One source of truth for the shared statuses: the core client
+# owns the base policy, uploads extend it. Previously both modules defined a
+# constant of the same name and they drifted -- the client did not retry 429/500
+# while uploads did.
+UPLOAD_ONLY_RETRYABLE_STATUS_CODES = {
+    # XNAT's import service returns a transient 400 while an archive operation
+    # races; retrying clears it. Deliberately NOT in the core client's set,
+    # where a 400 is a genuine client error. A follow-up will discriminate the
+    # transient 400s from the permanent ones.
+    400,
+}
+RETRYABLE_STATUS_CODES = CLIENT_RETRYABLE_STATUS_CODES | UPLOAD_ONLY_RETRYABLE_STATUS_CODES
+
+# Which 400s are worth retrying.
+#
+# Harvested 2026-08-04 from the messages compiled into the deployed XNAT
+# **1.9.2.1** on cnmdpxnatv01 (org.nrg.xnat.archive.PrearcSessionArchiver,
+# PrearcUtils, restlet.services.Importer), cross-checked against a real
+# ClientException in that host's prearchive.log. Read off the running server
+# rather than guessed, because the whole point is to tell two 400s apart.
+#
+# The transient ones are all concurrency: two uploads meeting in the same
+# session. Waiting genuinely clears them, which is why 400 was made retryable
+# in the first place.
+TRANSIENT_400_SIGNATURES = (
+    "session processing in progress",
+    "concurrent modification is discouraged",
+    "duplicate archive attempt",
+    "destination session in use",
+)
+
+# The permanent ones are configuration or data errors. No amount of waiting
+# fixes a project that does not exist, and retrying is what made a mislabeled
+# upload burn 62s per file across three passes before reporting the failure.
+PERMANENT_400_SIGNATURES = (
+    "unable to deduce session label",
+    "unable to identify subject",
+    "unable to identify destination project",
+    "not allowed to create new subjects",
+    "unable to create new subject id",
+    "unable to create new session id",
+    "session already exists, retry with overwrite enabled",
+    "via archive process",  # "Invalid modification of session {label,project,UID,...}"
+    "session already contains a scan",
+    "already exists for another subject",
+    "src uri is invalid",
+    "expected a catalog file, however it was missing",
+    "non-standard prearchive structure",
+    "or non-parsable dicom) files",
+    "is required when requesting",
+)
+
+
+def is_permanent_400(body: str) -> bool:
+    """Whether a 400 body names a fault that retrying cannot fix.
+
+    Deliberately a denylist of *known-permanent* messages rather than an
+    allowlist of known-transient ones. Both fix the pathology this addresses --
+    a misconfigured upload always produces one of the messages above, and now
+    fails on the first attempt instead of the sixth. The difference is how each
+    behaves when XNAT's wording drifts:
+
+    * denylist: an unrecognised 400 is retried, as it is today. A new transient
+      message costs some backoff.
+    * allowlist: an unrecognised 400 fails immediately. A new transient message
+      turns uploads that currently succeed into failures.
+
+    Slow is recoverable; spuriously refusing a good upload is not. The retry
+    budget bounds the slow case, so drift degrades rather than breaks.
+    """
+    if not body:
+        return False
+    haystack = body.lower()
+    # Transient wins a tie: "duplicate archive attempt" and the modification
+    # errors can co-occur in one body, and the concurrent case is the one that
+    # clears on its own.
+    if any(sig in haystack for sig in TRANSIENT_400_SIGNATURES):
+        return False
+    return any(sig in haystack for sig in PERMANENT_400_SIGNATURES)
+
+
+class RetryBudget:
+    """A ceiling on total backoff across one upload operation.
+
+    The signature lists above are read off one XNAT version; a future release
+    can word things differently, and an unrecognised permanent 400 would then
+    be retried on every file again. This bounds that worst case regardless of
+    what the server says: once the operation has spent its budget sleeping,
+    further retries are abandoned and the failures reported.
+    """
+
+    __slots__ = ("_lock", "_remaining", "_total")
+
+    def __init__(self, seconds: float = 900.0) -> None:
+        self._total = seconds
+        self._remaining = seconds
+        self._lock = threading.Lock()
+
+    def claim(self, seconds: float) -> bool:
+        """Reserve a backoff sleep. False when the budget is exhausted."""
+        with self._lock:
+            if self._remaining < seconds:
+                return False
+            self._remaining -= seconds
+            return True
+
+    @property
+    def exhausted(self) -> bool:
+        """Whether any budget remains."""
+        with self._lock:
+            return self._remaining <= 0
+
 
 # When running with --verbose, we can log small snippets of retryable HTTP 400
 # response bodies to help diagnose transient XNAT import races. Keep this capped
@@ -80,7 +197,7 @@ _gradual_scope_lock = threading.Lock()
 _gradual_scope_refcount = 0
 
 
-class _SessionRefresher:
+class SessionRefresher:
     """Thread-safe XNAT session token manager.
 
     When any worker thread encounters a 401 (expired session), it calls
@@ -88,28 +205,61 @@ class _SessionRefresher:
     re-authenticates; concurrent callers wait on the lock and receive the
     already-refreshed token.
 
+    A refresh here has to reach the *owning client* too. Workers hold their own
+    copy of the token, so without ``owner`` the shared client kept the token it
+    started with: after a multi-hour upload during which workers re-authenticated
+    several times, the phases that run afterwards -- hierarchy resolution and
+    resource attach in ``session upload-exam`` -- went out with a token that had
+    been dead for hours, turning a completed upload into a failure at the last
+    step.
+
     Args:
         base_url: XNAT server URL.
-        verify_ssl: Whether to verify SSL certificates.
+        verify_ssl: TLS verification: a bool, or an SSLContext carrying a
+            profile's ``ca_bundle`` (``XNATClient.httpx_verify()``).
         token: Initial JSESSIONID token.
         username: Credentials for re-authentication.
         password: Credentials for re-authentication.
+        owner: Client whose ``session_token`` should track refreshes.
     """
 
     def __init__(
         self,
         base_url: str,
-        verify_ssl: bool,
+        verify_ssl: bool | ssl.SSLContext,
         token: str | None,
         username: str | None,
         password: str | None,
+        owner: XNATClient | None = None,
     ) -> None:
         self._base_url = base_url
         self._verify_ssl = verify_ssl
         self._token = token
         self._username = username
         self._password = password
+        self._owner = owner
         self._lock = threading.Lock()
+
+    def _publish(self, token: str) -> None:
+        """Push a fresh token to the owning client and the on-disk cache.
+
+        Called with the lock held. Both writes are best-effort: a worker that
+        just re-authenticated has a usable token in hand, and failing the
+        upload because a *cache* could not be updated would be absurd.
+        """
+        if self._owner is not None:
+            self._owner.session_token = token
+
+        try:
+            # Imported here rather than at module scope: this is the only place
+            # the upload service touches the credential cache, and a top-level
+            # import would tie every upload to the auth module's import cost.
+            from xnatctl.core.auth import AuthManager
+
+            if self._username:
+                AuthManager().save_session(token, self._base_url, self._username)
+        except Exception as e:
+            logger.debug("Could not update the session cache after refresh: %s", e)
 
     @property
     def token(self) -> str | None:
@@ -142,7 +292,7 @@ class _SessionRefresher:
                 with httpx.Client(
                     base_url=self._base_url,
                     verify=self._verify_ssl,
-                    timeout=30.0,
+                    timeout=build_httpx_timeout(30.0),  # connect fails fast
                 ) as client:
                     resp = client.post(
                         "/data/JSESSION",
@@ -150,6 +300,7 @@ class _SessionRefresher:
                     )
                     if resp.status_code == 200 and "<html" not in resp.text.lower():
                         self._token = resp.text.strip()
+                        self._publish(self._token)
                         logger.info("Session refreshed successfully")
                     else:
                         logger.error("Session refresh failed: HTTP %d", resp.status_code)
@@ -159,11 +310,13 @@ class _SessionRefresher:
             return self._token
 
 
-def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client:
+def _get_gradual_http_client(*, base_url: str, verify_ssl: bool | ssl.SSLContext) -> httpx.Client:
     """Get a thread-local httpx.Client for gradual-DICOM uploads."""
     key = (base_url, verify_ssl)
     client: httpx.Client | None = getattr(_gradual_client_local, "client", None)
-    client_key: tuple[str, bool] | None = getattr(_gradual_client_local, "key", None)
+    client_key: tuple[str, bool | ssl.SSLContext] | None = getattr(
+        _gradual_client_local, "key", None
+    )
 
     if client is None or client_key != key or client.is_closed:
         if client is not None:
@@ -174,7 +327,7 @@ def _get_gradual_http_client(*, base_url: str, verify_ssl: bool) -> httpx.Client
 
         client = httpx.Client(
             base_url=base_url,
-            timeout=_GRADUAL_HTTP_TIMEOUT_SECONDS,
+            timeout=build_httpx_timeout(_GRADUAL_HTTP_TIMEOUT_SECONDS),  # connect fails fast
             verify=verify_ssl,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
         )
@@ -262,6 +415,10 @@ class _UploadResult:
     file_count: int
     archive_size: int
     error: str = ""
+    # A batch dropped because the user interrupted the run. Distinct from a
+    # failure: nothing went wrong with it, so it must not be reported as an
+    # error the server rejected.
+    cancelled: bool = False
 
 
 # =============================================================================
@@ -429,12 +586,37 @@ def is_retryable_status(status_code: int) -> bool:
     return status_code in RETRYABLE_STATUS_CODES
 
 
-def upload_with_retry(
+def _error_signature(error: str) -> str:
+    """Collapse an error message to something comparable across files.
+
+    Two rejections of the same *kind* differ in the file name and any UID the
+    server echoes back, so comparing raw strings would never find them equal.
+    The leading prefix is stable enough to group by and short enough not to
+    reach the variable tail.
+    """
+    return error.strip()[:200]
+
+
+def _safe_body(resp: httpx.Response) -> str:
+    """Response text, or empty if it cannot be read.
+
+    A body that will not decode must not turn a plain HTTP failure into an
+    exception from the retry helper.
+    """
+    try:
+        return resp.text
+    except Exception:
+        return ""
+
+
+def upload_with_retry(  # noqa: C901  # pre-existing; see pyproject
     upload_fn: Callable[[], httpx.Response],
     *,
     max_retries: int = UPLOAD_MAX_RETRIES,
     backoff_base: int = UPLOAD_RETRY_BACKOFF_BASE,
     label: str = "upload",
+    cancel_token: CancellationToken = NULL_TOKEN,
+    retry_budget: RetryBudget | None = None,
 ) -> httpx.Response:
     """Execute an upload function with retry on transient HTTP errors.
 
@@ -444,6 +626,13 @@ def upload_with_retry(
         max_retries: Maximum number of retries (default: 5).
         backoff_base: Base for exponential backoff in seconds (default: 2).
         label: Label for log messages.
+        cancel_token: Checked before each attempt, and slept against instead of
+            ``time.sleep``. The ladder is 2+4+8+16+32s, so without this a
+            cancelled upload sits in a backoff for up to a minute per in-flight
+            batch after the user has already asked it to stop.
+        retry_budget: Shared ceiling on total backoff for the whole operation.
+            When it runs out, the last response is returned instead of sleeping
+            again. Bounds the damage if a permanent 400 goes unrecognised.
 
     Returns:
         The httpx.Response from a successful attempt.
@@ -455,9 +644,17 @@ def upload_with_retry(
     last_exc: Exception | None = None
 
     for attempt in range(max_retries + 1):
+        if cancel_token.cancelled:
+            break
         try:
             resp = upload_fn()
             if not is_retryable_status(resp.status_code):
+                return resp
+            if resp.status_code == 400 and is_permanent_400(_safe_body(resp)):
+                # A bad project, an unknown subject, a session that needs
+                # --overwrite: the server will say the same thing in 62
+                # seconds. Report it now, on attempt one.
+                logger.debug("%s: permanent HTTP 400, not retrying", label)
                 return resp
             last_resp = resp
             last_exc = None
@@ -489,7 +686,20 @@ def upload_with_retry(
                     max_retries + 1,
                     delay,
                 )
-                time.sleep(delay)
+                if retry_budget is not None and not retry_budget.claim(delay):
+                    logger.warning("%s: retry budget exhausted, giving up", label)
+                    break
+                if cancel_token.sleep(delay):
+                    break
+        except httpx.ConnectTimeout:
+            # Fail fast: a connect-phase timeout means the host is
+            # unreachable and will not recover within the backoff window -- unlike
+            # the transient ConnectError bursts XNAT throws during cold start,
+            # which stay retryable below. Re-raise immediately instead of burning
+            # ~120s of retries. (Typed-error conversion on the upload path is
+            # the shared retry policy.)
+            logger.warning("%s: connect timed out; not retrying", label)
+            raise
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             last_exc = e
             last_resp = None
@@ -504,12 +714,20 @@ def upload_with_retry(
                     max_retries + 1,
                     delay,
                 )
-                time.sleep(delay)
+                if retry_budget is not None and not retry_budget.claim(delay):
+                    logger.warning("%s: retry budget exhausted, giving up", label)
+                    break
+                if cancel_token.sleep(delay):
+                    break
 
     if last_resp is not None:
         return last_resp
     if last_exc is not None:
         raise last_exc
+    if cancel_token.cancelled:
+        # Cancelled before any attempt produced a response. Saying "all retries
+        # exhausted" here would blame the server for the user's Ctrl+C.
+        raise OperationCancelledError(label)
     raise RuntimeError(f"{label}: all retries exhausted with no response")
 
 
@@ -564,17 +782,50 @@ def _create_archive(
 
 
 # =============================================================================
-# Parallel Upload Helpers (private, thread-safe standalone functions)
+# Archive upload (shared by the parallel batch path and `session upload`)
 # =============================================================================
 
 
-def _upload_single_archive(
+class ArchiveUploadResult(NamedTuple):
+    """Outcome of one archive upload, with enough context to classify it.
+
+    ``status_code`` and ``exception`` exist so the CLI can map a failure to the
+    documented exit-code taxonomy (auth 3, network 4, permission 6) instead of
+    flattening everything to a string and exiting 1.
+    """
+
+    success: bool
+    error: str
+    status_code: int | None = None
+    exception: BaseException | None = None
+
+
+def _classify_import_response(resp: httpx.Response) -> ArchiveUploadResult:
+    """Turn the import service's final response into an ArchiveUploadResult."""
+    if resp.status_code == 200:
+        return ArchiveUploadResult(True, "")
+    if resp.status_code in (401, 403):
+        # No body snippet here on purpose: XNAT answers both with an HTML
+        # login page, which is noise in a one-line error.
+        return ArchiveUploadResult(
+            False,
+            "Authentication failed: invalid or expired session",
+            status_code=resp.status_code,
+        )
+    return ArchiveUploadResult(
+        False,
+        f"HTTP {resp.status_code}: {resp.text[:500]}",
+        status_code=resp.status_code,
+    )
+
+
+def upload_single_archive(
     *,
     base_url: str,
     username: str | None,
     password: str | None,
     session_token: str | None,
-    verify_ssl: bool,
+    verify_ssl: bool | ssl.SSLContext,
     timeout: int,
     archive_path: Path,
     project: str,
@@ -584,18 +835,31 @@ def _upload_single_archive(
     ignore_unparsable: bool,
     overwrite: str,
     direct_archive: bool,
-) -> tuple[bool, str]:
+    cancel_token: CancellationToken = NULL_TOKEN,
+    session_refresher: SessionRefresher | None = None,
+) -> ArchiveUploadResult:
     """Upload a single archive file to XNAT.
 
     Creates a fresh httpx client for thread-safety in parallel execution.
 
+    A 401 mid-upload used to end the batch. That is the wrong answer whenever
+    credentials are available: XNAT evicts sessions when an account exceeds its
+    concurrent-session limit -- routine when several workers share a service
+    account -- so a long parallel upload would fail batch by batch against a
+    server that was working perfectly. The gradual path already reauthenticated;
+    this one did not. Refreshing through the shared *session_refresher* rather
+    than logging in per batch matters: it serialises the reauth, so N workers
+    hitting the same eviction do not answer it with N more logins.
+
     Returns:
-        Tuple of (success, error_message).
+        ArchiveUploadResult; on failure it carries the final HTTP status or the
+        transport exception so callers can classify the error.
     """
     name = archive_path.name.lower()
-    content_type = (
-        "application/x-tar" if name.endswith((".tar", ".tar.gz", ".tgz")) else "application/zip"
-    )
+    # Anything that is not a ZIP defaults to tar: the CLI accepts arbitrary
+    # archive names (data.tar.bz2, extensionless), and tar was the historical
+    # default for those. The batch path only ever generates .tar/.zip names.
+    content_type = "application/zip" if name.endswith(".zip") else "application/x-tar"
 
     params = {
         "import-handler": import_handler,
@@ -614,7 +878,7 @@ def _upload_single_archive(
 
     with httpx.Client(
         base_url=base_url,
-        timeout=timeout,
+        timeout=build_httpx_timeout(timeout),  # connect fails fast
         verify=verify_ssl,
     ) as client:
         try:
@@ -625,34 +889,57 @@ def _upload_single_archive(
                 cookies = {"JSESSIONID": session_token}
             else:
                 if not username or not password:
-                    return False, "Authentication failed: missing credentials"
+                    return ArchiveUploadResult(False, "Authentication failed: missing credentials")
 
                 auth_resp = client.post(
                     "/data/JSESSION",
                     auth=(str(username), str(password)),
                 )
                 if auth_resp.status_code != 200:
-                    return False, f"Authentication failed: HTTP {auth_resp.status_code}"
+                    return ArchiveUploadResult(
+                        False,
+                        f"Authentication failed: HTTP {auth_resp.status_code}",
+                        status_code=auth_resp.status_code,
+                    )
 
                 if "<html" in auth_resp.text.lower():
-                    return False, "Authentication failed: invalid credentials"
+                    return ArchiveUploadResult(False, "Authentication failed: invalid credentials")
 
                 session_token = auth_resp.text.strip()
                 cookies = {"JSESSIONID": session_token}
                 created_session = True
 
-            def _attempt() -> httpx.Response:
+            def _attempt_with(jar: dict[str, str]) -> httpx.Response:
                 with archive_path.open("rb") as data:
                     return client.post(
                         "/data/services/import",
                         params=params,
                         headers={"Content-Type": content_type},
                         content=data,
-                        cookies=cookies,
+                        cookies=jar,
                     )
 
             try:
-                resp = upload_with_retry(_attempt, label=f"batch {archive_path.name}")
+                resp = upload_with_retry(
+                    lambda: _attempt_with(cookies),
+                    label=f"batch {archive_path.name}",
+                    cancel_token=cancel_token,
+                )
+
+                if resp.status_code == 401 and session_refresher is not None:
+                    fresh = session_refresher.refresh(session_token)
+                    if fresh and fresh != session_token:
+                        logger.info(
+                            "Session expired mid-upload; retrying batch %s with a refreshed token",
+                            archive_path.name,
+                        )
+                        session_token = fresh
+                        cookies = {"JSESSIONID": fresh}
+                        resp = upload_with_retry(
+                            lambda: _attempt_with(cookies),
+                            label=f"batch {archive_path.name} (after reauth)",
+                            cancel_token=cancel_token,
+                        )
             finally:
                 if created_session:
                     try:
@@ -660,77 +947,20 @@ def _upload_single_archive(
                     except Exception:
                         pass
 
-            if resp.status_code == 200:
-                return True, ""
-            if resp.status_code in (401, 403):
-                return False, "Authentication failed: invalid or expired session"
-            return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            return _classify_import_response(resp)
 
-        except httpx.TimeoutException:
-            return False, "Upload timed out (after retries)"
+        except httpx.ConnectTimeout as e:
+            # upload_with_retry re-raises this without retrying (fail fast on
+            # an unreachable host), so do not claim retries happened.
+            return ArchiveUploadResult(False, "Connection timed out; not retried", exception=e)
+        except httpx.TimeoutException as e:
+            return ArchiveUploadResult(False, "Upload timed out (after retries)", exception=e)
         except httpx.ConnectError as e:
-            return False, f"Connection failed (after retries): {e}"
+            return ArchiveUploadResult(
+                False, f"Connection failed (after retries): {e}", exception=e
+            )
         except Exception as e:
-            return False, str(e)
-
-
-def _upload_batch(
-    *,
-    base_url: str,
-    username: str | None,
-    password: str | None,
-    session_token: str | None,
-    verify_ssl: bool,
-    timeout: int,
-    batch_id: int,
-    archive_path: Path,
-    file_count: int,
-    project: str,
-    subject: str,
-    session: str,
-    import_handler: str,
-    ignore_unparsable: bool,
-    overwrite: str,
-    direct_archive: bool,
-) -> _UploadResult:
-    """Upload a single batch archive, returning an _UploadResult."""
-    archive_size = archive_path.stat().st_size
-    start_time = time.time()
-
-    try:
-        success, error = _upload_single_archive(
-            base_url=base_url,
-            username=username,
-            password=password,
-            session_token=session_token,
-            verify_ssl=verify_ssl,
-            timeout=timeout,
-            archive_path=archive_path,
-            project=project,
-            subject=subject,
-            session=session,
-            import_handler=import_handler,
-            ignore_unparsable=ignore_unparsable,
-            overwrite=overwrite,
-            direct_archive=direct_archive,
-        )
-        return _UploadResult(
-            batch_id=batch_id,
-            success=success,
-            duration=time.time() - start_time,
-            file_count=file_count,
-            archive_size=archive_size,
-            error=error,
-        )
-    except Exception as e:
-        return _UploadResult(
-            batch_id=batch_id,
-            success=False,
-            duration=time.time() - start_time,
-            file_count=file_count,
-            archive_size=archive_size,
-            error=str(e),
-        )
+            return ArchiveUploadResult(False, str(e), exception=e)
 
 
 def _create_and_upload_batch(
@@ -743,7 +973,7 @@ def _create_and_upload_batch(
     username: str | None,
     password: str | None,
     session_token: str | None,
-    verify_ssl: bool,
+    verify_ssl: bool | ssl.SSLContext,
     timeout: int,
     batch_id: int,
     project: str,
@@ -753,6 +983,8 @@ def _create_and_upload_batch(
     ignore_unparsable: bool,
     overwrite: str,
     direct_archive: bool,
+    cancel_token: CancellationToken = NULL_TOKEN,
+    session_refresher: SessionRefresher | None = None,
 ) -> _UploadResult:
     """Create archive, upload it, then delete the archive immediately.
 
@@ -760,14 +992,29 @@ def _create_and_upload_batch(
     disk and memory usage. The archive is deleted as soon as the upload
     completes (or fails), preventing all archives from existing on disk
     simultaneously.
+
+    Checks for cancellation before doing any work: ``cancel_futures`` drops the
+    queue, but a worker that has already picked up a batch would otherwise go
+    on to build and upload an archive the user asked it to abandon.
     """
     start_time = time.time()
     archive_size = 0
 
+    if cancel_token.cancelled:
+        return _UploadResult(
+            batch_id=batch_id,
+            success=False,
+            duration=0.0,
+            file_count=len(batch),
+            archive_size=0,
+            error="cancelled",
+            cancelled=True,
+        )
+
     try:
         archive_size = _create_archive(batch, archive_path, source_path, archive_format)
 
-        success, error = _upload_single_archive(
+        upload_result = upload_single_archive(
             base_url=base_url,
             username=username,
             password=password,
@@ -782,15 +1029,27 @@ def _create_and_upload_batch(
             ignore_unparsable=ignore_unparsable,
             overwrite=overwrite,
             direct_archive=direct_archive,
+            cancel_token=cancel_token,
+            session_refresher=session_refresher,
         )
 
         return _UploadResult(
             batch_id=batch_id,
-            success=success,
+            success=upload_result.success,
             duration=time.time() - start_time,
             file_count=len(batch),
             archive_size=archive_size,
-            error=error,
+            error=upload_result.error,
+        )
+    except OperationCancelledError:
+        return _UploadResult(
+            batch_id=batch_id,
+            success=False,
+            duration=time.time() - start_time,
+            file_count=len(batch),
+            archive_size=archive_size,
+            error="cancelled",
+            cancelled=True,
         )
     except Exception as e:
         return _UploadResult(
@@ -829,7 +1088,7 @@ def _check_dicom_deps() -> None:
         ) from e
 
 
-def _get_verification_sop_class():
+def _get_verification_sop_class() -> Any:
     """Get VerificationSOPClass with compatibility for pynetdicom versions."""
     from pynetdicom import sop_class as _sop_class
 
@@ -841,7 +1100,7 @@ def _get_verification_sop_class():
     )
 
 
-def _get_storage_contexts():
+def _get_storage_contexts() -> list[Any]:
     """Get storage presentation contexts with version compatibility."""
     try:
         from pynetdicom import StoragePresentationContexts
@@ -855,7 +1114,7 @@ def _get_storage_contexts():
         return [build_context(uid) for uid in uids]
 
 
-def _ensure_sop_uids(ds) -> None:
+def _ensure_sop_uids(ds: Any) -> None:
     """Populate missing SOP UID attributes from file-meta.
 
     Args:
@@ -872,7 +1131,74 @@ def _ensure_sop_uids(ds) -> None:
             ds.SOPInstanceUID = uid
 
 
-def _c_echo(host: str, port: int, calling_aet: str, called_aet: str) -> bool:
+def _tls_kwargs(tls_context: ssl.SSLContext | None, host: str) -> dict[str, Any]:
+    """Association kwargs for TLS, or nothing at all when plaintext.
+
+    ``host`` is passed as the TLS ``server_hostname`` rather than the ``None``
+    the pynetdicom examples use: with ``check_hostname`` on, omitting it means
+    the certificate is never matched against the host being talked to, which
+    removes most of the protection.
+    """
+    if tls_context is None:
+        return {}
+    return {"tls_args": (tls_context, host)}
+
+
+def build_dicom_tls_context(
+    ca_bundle: str | None = None,
+    client_cert: str | None = None,
+    client_key: str | None = None,
+) -> ssl.SSLContext:
+    """Build the TLS context for a DICOM association.
+
+    Plain C-STORE puts pixel data and the patient identifiers attached to it on
+    the wire in cleartext. DICOM's own answer is TLS, which pynetdicom supports
+    through ``ae.associate(..., tls_args=...)``.
+
+    There is deliberately no way to switch verification off. An "insecure TLS"
+    mode is the worst of both worlds -- it looks encrypted in the command line
+    and in the logs while accepting any certificate presented, so a
+    man-in-the-middle reads the PHI anyway and nobody notices. A site that
+    genuinely cannot verify certificates should send plaintext knowingly and
+    see the notice that goes with it.
+
+    Args:
+        ca_bundle: PEM file of CAs to trust. Falls back to the system store.
+        client_cert: Client certificate, for SCPs requiring mutual TLS.
+        client_key: Its private key. May be omitted if the cert file holds both.
+
+    Returns:
+        A context with certificate and hostname verification enabled.
+
+    Raises:
+        UploadError: If the certificate material cannot be loaded.
+    """
+    context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_bundle)
+    # create_default_context already sets these; asserted rather than assigned
+    # so a future edit that weakens them fails loudly here.
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+
+    if client_cert:
+        try:
+            context.load_cert_chain(certfile=client_cert, keyfile=client_key)
+        except (OSError, ssl.SSLError) as e:
+            raise UploadError(
+                f"Could not load the DICOM TLS client certificate: {e}",
+                client_cert,
+                {"client_key": client_key},
+            ) from e
+
+    return context
+
+
+def _c_echo(
+    host: str,
+    port: int,
+    calling_aet: str,
+    called_aet: str,
+    tls_context: ssl.SSLContext | None = None,
+) -> bool:
     """Send a C-ECHO to verify connectivity and AE titles.
 
     Args:
@@ -880,6 +1206,7 @@ def _c_echo(host: str, port: int, calling_aet: str, called_aet: str) -> bool:
         port: DICOM SCP port.
         calling_aet: Our AE title.
         called_aet: Remote AE title.
+        tls_context: When given, the association is encrypted.
 
     Returns:
         True if C-ECHO succeeded.
@@ -890,7 +1217,7 @@ def _c_echo(host: str, port: int, calling_aet: str, called_aet: str) -> bool:
     ae = AE(ae_title=calling_aet)
     ae.add_requested_context(_get_verification_sop_class())
 
-    assoc = ae.associate(host, port, ae_title=called_aet)
+    assoc = ae.associate(host, port, ae_title=called_aet, **_tls_kwargs(tls_context, host))
     if not assoc.is_established:
         return False
 
@@ -908,6 +1235,7 @@ def _send_dicom_batch(
     calling_aet: str,
     called_aet: str,
     log_dir: Path,
+    tls_context: ssl.SSLContext | None = None,
 ) -> tuple[int, int]:
     """Send a batch of DICOM files over a single association.
 
@@ -919,6 +1247,7 @@ def _send_dicom_batch(
         calling_aet: Our AE title.
         called_aet: Remote AE title.
         log_dir: Directory for batch log files.
+        tls_context: When given, the association is encrypted.
 
     Returns:
         Tuple of (sent_count, failed_count).
@@ -936,7 +1265,7 @@ def _send_dicom_batch(
         ae.requested_contexts = _get_storage_contexts()
         ae.add_requested_context("1.3.12.2.1107.5.9.1")
 
-        assoc = ae.associate(host, port, ae_title=called_aet)
+        assoc = ae.associate(host, port, ae_title=called_aet, **_tls_kwargs(tls_context, host))
         if not assoc.is_established:
             log.write("Association rejected/aborted\n")
             return sent, len(files)
@@ -978,14 +1307,15 @@ def _send_dicom_batch(
 def _upload_single_file_gradual(
     *,
     base_url: str,
-    session_refresher: _SessionRefresher,
-    verify_ssl: bool,
+    session_refresher: SessionRefresher,
+    verify_ssl: bool | ssl.SSLContext,
     file_path: Path,
     display_path: str | None = None,
     project: str,
     subject: str,
     session: str,
     direct_archive: bool = True,
+    cancel_token: CancellationToken = NULL_TOKEN,
 ) -> tuple[str, bool, str]:
     """Upload a single file via the gradual-DICOM import handler.
 
@@ -996,11 +1326,15 @@ def _upload_single_file_gradual(
         base_url: XNAT server base URL.
         session_refresher: Thread-safe token manager for reauth on 401.
         verify_ssl: Whether to verify SSL certificates.
+        display_path: Path shown in progress and error messages, when it
+            should differ from ``file_path`` (e.g. relative to the upload root).
         file_path: Path to the DICOM file.
         project: Target project ID.
         subject: Target subject label.
         session: Target session label.
         direct_archive: Use direct archive vs prearchive (default: True).
+        cancel_token: Checked by the retry ladder so an interrupted upload
+            abandons its backoff instead of waiting it out.
 
     Returns:
         Tuple of (filename, success, error_message).
@@ -1030,7 +1364,9 @@ def _upload_single_file_gradual(
                         cookies=cookies,
                     )
 
-            return upload_with_retry(_attempt, label=f"gradual-DICOM {name}")
+            return upload_with_retry(
+                _attempt, label=f"gradual-DICOM {name}", cancel_token=cancel_token
+            )
 
         token = session_refresher.token
         resp = _do_upload(token)
@@ -1076,229 +1412,6 @@ class UploadService(BaseService):
     Provides methods for all upload transports: REST batch, parallel REST,
     DICOM C-STORE, and resource uploads.
     """
-
-    def upload_dicom(
-        self,
-        project: str,
-        subject: str,
-        session: str,
-        source_path: Path,
-        overwrite: bool = False,
-        quarantine: bool = False,
-        batch_size: int = DEFAULT_BATCH_SIZE,
-        parallel: bool = True,
-        workers: int = DEFAULT_UPLOAD_WORKERS,
-        progress_callback: Callable[[UploadProgress], None] | None = None,
-    ) -> UploadSummary:
-        """Upload DICOM files via simple REST batch (ZIP per batch).
-
-        Args:
-            project: Project ID.
-            subject: Subject label.
-            session: Session label.
-            source_path: Path to DICOM files (directory or ZIP).
-            overwrite: Overwrite existing scans.
-            quarantine: Send to prearchive instead.
-            batch_size: Files per upload batch.
-            parallel: Use parallel uploads.
-            workers: Number of parallel workers.
-            progress_callback: Progress callback function.
-
-        Returns:
-            UploadSummary with results.
-        """
-        start_time = time.time()
-        source_path = Path(source_path)
-
-        if not source_path.exists():
-            raise FileNotFoundError(f"Source not found: {source_path}")
-
-        if progress_callback:
-            progress_callback(
-                UploadProgress(
-                    phase=OperationPhase.PREPARING,
-                    message="Preparing upload",
-                )
-            )
-
-        # Collect DICOM files
-        temp_dir: str | None = None
-        try:
-            dicom_files: list[Path] = []
-            if source_path.is_file():
-                if source_path.suffix.lower() == ".zip":
-                    temp_dir = tempfile.mkdtemp()
-                    temp_root = Path(temp_dir)
-                    with zipfile.ZipFile(source_path, "r") as zf:
-                        for member in zf.infolist():
-                            if member.is_dir():
-                                continue
-                            target = (temp_root / member.filename).resolve()
-                            if not target.is_relative_to(temp_root.resolve()):
-                                continue
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            with zf.open(member) as src, open(target, "wb") as dst:
-                                shutil.copyfileobj(src, dst)
-                    source_path = Path(temp_dir)
-                    dicom_files = collect_dicom_files(source_path)
-                else:
-                    dicom_files = [source_path] if _is_dicom_like_path(source_path) else []
-            else:
-                dicom_files = collect_dicom_files(source_path)
-
-            total_files = len(dicom_files)
-            if total_files == 0:
-                return UploadSummary(
-                    success=False,
-                    total=0,
-                    succeeded=0,
-                    failed=0,
-                    duration=0,
-                    errors=["No DICOM files found"],
-                )
-
-            total_size = sum(f.stat().st_size for f in dicom_files)
-
-            if progress_callback:
-                progress_callback(
-                    UploadProgress(
-                        phase=OperationPhase.ARCHIVING,
-                        total=total_files,
-                        message=f"Found {total_files} files",
-                    )
-                )
-
-            batches = list(self._split_into_batches(dicom_files, batch_size))
-            total_batches = len(batches)
-            results: dict[str, Any] = {"succeeded": 0, "failed": 0, "errors": []}
-
-            dest = f"/archive/projects/{project}/subjects/{subject}/experiments/{session}"
-
-            base_url = self.client.base_url
-            session_token = self.client.session_token
-            verify_ssl = self.client.verify_ssl
-            timeout = self.client.timeout
-
-            def _upload_batch_fn(batch_id: int, files: list[Path]) -> tuple[bool, str]:
-                try:
-                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-                        zip_path = Path(tmp.name)
-
-                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for file_path in files:
-                            zf.write(file_path, file_path.name)
-
-                    params: dict[str, Any] = {
-                        "dest": dest,
-                        "overwrite": "delete" if overwrite else "none",
-                        "import-handler": "SI",
-                        "PROJECT_ID": project,
-                        "SUBJECT_ID": subject,
-                        "EXPT_LABEL": session,
-                    }
-                    if quarantine:
-                        params["dest"] = f"/prearchive/projects/{project}"
-
-                    cookies = {"JSESSIONID": session_token} if session_token else {}
-                    with httpx.Client(
-                        base_url=base_url,
-                        timeout=timeout,
-                        verify=verify_ssl,
-                    ) as http:
-                        with open(zip_path, "rb") as zip_file:
-                            http.post(
-                                "/data/services/import",
-                                params=params,
-                                content=zip_file,
-                                headers={"Content-Type": "application/zip"},
-                                cookies=cookies,
-                            )
-
-                    zip_path.unlink()
-                    return (True, "")
-                except Exception as e:
-                    return (False, str(e))
-
-            if parallel and total_batches > 1:
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures = {
-                        executor.submit(_upload_batch_fn, i, batch): i
-                        for i, batch in enumerate(batches)
-                    }
-                    for future in as_completed(futures):
-                        batch_id = futures[future]
-                        success, error = future.result()
-                        if success:
-                            results["succeeded"] += 1
-                        else:
-                            results["failed"] += 1
-                            results["errors"].append(f"Batch {batch_id}: {error}")
-                        if progress_callback:
-                            progress_callback(
-                                UploadProgress(
-                                    phase=OperationPhase.UPLOADING,
-                                    current=results["succeeded"] + results["failed"],
-                                    total=total_batches,
-                                    batch_id=batch_id,
-                                    message=f"Uploading batch {batch_id + 1}/{total_batches}",
-                                    success=success,
-                                )
-                            )
-            else:
-                for batch_id, batch in enumerate(batches):
-                    success, error = _upload_batch_fn(batch_id, batch)
-                    if success:
-                        results["succeeded"] += 1
-                    else:
-                        results["failed"] += 1
-                        results["errors"].append(f"Batch {batch_id}: {error}")
-                    if progress_callback:
-                        progress_callback(
-                            UploadProgress(
-                                phase=OperationPhase.UPLOADING,
-                                current=batch_id + 1,
-                                total=total_batches,
-                                batch_id=batch_id,
-                                message=f"Uploading batch {batch_id + 1}/{total_batches}",
-                                success=success,
-                            )
-                        )
-
-            duration = time.time() - start_time
-            overall_success = results["failed"] == 0
-
-            if progress_callback:
-                progress_callback(
-                    UploadProgress(
-                        phase=OperationPhase.COMPLETE if overall_success else OperationPhase.ERROR,
-                        current=total_batches,
-                        total=total_batches,
-                        message="Upload complete"
-                        if overall_success
-                        else "Upload completed with errors",
-                        success=overall_success,
-                        errors=results["errors"],
-                    )
-                )
-
-            return UploadSummary(
-                success=overall_success,
-                total=total_batches,
-                succeeded=results["succeeded"],
-                failed=results["failed"],
-                duration=duration,
-                errors=results["errors"],
-                total_files=total_files,
-                total_size_mb=total_size / (1024 * 1024),
-                batches_total=total_batches,
-                batches_succeeded=results["succeeded"],
-                batches_failed=results["failed"],
-                session_id=session,
-            )
-
-        finally:
-            if temp_dir:
-                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def upload_dicom_parallel(
         self,
@@ -1352,7 +1465,7 @@ class UploadService(BaseService):
 
         base_url = self.client.base_url
         session_token = self.client.session_token
-        verify_ssl = self.client.verify_ssl
+        verify_ssl = self.client.httpx_verify()
         effective_username = username or self.client.username
         effective_password = password or self.client.password
 
@@ -1418,10 +1531,27 @@ class UploadService(BaseService):
 
             results: list[_UploadResult] = []
 
-            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            # One refresher for the run, so a session evicted mid-upload is
+            # re-established once rather than once per worker. Only built when
+            # a token is in play: workers given bare credentials already log in
+            # per batch and have nothing to refresh.
+            batch_refresher = (
+                SessionRefresher(
+                    base_url=base_url,
+                    verify_ssl=verify_ssl,
+                    token=session_token,
+                    username=effective_username,
+                    password=effective_password,
+                    owner=self.client,
+                )
+                if session_token
+                else None
+            )
+
+            with cancellable_pool(effective_workers) as (executor, cancel_token):
                 futures: dict[Future[_UploadResult], int] = {}
                 for i, batch in enumerate(batches):
-                    fut: Future[_UploadResult] = executor.submit(  # type: ignore[arg-type]
+                    fut: Future[_UploadResult] = executor.submit(
                         _create_and_upload_batch,
                         batch=batch,
                         archive_path=archive_paths[i],
@@ -1441,11 +1571,13 @@ class UploadService(BaseService):
                         ignore_unparsable=ignore_unparsable,
                         overwrite=overwrite,
                         direct_archive=direct_archive,
+                        cancel_token=cancel_token,
+                        session_refresher=batch_refresher,
                     )
                     futures[fut] = i + 1
 
-                for done in as_completed(futures):  # type: ignore[arg-type]
-                    result: _UploadResult = done.result()  # type: ignore[assignment]
+                for done in as_completed(futures):
+                    result: _UploadResult = done.result()
                     results.append(result)
                     total_archive_size += result.archive_size
 
@@ -1512,6 +1644,10 @@ class UploadService(BaseService):
         calling_aet: str = DEFAULT_DICOM_CALLING_AET,
         workers: int = DEFAULT_DICOM_STORE_WORKERS,
         cleanup: bool = True,
+        tls: bool = False,
+        tls_ca_bundle: str | None = None,
+        tls_cert: str | None = None,
+        tls_key: str | None = None,
     ) -> DICOMStoreSummary:
         """Send DICOM files to an SCP using C-STORE.
 
@@ -1529,6 +1665,13 @@ class UploadService(BaseService):
             calling_aet: Our AE title (default: XNATCTL).
             workers: Number of parallel associations (default: 4).
             cleanup: Remove temporary workspace on completion (default: True).
+            tls: Encrypt the associations. Off by default, which matches the
+                DICOM standard's own default and the many deployments that run
+                C-STORE inside a trusted VLAN -- but see the notice logged when
+                it is off, because the alternative is PHI in cleartext.
+            tls_ca_bundle: PEM file of CAs to trust (default: system store).
+            tls_cert: Client certificate, for SCPs requiring mutual TLS.
+            tls_key: Its private key.
 
         Returns:
             DICOMStoreSummary with results.
@@ -1537,8 +1680,22 @@ class UploadService(BaseService):
             ImportError: If pydicom/pynetdicom are not installed.
             ValueError: If dicom_root is not a directory.
             RuntimeError: If C-ECHO fails or no DICOM files found.
+            UploadError: If TLS material is requested but cannot be loaded.
         """
         _check_dicom_deps()
+
+        tls_context = build_dicom_tls_context(tls_ca_bundle, tls_cert, tls_key) if tls else None
+        if tls_context is None:
+            # Informational, not alarming: plenty of sites run C-STORE on a
+            # segregated network on purpose. But it should be a decision
+            # someone made, not one they never knew they had.
+            logger.info(
+                "DICOM C-STORE to %s:%s is unencrypted; use --tls if the server supports it",
+                host,
+                port,
+            )
+        else:
+            logger.info("DICOM C-STORE to %s:%s is TLS-encrypted", host, port)
 
         if not dicom_root.exists() or not dicom_root.is_dir():
             raise ValueError(f"dicom_root is not a directory: {dicom_root}")
@@ -1557,7 +1714,7 @@ class UploadService(BaseService):
                 host,
                 port,
             )
-            if not _c_echo(host, port, calling_aet, called_aet):
+            if not _c_echo(host, port, calling_aet, called_aet, tls_context):
                 raise RuntimeError(
                     f"C-ECHO failed - check host/port/AET settings "
                     f"(host={host}, port={port}, called_aet={called_aet})"
@@ -1576,7 +1733,7 @@ class UploadService(BaseService):
 
             sent_total = 0
 
-            with ThreadPoolExecutor(max_workers=len(batches)) as pool:
+            with cancellable_pool(len(batches)) as (pool, _cstore_token):
                 futures = {
                     pool.submit(
                         _send_dicom_batch,
@@ -1587,6 +1744,7 @@ class UploadService(BaseService):
                         calling_aet,
                         called_aet,
                         log_dir,
+                        tls_context,
                     ): i
                     for i, batch in enumerate(batches)
                 }
@@ -1808,7 +1966,7 @@ class UploadService(BaseService):
                 start_time=start_time,
             )
 
-    def _upload_dicom_gradual_from_files(
+    def _upload_dicom_gradual_from_files(  # noqa: C901  # pre-existing; see pyproject
         self,
         *,
         files: Sequence[Path],
@@ -1838,13 +1996,16 @@ class UploadService(BaseService):
             UploadSummary with results.
         """
         base_url = self.client.base_url
-        verify_ssl = self.client.verify_ssl
-        session_refresher = _SessionRefresher(
+        verify_ssl = self.client.httpx_verify()
+        session_refresher = SessionRefresher(
             base_url=base_url,
             verify_ssl=verify_ssl,
             token=self.client.session_token,
             username=self.client.username,
             password=self.client.password,
+            # So the phases that run after this upload inherit the refreshed
+            # token instead of the one it started with.
+            owner=self.client,
         )
 
         file_list = list(files)
@@ -1957,6 +2118,9 @@ class UploadService(BaseService):
                 message=f"Warming up gradual-DICOM upload with {len(warmup_files)} file(s)...",
             )
 
+        # No cancel_token here on purpose: the warmup is sequential and runs on
+        # the main thread, so Ctrl+C interrupts its retry sleep directly. The
+        # token only earns its place where work happens in worker threads.
         for p in warmup_files:
             _name, ok, err = _upload_single_file_gradual(
                 base_url=base_url,
@@ -1986,8 +2150,37 @@ class UploadService(BaseService):
                 ),
             )
 
+        # Circuit-breaker. The warmup exists to try a small, deterministic set
+        # before opening the throttle; if the server refused every one of them
+        # for the same reason, the remaining files will be refused for that
+        # reason too. Stopping here is the difference between one round of
+        # errors and hours of them: the wide-parallel phase plus two salvage
+        # passes would otherwise retry every file in a 100k-file directory
+        # before reporting the same message.
+        if warmup_files and len(failed_paths) == len(warmup_files):
+            reasons = {_error_signature(error_by_path.get(p, "")) for p in warmup_files}
+            if len(reasons) == 1:
+                reason = error_by_path.get(warmup_files[0], "").strip()
+                message = (
+                    f"Server rejected all {len(warmup_files)} warmup files with the same "
+                    f"error, so the remaining {total_files - len(warmup_files)} would fail "
+                    f"the same way: {reason}. Check the project, subject and session "
+                    f"labels before retrying."
+                )
+                logger.error("Aborting gradual upload: %s", message)
+                report(OperationPhase.ERROR, message=message, success=False, errors=[message])
+                return UploadSummary(
+                    success=False,
+                    total=total_files,
+                    succeeded=0,
+                    failed=len(warmup_files),
+                    duration=time.time() - start_time,
+                    errors=[message],
+                    session_id=session,
+                )
+
         # Main pass: parallel per-file upload (bounded in-flight window)
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        with cancellable_pool(workers) as (executor, gradual_token):
             prefetch = max(1, workers * 2)
             file_iter = iter(remaining_files)
 
@@ -1995,7 +2188,12 @@ class UploadService(BaseService):
             future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
 
             def _submit_one(path: Path) -> None:
-                fut: Future[tuple[str, bool, str]] = executor.submit(  # type: ignore[arg-type]
+                # This pass refills its window as files complete, so without
+                # this check a cancelled run would keep feeding itself the rest
+                # of the directory one file at a time.
+                if gradual_token.cancelled:
+                    raise StopIteration
+                fut: Future[tuple[str, bool, str]] = executor.submit(
                     _upload_single_file_gradual,
                     base_url=base_url,
                     session_refresher=session_refresher,
@@ -2006,6 +2204,7 @@ class UploadService(BaseService):
                     subject=subject,
                     session=session,
                     direct_archive=direct_archive,
+                    cancel_token=gradual_token,
                 )
                 in_flight.add(fut)
                 future_to_path[fut] = path
@@ -2068,14 +2267,23 @@ class UploadService(BaseService):
             to_retry = sorted(failed_paths, key=display)
             remaining_failed: set[Path] = set(failed_paths)
 
-            with ThreadPoolExecutor(max_workers=retry_workers) as retry_executor:
+            with cancellable_pool(retry_workers, gradual_token) as (retry_executor, _):
                 prefetch = max(1, retry_workers * 2)
                 retry_iter = iter(to_retry)
                 retry_in_flight: set[Future[tuple[str, bool, str]]] = set()
                 retry_future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
 
                 def _submit_retry(path: Path) -> None:
-                    fut: Future[tuple[str, bool, str]] = retry_executor.submit(  # type: ignore[arg-type]
+                    # Same two guards as the main pass. Without them the
+                    # salvage pass ran on NULL_TOKEN: after Ctrl+C every
+                    # in-flight file sat out its full 2+4+8+16+32s retry
+                    # ladder before shutdown(wait=True) could return -- the
+                    # exact wait cooperative cancellation exists to remove,
+                    # reintroduced in the one pass whose files are already
+                    # known to be failing.
+                    if gradual_token.cancelled:
+                        raise StopIteration
+                    fut: Future[tuple[str, bool, str]] = retry_executor.submit(
                         _upload_single_file_gradual,
                         base_url=base_url,
                         session_refresher=session_refresher,
@@ -2086,6 +2294,7 @@ class UploadService(BaseService):
                         subject=subject,
                         session=session,
                         direct_archive=direct_archive,
+                        cancel_token=gradual_token,
                     )
                     retry_in_flight.add(fut)
                     retry_future_to_path[fut] = path
@@ -2185,7 +2394,7 @@ class UploadService(BaseService):
             session_id=session,
         )
 
-    def upload_resource(
+    def upload_resource(  # noqa: C901  # pre-existing; see pyproject
         self,
         session_id: str,
         resource_label: str,
@@ -2236,43 +2445,49 @@ class UploadService(BaseService):
             else:
                 base_path = f"/data/experiments/{session_id}/resources/{resource_label}/files"
 
+        # A directory source is zipped to a temp file that MUST be removed on
+        # every exit path. It used to leak on all of them: a 50 GB resource
+        # directory left a 50 GB zip behind on each invocation, and
+        # `session upload-exam` calls this once per resource directory.
+        temp_zip: Path | None = None
         if source_path.is_dir():
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
                 zip_path = Path(tmp.name)
 
             shutil.make_archive(str(zip_path.with_suffix("")), "zip", source_path)
+            temp_zip = zip_path
             source_path = zip_path
             extract = True
 
-        file_size = source_path.stat().st_size
-
-        if progress_callback:
-            progress_callback(
-                UploadProgress(
-                    phase=OperationPhase.UPLOADING,
-                    total_bytes=file_size,
-                    message=f"Uploading {source_path.name}",
-                )
-            )
-
-        params: dict[str, Any] = {}
-        if extract:
-            params["extract"] = "true"
-        if overwrite:
-            params["overwrite"] = "true"
-
-        path = f"{base_path}/{source_path.name}"
-
         try:
+            file_size = source_path.stat().st_size
+
+            if progress_callback:
+                progress_callback(
+                    UploadProgress(
+                        phase=OperationPhase.UPLOADING,
+                        total_bytes=file_size,
+                        message=f"Uploading {source_path.name}",
+                    )
+                )
+
+            params: dict[str, Any] = {}
+            if extract:
+                params["extract"] = "true"
+            if overwrite:
+                params["overwrite"] = "true"
+
+            path = f"{base_path}/{source_path.name}"
+
             base_url = self.client.base_url
             session_token = self.client.session_token
-            verify_ssl = self.client.verify_ssl
+            verify_ssl = self.client.httpx_verify()
             res_timeout = self.client.timeout
             cookies = {"JSESSIONID": session_token} if session_token else {}
 
             with httpx.Client(
                 base_url=base_url,
-                timeout=res_timeout,
+                timeout=build_httpx_timeout(res_timeout),  # connect fails fast
                 verify=verify_ssl,
             ) as http:
 
@@ -2336,6 +2551,11 @@ class UploadService(BaseService):
                 errors=[str(e)],
                 session_id=session_id,
             )
+        finally:
+            # Covers both the success return and the broad `except` above, which
+            # returns a failure summary rather than propagating.
+            if temp_zip is not None:
+                temp_zip.unlink(missing_ok=True)
 
     def _split_into_batches(
         self,

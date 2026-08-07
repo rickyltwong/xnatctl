@@ -9,17 +9,33 @@ from typing import Any
 
 
 class XNATCtlError(Exception):
-    """Base exception for all xnatctl errors."""
+    """Base exception for all xnatctl errors.
 
-    def __init__(self, message: str, details: dict[str, Any] | None = None):
+    ``str(exc)`` is the human-facing message and nothing else. ``details``
+    survives for verbose output and structured rendering, but is no longer
+    appended to the message: doing so turned "Profile not found: prod" into
+    "Profile not found: prod (field=profile, value='prod')", where the suffix
+    only restated the message as debug noise.
+    """
+
+    #: Next step for this class of error, shown under the message as
+    #: ``Try: ...``. Set it on a subclass when there is a genuinely clear
+    #: action; leaving it None is correct when there is not, because a vague
+    #: hint is worse than none. Instances may override via ``hint=``.
+    default_hint: str | None = None
+
+    def __init__(
+        self,
+        message: str,
+        details: dict[str, Any] | None = None,
+        hint: str | None = None,
+    ):
         super().__init__(message)
         self.message = message
         self.details = details or {}
+        self.hint = hint if hint is not None else self.default_hint
 
     def __str__(self) -> str:
-        if self.details:
-            detail_str = ", ".join(f"{k}={v}" for k, v in self.details.items())
-            return f"{self.message} ({detail_str})"
         return self.message
 
 
@@ -36,19 +52,36 @@ class ConfigurationError(XNATCtlError):
         message: str,
         field: str | None = None,
         value: Any = None,
+        hint: str | None = None,
     ):
         details = {}
         if field:
             details["field"] = field
         if value is not None:
             details["value"] = repr(value)
-        super().__init__(message, details)
+        super().__init__(message, details, hint=hint)
         self.field = field
         self.value = value
 
 
+class NoConfigurationError(ConfigurationError):
+    """No profiles are configured at all -- the first-run state.
+
+    Distinct from :class:`ProfileNotFoundError`, which means "that particular
+    profile is missing". On a fresh machine the honest problem is that nothing
+    has been configured yet, and telling the user their *default* profile was
+    not found sends them looking for a typo that does not exist.
+    """
+
+    default_hint = "Run 'xnatctl config init' to create one."
+
+
 class ProfileNotFoundError(ConfigurationError):
     """Requested profile does not exist."""
+
+    default_hint = (
+        "Run 'xnatctl config show' to list profiles, or 'xnatctl config init' to create one."
+    )
 
     def __init__(self, profile: str):
         super().__init__(f"Profile not found: {profile}", field="profile", value=profile)
@@ -152,15 +185,28 @@ class NetworkError(ConnectionError):
 class ServerUnreachableError(ConnectionError):
     """Server is not reachable."""
 
+    default_hint = "Check the server URL, and whether you need a VPN to reach it."
+
     def __init__(self, url: str):
         super().__init__(f"Server unreachable: {url}", url)
 
 
 class TimeoutError(ConnectionError):
-    """Request timed out."""
+    """Request timed out.
 
-    def __init__(self, url: str, timeout: int):
-        super().__init__(f"Request timed out after {timeout}s: {url}", url)
+    Raised by ``XNATClient`` when the CONNECT phase times out (host blackholed /
+    firewall-DROPped), so ``timeout`` is the connect timeout in seconds. This
+    fails fast and is not retried.
+
+    Also raised for a READ-phase timeout on a non-idempotent method:
+    the server has already seen the request, so retrying could execute it twice.
+    Those carry an explicit ``message`` saying the operation may have partially
+    executed. Read-phase timeouts on idempotent methods are retried and remain
+    the generic ``NetworkError`` bucket.
+    """
+
+    def __init__(self, url: str, timeout: int, message: str | None = None):
+        super().__init__(message or f"Could not connect to {url} within {timeout}s", url)
         self.timeout = timeout
 
 
@@ -178,12 +224,57 @@ class RetryExhaustedError(ConnectionError):
 
 
 # =============================================================================
+# HTTP Status Errors
+# =============================================================================
+
+
+class HTTPResponseError(XNATCtlError):
+    """Base for an HTTP error status with no more specific typed handler.
+
+    Carries ``status_code``, ``method``, ``path``, and a redacted body snippet
+    in ``details`` so callers and ``handle_errors`` never see a raw
+    ``httpx.HTTPStatusError``.
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        method: str,
+        path: str,
+        body: str = "",
+    ):
+        msg = f"HTTP {status_code} on {method} {path}"
+        details: dict[str, Any] = {
+            "status_code": status_code,
+            "method": method,
+            "path": path,
+        }
+        if body:
+            details["body"] = body
+        super().__init__(msg, details)
+        self.status_code = status_code
+        self.method = method
+        self.path = path
+        self.body = body
+
+
+class ClientRequestError(HTTPResponseError):
+    """A 4xx response not covered by auth/permission/not-found (e.g. 400, 409, 422)."""
+
+
+class ServerError(HTTPResponseError):
+    """A 5xx response (500, 502, 503, 504)."""
+
+
+# =============================================================================
 # Authentication Errors
 # =============================================================================
 
 
 class AuthenticationError(XNATCtlError):
     """Authentication failed."""
+
+    default_hint = "Run 'xnatctl auth login', or set XNAT_USER and XNAT_PASS."
 
     def __init__(self, url: str | None = None, reason: str = ""):
         msg = "Authentication failed"
@@ -200,12 +291,16 @@ class AuthenticationError(XNATCtlError):
 class SessionExpiredError(AuthenticationError):
     """Session has expired."""
 
+    default_hint = "Your session expired. Run 'xnatctl auth login' again."
+
     def __init__(self, url: str | None = None):
         super().__init__(url, "Session expired - please login again")
 
 
 class PermissionDeniedError(AuthenticationError):
     """User lacks permission for the requested operation."""
+
+    default_hint = "Check that your XNAT account has the required role on this project."
 
     def __init__(self, resource: str, operation: str = "access", url: str | None = None):
         super().__init__(url, reason=f"Permission denied to {operation} {resource}")
@@ -239,6 +334,10 @@ class ResourceError(XNATCtlError):
 
 class ResourceNotFoundError(ResourceError):
     """Requested resource does not exist."""
+
+    default_hint = (
+        "Check the ID or label. Labels require -P/--project (or default_project in the profile)."
+    )
 
     def __init__(self, resource_type: str, resource_id: str):
         super().__init__(
@@ -436,3 +535,17 @@ class TransferConfigError(TransferError):
             details["field"] = field
         super().__init__(message, details)
         self.field = field
+
+
+class OperationCancelledError(XNATCtlError):
+    """The user interrupted the operation.
+
+    Not a failure: nothing went wrong, the run was stopped on request. Kept
+    distinct so a cancelled batch is never reported as data the server
+    rejected, and so it maps to the user-cancelled exit code rather than a
+    general error.
+    """
+
+    def __init__(self, operation: str = "operation"):
+        super().__init__(f"Cancelled: {operation}", {"operation": operation})
+        self.operation = operation

@@ -33,7 +33,6 @@ class _RenameRule:
 
 def _apply_template(*, template: str, project: str, groups: tuple[str | None, ...]) -> str:
     """Apply {project} and {1}/{2}/... substitutions to a template string."""
-
     target = template.replace("{project}", project)
     for i, g in enumerate(groups, start=1):
         target = target.replace(f"{{{i}}}", g or "")
@@ -116,11 +115,12 @@ def subject() -> None:
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--filter", "filter_expr", help="Filter expression (e.g., 'label:SUB*')")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def subject_list(ctx: Context, project: str | None, filter_expr: str | None) -> None:
     """List subjects in a project.
 
+    \b
     Example:
         xnatctl subject list --project MYPROJ
         xnatctl subject list -P MYPROJ -q  # IDs only
@@ -184,11 +184,12 @@ def subject_list(ctx: Context, project: str | None, filter_expr: str | None) -> 
 @click.argument("subject_id")
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
     """Show subject details.
 
+    \b
     Example:
         xnatctl subject show SUB001 --project MYPROJ
     """
@@ -240,11 +241,12 @@ def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @confirm_destructive("Delete this subject and all its sessions?")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: bool) -> None:
     """Delete a subject.
 
+    \b
     Example:
         xnatctl subject delete SUB001 --project MYPROJ
         xnatctl subject delete SUB001 -P MYPROJ --dry-run
@@ -256,7 +258,7 @@ def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: 
     client = ctx.get_client()
 
     if dry_run:
-        click.echo(f"Would delete subject: {subject_id} from project: {project}")
+        click.echo(f"Would delete subject: {subject_id} from project: {project}", err=True)
         return
 
     # Delete subject
@@ -283,9 +285,9 @@ def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: 
 @click.option("--to", "to_template", help="Template for new label (use {1}, {2} for groups)")
 @click.option("--dry-run", is_flag=True, help="Preview changes without applying")
 @global_options
-@require_auth
 @handle_errors
-def subject_rename(
+@require_auth
+def subject_rename(  # noqa: C901  # pre-existing; see pyproject
     ctx: Context,
     project: str | None,
     patterns_file: str | None,
@@ -298,6 +300,7 @@ def subject_rename(
 
     Supports merging when target subject already exists.
 
+    \b
     Examples:
         # Using mapping file
         xnatctl subject rename -P MYPROJ --mapping renames.json

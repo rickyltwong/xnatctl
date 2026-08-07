@@ -31,6 +31,11 @@ If you omit ``--url``, the command prompts you interactively. The ``--project`` 
 optional but convenient -- it sets a default project so you can skip the ``-P`` flag on
 most commands.
 
+After writing the profile, ``config init`` offers to log in right away (on a
+real terminal; pass ``--login`` or ``--no-login`` to decide up front in
+scripts), so a fresh machine gets from nothing to an authenticated session in
+one command.
+
 After running ``config init``, your configuration file will look like this:
 
 .. code-block:: yaml
@@ -119,20 +124,33 @@ required; the rest have sensible defaults.
        ``XNAT_USER`` environment variable or prompts interactively.
    * - ``password``
      - *(none)*
-     - Password for authentication. Storing passwords in the config file is
-       discouraged on shared systems -- prefer environment variables or the
-       interactive prompt instead.
+     - Password for authentication, stored in plaintext. Discouraged: prefer the
+       OS keychain (see ``password_source``), environment variables, or the
+       interactive prompt. See `Storing Passwords in the OS Keychain`_.
+   * - ``password_source``
+     - *(none)*
+     - Set to ``keyring`` to read the password from the OS keychain instead of
+       the inline ``password`` field. Written for you by
+       ``xnatctl config set-password``; requires the ``xnatctl[keyring]``
+       extra.
    * - ``verify_ssl``
      - ``true``
      - Whether to verify TLS certificates when connecting. Set this to ``false``
        only when working with development servers that use self-signed certificates.
        Never disable verification for production servers.
+   * - ``ca_bundle``
+     - *(none)*
+     - Path to a custom CA bundle for TLS verification -- the secure alternative
+       to ``verify_ssl: false`` for servers with self-signed or institutional
+       certificates.
    * - ``timeout``
      - ``21600``
-     - HTTP request timeout in seconds. The default of 21600 (6 hours) is
-       deliberately generous to accommodate large DICOM transfers. You can lower
-       this for faster failure detection on slow or unreliable networks, or raise it
-       further if your transfers routinely exceed six hours.
+     - HTTP read timeout in seconds -- how long a single request may take once
+       connected. The default of 21600 (6 hours) is deliberately generous to
+       accommodate large DICOM transfers. The *connect* phase is governed
+       separately and fails in about 10 seconds regardless of this value, so
+       an unreachable or firewalled host errors out quickly instead of
+       hanging for hours.
    * - ``default_project``
      - *(none)*
      - Default project ID used as a fallback when you omit the ``-P`` flag. This
@@ -198,13 +216,21 @@ editing a YAML file is impractical.
        ``config.yaml`` for the current session. Handy when you want to pin a
        particular profile in a shell without editing the config file.
    * - ``XNAT_VERIFY_SSL``
-     - Override SSL verification (``true`` or ``false``). Applied when ``XNAT_URL``
-       is also set. Useful for CI environments connecting to development servers
-       with self-signed certificates.
+     - Override SSL verification. Accepts ``true``/``false``/``1``/``0``/
+       ``yes``/``no`` (case-insensitive); any other value is an error rather
+       than silently disabling verification. Applied when ``XNAT_URL`` is also
+       set. Disabling verification prints a warning -- prefer ``ca_bundle`` in
+       the profile for self-signed certificates.
    * - ``XNAT_TIMEOUT``
      - Override HTTP timeout in seconds. Applied when ``XNAT_URL`` is also set.
        Use this to tighten the timeout in CI where you want fast failure on
        network issues.
+   * - ``XNATCTL_DEBUG``
+     - Set to ``1`` to enable full diagnostics: debug logging plus a complete
+       httpx/httpcore wire trace, and a traceback on unexpected errors. Unlike
+       ``--verbose`` this is read before flags are parsed, so it also covers
+       failures during startup. ``0``, ``false``, ``no`` and ``off`` count as
+       unset. See :doc:`debugging`.
 
 The following example shows a typical CI/CD setup that authenticates with environment
 variables and lists session IDs for a project:
@@ -223,11 +249,13 @@ Credential Priority
 When xnatctl needs credentials, it checks four sources in order and uses the first
 match it finds:
 
-1. **CLI arguments** -- ``--username`` and ``--password`` passed directly on the command
-   line.
+1. **CLI arguments** -- ``--username`` on the command line, and for the
+   password ``--password-stdin`` (reads one line from stdin). A password
+   *value* on argv is refused with a usage error: it would be visible in
+   ``ps``, ``/proc/*/cmdline``, and shell history.
 2. **Environment variables** -- ``XNAT_USER`` and ``XNAT_PASS`` in the current shell.
-3. **Profile configuration** -- ``username`` and ``password`` fields in the active
-   profile inside ``config.yaml``.
+3. **Profile configuration** -- the ``username`` field plus either the inline
+   ``password`` or, with ``password_source: keyring``, the OS keychain.
 4. **Interactive prompt** -- if none of the above provide credentials, xnatctl asks you
    at the terminal.
 
@@ -237,6 +265,54 @@ match it finds:
    day-to-day use, override it with an environment variable in CI, and still pass
    ``--username`` on the command line when you need to authenticate as a different user
    for a single command. Each layer shadows the ones below it without removing them.
+
+
+Storing Passwords in the OS Keychain
+------------------------------------
+
+Instead of a plaintext ``password`` in ``config.yaml``, xnatctl can keep the
+password in your operating system's keychain (macOS Keychain, GNOME
+Keyring/KWallet, Windows Credential Manager) via the optional `keyring
+<https://pypi.org/project/keyring/>`_ package.
+
+If you already have a profile with an inline plaintext password, migrating
+takes two commands:
+
+.. code-block:: console
+
+   $ pip install 'xnatctl[keyring]'
+   $ xnatctl config set-password prod
+   Password: ********
+   Repeat for confirmation: ********
+   ✓ Password for profile 'prod' stored in the OS keychain
+
+``set-password`` prompts for the password (never accepts it as an argument),
+stores it in the keychain, writes ``password_source: keyring`` into the
+profile, and **removes the inline** ``password:`` **line** from
+``config.yaml``. Afterwards the profile looks like:
+
+.. code-block:: yaml
+
+   profiles:
+     prod:
+       url: https://xnat.example.org
+       username: admin
+       password_source: keyring   # no plaintext password on disk
+
+Nothing else changes: every command resolves the password through the same
+credential chain, so ``auth login``, transfers, and automatic
+re-authentication all read the keychain transparently. ``XNAT_PASS`` still
+wins over the keychain when set.
+
+If the keychain entry is missing or the ``keyring`` package is not installed,
+commands fail with an error naming the exact fix. A failed keychain write
+leaves ``config.yaml`` untouched.
+
+.. note::
+
+   On headless servers without a keychain backend, use the ``XNAT_PASS``
+   environment variable sourced from a secret store instead, or simply delete
+   the ``password:`` line and let interactive commands prompt.
 
 
 Authentication Flow
@@ -275,7 +351,34 @@ You can also explicitly clear your session at any time:
 
 .. warning::
 
-   Avoid storing passwords directly in ``config.yaml`` on shared or multi-user systems.
-   The config file is not encrypted, and anyone with read access to your home directory
-   can see the credentials. Prefer environment variables, a secrets manager, or the
-   interactive prompt for sensitive environments.
+   Avoid storing passwords directly in ``config.yaml``. The file is written
+   ``0600``, but it is not encrypted, and a plaintext password in it is
+   readable by anything running as you. Prefer the OS keychain
+   (``xnatctl config set-password``), environment variables, a secrets manager,
+   or the interactive prompt. xnatctl warns at startup if it finds a plaintext
+   password in a config file that other users can read.
+
+Audit trail
+-----------
+
+Destructive commands -- anything that prompts for confirmation, such as
+``subject delete``, ``scan delete`` and ``prearchive delete`` -- append one
+JSON line to ``~/.config/xnatctl/audit.log``, created ``0600``. Each record
+holds the timestamp, command, profile, server, user, the identifiers the
+command targeted, whether it was a ``--dry-run``, and the outcome:
+
+.. code-block:: json
+
+   {"timestamp": "2026-07-28T14:02:11-04:00", "operation": "xnatctl subject delete",
+    "success": true, "profile": "prod", "server": "https://xnat.example.org",
+    "user": "admin", "project": "STUDY01", "subject": "SUB001"}
+
+This answers "who deleted SUB001 from this workstation, when, and against which
+server" locally -- XNAT's own audit log is server-side and often not readable
+by the person who ran the command. Read-only commands are not recorded, and
+neither is a confirmation you declined, since nothing was attempted.
+
+Secrets never enter the file: credential-shaped parameters are dropped by name
+and every recorded string is redacted the same way log output is. The log
+rotates once to ``audit.log.1`` at 10 MB. Writing is best-effort -- if the file
+cannot be written, xnatctl warns and completes the operation anyway.

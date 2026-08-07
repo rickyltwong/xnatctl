@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
 
 import click
 
@@ -11,14 +14,21 @@ from xnatctl.cli.common import (
     Context,
     _make_alias_cb,
     _make_forwarding_alias_cb,
+    _make_noop_cb,
     default_project_from_context,
     global_options,
     handle_errors,
+    read_password_stdin,
+    reject_argv_password,
     require_auth,
     require_project_from_context,
     resolve_workers_from_context,
 )
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.cancellation import cancellable_pool
+
+if TYPE_CHECKING:  # import cycle: client imports nothing from cli
+    from xnatctl.core.client import XNATClient
+from xnatctl.core.exceptions import DownloadError, ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -44,8 +54,8 @@ def session() -> None:
     "--modality", type=click.Choice(["MR", "PET", "CT", "EEG"]), help="Filter by modality"
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_list(
     ctx: Context,
     project: str | None,
@@ -54,6 +64,7 @@ def session_list(
 ) -> None:
     """List sessions/experiments in a project.
 
+    \b
     Example:
         xnatctl session list --project MYPROJ
         xnatctl session list -P MYPROJ --subject SUB001
@@ -81,13 +92,8 @@ def session_list(
 
         # Filter by modality (case-insensitive)
         if modality:
-            if modality == "MR" and "mrsession" not in xsi_lower:
-                continue
-            elif modality == "PET" and "petsession" not in xsi_lower:
-                continue
-            elif modality == "CT" and "ctsession" not in xsi_lower:
-                continue
-            elif modality == "EEG" and "eegsession" not in xsi_lower:
+            marker = _MODALITY_XSI_MARKERS.get(modality)
+            if marker and marker not in xsi_lower:
                 continue
 
         # Extract modality from xsiType (case-insensitive)
@@ -142,11 +148,12 @@ def session_list(
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     """Show session details including scans and resources.
 
+    \b
     Example:
         xnatctl session show -E XNAT_E00001
         xnatctl session show -E SESSION_LABEL -P MYPROJ
@@ -270,7 +277,7 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             )
 
 
-def _extract_scan_zip(
+def _extract_scan_zip(  # noqa: C901  # pre-existing; see pyproject
     zip_path: Path,
     scan_base: Path,
     *,
@@ -372,8 +379,42 @@ def _extract_scan_zip(
     return files_extracted, duplicates_renamed
 
 
-def _download_session_fast(
-    client,
+#: Substring that identifies each modality inside an experiment's xsiType,
+#: e.g. "xnat:mrSessionData" for MR. Previously four `elif` branches; ruff's
+#: SIM114 autofix collapsed them into one 200-character boolean, which is how
+#: this table came to exist instead.
+_MODALITY_XSI_MARKERS = {
+    "MR": "mrsession",
+    "PET": "petsession",
+    "CT": "ctsession",
+    "EEG": "eegsession",
+}
+
+
+class _ScanResult(NamedTuple):
+    """One scan download attempt."""
+
+    scan_id: str
+    ok: bool
+    files: int
+    message: str
+
+
+class DownloadOutcome(NamedTuple):
+    """What a parallel session download actually achieved.
+
+    Returned rather than discarded because the caller has to decide the exit
+    code: a download that lost scans is not a success, and for a long time it
+    was reported as one.
+    """
+
+    succeeded: int
+    failed: list[tuple[str, str]]
+    files: int
+
+
+def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
+    client: XNATClient,
     session_project: str,
     subject: str,
     resolved_session_id: str,
@@ -382,7 +423,7 @@ def _download_session_fast(
     quiet: bool = False,
     include_resources: tuple[str, ...] = (),
     exclude_resources: tuple[str, ...] = (),
-) -> None:
+) -> DownloadOutcome:
     """Download session scans in parallel and extract to standard structure.
 
     Uses a two-tier strategy:
@@ -406,9 +447,11 @@ def _download_session_fast(
         {session_dir}/scans/{scan_id}/resources/{label}/files/{files...}
     """
     import tempfile
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
 
     import httpx
+
+    from xnatctl.core.timeouts import build_httpx_timeout
 
     scans_resp = client.get_json(f"/data/experiments/{resolved_session_id}/scans")
     results = scans_resp.get("ResultSet", {}).get("Result", [])
@@ -416,15 +459,15 @@ def _download_session_fast(
 
     if not scan_ids:
         if not quiet:
-            click.echo("No scans found in session")
-        return
+            click.echo("No scans found in session", err=True)
+        return DownloadOutcome(succeeded=0, failed=[], files=0)
 
     if not quiet:
-        click.echo(f"Downloading {len(scan_ids)} scans in parallel...")
+        click.echo(f"Downloading {len(scan_ids)} scans in parallel...", err=True)
 
     base_url = client.base_url
     session_token = client.session_token
-    verify_ssl = client.verify_ssl
+    verify_ssl = client.httpx_verify()  # inherits ca_bundle, not just the bool
     timeout = client.timeout
     exclude_set = frozenset(exclude_resources)
 
@@ -441,7 +484,7 @@ def _download_session_fast(
     def download_and_extract(
         scan_id: str,
         resource_label: str | None,
-    ) -> tuple[str, bool, str]:
+    ) -> _ScanResult:
         """Download a scan ZIP and extract into standard layout."""
         base = (
             f"/data/projects/{session_project}/subjects/{subject}"
@@ -455,7 +498,7 @@ def _download_session_fast(
         try:
             with httpx.Client(
                 base_url=base_url,
-                timeout=timeout,
+                timeout=build_httpx_timeout(timeout),  # connect fails fast
                 verify=verify_ssl,
             ) as http:
                 cookies = {"JSESSIONID": session_token} if session_token else {}
@@ -493,38 +536,48 @@ def _download_session_fast(
             if renamed:
                 parts.append(f"renamed {renamed} duplicates")
             status = ", ".join(parts) if parts else ""
-            return scan_id, True, status
+            return _ScanResult(scan_id, True, extracted, status)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
+                # A scan with no files of the requested type is normal under
+                # -r, so this is not an error -- but it downloaded nothing,
+                # and the zero is what stops an all-404 session (the failure
+                # mode ADR-0010 describes) reading as a complete download.
                 label_desc = f" ({resource_label})" if resource_label else ""
-                return scan_id, True, f"no files{label_desc}"
-            return scan_id, False, str(e)
+                return _ScanResult(scan_id, True, 0, f"no files{label_desc}")
+            return _ScanResult(scan_id, False, 0, str(e))
         except Exception as e:
-            return scan_id, False, str(e)
+            return _ScanResult(scan_id, False, 0, str(e))
 
-    succeeded = []
-    failed = []
+    succeeded: list[str] = []
+    failed: list[tuple[str, str]] = []
+    total_files = 0
 
     pool_size = min(len(download_tasks), workers)
-    with ThreadPoolExecutor(max_workers=pool_size) as executor:
+    with cancellable_pool(pool_size) as (executor, _token):
         futures = {
             executor.submit(download_and_extract, sid, res): (sid, res)
             for sid, res in download_tasks
         }
         for future in as_completed(futures):
-            scan_id, success, msg = future.result()
-            if success:
-                succeeded.append(scan_id)
+            result = future.result()
+            if result.ok:
+                succeeded.append(result.scan_id)
+                total_files += result.files
                 if not quiet:
-                    status = f" ({msg})" if msg else ""
-                    click.echo(f"  Scan {scan_id} done{status}")
+                    status = f" ({result.message})" if result.message else ""
+                    click.echo(f"  Scan {result.scan_id} done{status}", err=True)
             else:
-                failed.append((scan_id, msg))
-                if not quiet:
-                    click.echo(f"  Scan {scan_id} FAILED: {msg}")
+                failed.append((result.scan_id, result.message))
+                # Reported even under --quiet. Quiet suppresses per-item
+                # chatter, not the news that data is missing -- and --quiet is
+                # the scripting mode, where silence is most dangerous.
+                click.echo(f"  Scan {result.scan_id} FAILED: {result.message}", err=True)
 
-    if failed and not quiet:
-        click.echo(f"Warning: {len(failed)}/{len(download_tasks)} downloads failed")
+    if failed:
+        click.echo(f"{len(failed)}/{len(download_tasks)} scan downloads failed", err=True)
+
+    return DownloadOutcome(succeeded=len(succeeded), failed=failed, files=total_files)
 
 
 @session.command("download")
@@ -569,7 +622,9 @@ def _download_session_fast(
     "--include-resources",
     is_flag=True,
     hidden=True,
-    help="[Deprecated] Use --session-resources instead",
+    expose_value=False,
+    callback=_make_alias_cb("--include-resources", "session_resources", True),
+    help="Deprecated: use --session-resources instead",
 )
 @click.option(
     "--extract/--no-extract", default=False, help="Extract ZIPs and remove archives after download"
@@ -582,20 +637,21 @@ def _download_session_fast(
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--unzip", "--extract", "extract", True),
+    callback=_make_alias_cb("--unzip", "extract", True),
 )
 @click.option(
     "--no-unzip",
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--no-unzip", "--no-extract", "extract", False),
+    callback=_make_alias_cb("--no-unzip", "extract", False),
 )
 @click.option(
     "--cleanup",
     is_flag=True,
     hidden=True,
     expose_value=False,
+    callback=_make_noop_cb("--cleanup"),
     help="Deprecated: noop (cleanup is implicit with --extract)",
 )
 @click.option(
@@ -603,13 +659,13 @@ def _download_session_fast(
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--no-cleanup", "--extract --keep-zips", "keep_zips", True),
+    callback=_make_alias_cb("--no-cleanup", "keep_zips", True),
 )
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
-@require_auth
 @handle_errors
-def session_download(
+@require_auth
+def session_download(  # noqa: C901  # pre-existing; see pyproject
     ctx: Context,
     session_id: str,
     project: str | None,
@@ -619,7 +675,6 @@ def session_download(
     resource: tuple[str, ...],
     exclude_resource: tuple[str, ...],
     session_resources: bool,
-    include_resources: bool,
     extract: bool,
     keep_zips: bool,
     dry_run: bool,
@@ -633,6 +688,7 @@ def session_download(
     downloaded. Use -r to include specific types, or --exclude-resource to
     exclude specific types.
 
+    \b
     Example:
         xnatctl session download -E XNAT_E00001
         xnatctl session download -E XNAT_E00001 --out ./data --workers 8
@@ -642,22 +698,11 @@ def session_download(
         xnatctl session download -E XNAT_E00001 --out ./data --session-resources
         xnatctl session download -E XNAT_E00001 --out ./data --dry-run
     """
-    import warnings
-
     from xnatctl.core.validation import validate_path_writable
 
     # Map extract/keep_zips to internal unzip/cleanup
     unzip = extract or keep_zips
     cleanup = extract and not keep_zips
-
-    # Handle deprecated --include-resources
-    if include_resources:
-        warnings.warn(
-            "--include-resources is deprecated, use --session-resources instead",
-            DeprecationWarning,
-            stacklevel=1,
-        )
-        session_resources = True
 
     # Validate mutual exclusion
     if resource and exclude_resource:
@@ -705,20 +750,20 @@ def session_download(
         raise SystemExit(1)
 
     if dry_run:
-        click.echo(f"[DRY-RUN] Would download session {session_id}")
+        click.echo(f"[DRY-RUN] Would download session {session_id}", err=True)
         if resolved_session_id != session_id:
-            click.echo(f"  Resolved ID: {resolved_session_id}")
-        click.echo(f"  Project: {session_project}")
-        click.echo(f"  Subject: {subject}")
-        click.echo(f"  Output: {out_path / (name or session_id)}")
-        click.echo(f"  Workers: {workers}")
+            click.echo(f"  Resolved ID: {resolved_session_id}", err=True)
+        click.echo(f"  Project: {session_project}", err=True)
+        click.echo(f"  Subject: {subject}", err=True)
+        click.echo(f"  Output: {out_path / (name or session_id)}", err=True)
+        click.echo(f"  Workers: {workers}", err=True)
         if resource:
-            click.echo(f"  Resources: {', '.join(resource)}")
+            click.echo(f"  Resources: {', '.join(resource)}", err=True)
         elif exclude_resource:
-            click.echo(f"  Exclude resources: {', '.join(exclude_resource)}")
+            click.echo(f"  Exclude resources: {', '.join(exclude_resource)}", err=True)
         else:
-            click.echo("  Resources: all")
-        click.echo(f"  Session resources: {session_resources}")
+            click.echo("  Resources: all", err=True)
+        click.echo(f"  Session resources: {session_resources}", err=True)
         return
 
     # Create session directory
@@ -730,8 +775,9 @@ def session_download(
     # Use parallel path when filtering is active (even with workers=1)
     use_parallel = workers > 1 or resource or exclude_resource
 
+    outcome: DownloadOutcome | None = None
     if use_parallel:
-        _download_session_fast(
+        outcome = _download_session_fast(
             client=client,
             session_project=session_project,
             subject=subject,
@@ -774,7 +820,7 @@ def session_download(
     # Download session-level resources (outside scans)
     if session_resources:
         if not ctx.quiet:
-            click.echo("Downloading session-level resources...")
+            click.echo("Downloading session-level resources...", err=True)
         try:
             res_url = (
                 f"/data/projects/{session_project}/subjects/{subject}"
@@ -800,16 +846,36 @@ def session_download(
                             f.write(chunk)
 
             if not ctx.quiet:
-                click.echo(f"  Session resources downloaded ({len(sess_resources)})")
+                click.echo(f"  Session resources downloaded ({len(sess_resources)})", err=True)
         except Exception as e:
             if not ctx.quiet:
-                click.echo(f"  Session resources: {e}")
+                click.echo(f"  Session resources: {e}", err=True)
 
     # Extract ZIPs if requested
     if unzip:
         _extract_session_zips(session_dir, cleanup=cleanup, quiet=ctx.quiet)
 
-    print_success(f"Downloaded session to: {session_dir}")
+    if outcome is not None and outcome.failed:
+        # Losing scans and exiting 0 is how a partial transfer gets mistaken
+        # for a whole one. The names are in the message so the caller can
+        # retry exactly what is missing.
+        lost = ", ".join(scan_id for scan_id, _msg in outcome.failed)
+        raise DownloadError(
+            f"{len(outcome.failed)} of {outcome.succeeded + len(outcome.failed)} scans "
+            f"failed to download ({lost}). The session directory is incomplete: "
+            f"{session_dir}",
+            session_id,
+            {"failed_scans": dict(outcome.failed)},
+        )
+
+    if outcome is not None:
+        # Says what arrived rather than only where it was put: "0 scans
+        # (0 files)" is the honest report for a session that yielded nothing.
+        print_success(
+            f"Downloaded {outcome.succeeded} scans ({outcome.files} files) to: {session_dir}"
+        )
+    else:
+        print_success(f"Downloaded session to: {session_dir}")
 
 
 @session.command("upload")
@@ -821,10 +887,26 @@ def session_download(
     "--session",
     hidden=True,
     expose_value=False,
-    callback=_make_forwarding_alias_cb("--session", "--experiment", "experiment"),
+    callback=_make_forwarding_alias_cb("--session", "experiment"),
 )
 @click.option("--username", "-u", hidden=True, help="XNAT username (REST upload)")
-@click.option("--password", hidden=True, help="XNAT password (REST upload)")
+@click.option(
+    "--password",
+    hidden=True,
+    expose_value=False,
+    is_eager=True,
+    callback=reject_argv_password(
+        "Use --password-stdin, set XNAT_PASS, run 'xnatctl auth login' first, "
+        "or let the command prompt."
+    ),
+    help="REFUSED: use --password-stdin, XNAT_PASS, or the prompt",
+)
+@click.option(
+    "--password-stdin",
+    is_flag=True,
+    hidden=True,
+    help="Read the upload password from stdin (one line)",
+)
 @click.option(
     "--mode",
     type=click.Choice(["tar", "zip", "gradual"]),
@@ -836,14 +918,14 @@ def session_download(
     is_flag=True,
     hidden=True,
     expose_value=False,
-    callback=_make_alias_cb("--gradual", "--mode gradual", "mode", "gradual"),
+    callback=_make_alias_cb("--gradual", "mode", "gradual"),
 )
 @click.option(
     "--archive-format",
     type=click.Choice(["tar", "zip"]),
     hidden=True,
     expose_value=False,
-    callback=_make_forwarding_alias_cb("--archive-format", "--mode", "mode"),
+    callback=_make_forwarding_alias_cb("--archive-format", "mode"),
 )
 @click.option(
     "--zip-to-tar/--no-zip-to-tar",
@@ -878,8 +960,8 @@ def session_download(
 )
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_upload(
     ctx: Context,
     input_path: str,
@@ -887,7 +969,7 @@ def session_upload(
     subject: str,
     experiment: str,
     username: str | None,
-    password: str | None,
+    password_stdin: bool,
     mode: str | None,
     zip_to_tar: bool,
     workers: int | None,
@@ -903,6 +985,7 @@ def session_upload(
 
     For DICOM C-STORE network transfer, use `session upload-dicom` instead.
 
+    \b
     Example:
         xnatctl session upload ./archive.zip -P MYPROJ -S SUB001 -E SESS001
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001
@@ -914,6 +997,11 @@ def session_upload(
         validate_session_id,
         validate_subject_id,
     )
+
+    # A password value on argv is refused by the --password callback;
+    # stdin is the only explicit per-command source. Downstream fallbacks
+    # (XNAT_PASS, prompt) live in _upload_directory_parallel.
+    password = read_password_stdin("--password-stdin") if password_stdin else None
 
     # Resolve profile defaults
     profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
@@ -950,16 +1038,16 @@ def session_upload(
 
     # Dry run handling
     if dry_run:
-        click.echo("[DRY-RUN] Would upload with the following settings:")
-        click.echo(f"  Source: {source_path}")
-        click.echo(f"  Project: {project}")
-        click.echo(f"  Subject: {subject}")
-        click.echo(f"  Session: {session}")
-        click.echo(f"  Mode: {mode}")
-        click.echo(f"  Workers: {workers}")
+        click.echo("[DRY-RUN] Would upload with the following settings:", err=True)
+        click.echo(f"  Source: {source_path}", err=True)
+        click.echo(f"  Project: {project}", err=True)
+        click.echo(f"  Subject: {subject}", err=True)
+        click.echo(f"  Session: {session}", err=True)
+        click.echo(f"  Mode: {mode}", err=True)
+        click.echo(f"  Workers: {workers}", err=True)
         if not gradual:
-            click.echo(f"  Overwrite: {overwrite}")
-            click.echo(f"  Direct archive: {direct_archive}")
+            click.echo(f"  Overwrite: {overwrite}", err=True)
+            click.echo(f"  Direct archive: {direct_archive}", err=True)
         return
 
     # Gradual per-file upload
@@ -1017,7 +1105,7 @@ def session_upload(
     "--session",
     hidden=True,
     expose_value=False,
-    callback=_make_forwarding_alias_cb("--session", "--experiment", "experiment"),
+    callback=_make_forwarding_alias_cb("--session", "experiment"),
 )
 @click.option(
     "--workers",
@@ -1070,9 +1158,7 @@ def session_upload(
     type=click.IntRange(min=0),
     hidden=True,
     expose_value=False,
-    callback=lambda ctx, param, value: (
-        ctx.params.update({"wait": value}) or value  # type: ignore[func-returns-value]
-    )
+    callback=lambda ctx, param, value: (ctx.params.update({"wait": value}) or value)
     if value is not None
     and param.name
     and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
@@ -1084,7 +1170,7 @@ def session_upload(
     hidden=True,
     expose_value=False,
     callback=lambda ctx, param, value: (
-        ctx.params.update({"wait": DEFAULT_ARCHIVE_WAIT_SECONDS if value else 0}) or value  # type: ignore[func-returns-value]
+        ctx.params.update({"wait": DEFAULT_ARCHIVE_WAIT_SECONDS if value else 0}) or value
     )
     if value is not None
     and param.name
@@ -1093,9 +1179,9 @@ def session_upload(
 )
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
-@require_auth
 @handle_errors
-def session_upload_exam(
+@require_auth
+def session_upload_exam(  # noqa: C901  # pre-existing; see pyproject
     ctx: Context,
     exam_root: str,
     project: str | None,
@@ -1112,13 +1198,13 @@ def session_upload_exam(
 ) -> None:
     """Upload an exam root (DICOM + session resources).
 
+    \b
     Exam roots follow a common folder convention:
     - DICOM files may appear anywhere under the root (recursive)
     - Top-level directories without DICOM-like files are treated as session-level
       resources (label = directory name)
     - Top-level non-DICOM files are treated as misc attachments under --misc-label
     """
-
     from xnatctl.core.exam import classify_exam_root
     from xnatctl.core.exceptions import ResourceNotFoundError
     from xnatctl.core.validation import (
@@ -1167,17 +1253,17 @@ def session_upload_exam(
         resource_labels.append(validate_resource_label(resource_dir.name))
 
     if dry_run:
-        click.echo("[DRY-RUN] Would upload exam with the following settings:")
-        click.echo(f"  Exam root: {exam_root_path}")
-        click.echo(f"  Project: {project}")
-        click.echo(f"  Subject: {subject}")
-        click.echo(f"  Session: {session}")
-        click.echo(f"  Workers: {workers}")
-        click.echo(f"  Direct archive: {direct_archive}")
-        click.echo(f"  Resource dirs ({len(resource_labels)}):")
+        click.echo("[DRY-RUN] Would upload exam with the following settings:", err=True)
+        click.echo(f"  Exam root: {exam_root_path}", err=True)
+        click.echo(f"  Project: {project}", err=True)
+        click.echo(f"  Subject: {subject}", err=True)
+        click.echo(f"  Session: {session}", err=True)
+        click.echo(f"  Workers: {workers}", err=True)
+        click.echo(f"  Direct archive: {direct_archive}", err=True)
+        click.echo(f"  Resource dirs ({len(resource_labels)}):", err=True)
         for label in resource_labels:
-            click.echo(f"    - {label}")
-        click.echo(f"  Misc label: {misc_label}")
+            click.echo(f"    - {label}", err=True)
+        click.echo(f"  Misc label: {misc_label}", err=True)
         return
 
     client = ctx.get_client()
@@ -1221,7 +1307,7 @@ def session_upload_exam(
                         "uploaded": dicom_uploaded,
                     },
                     "resources": {
-                        "skipped": True if skip_resources else False,
+                        "skipped": bool(skip_resources),
                         "resource_dirs": 0,
                         "misc_files": 0,
                         "misc_label": misc_label,
@@ -1311,6 +1397,10 @@ def session_upload_exam(
                 f"{dicom_msg}; session '{session}' not archived yet{waited}. "
                 f"{pending} resource item(s) not attached -- re-run once archived:\n  {rerun}"
             )
+        # Deliberate exit 0: this is documented partial success --
+        # the DICOM upload succeeded and the emitted --attach-only command
+        # recovers the pending resources once archiving completes. Returning
+        # nonzero here would make callers treat a recoverable state as failure.
         return
 
     resource_service = ResourceService(client)
@@ -1408,7 +1498,7 @@ def _upload_gradual_dicom(
         progress_counter += 1
         if p.phase.value == "uploading" and progress_counter % 100 != 0:
             return
-        click.echo(f"  [{p.phase.value}] {p.message}")
+        click.echo(f"  [{p.phase.value}] {p.message}", err=True)
 
     try:
         summary = service.upload_dicom_gradual(
@@ -1446,7 +1536,11 @@ def _upload_gradual_dicom(
                 click.echo(f"  - {err}", err=True)
             if len(summary.errors) > 5:
                 click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
-            raise SystemExit(1)
+
+    # Exit code must not depend on the output format: a failed upload has to
+    # return nonzero under -o json too, or automation reports success.
+    if not summary.success:
+        raise SystemExit(1)
 
 
 def _upload_single_archive(
@@ -1510,7 +1604,7 @@ def _upload_single_archive(
 
 
 def _do_single_upload(
-    client,
+    client: XNATClient,
     archive_path: Path,
     project: str,
     subject: str,
@@ -1520,44 +1614,95 @@ def _do_single_upload(
     ignore_unparsable: bool,
     zip_to_tar: bool,
 ) -> None:
-    """Execute the actual upload with retry on transient errors."""
-    from xnatctl.services.uploads import archive_destination_params, upload_with_retry
+    """Upload one archive through the services-layer uploader.
 
-    params = {
-        "import-handler": "DICOM-zip",
-        "project": project,
-        "subject": subject,
-        "session": session,
-        "overwrite": overwrite,
-        "overwrite_files": "true",
-        "quarantine": "false",
-        "triggerPipelines": "true",
-        "rename": "false",
-        "Ignore-Unparsable": "true" if ignore_unparsable else "false",
-        "inbody": "true",
-        **archive_destination_params(project, direct_archive),
-    }
+    Deliberately not ``client.post`` wrapped in ``upload_with_retry``: that
+    stacked two retry ladders, and because ``_request`` raises typed errors on
+    4xx, ``upload_with_retry`` never saw a raw 400 response -- so the
+    transient-vs-permanent 400 discrimination the import service needs was dead
+    on this path.
 
-    with _maybe_zip_to_tar(archive_path, zip_to_tar) as (upload_path, content_type):
+    Failures are re-raised as typed exceptions so ``@handle_errors`` keeps the
+    documented exit-code taxonomy (auth 3, network 4, permission 6).
+    """
+    import httpx
 
-        def _attempt():
-            with open(upload_path, "rb") as f:
-                return client.post(
-                    "/data/services/import",
-                    params=params,
-                    data=f,
-                    headers={"Content-Type": content_type},
-                    timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
-                )
+    from xnatctl.core.client import RETRYABLE_STATUS_CODES
+    from xnatctl.core.exceptions import (
+        NetworkError,
+        PermissionDeniedError,
+        ResourceNotFoundError,
+        RetryExhaustedError,
+        SessionExpiredError,
+        UploadError,
+    )
+    from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
+    from xnatctl.services.uploads import (
+        UPLOAD_MAX_RETRIES,
+        SessionRefresher,
+        upload_single_archive,
+    )
 
-        resp = upload_with_retry(_attempt, label=f"REST upload {archive_path.name}")
+    refresher = SessionRefresher(
+        base_url=client.base_url,
+        verify_ssl=client.httpx_verify(),
+        token=client.session_token,
+        username=client.username,
+        password=client.password,
+        owner=client,
+    )
 
-    if not (200 <= resp.status_code < 300):
-        print_error(f"Upload failed (HTTP {resp.status_code}): {resp.text[:500]}")
-        raise SystemExit(1)
+    with _maybe_zip_to_tar(archive_path, zip_to_tar) as upload_path:
+        result = upload_single_archive(
+            base_url=client.base_url,
+            username=client.username,
+            password=client.password,
+            session_token=client.session_token,
+            verify_ssl=client.httpx_verify(),
+            timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
+            archive_path=upload_path,
+            project=project,
+            subject=subject,
+            session=session,
+            import_handler="DICOM-zip",
+            ignore_unparsable=ignore_unparsable,
+            overwrite=overwrite,
+            direct_archive=direct_archive,
+            session_refresher=refresher,
+        )
+
+    if result.success:
+        return
+    if result.status_code == 401:
+        raise SessionExpiredError(client.base_url)
+    if result.status_code == 403:
+        raise PermissionDeniedError(f"project {project}", "upload to", url=client.base_url)
+    if result.status_code == 404:
+        raise ResourceNotFoundError("Import destination", f"{project}/{subject}/{session}")
+    if result.status_code in RETRYABLE_STATUS_CODES:
+        # The core set (429/5xx), NOT the upload set: an exhausted transient
+        # 400 falls through to UploadError below, where the body -- which names
+        # the conflicting session -- survives in the message.
+        raise RetryExhaustedError(
+            f"upload {archive_path.name}",
+            UPLOAD_MAX_RETRIES + 1,
+            UploadError(result.error),
+        )
+    if isinstance(result.exception, httpx.TimeoutException):
+        raise XNATTimeoutError(
+            client.base_url,
+            DEFAULT_HTTP_TIMEOUT_SECONDS,
+            message=f"Upload of {archive_path.name} failed: {result.error}",
+        )
+    if isinstance(result.exception, httpx.TransportError):
+        raise NetworkError(client.base_url, cause=result.error)
+    raise UploadError(
+        f"Upload of {archive_path.name} failed: {result.error}",
+        file_path=str(archive_path),
+    )
 
 
-def _safe_mtime(date_time: tuple) -> float:
+def _safe_mtime(date_time: tuple[int, ...]) -> float:
     """Convert ZIP date_time tuple to timestamp safely.
 
     Args:
@@ -1573,8 +1718,11 @@ def _safe_mtime(date_time: tuple) -> float:
         # Validate year is in reasonable range (ZIP format supports 1980-2107)
         if year < 1980 or year > 2107:
             return 0.0
-        # Use 0 for DST (let system figure it out) instead of -1
-        return time.mktime(date_time + (0, 0, 0))
+        # mktime wants a full 9-tuple: the ZIP header carries 6 fields, and the
+        # trailing three (weekday, yearday, DST) are filled with 0 -- 0 for DST
+        # rather than -1 so the platform resolves it instead of guessing.
+        y, mo, d, h, mi, sec = date_time[:6]
+        return time.mktime((y, mo, d, h, mi, sec, 0, 0, 0))
     except (ValueError, OverflowError, OSError):
         # Invalid date - use epoch
         return 0.0
@@ -1623,27 +1771,29 @@ def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
         raise OSError(f"Failed to convert ZIP to TAR: {e}") from e
 
 
-def _default_content_type(archive_path: Path) -> str:
-    return "application/zip" if archive_path.suffix.lower() == ".zip" else "application/x-tar"
-
-
 def _should_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> bool:
     return zip_to_tar and archive_path.suffix.lower() == ".zip"
 
 
-def _maybe_zip_to_tar(archive_path: Path, zip_to_tar: bool):
+def _maybe_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> AbstractContextManager[Path]:
+    """Yield the path to upload, converting ZIP to TAR when asked.
+
+    A context manager because the converted archive lives in a temporary
+    directory that must outlive the conversion but not the upload. Content type
+    is derived from the yielded path's name by the uploader.
+    """
     import tempfile
     from contextlib import contextmanager
 
     @contextmanager
-    def _converter():
+    def _converter() -> Iterator[Path]:
         if _should_zip_to_tar(archive_path, zip_to_tar):
             with tempfile.TemporaryDirectory() as temp_dir:
                 tar_path = Path(temp_dir) / f"{archive_path.stem}.tar"
                 _zip_to_tar(archive_path, tar_path)
-                yield tar_path, "application/x-tar"
+                yield tar_path
         else:
-            yield archive_path, _default_content_type(archive_path)
+            yield archive_path
 
     return _converter()
 
@@ -1761,7 +1911,10 @@ def _upload_directory_parallel(
                 click.echo(f"  - {error}", err=True)
             if len(summary.errors) > 5:
                 click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
-            raise SystemExit(1)
+
+    # Format-independent failure exit: -o json must also return nonzero.
+    if not summary.success:
+        raise SystemExit(1)
 
 
 def _upload_dicom_store(
@@ -1772,6 +1925,10 @@ def _upload_dicom_store(
     called_aet: str | None,
     calling_aet: str,
     dicom_workers: int,
+    tls: bool = False,
+    tls_ca_bundle: str | None = None,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
 ) -> None:
     """Upload via DICOM C-STORE protocol."""
     if not dicom_host:
@@ -1797,8 +1954,24 @@ def _upload_dicom_store(
         )
         raise SystemExit(1) from e
 
+    if tls_key and not tls_cert:
+        raise click.UsageError("--tls-key requires --tls-cert")
+    if (tls_ca_bundle or tls_cert) and not tls:
+        raise click.UsageError("--tls-ca-bundle/--tls-cert/--tls-key have no effect without --tls")
+
     if not ctx.quiet:
-        click.echo(f"Sending DICOM files to {dicom_host}:{dicom_port} ({called_aet})...")
+        scheme = "TLS" if tls else "plaintext"
+        click.echo(
+            f"Sending DICOM files to {dicom_host}:{dicom_port} ({called_aet}) over {scheme}...",
+            err=True,
+        )
+        if not tls:
+            # Said once, plainly, on stderr. Sites that mean to do this are not
+            # helped by a warning; sites that did not know need to be told.
+            click.echo(
+                "  Note: DICOM C-STORE is unencrypted. Use --tls if the server supports it.",
+                err=True,
+            )
 
     client = ctx.get_client()
     service = UploadService(client)
@@ -1811,6 +1984,10 @@ def _upload_dicom_store(
         calling_aet=calling_aet,
         workers=dicom_workers,
         cleanup=True,
+        tls=tls,
+        tls_ca_bundle=tls_ca_bundle,
+        tls_cert=tls_cert,
+        tls_key=tls_key,
     )
 
     if ctx.output_format == OutputFormat.JSON:
@@ -1832,7 +2009,10 @@ def _upload_dicom_store(
                 f"{summary.failed}/{summary.total_files} files failed"
             )
             click.echo(f"Check logs in: {summary.log_dir}", err=True)
-            raise SystemExit(1)
+
+    # Format-independent failure exit: -o json must also return nonzero.
+    if not summary.success:
+        raise SystemExit(1)
 
 
 @session.command("upload-dicom")
@@ -1873,10 +2053,34 @@ def _upload_dicom_store(
     show_default="4 (or profile)",
     help="Parallel DICOM C-STORE associations",
 )
+@click.option(
+    "--tls",
+    is_flag=True,
+    envvar="XNAT_DICOM_TLS",
+    help="Encrypt the DICOM association (env: XNAT_DICOM_TLS)",
+)
+@click.option(
+    "--tls-ca-bundle",
+    type=click.Path(exists=True, dir_okay=False),
+    envvar="XNAT_DICOM_TLS_CA_BUNDLE",
+    help="PEM file of CAs to trust for --tls (default: system store)",
+)
+@click.option(
+    "--tls-cert",
+    type=click.Path(exists=True, dir_okay=False),
+    envvar="XNAT_DICOM_TLS_CERT",
+    help="Client certificate, for SCPs requiring mutual TLS",
+)
+@click.option(
+    "--tls-key",
+    type=click.Path(exists=True, dir_okay=False),
+    envvar="XNAT_DICOM_TLS_KEY",
+    help="Private key for --tls-cert",
+)
 @click.option("--dry-run", is_flag=True, help="Preview without sending")
 @global_options
-@require_auth
 @handle_errors
+@require_auth
 def session_upload_dicom(
     ctx: Context,
     input_path: str,
@@ -1885,12 +2089,17 @@ def session_upload_dicom(
     port: int,
     calling_aet: str,
     workers: int | None,
+    tls: bool,
+    tls_ca_bundle: str | None,
+    tls_cert: str | None,
+    tls_key: str | None,
     dry_run: bool,
 ) -> None:
     """Upload DICOM files via C-STORE network protocol.
 
     Requires pydicom and pynetdicom (install with: pip install xnatctl[dicom]).
 
+    \b
     Example:
         xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT
         xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT --port 8104
@@ -1904,12 +2113,13 @@ def session_upload_dicom(
         workers = profile.workers if (profile and profile.workers is not None) else 4
 
     if dry_run:
-        click.echo("[DRY-RUN] Would send DICOM files via C-STORE:")
-        click.echo(f"  Source: {source_path}")
-        click.echo(f"  Host: {host}:{port}")
-        click.echo(f"  Called AET: {called_aet}")
-        click.echo(f"  Calling AET: {calling_aet}")
-        click.echo(f"  Workers: {workers}")
+        click.echo("[DRY-RUN] Would send DICOM files via C-STORE:", err=True)
+        click.echo(f"  Source: {source_path}", err=True)
+        click.echo(f"  Host: {host}:{port}", err=True)
+        click.echo(f"  Called AET: {called_aet}", err=True)
+        click.echo(f"  Calling AET: {calling_aet}", err=True)
+        click.echo(f"  Workers: {workers}", err=True)
+        click.echo(f"  Transport: {'TLS' if tls else 'plaintext'}", err=True)
         return
 
     _upload_dicom_store(
@@ -1920,6 +2130,10 @@ def session_upload_dicom(
         called_aet=called_aet,
         calling_aet=calling_aet,
         dicom_workers=workers,
+        tls=tls,
+        tls_ca_bundle=tls_ca_bundle,
+        tls_cert=tls_cert,
+        tls_key=tls_key,
     )
 
 
@@ -1940,7 +2154,7 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
 
     for zip_path in zip_files:
         if not quiet:
-            click.echo(f"Extracting {zip_path.name}...")
+            click.echo(f"Extracting {zip_path.name}...", err=True)
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
@@ -1970,7 +2184,7 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
             if cleanup:
                 zip_path.unlink()
                 if not quiet:
-                    click.echo(f"  Removed {zip_path.name}")
+                    click.echo(f"  Removed {zip_path.name}", err=True)
         except zipfile.BadZipFile:
             print_error(f"Invalid ZIP file: {zip_path.name}")
 
@@ -1992,13 +2206,14 @@ def local() -> None:
 @click.option("--recursive", "-r", is_flag=True, help="Process subdirectories")
 @click.option("--dry-run", is_flag=True, help="Preview what would be extracted")
 @handle_errors
-def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool) -> None:
+def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool) -> None:  # noqa: C901  # pre-existing; see pyproject
     """Extract downloaded XNAT session ZIPs.
 
     This command extracts ZIP files from previously downloaded sessions,
     creating organized subdirectories. Use after downloading without --unzip,
     or to re-process existing downloads.
 
+    \b
     Example:
         # Extract a single session directory
         xnatctl local extract ./data/XNAT_E00001
@@ -2021,25 +2236,25 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
         zip_files = list(input_path.glob("*.zip"))
 
     if not zip_files:
-        click.echo("No ZIP files found.")
+        click.echo("No ZIP files found.", err=True)
         return
 
-    click.echo(f"Found {len(zip_files)} ZIP file(s)")
+    click.echo(f"Found {len(zip_files)} ZIP file(s)", err=True)
 
     if dry_run:
-        click.echo("\n[DRY-RUN] Would extract:")
+        click.echo("\n[DRY-RUN] Would extract:", err=True)
         for zip_file in zip_files:
             extract_dir = zip_file.parent / zip_file.stem
-            click.echo(f"  {zip_file} -> {extract_dir}/")
+            click.echo(f"  {zip_file} -> {extract_dir}/", err=True)
             if cleanup:
-                click.echo(f"    (would remove {zip_file.name})")
+                click.echo(f"    (would remove {zip_file.name})", err=True)
         return
 
     extracted = 0
     failed = 0
 
     for zip_path in zip_files:
-        click.echo(f"Extracting {zip_path.name}...")
+        click.echo(f"Extracting {zip_path.name}...", err=True)
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
@@ -2069,7 +2284,7 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
 
             if cleanup:
                 zip_path.unlink()
-                click.echo(f"  Removed {zip_path.name}")
+                click.echo(f"  Removed {zip_path.name}", err=True)
         except zipfile.BadZipFile:
             print_error(f"Invalid ZIP file: {zip_path.name}")
             failed += 1
@@ -2078,6 +2293,6 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
             failed += 1
 
     if failed:
-        click.echo(f"\nExtracted: {extracted}, Failed: {failed}")
+        click.echo(f"\nExtracted: {extracted}, Failed: {failed}", err=True)
     else:
         print_success(f"Extracted {extracted} ZIP file(s)")
