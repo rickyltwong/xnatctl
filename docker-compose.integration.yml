@@ -1,0 +1,68 @@
+# A throwaway XNAT for the integration tier.
+#
+#   docker compose -f docker-compose.integration.yml up -d --wait
+#   uv run pytest tests/integration -m integration
+#   docker compose -f docker-compose.integration.yml down -v
+#
+# First boot builds the whole schema and takes several minutes; the healthcheck
+# below is what `--wait` blocks on. Everything here listens on localhost only
+# and the credentials are fixed throwaways -- do not point this at real data.
+#
+# Named volumes rather than bind mounts: XNAT writes as the container's user,
+# and bind-mounted archive directories leave root-owned litter behind that the
+# next `down -v` cannot clear.
+
+name: xnatctl-integration
+
+services:
+  xnat-db:
+    image: postgres:16.9-alpine
+    environment:
+      POSTGRES_DB: xnat
+      POSTGRES_USER: xnat
+      POSTGRES_PASSWORD: xnat
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xnat -d xnat"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  xnat-web:
+    build:
+      context: ./docker/integration
+      args:
+        XNAT_VERSION: ${XNAT_VERSION:-1.9.2.1}
+    # Published on 8104 rather than 8080: 8080 is the single most contested
+    # port on a developer machine, and a conflict here surfaces as an opaque
+    # timeout several minutes into startup.
+    ports:
+      - "127.0.0.1:8104:8080"
+    depends_on:
+      xnat-db:
+        condition: service_healthy
+    volumes:
+      - archive:/data/xnat/archive
+      - build:/data/xnat/build
+      - cache:/data/xnat/cache
+      - prearchive:/data/xnat/prearchive
+    environment:
+      # 2g is enough for the golden-path workload and leaves room on a laptop.
+      CATALINA_OPTS: -Xms256m -Xmx2g -Dxnat.home=/data/xnat/home
+    healthcheck:
+      # Not /data/version -- that 404s on 1.9.x. buildInfo is served once the
+      # webapp is actually up, which is the thing being waited for.
+      test:
+        ["CMD-SHELL", "curl -fsS http://localhost:8080/xapi/siteConfig/buildInfo || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      start_period: 240s
+
+volumes:
+  db:
+  archive:
+  build:
+  cache:
+  prearchive:

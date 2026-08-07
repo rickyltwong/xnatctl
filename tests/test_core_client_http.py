@@ -138,6 +138,55 @@ class TestPaginate:
         assert len(calls) == 3, "the empty third page is what terminates the loop"
         assert query_of(calls[2])["offset"][0] == "200"
 
+    def test_a_server_that_ignores_limit_does_not_loop_forever(self) -> None:
+        """Regression: XNAT 1.9.2.1 returns the whole set for any limit.
+
+        The old loop saw len(results) >= page_size, advanced the offset, and
+        got the identical page back on every subsequent request -- an infinite
+        generator that also re-yielded every row each time round. Found by the
+        integration tier against a real server, on /data/projects.
+        """
+        client, calls = make_client(lambda _r: httpx.Response(200, json=page(7)))
+
+        items = list(client.paginate("/data/projects", page_size=2))
+
+        assert len(items) == 7, "the full result set is still delivered once"
+        assert len(calls) == 1, "a server that ignores limit has no second page"
+
+    def test_a_repeated_page_stops_the_loop(self) -> None:
+        """The same regression when the collection is smaller than a page.
+
+        Counting rows cannot detect it here: one row for a page size of one
+        looks exactly like a legitimate full page, so the loop advanced the
+        offset and got that same row back forever. This is the shape the live
+        server actually presented -- one project, page_size=1 -- and it is why
+        the row-count check alone was not enough.
+        """
+        client, calls = make_client(lambda _r: httpx.Response(200, json=page(1)))
+
+        items = list(client.paginate("/data/projects", page_size=1))
+
+        assert len(items) == 1, "the row is yielded once, not twice"
+        assert len(calls) == 2, "one request, then one that proves it repeated"
+
+    def test_a_repeated_page_is_not_yielded_twice(self) -> None:
+        client, _ = make_client(lambda _r: httpx.Response(200, json=page(2)))
+
+        ids = [item["ID"] for item in client.paginate("/data/projects", page_size=2)]
+
+        assert ids == sorted(set(ids)), f"duplicate rows yielded: {ids}"
+
+    def test_genuinely_paginating_servers_are_unaffected(self) -> None:
+        """Distinct pages of equal size must still walk to the end."""
+        pages = [page(2, start=0), page(2, start=2), page(1, start=4)]
+        seq = iter(pages)
+        client, calls = make_client(lambda _r: httpx.Response(200, json=next(seq)))
+
+        items = list(client.paginate("/data/projects", page_size=2))
+
+        assert len(items) == 5
+        assert len(calls) == 3
+
     def test_empty_first_page_makes_exactly_one_request(self) -> None:
         client, calls = make_client(lambda _r: httpx.Response(200, json=page(0)))
 

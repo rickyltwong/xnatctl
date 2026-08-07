@@ -122,10 +122,60 @@ To run a single test function:
 
 .. note::
 
-   Tests marked ``integration`` (requiring a live XNAT server) are deselected
-   by default; run them explicitly with ``-m integration``. CI enforces a
-   coverage floor (see ``fail_under`` in ``pyproject.toml``), so substantial
-   new code needs tests to keep the gate green.
+   CI enforces a coverage floor (see ``fail_under`` in ``pyproject.toml``), so
+   substantial new code needs tests to keep the gate green.
+
+
+The Integration Tier
+--------------------
+
+Everything above runs against mocks. That proves xnatctl sends what we think
+it sends; it cannot prove XNAT answers the way we think it answers. The tests
+in ``tests/integration/`` talk to a real server, and they are where beliefs
+about XNAT's behaviour get checked -- whether an import lands in the archive
+or the prearchive, what a scan ZIP's internal layout really is, whether the
+files come back byte-identical.
+
+These tests are marked ``integration`` and **deselected by default**, so a
+normal ``pytest`` run never waits on any of it.
+
+Start a throwaway XNAT and run them:
+
+.. code-block:: console
+
+   $ docker compose -f docker-compose.integration.yml up -d --wait
+   $ uv run pytest tests/integration -m integration -v
+   $ docker compose -f docker-compose.integration.yml down -v
+
+The first ``up`` builds the image, which downloads the official XNAT WAR
+(around 250 MB). Later runs reuse it. Startup takes roughly 90 seconds once
+built, and ``--wait`` blocks until the server answers.
+
+The stack listens on ``127.0.0.1:8104`` -- not 8080, which is the port most
+likely to already be taken -- with credentials ``admin``/``admin``. The
+fixtures complete XNAT's first-run setup wizard automatically; without that,
+even ``POST /data/JSESSION`` is redirected to ``/setup``.
+
+To point the tier at a server of your own instead:
+
+.. code-block:: console
+
+   $ XNATCTL_TEST_URL=https://xnat.example.org \
+       XNATCTL_TEST_USER=me XNATCTL_TEST_PASS=secret \
+       uv run pytest tests/integration -m integration -v
+
+Use a scratch server. The tier creates and deletes projects.
+
+If nothing is listening, the whole tier skips with a message saying so rather
+than failing. In CI it runs nightly and on demand through the ``Integration``
+workflow, not on pull requests -- see ``.github/workflows/integration.yml``.
+
+To change the XNAT version under test, set ``XNAT_VERSION`` (it defaults to
+the version the maintainers run in production) and rebuild:
+
+.. code-block:: console
+
+   $ XNAT_VERSION=1.9.3.6 docker compose -f docker-compose.integration.yml build
 
 
 Linting, Formatting, and Type Checking
