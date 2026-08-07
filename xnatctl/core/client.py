@@ -75,6 +75,9 @@ RETRYABLE_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
     httpx.WriteError,
     httpx.RemoteProtocolError,
     httpx.ProxyError,
+    # Failure tearing the connection down. Harmless on its own, but it aborts
+    # the request that was in flight, so it needs the same treatment.
+    httpx.CloseError,
 )
 # Permanent transport failures: a bad scheme or an undecodable body will not fix
 # itself, so they raise immediately instead of burning the retry budget.
@@ -82,6 +85,14 @@ PERMANENT_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
     httpx.UnsupportedProtocol,
     httpx.DecodingError,
     httpx.InvalidURL,
+    # A redirect loop is not hypothetical here: an uninitialized XNAT bounces
+    # essentially every request to /setup, and a misconfigured siteUrl or a
+    # login-wall proxy does the same.
+    httpx.TooManyRedirects,
+    # We built a malformed request. That is a bug rather than a network event,
+    # and repeating it produces the same bug, so it fails immediately -- but it
+    # still leaves as a typed error rather than a traceback.
+    httpx.LocalProtocolError,
 )
 _BODY_SNIPPET_CHARS = 200
 _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
