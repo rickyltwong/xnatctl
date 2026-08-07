@@ -5,6 +5,14 @@ name: Integration
 # case slow to punish a rare kind of breakage. Nightly plus on-demand catches
 # the same regressions a day later, which is the right trade for a tier whose
 # job is verifying real server semantics rather than our own logic.
+#
+# NOTE: neither trigger fires until this file reaches the default branch.
+# GitHub reads workflow_dispatch and schedule only from the default branch --
+# `gh workflow run integration.yml --ref dev` answers 404 while it lives on
+# dev alone. Nothing here is broken; it activates on the next release merge.
+# Until then the tier is a local command:
+#   docker compose -f docker-compose.integration.yml up -d --wait
+#   uv run pytest tests/integration -m integration
 on:
   workflow_dispatch:
   schedule:
