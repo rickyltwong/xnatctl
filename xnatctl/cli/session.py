@@ -27,8 +27,6 @@ from xnatctl.cli.common import (
 from xnatctl.core.cancellation import cancellable_pool
 
 if TYPE_CHECKING:  # import cycle: client imports nothing from cli
-    import httpx
-
     from xnatctl.core.client import XNATClient
 from xnatctl.core.exceptions import DownloadError, ResourceNotFoundError
 from xnatctl.core.output import (
@@ -469,7 +467,7 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
 
     base_url = client.base_url
     session_token = client.session_token
-    verify_ssl = client.verify_ssl
+    verify_ssl = client.httpx_verify()  # inherits ca_bundle, not just the bool
     timeout = client.timeout
     exclude_set = frozenset(exclude_resources)
 
@@ -1616,41 +1614,92 @@ def _do_single_upload(
     ignore_unparsable: bool,
     zip_to_tar: bool,
 ) -> None:
-    """Execute the actual upload with retry on transient errors."""
-    from xnatctl.services.uploads import archive_destination_params, upload_with_retry
+    """Upload one archive through the services-layer uploader.
 
-    params = {
-        "import-handler": "DICOM-zip",
-        "project": project,
-        "subject": subject,
-        "session": session,
-        "overwrite": overwrite,
-        "overwrite_files": "true",
-        "quarantine": "false",
-        "triggerPipelines": "true",
-        "rename": "false",
-        "Ignore-Unparsable": "true" if ignore_unparsable else "false",
-        "inbody": "true",
-        **archive_destination_params(project, direct_archive),
-    }
+    Deliberately not ``client.post`` wrapped in ``upload_with_retry``: that
+    stacked two retry ladders, and because ``_request`` raises typed errors on
+    4xx, ``upload_with_retry`` never saw a raw 400 response -- so the
+    transient-vs-permanent 400 discrimination the import service needs was dead
+    on this path.
 
-    with _maybe_zip_to_tar(archive_path, zip_to_tar) as (upload_path, content_type):
+    Failures are re-raised as typed exceptions so ``@handle_errors`` keeps the
+    documented exit-code taxonomy (auth 3, network 4, permission 6).
+    """
+    import httpx
 
-        def _attempt() -> httpx.Response:
-            with open(upload_path, "rb") as f:
-                return client.post(
-                    "/data/services/import",
-                    params=params,
-                    data=f,
-                    headers={"Content-Type": content_type},
-                    timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
-                )
+    from xnatctl.core.client import RETRYABLE_STATUS_CODES
+    from xnatctl.core.exceptions import (
+        NetworkError,
+        PermissionDeniedError,
+        ResourceNotFoundError,
+        RetryExhaustedError,
+        SessionExpiredError,
+        UploadError,
+    )
+    from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
+    from xnatctl.services.uploads import (
+        UPLOAD_MAX_RETRIES,
+        SessionRefresher,
+        upload_single_archive,
+    )
 
-        resp = upload_with_retry(_attempt, label=f"REST upload {archive_path.name}")
+    refresher = SessionRefresher(
+        base_url=client.base_url,
+        verify_ssl=client.httpx_verify(),
+        token=client.session_token,
+        username=client.username,
+        password=client.password,
+        owner=client,
+    )
 
-    if not (200 <= resp.status_code < 300):
-        print_error(f"Upload failed (HTTP {resp.status_code}): {resp.text[:500]}")
-        raise SystemExit(1)
+    with _maybe_zip_to_tar(archive_path, zip_to_tar) as upload_path:
+        result = upload_single_archive(
+            base_url=client.base_url,
+            username=client.username,
+            password=client.password,
+            session_token=client.session_token,
+            verify_ssl=client.httpx_verify(),
+            timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
+            archive_path=upload_path,
+            project=project,
+            subject=subject,
+            session=session,
+            import_handler="DICOM-zip",
+            ignore_unparsable=ignore_unparsable,
+            overwrite=overwrite,
+            direct_archive=direct_archive,
+            session_refresher=refresher,
+        )
+
+    if result.success:
+        return
+    if result.status_code == 401:
+        raise SessionExpiredError(client.base_url)
+    if result.status_code == 403:
+        raise PermissionDeniedError(f"project {project}", "upload to", url=client.base_url)
+    if result.status_code == 404:
+        raise ResourceNotFoundError("Import destination", f"{project}/{subject}/{session}")
+    if result.status_code in RETRYABLE_STATUS_CODES:
+        # The core set (429/5xx), NOT the upload set: an exhausted transient
+        # 400 falls through to UploadError below, where the body -- which names
+        # the conflicting session -- survives in the message.
+        raise RetryExhaustedError(
+            f"upload {archive_path.name}",
+            UPLOAD_MAX_RETRIES + 1,
+            UploadError(result.error),
+        )
+    if isinstance(result.exception, httpx.TimeoutException):
+        raise XNATTimeoutError(
+            client.base_url,
+            DEFAULT_HTTP_TIMEOUT_SECONDS,
+            message=f"Upload of {archive_path.name} failed: {result.error}",
+        )
+    if isinstance(result.exception, httpx.TransportError):
+        raise NetworkError(client.base_url, cause=result.error)
+    raise UploadError(
+        f"Upload of {archive_path.name} failed: {result.error}",
+        file_path=str(archive_path),
+    )
 
 
 def _safe_mtime(date_time: tuple[int, ...]) -> float:
@@ -1722,34 +1771,29 @@ def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
         raise OSError(f"Failed to convert ZIP to TAR: {e}") from e
 
 
-def _default_content_type(archive_path: Path) -> str:
-    return "application/zip" if archive_path.suffix.lower() == ".zip" else "application/x-tar"
-
-
 def _should_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> bool:
     return zip_to_tar and archive_path.suffix.lower() == ".zip"
 
 
-def _maybe_zip_to_tar(
-    archive_path: Path, zip_to_tar: bool
-) -> AbstractContextManager[tuple[Path, str]]:
-    """Yield the path to upload and its content type, converting ZIP to TAR.
+def _maybe_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> AbstractContextManager[Path]:
+    """Yield the path to upload, converting ZIP to TAR when asked.
 
     A context manager because the converted archive lives in a temporary
-    directory that must outlive the conversion but not the upload.
+    directory that must outlive the conversion but not the upload. Content type
+    is derived from the yielded path's name by the uploader.
     """
     import tempfile
     from contextlib import contextmanager
 
     @contextmanager
-    def _converter() -> Iterator[tuple[Path, str]]:
+    def _converter() -> Iterator[Path]:
         if _should_zip_to_tar(archive_path, zip_to_tar):
             with tempfile.TemporaryDirectory() as temp_dir:
                 tar_path = Path(temp_dir) / f"{archive_path.stem}.tar"
                 _zip_to_tar(archive_path, tar_path)
-                yield tar_path, "application/x-tar"
+                yield tar_path
         else:
-            yield archive_path, _default_content_type(archive_path)
+            yield archive_path
 
     return _converter()
 
