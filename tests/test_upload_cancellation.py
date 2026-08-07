@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import as_completed
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -304,3 +309,87 @@ def test_cancellation_maps_to_the_user_cancelled_exit_code() -> None:
     from xnatctl.core.exceptions import OperationCancelledError
 
     assert exit_code_for(OperationCancelledError("upload")) == ExitCode.USER_CANCELLED
+
+
+@contextmanager
+def _null_scope() -> Iterator[None]:
+    """Stand in for the thread-local HTTP client scope; nothing to set up."""
+    yield
+
+
+def _service() -> Any:
+    """An UploadService whose client is never actually called."""
+    from xnatctl.core.client import XNATClient
+    from xnatctl.services.uploads import UploadService
+
+    client = MagicMock(spec=XNATClient)
+    client.base_url = "https://xnat.example.org"
+    client.session_token = "tok"
+    client.verify_ssl = True
+    client.username = None
+    client.password = None
+    return UploadService(client)
+
+
+class TestTheSalvagePassIsAlsoCancellable:
+    """The retry pass shipped with cancellation missing.
+
+    ``upload_dicom_gradual_files`` makes a second, lower-concurrency pass over
+    files that failed the first time. Its pool was built from the shared token
+    but ``_submit_retry`` never passed ``cancel_token`` down, so every worker
+    ran on ``NULL_TOKEN``: after Ctrl+C each in-flight file sat out its whole
+    2+4+8+16+32s retry ladder before the pool could shut down. Precisely the
+    wait cooperative cancellation exists to remove -- reintroduced in the one
+    pass whose files are already known to be failing, which is where a user is
+    most likely to give up and press Ctrl+C.
+
+    The end-to-end check that signed this feature off only exercised the main
+    pass, so it saw nothing.
+    """
+
+    def test_the_retry_worker_is_given_the_shared_token(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import xnatctl.services.uploads as uploads
+        from xnatctl.core.cancellation import NULL_TOKEN
+
+        # The first five files are the warmup batch; they must succeed or the
+        # circuit-breaker aborts the whole upload before any salvage happens.
+        warmup = 5
+        failing = {"0007.dcm", "0008.dcm"}
+        captured: list[tuple[str, object]] = []
+
+        def fake_upload(**kwargs: object) -> tuple[str, bool, str]:
+            name = Path(str(kwargs["file_path"])).name
+            captured.append((name, kwargs.get("cancel_token")))
+            already_tried = sum(1 for seen, _tok in captured if seen == name) > 1
+            ok = name not in failing or already_tried  # succeeds on the retry
+            return (name, ok, "" if ok else "transient 400")
+
+        monkeypatch.setattr(uploads, "_upload_single_file_gradual", fake_upload)
+        monkeypatch.setattr(uploads, "_gradual_http_clients_scope", _null_scope)
+
+        files = []
+        for i in range(warmup + 5):
+            path = tmp_path / f"{i:04d}.dcm"
+            path.write_bytes(b"\0" * 128 + b"DICM")
+            files.append(path)
+
+        _service().upload_dicom_gradual_files(
+            files=files, project="P", subject="S", session="E", workers=2
+        )
+
+        retries = [tok for name, tok in captured if name in failing][2:]
+
+        assert retries, "the salvage pass never ran; this test would prove nothing"
+        assert NULL_TOKEN not in retries, (
+            "the salvage pass runs uncancellable: Ctrl+C would wait out every retry ladder"
+        )
+        # Baseline is a main-pass file, not captured[0]: the first five are the
+        # sequential warmup, which deliberately carries no token (Ctrl+C
+        # interrupts it on the main thread directly).
+        main_pass_tokens = [tok for name, tok in captured[5:] if name not in failing]
+        assert main_pass_tokens, "no main-pass upload to compare against"
+        assert all(tok is main_pass_tokens[0] for tok in retries), (
+            "the salvage pass uses a different token than the main pass"
+        )

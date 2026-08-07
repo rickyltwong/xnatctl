@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import click
 
@@ -30,7 +30,7 @@ if TYPE_CHECKING:  # import cycle: client imports nothing from cli
     import httpx
 
     from xnatctl.core.client import XNATClient
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import DownloadError, ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -393,6 +393,28 @@ _MODALITY_XSI_MARKERS = {
 }
 
 
+class _ScanResult(NamedTuple):
+    """One scan download attempt."""
+
+    scan_id: str
+    ok: bool
+    files: int
+    message: str
+
+
+class DownloadOutcome(NamedTuple):
+    """What a parallel session download actually achieved.
+
+    Returned rather than discarded because the caller has to decide the exit
+    code: a download that lost scans is not a success, and for a long time it
+    was reported as one.
+    """
+
+    succeeded: int
+    failed: list[tuple[str, str]]
+    files: int
+
+
 def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     client: XNATClient,
     session_project: str,
@@ -403,7 +425,7 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     quiet: bool = False,
     include_resources: tuple[str, ...] = (),
     exclude_resources: tuple[str, ...] = (),
-) -> None:
+) -> DownloadOutcome:
     """Download session scans in parallel and extract to standard structure.
 
     Uses a two-tier strategy:
@@ -440,7 +462,7 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     if not scan_ids:
         if not quiet:
             click.echo("No scans found in session", err=True)
-        return
+        return DownloadOutcome(succeeded=0, failed=[], files=0)
 
     if not quiet:
         click.echo(f"Downloading {len(scan_ids)} scans in parallel...", err=True)
@@ -464,7 +486,7 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     def download_and_extract(
         scan_id: str,
         resource_label: str | None,
-    ) -> tuple[str, bool, str]:
+    ) -> _ScanResult:
         """Download a scan ZIP and extract into standard layout."""
         base = (
             f"/data/projects/{session_project}/subjects/{subject}"
@@ -516,17 +538,22 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
             if renamed:
                 parts.append(f"renamed {renamed} duplicates")
             status = ", ".join(parts) if parts else ""
-            return scan_id, True, status
+            return _ScanResult(scan_id, True, extracted, status)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
+                # A scan with no files of the requested type is normal under
+                # -r, so this is not an error -- but it downloaded nothing,
+                # and the zero is what stops an all-404 session (the failure
+                # mode ADR-0010 describes) reading as a complete download.
                 label_desc = f" ({resource_label})" if resource_label else ""
-                return scan_id, True, f"no files{label_desc}"
-            return scan_id, False, str(e)
+                return _ScanResult(scan_id, True, 0, f"no files{label_desc}")
+            return _ScanResult(scan_id, False, 0, str(e))
         except Exception as e:
-            return scan_id, False, str(e)
+            return _ScanResult(scan_id, False, 0, str(e))
 
-    succeeded = []
-    failed = []
+    succeeded: list[str] = []
+    failed: list[tuple[str, str]] = []
+    total_files = 0
 
     pool_size = min(len(download_tasks), workers)
     with cancellable_pool(pool_size) as (executor, _token):
@@ -535,19 +562,24 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
             for sid, res in download_tasks
         }
         for future in as_completed(futures):
-            scan_id, success, msg = future.result()
-            if success:
-                succeeded.append(scan_id)
+            result = future.result()
+            if result.ok:
+                succeeded.append(result.scan_id)
+                total_files += result.files
                 if not quiet:
-                    status = f" ({msg})" if msg else ""
-                    click.echo(f"  Scan {scan_id} done{status}", err=True)
+                    status = f" ({result.message})" if result.message else ""
+                    click.echo(f"  Scan {result.scan_id} done{status}", err=True)
             else:
-                failed.append((scan_id, msg))
-                if not quiet:
-                    click.echo(f"  Scan {scan_id} FAILED: {msg}", err=True)
+                failed.append((result.scan_id, result.message))
+                # Reported even under --quiet. Quiet suppresses per-item
+                # chatter, not the news that data is missing -- and --quiet is
+                # the scripting mode, where silence is most dangerous.
+                click.echo(f"  Scan {result.scan_id} FAILED: {result.message}", err=True)
 
-    if failed and not quiet:
-        click.echo(f"Warning: {len(failed)}/{len(download_tasks)} downloads failed", err=True)
+    if failed:
+        click.echo(f"{len(failed)}/{len(download_tasks)} scan downloads failed", err=True)
+
+    return DownloadOutcome(succeeded=len(succeeded), failed=failed, files=total_files)
 
 
 @session.command("download")
@@ -745,8 +777,9 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     # Use parallel path when filtering is active (even with workers=1)
     use_parallel = workers > 1 or resource or exclude_resource
 
+    outcome: DownloadOutcome | None = None
     if use_parallel:
-        _download_session_fast(
+        outcome = _download_session_fast(
             client=client,
             session_project=session_project,
             subject=subject,
@@ -824,7 +857,27 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     if unzip:
         _extract_session_zips(session_dir, cleanup=cleanup, quiet=ctx.quiet)
 
-    print_success(f"Downloaded session to: {session_dir}")
+    if outcome is not None and outcome.failed:
+        # Losing scans and exiting 0 is how a partial transfer gets mistaken
+        # for a whole one. The names are in the message so the caller can
+        # retry exactly what is missing.
+        lost = ", ".join(scan_id for scan_id, _msg in outcome.failed)
+        raise DownloadError(
+            f"{len(outcome.failed)} of {outcome.succeeded + len(outcome.failed)} scans "
+            f"failed to download ({lost}). The session directory is incomplete: "
+            f"{session_dir}",
+            session_id,
+            {"failed_scans": dict(outcome.failed)},
+        )
+
+    if outcome is not None:
+        # Says what arrived rather than only where it was put: "0 scans
+        # (0 files)" is the honest report for a session that yielded nothing.
+        print_success(
+            f"Downloaded {outcome.succeeded} scans ({outcome.files} files) to: {session_dir}"
+        )
+    else:
+        print_success(f"Downloaded session to: {session_dir}")
 
 
 @session.command("upload")

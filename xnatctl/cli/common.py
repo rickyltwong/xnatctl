@@ -875,22 +875,39 @@ def create_dest_client(
     Raises:
         ConfigurationError: If no destination specified.
     """
+    # Built like the source client in Context.get_client, and for the same
+    # reasons. It used to drop both of the settings below, which made the
+    # destination of a cross-server transfer strictly weaker than its source:
+    # a destination behind a private CA could not verify TLS at all (pushing
+    # people towards verify_ssl: false), and the destination side of a
+    # multi-hour transfer never re-authenticated after its session expired.
     if dest_profile:
         config = ctx.config or Config.load()
         profile = config.get_profile(dest_profile)
         username, password = get_credentials(profile)
+        if not profile.verify_ssl and not profile.ca_bundle:
+            print_warning(
+                redact_url_query(
+                    f"TLS certificate verification is DISABLED for the transfer "
+                    f"destination {profile.url}. Prefer 'ca_bundle' in the profile "
+                    "for self-signed certs."
+                )
+            )
         return XNATClient(
             base_url=profile.url,
             username=username,
             password=password,
             timeout=profile.timeout,
             verify_ssl=profile.verify_ssl,
+            ca_bundle=profile.ca_bundle,
+            auto_reauth=True,
         )
     if dest_url:
         return XNATClient(
             base_url=dest_url,
             username=dest_user,
             password=dest_pass,
+            auto_reauth=True,
         )
     raise ConfigurationError("Destination not specified. Use --dest-profile or --dest-url.")
 

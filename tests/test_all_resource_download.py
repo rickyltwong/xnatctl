@@ -18,7 +18,7 @@ from click.testing import CliRunner
 from conftest import authenticated_seams, make_authenticated_context
 
 from xnatctl.cli.main import cli
-from xnatctl.cli.session import _extract_scan_zip
+from xnatctl.cli.session import DownloadOutcome, _extract_scan_zip
 from xnatctl.models.progress import DownloadSummary
 
 # =============================================================================
@@ -533,6 +533,10 @@ class TestSessionDownloadResourceFlags:
             authenticated_seams(ctx, mock_client),
             patch(
                 "xnatctl.cli.session._download_session_fast",
+                # A bare MagicMock's .failed is truthy, and the command now
+                # reads that field to decide its exit code -- a stand-in has to
+                # honour the return contract or it fakes a failed download.
+                return_value=DownloadOutcome(succeeded=1, failed=[], files=3),
             ) as mock_fast,
         ):
             result = runner.invoke(
@@ -581,6 +585,10 @@ class TestSessionDownloadResourceFlags:
             authenticated_seams(ctx, mock_client),
             patch(
                 "xnatctl.cli.session._download_session_fast",
+                # A bare MagicMock's .failed is truthy, and the command now
+                # reads that field to decide its exit code -- a stand-in has to
+                # honour the return contract or it fakes a failed download.
+                return_value=DownloadOutcome(succeeded=1, failed=[], files=3),
             ) as mock_fast,
         ):
             result = runner.invoke(

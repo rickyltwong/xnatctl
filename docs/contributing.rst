@@ -162,9 +162,14 @@ To point the tier at a server of your own instead:
 
    $ XNATCTL_TEST_URL=https://xnat.example.org \
        XNATCTL_TEST_USER=me XNATCTL_TEST_PASS=secret \
+       XNATCTL_TEST_I_KNOW_THIS_IS_NOT_PRODUCTION=yes \
        uv run pytest tests/integration -m integration -v
 
-Use a scratch server. The tier creates and deletes projects.
+**Use a scratch server.** The tier creates projects and deletes them with
+``removeFiles=true``. Because a stale ``XNATCTL_TEST_URL`` in a shell or a CI
+variable is all it would take to run that against real imaging data, any host
+other than localhost is refused unless
+``XNATCTL_TEST_I_KNOW_THIS_IS_NOT_PRODUCTION=yes`` is also set.
 
 If nothing is listening, the whole tier skips with a message saying so rather
 than failing. In CI it runs nightly and on demand through the ``Integration``

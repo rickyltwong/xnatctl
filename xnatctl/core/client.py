@@ -717,12 +717,21 @@ class XNATClient:
             if ignores_limit or repeats_page:
                 if not repeats_page:
                     yield from results
-                logger.debug(
-                    "paginate %s: %s at offset=%d limit=%d; endpoint does not paginate, stopping",
+                # WARNING, not DEBUG. Stopping is right for a server that
+                # ignores these parameters, but it is indistinguishable from
+                # one that honours `limit` while ignoring `offset` -- where
+                # stopping truncates the listing instead. Nobody runs this at
+                # DEBUG, and a short result set that should have been long is
+                # exactly the kind of wrong answer that gets believed.
+                logger.warning(
+                    "paginate %s: %s at offset=%d limit=%d. Treating the endpoint as "
+                    "unpaginated and stopping after %d row(s); if the server does "
+                    "paginate, this listing may be incomplete.",
                     path,
                     "returned more rows than requested" if ignores_limit else "repeated a page",
                     offset,
                     page_size,
+                    len(results),
                 )
                 break
 

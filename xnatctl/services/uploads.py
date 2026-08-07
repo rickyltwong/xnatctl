@@ -800,10 +800,20 @@ def _upload_single_archive(
     overwrite: str,
     direct_archive: bool,
     cancel_token: CancellationToken = NULL_TOKEN,
+    session_refresher: _SessionRefresher | None = None,
 ) -> tuple[bool, str]:
     """Upload a single archive file to XNAT.
 
     Creates a fresh httpx client for thread-safety in parallel execution.
+
+    A 401 mid-upload used to end the batch. That is the wrong answer whenever
+    credentials are available: XNAT evicts sessions when an account exceeds its
+    concurrent-session limit -- routine when several workers share a service
+    account -- so a long parallel upload would fail batch by batch against a
+    server that was working perfectly. The gradual path already reauthenticated;
+    this one did not. Refreshing through the shared *session_refresher* rather
+    than logging in per batch matters: it serialises the reauth, so N workers
+    hitting the same eviction do not answer it with N more logins.
 
     Returns:
         Tuple of (success, error_message).
@@ -857,22 +867,37 @@ def _upload_single_archive(
                 cookies = {"JSESSIONID": session_token}
                 created_session = True
 
-            def _attempt() -> httpx.Response:
+            def _attempt_with(jar: dict[str, str]) -> httpx.Response:
                 with archive_path.open("rb") as data:
                     return client.post(
                         "/data/services/import",
                         params=params,
                         headers={"Content-Type": content_type},
                         content=data,
-                        cookies=cookies,
+                        cookies=jar,
                     )
 
             try:
                 resp = upload_with_retry(
-                    _attempt,
+                    lambda: _attempt_with(cookies),
                     label=f"batch {archive_path.name}",
                     cancel_token=cancel_token,
                 )
+
+                if resp.status_code == 401 and session_refresher is not None:
+                    fresh = session_refresher.refresh(session_token)
+                    if fresh and fresh != session_token:
+                        logger.info(
+                            "Session expired mid-upload; retrying batch %s with a refreshed token",
+                            archive_path.name,
+                        )
+                        session_token = fresh
+                        cookies = {"JSESSIONID": fresh}
+                        resp = upload_with_retry(
+                            lambda: _attempt_with(cookies),
+                            label=f"batch {archive_path.name} (after reauth)",
+                            cancel_token=cancel_token,
+                        )
             finally:
                 if created_session:
                     try:
@@ -892,65 +917,6 @@ def _upload_single_archive(
             return False, f"Connection failed (after retries): {e}"
         except Exception as e:
             return False, str(e)
-
-
-def _upload_batch(
-    *,
-    base_url: str,
-    username: str | None,
-    password: str | None,
-    session_token: str | None,
-    verify_ssl: bool,
-    timeout: int,
-    batch_id: int,
-    archive_path: Path,
-    file_count: int,
-    project: str,
-    subject: str,
-    session: str,
-    import_handler: str,
-    ignore_unparsable: bool,
-    overwrite: str,
-    direct_archive: bool,
-) -> _UploadResult:
-    """Upload a single batch archive, returning an _UploadResult."""
-    archive_size = archive_path.stat().st_size
-    start_time = time.time()
-
-    try:
-        success, error = _upload_single_archive(
-            base_url=base_url,
-            username=username,
-            password=password,
-            session_token=session_token,
-            verify_ssl=verify_ssl,
-            timeout=timeout,
-            archive_path=archive_path,
-            project=project,
-            subject=subject,
-            session=session,
-            import_handler=import_handler,
-            ignore_unparsable=ignore_unparsable,
-            overwrite=overwrite,
-            direct_archive=direct_archive,
-        )
-        return _UploadResult(
-            batch_id=batch_id,
-            success=success,
-            duration=time.time() - start_time,
-            file_count=file_count,
-            archive_size=archive_size,
-            error=error,
-        )
-    except Exception as e:
-        return _UploadResult(
-            batch_id=batch_id,
-            success=False,
-            duration=time.time() - start_time,
-            file_count=file_count,
-            archive_size=archive_size,
-            error=str(e),
-        )
 
 
 def _create_and_upload_batch(
@@ -974,6 +940,7 @@ def _create_and_upload_batch(
     overwrite: str,
     direct_archive: bool,
     cancel_token: CancellationToken = NULL_TOKEN,
+    session_refresher: _SessionRefresher | None = None,
 ) -> _UploadResult:
     """Create archive, upload it, then delete the archive immediately.
 
@@ -1019,6 +986,7 @@ def _create_and_upload_batch(
             overwrite=overwrite,
             direct_archive=direct_archive,
             cancel_token=cancel_token,
+            session_refresher=session_refresher,
         )
 
         return _UploadResult(
@@ -1519,6 +1487,23 @@ class UploadService(BaseService):
 
             results: list[_UploadResult] = []
 
+            # One refresher for the run, so a session evicted mid-upload is
+            # re-established once rather than once per worker. Only built when
+            # a token is in play: workers given bare credentials already log in
+            # per batch and have nothing to refresh.
+            batch_refresher = (
+                _SessionRefresher(
+                    base_url=base_url,
+                    verify_ssl=verify_ssl,
+                    token=session_token,
+                    username=effective_username,
+                    password=effective_password,
+                    owner=self.client,
+                )
+                if session_token
+                else None
+            )
+
             with cancellable_pool(effective_workers) as (executor, cancel_token):
                 futures: dict[Future[_UploadResult], int] = {}
                 for i, batch in enumerate(batches):
@@ -1543,6 +1528,7 @@ class UploadService(BaseService):
                         overwrite=overwrite,
                         direct_archive=direct_archive,
                         cancel_token=cancel_token,
+                        session_refresher=batch_refresher,
                     )
                     futures[fut] = i + 1
 
@@ -2088,6 +2074,9 @@ class UploadService(BaseService):
                 message=f"Warming up gradual-DICOM upload with {len(warmup_files)} file(s)...",
             )
 
+        # No cancel_token here on purpose: the warmup is sequential and runs on
+        # the main thread, so Ctrl+C interrupts its retry sleep directly. The
+        # token only earns its place where work happens in worker threads.
         for p in warmup_files:
             _name, ok, err = _upload_single_file_gradual(
                 base_url=base_url,
@@ -2241,6 +2230,15 @@ class UploadService(BaseService):
                 retry_future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
 
                 def _submit_retry(path: Path) -> None:
+                    # Same two guards as the main pass. Without them the
+                    # salvage pass ran on NULL_TOKEN: after Ctrl+C every
+                    # in-flight file sat out its full 2+4+8+16+32s retry
+                    # ladder before shutdown(wait=True) could return -- the
+                    # exact wait cooperative cancellation exists to remove,
+                    # reintroduced in the one pass whose files are already
+                    # known to be failing.
+                    if gradual_token.cancelled:
+                        raise StopIteration
                     fut: Future[tuple[str, bool, str]] = retry_executor.submit(
                         _upload_single_file_gradual,
                         base_url=base_url,
@@ -2252,6 +2250,7 @@ class UploadService(BaseService):
                         subject=subject,
                         session=session,
                         direct_archive=direct_archive,
+                        cancel_token=gradual_token,
                     )
                     retry_in_flight.add(fut)
                     retry_future_to_path[fut] = path
