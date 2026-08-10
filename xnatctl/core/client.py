@@ -498,8 +498,8 @@ class XNATClient:
                     if resp.status_code in _AMBIGUOUS_RETRY_CODES and not may_retry_after_send:
                         ambiguous = ServerError(resp.status_code, method, path, _body_snippet(resp))
                         # The reason goes in the hint, not the message: the
-                        # message is the one line CLI-09 always prints, and the
-                        # hint is where it puts the next step. Without it the
+                        # message is the one line the CLI always prints, and
+                        # the hint is where it puts the next step. Without it
                         # operator sees "HTTP 504" and reasonably assumes the
                         # request did nothing.
                         ambiguous.hint = (
