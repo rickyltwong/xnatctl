@@ -7,8 +7,8 @@ and return nothing. ``session_download`` then printed "Downloaded session to:
 ``xnatctl session download -q ... && process_data`` proceeded on an incomplete
 dataset with no signal that anything was missing.
 
-ROB-01 fixed exactly this for uploads and ``scan download``; this path has no
-summary object, so it was missed and nothing covered it.
+The exit-nonzero-under-json fix covered uploads and ``scan download``; this
+path has no summary object, so it was missed and nothing covered it.
 
 These tests drive a real local HTTP server rather than mocking the transport,
 because ``_download_session_fast`` builds its own ``httpx.Client`` with no
