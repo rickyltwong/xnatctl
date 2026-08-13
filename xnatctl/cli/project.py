@@ -16,6 +16,7 @@ from xnatctl.cli.common import (
     handle_errors,
     parallel_options,
     require_auth,
+    resolve_workers_from_context,
 )
 from xnatctl.core.output import print_error, print_output, print_success
 from xnatctl.models.hierarchy import ProjectRef
@@ -239,10 +240,7 @@ def project_transfer(
     from xnatctl.models.transfer import TransferConfig
     from xnatctl.services.transfer.orchestrator import TransferOrchestrator
 
-    # Resolve workers from profile
-    if workers is None:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        workers = profile.workers if (profile and profile.workers is not None) else 4
+    workers = resolve_workers_from_context(ctx, workers)
 
     source_client = ctx.get_client()
 

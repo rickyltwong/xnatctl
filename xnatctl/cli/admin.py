@@ -12,6 +12,7 @@ from xnatctl.cli.common import (
     handle_errors,
     parallel_options,
     require_auth,
+    resolve_workers_from_context,
 )
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
@@ -103,10 +104,7 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
         click.echo("No experiments matched selection", err=True)
         return
 
-    # Resolve workers from profile
-    if workers is None:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        workers = profile.workers if (profile and profile.workers is not None) else 4
+    workers = resolve_workers_from_context(ctx, workers)
 
     # Prepare options parameter
     options_param = ",".join(options) if options else None

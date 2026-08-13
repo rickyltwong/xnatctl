@@ -22,6 +22,9 @@ from xnatctl.cli.common import (
     reject_argv_password,
     require_auth,
     require_project_from_context,
+    resolve_archive_mode_from_context,
+    resolve_direct_archive_from_context,
+    resolve_overwrite_from_context,
     resolve_workers_from_context,
 )
 from xnatctl.core.cancellation import cancellable_pool
@@ -1003,27 +1006,11 @@ def session_upload(
     # (XNAT_PASS, prompt) live in _upload_directory_parallel.
     password = read_password_stdin("--password-stdin") if password_stdin else None
 
-    # Resolve profile defaults
-    profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-    if not project:
-        project = profile.default_project if profile else None
-        if not project:
-            profile_name = ctx.profile_name or (
-                ctx.config.default_profile if ctx.config else "default"
-            )
-            raise click.ClickException(
-                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-            )
-    if mode is None:
-        mode = profile.archive_mode if (profile and profile.archive_mode is not None) else "tar"
-    if workers is None:
-        workers = profile.workers if (profile and profile.workers is not None) else 4
-    if overwrite is None:
-        overwrite = profile.overwrite if (profile and profile.overwrite is not None) else "delete"
-    if direct_archive is None:
-        direct_archive = (
-            profile.direct_archive if (profile and profile.direct_archive is not None) else True
-        )
+    project = require_project_from_context(ctx, project)
+    mode = resolve_archive_mode_from_context(ctx, mode)
+    workers = resolve_workers_from_context(ctx, workers)
+    overwrite = resolve_overwrite_from_context(ctx, overwrite)
+    direct_archive = resolve_direct_archive_from_context(ctx, direct_archive)
 
     # Map mode to internal gradual/archive_format
     gradual = mode == "gradual"
@@ -1216,23 +1203,9 @@ def session_upload_exam(  # noqa: C901  # pre-existing; see pyproject
     from xnatctl.services.resources import ResourceService
     from xnatctl.services.uploads import UploadService
 
-    # Resolve profile defaults
-    profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-    if not project:
-        project = profile.default_project if profile else None
-        if not project:
-            profile_name = ctx.profile_name or (
-                ctx.config.default_profile if ctx.config else "default"
-            )
-            raise click.ClickException(
-                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-            )
-    if workers is None:
-        workers = profile.workers if (profile and profile.workers is not None) else 4
-    if direct_archive is None:
-        direct_archive = (
-            profile.direct_archive if (profile and profile.direct_archive is not None) else True
-        )
+    project = require_project_from_context(ctx, project)
+    workers = resolve_workers_from_context(ctx, workers)
+    direct_archive = resolve_direct_archive_from_context(ctx, direct_archive)
 
     # Map wait to internal wait_for_archive/wait_timeout
     wait_for_archive = wait > 0
@@ -2107,10 +2080,7 @@ def session_upload_dicom(
     """
     source_path = Path(input_path)
 
-    # Resolve workers from profile
-    if workers is None:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        workers = profile.workers if (profile and profile.workers is not None) else 4
+    workers = resolve_workers_from_context(ctx, workers)
 
     if dry_run:
         click.echo("[DRY-RUN] Would send DICOM files via C-STORE:", err=True)

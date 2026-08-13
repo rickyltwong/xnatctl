@@ -168,6 +168,36 @@ def resolve_workers_from_context(ctx: Context, workers: int | None, default: int
     return default
 
 
+def resolve_overwrite_from_context(ctx: Context, overwrite: str | None) -> str:
+    """Resolve overwrite mode from explicit option, profile, or ``delete``."""
+    if overwrite is not None:
+        return overwrite
+    profile = get_profile(ctx)
+    if profile and profile.overwrite is not None:
+        return profile.overwrite
+    return "delete"
+
+
+def resolve_direct_archive_from_context(ctx: Context, direct_archive: bool | None) -> bool:
+    """Resolve direct-archive flag from explicit option, profile, or ``True``."""
+    if direct_archive is not None:
+        return direct_archive
+    profile = get_profile(ctx)
+    if profile and profile.direct_archive is not None:
+        return profile.direct_archive
+    return True
+
+
+def resolve_archive_mode_from_context(ctx: Context, mode: str | None) -> str:
+    """Resolve archive mode from explicit option, profile, or ``tar``."""
+    if mode is not None:
+        return mode
+    profile = get_profile(ctx)
+    if profile and profile.archive_mode is not None:
+        return profile.archive_mode
+    return "tar"
+
+
 # =============================================================================
 # Global Options
 # =============================================================================

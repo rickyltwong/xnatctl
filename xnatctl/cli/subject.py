@@ -10,6 +10,7 @@ import click
 from xnatctl.cli.common import (
     Context,
     confirm_destructive,
+    default_project_from_context,
     global_options,
     handle_errors,
     require_auth,
@@ -317,8 +318,7 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
     from xnatctl.services.subjects import SubjectService
 
     if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
+        project = default_project_from_context(ctx)
         if not project and patterns_file:
             try:
                 projects = _projects_in_patterns_file(patterns_file)
