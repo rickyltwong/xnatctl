@@ -33,8 +33,17 @@ import httpx
 
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken, cancellable_pool
 from xnatctl.core.client import XNATClient
-from xnatctl.core.exceptions import OperationCancelledError, UploadError
-from xnatctl.core.retry import upload_with_retry
+from xnatctl.core.exceptions import (
+    NetworkError,
+    OperationCancelledError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+    RetryExhaustedError,
+    SessionExpiredError,
+    UploadError,
+)
+from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
+from xnatctl.core.retry import RETRYABLE_STATUS_CODES, UPLOAD_MAX_RETRIES, upload_with_retry
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
 from xnatctl.models.progress import (
     OperationPhase,
@@ -670,6 +679,182 @@ def upload_single_archive(
             )
         except Exception as e:
             return ArchiveUploadResult(False, str(e), exception=e)
+
+
+def _safe_mtime(date_time: tuple[int, ...]) -> float:
+    """Convert ZIP date_time tuple to timestamp safely.
+
+    Args:
+        date_time: 6-tuple (year, month, day, hour, minute, second)
+
+    Returns:
+        Unix timestamp, defaulting to 0 if conversion fails or date is invalid.
+    """
+    try:
+        year = date_time[0]
+        # Validate year is in reasonable range (ZIP format supports 1980-2107)
+        if year < 1980 or year > 2107:
+            return 0.0
+        # mktime wants a full 9-tuple: the ZIP header carries 6 fields, and the
+        # trailing three (weekday, yearday, DST) are filled with 0 -- 0 for DST
+        # rather than -1 so the platform resolves it instead of guessing.
+        y, mo, d, h, mi, sec = date_time[:6]
+        return time.mktime((y, mo, d, h, mi, sec, 0, 0, 0))
+    except (ValueError, OverflowError, OSError):
+        # Invalid date - use epoch
+        return 0.0
+
+
+def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
+    """Convert ZIP archive to TAR format.
+
+    Args:
+        archive_path: Source ZIP file
+        tar_path: Destination TAR file
+
+    Raises:
+        zipfile.BadZipFile: If ZIP is corrupted
+        OSError: If file operations fail
+    """
+    try:
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            # Validate ZIP integrity first
+            bad_file = zf.testzip()
+            if bad_file:
+                raise zipfile.BadZipFile(f"Corrupted file in archive: {bad_file}")
+
+            with tarfile.open(tar_path, "w") as tf:
+                for info in zf.infolist():
+                    name = info.filename
+                    if info.is_dir():
+                        tarinfo = tarfile.TarInfo(name.rstrip("/") + "/")
+                        tarinfo.type = tarfile.DIRTYPE
+                        tarinfo.mtime = _safe_mtime(info.date_time)
+                        tarinfo.size = 0
+                        tf.addfile(tarinfo)
+                        continue
+
+                    tarinfo = tarfile.TarInfo(name)
+                    tarinfo.size = info.file_size
+                    tarinfo.mtime = _safe_mtime(info.date_time)
+                    with zf.open(info, "r") as src:
+                        tf.addfile(tarinfo, fileobj=src)
+    except zipfile.BadZipFile:
+        raise
+    except Exception as e:
+        raise OSError(f"Failed to convert ZIP to TAR: {e}") from e
+
+
+def _should_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> bool:
+    return zip_to_tar and archive_path.suffix.lower() == ".zip"
+
+
+def _maybe_zip_to_tar(
+    archive_path: Path, zip_to_tar: bool
+) -> contextlib.AbstractContextManager[Path]:
+    """Yield the path to upload, converting ZIP to TAR when asked.
+
+    A context manager because the converted archive lives in a temporary
+    directory that must outlive the conversion but not the upload. Content type
+    is derived from the yielded path's name by the uploader.
+    """
+
+    @contextlib.contextmanager
+    def _converter() -> Iterator[Path]:
+        if _should_zip_to_tar(archive_path, zip_to_tar):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                tar_path = Path(temp_dir) / f"{archive_path.stem}.tar"
+                _zip_to_tar(archive_path, tar_path)
+                yield tar_path
+        else:
+            yield archive_path
+
+    return _converter()
+
+
+def upload_archive_or_raise(
+    client: XNATClient,
+    archive_path: Path,
+    project: str,
+    subject: str,
+    session: str,
+    overwrite: str,
+    direct_archive: bool,
+    ignore_unparsable: bool,
+    zip_to_tar: bool,
+) -> None:
+    """Upload one archive through :func:`upload_single_archive`, raising on failure.
+
+    A thin classifier over :func:`upload_single_archive`: that function returns an
+    :class:`ArchiveUploadResult` so the parallel batch path can tally failures,
+    whereas the single-archive CLI path wants the failure mapped to a typed
+    exception so ``@handle_errors`` keeps the documented exit-code taxonomy
+    (auth 3, network 4, permission 6). The two are kept separate deliberately --
+    one returns a result to be counted, one raises to stop a command.
+
+    Deliberately not ``client.post`` wrapped in ``upload_with_retry``: that
+    stacked two retry ladders, and because ``_request`` raises typed errors on
+    4xx, ``upload_with_retry`` never saw a raw 400 response -- so the
+    transient-vs-permanent 400 discrimination the import service needs was dead
+    on this path.
+    """
+    refresher = SessionRefresher(
+        base_url=client.base_url,
+        verify_ssl=client.httpx_verify(),
+        token=client.session_token,
+        username=client.username,
+        password=client.password,
+        owner=client,
+    )
+
+    with _maybe_zip_to_tar(archive_path, zip_to_tar) as upload_path:
+        result = upload_single_archive(
+            base_url=client.base_url,
+            username=client.username,
+            password=client.password,
+            session_token=client.session_token,
+            verify_ssl=client.httpx_verify(),
+            timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
+            archive_path=upload_path,
+            project=project,
+            subject=subject,
+            session=session,
+            import_handler="DICOM-zip",
+            ignore_unparsable=ignore_unparsable,
+            overwrite=overwrite,
+            direct_archive=direct_archive,
+            session_refresher=refresher,
+        )
+
+    if result.success:
+        return
+    if result.status_code == 401:
+        raise SessionExpiredError(client.base_url)
+    if result.status_code == 403:
+        raise PermissionDeniedError(f"project {project}", "upload to", url=client.base_url)
+    if result.status_code == 404:
+        raise ResourceNotFoundError("Import destination", f"{project}/{subject}/{session}")
+    if result.status_code in RETRYABLE_STATUS_CODES:
+        # The core set (429/5xx), NOT the upload set: an exhausted transient
+        # 400 falls through to UploadError below, where the body -- which names
+        # the conflicting session -- survives in the message.
+        raise RetryExhaustedError(
+            f"upload {archive_path.name}",
+            UPLOAD_MAX_RETRIES + 1,
+            UploadError(result.error),
+        )
+    if isinstance(result.exception, httpx.TimeoutException):
+        raise XNATTimeoutError(
+            client.base_url,
+            DEFAULT_HTTP_TIMEOUT_SECONDS,
+            message=f"Upload of {archive_path.name} failed: {result.error}",
+        )
+    if isinstance(result.exception, httpx.TransportError):
+        raise NetworkError(client.base_url, cause=result.error)
+    raise UploadError(
+        f"Upload of {archive_path.name} failed: {result.error}",
+        file_path=str(archive_path),
+    )
 
 
 def _create_and_upload_batch(

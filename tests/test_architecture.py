@@ -15,7 +15,7 @@ it is allowlisted for the import check only; it makes no raw-HTTP call and so is
 still held to the call check.
 
 Type-only imports under ``if TYPE_CHECKING:`` are annotations, not layering, and
-are allowed anywhere (``cli/session.py`` imports ``XNATClient`` that way).
+are allowed anywhere.
 
 See docs/adr/0013-cli-routes-through-services.md.
 """
