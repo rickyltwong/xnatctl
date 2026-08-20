@@ -366,6 +366,19 @@ sequential retry pass to maximize completion rate on flaky networks.
    :members:
    :undoc-members:
 
+Exam Upload Service
+-------------------
+
+Orchestrates ``session upload-exam``: it uploads the exam root's DICOM, waits
+for the session to archive, then attaches the top-level resource directories and
+misc files. The Click command keeps only option resolution and output rendering;
+the service returns an :class:`~xnatctl.services.exam_upload.ExamUploadResult`
+whose ``to_json_dict`` is the ``-o json`` compatibility contract.
+
+.. automodule:: xnatctl.services.exam_upload
+   :members:
+   :undoc-members:
+
 Import Service Requests
 -----------------------
 

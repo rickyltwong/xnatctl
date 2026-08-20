@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import click
@@ -40,6 +39,11 @@ from xnatctl.services.downloads import (
     ScanResult,
     extract_session_zips,
     stream_to_file,
+)
+from xnatctl.services.exam_upload import (
+    ExamOutcome,
+    ExamUploadResult,
+    ExamUploadService,
 )
 from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.sessions import SessionService
@@ -807,6 +811,39 @@ def session_upload(
         )
 
 
+def _render_exam_upload_result(ctx: Context, result: ExamUploadResult) -> None:
+    """Render an exam-upload result to JSON or the table summary, unchanged."""
+    if ctx.output_format == OutputFormat.JSON:
+        print_output(result.to_json_dict(), format=OutputFormat.JSON)
+        return
+
+    dicom_msg = (
+        "DICOM skipped"
+        if result.attach_only
+        else f"DICOM uploaded {result.dicom_uploaded}/{result.dicom_total}"
+    )
+
+    if result.outcome is ExamOutcome.NOT_ARCHIVED:
+        waited = f" after waiting {result.wait_timeout}s" if result.wait_for_archive else ""
+        print_warning(
+            f"{dicom_msg}; session '{result.session}' not archived yet{waited}. "
+            f"{result.pending} resource item(s) not attached -- re-run once archived:"
+            f"\n  {result.rerun}"
+        )
+        return
+
+    if result.outcome is ExamOutcome.NO_RESOURCES:
+        resources_msg = (
+            "resources skipped" if result.skip_resources else "resources attached 0 dirs + 0 files"
+        )
+    else:  # COMPLETE
+        resources_msg = (
+            f"resources attached {result.attached_resource_dirs} dirs "
+            f"+ {result.attached_misc_files} files"
+        )
+    print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
+
+
 @session.command("upload-exam")
 @click.argument("exam_root", type=click.Path(exists=True, file_okay=False))
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
@@ -892,7 +929,7 @@ def session_upload(
 @global_options
 @handle_errors
 @require_auth
-def session_upload_exam(  # noqa: C901  # pre-existing; see pyproject
+def session_upload_exam(
     ctx: Context,
     exam_root: str,
     project: str | None,
@@ -916,260 +953,57 @@ def session_upload_exam(  # noqa: C901  # pre-existing; see pyproject
       resources (label = directory name)
     - Top-level non-DICOM files are treated as misc attachments under --misc-label
     """
-    from xnatctl.core.exam import classify_exam_root
-    from xnatctl.core.exceptions import ResourceNotFoundError
     from xnatctl.core.validation import (
         validate_project_id,
-        validate_resource_label,
         validate_session_id,
         validate_subject_id,
     )
-    from xnatctl.services.resources import ResourceService
-    from xnatctl.services.uploads import UploadService
 
     project = require_project_from_context(ctx, project)
     workers = resolve_workers_from_context(ctx, workers)
     direct_archive = resolve_direct_archive_from_context(ctx, direct_archive)
-
-    # Map wait to internal wait_for_archive/wait_timeout
-    wait_for_archive = wait > 0
-    wait_timeout = wait
 
     session = experiment
     project = validate_project_id(project)
     subject = validate_subject_id(subject)
     session = validate_session_id(session)
 
-    misc_label = validate_resource_label(misc_label)
-
-    exam_root_path = Path(exam_root)
-    classification = classify_exam_root(exam_root_path)
-
-    resource_labels: list[str] = []
-    for resource_dir in classification.resource_dirs:
-        resource_labels.append(validate_resource_label(resource_dir.name))
+    service = ExamUploadService(ctx.get_client())
+    plan = service.plan(Path(exam_root), misc_label)
 
     if dry_run:
         click.echo("[DRY-RUN] Would upload exam with the following settings:", err=True)
-        click.echo(f"  Exam root: {exam_root_path}", err=True)
+        click.echo(f"  Exam root: {plan.exam_root}", err=True)
         click.echo(f"  Project: {project}", err=True)
         click.echo(f"  Subject: {subject}", err=True)
         click.echo(f"  Session: {session}", err=True)
         click.echo(f"  Workers: {workers}", err=True)
         click.echo(f"  Direct archive: {direct_archive}", err=True)
-        click.echo(f"  Resource dirs ({len(resource_labels)}):", err=True)
-        for label in resource_labels:
+        click.echo(f"  Resource dirs ({len(plan.resource_labels)}):", err=True)
+        for label in plan.resource_labels:
             click.echo(f"    - {label}", err=True)
-        click.echo(f"  Misc label: {misc_label}", err=True)
+        click.echo(f"  Misc label: {plan.misc_label}", err=True)
         return
 
-    client = ctx.get_client()
+    result = service.upload_exam(
+        plan,
+        project=project,
+        subject=subject,
+        session=session,
+        workers=workers,
+        direct_archive=direct_archive,
+        skip_resources=skip_resources,
+        attach_only=attach_only,
+        wait=wait,
+        wait_interval=wait_interval,
+    )
 
-    dicom_total = len(classification.dicom_files)
-    dicom_uploaded = 0
+    if result.error_message is not None:
+        # NO_DICOM / DICOM_FAILED surface as the same ClickException (exit 1)
+        # the inline command has always raised.
+        raise click.ClickException(result.error_message)
 
-    if not attach_only:
-        if not classification.dicom_files:
-            raise click.ClickException(f"No DICOM files found under: {exam_root_path}")
-
-        upload_service = UploadService(client)
-        summary = upload_service.upload_dicom_gradual_files(
-            files=classification.dicom_files,
-            project=project,
-            subject=subject,
-            session=session,
-            workers=workers,
-            direct_archive=direct_archive,
-        )
-        if not summary.success:
-            errors = "; ".join(summary.errors[:3])
-            raise click.ClickException(
-                f"DICOM upload failed ({summary.succeeded}/{summary.total} succeeded): {errors}"
-            )
-        dicom_uploaded = summary.succeeded
-
-    has_attachable_resources = bool(classification.resource_dirs) or bool(classification.misc_files)
-
-    if skip_resources or not has_attachable_resources:
-        if ctx.output_format == OutputFormat.JSON:
-            print_output(
-                {
-                    "project": project,
-                    "subject": subject,
-                    "session": session,
-                    "exam_root": str(exam_root_path),
-                    "dicom": {
-                        "skipped": attach_only,
-                        "total": dicom_total,
-                        "uploaded": dicom_uploaded,
-                    },
-                    "resources": {
-                        "skipped": bool(skip_resources),
-                        "resource_dirs": 0,
-                        "misc_files": 0,
-                        "misc_label": misc_label,
-                    },
-                },
-                format=OutputFormat.JSON,
-            )
-        else:
-            dicom_msg = (
-                f"DICOM uploaded {dicom_uploaded}/{dicom_total}"
-                if not attach_only
-                else "DICOM skipped"
-            )
-            resources_msg = (
-                "resources skipped" if skip_resources else ("resources attached 0 dirs + 0 files")
-            )
-            print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
-        return
-
-    def _resolve_experiment_id() -> str | None:
-        try:
-            hierarchy = HierarchyService(client)
-            resolved = hierarchy.resolve_experiment(
-                ExperimentRef(
-                    experiment=session,
-                    project_id=project,
-                    experiment_is_label=True,
-                )
-            )
-        except ResourceNotFoundError:
-            return None
-        return resolved.experiment_id or session
-
-    resolved_experiment_id = _resolve_experiment_id()
-    if not resolved_experiment_id and wait_for_archive:
-        deadline = time.monotonic() + wait_timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(wait_interval, remaining))
-            resolved_experiment_id = _resolve_experiment_id()
-            if resolved_experiment_id:
-                break
-
-    if not resolved_experiment_id:
-        # Archiving outlived the wait window (or --wait 0 on a not-yet-archived
-        # session). Don't discard the successful DICOM upload or silently drop
-        # resources: report an actionable partial result so the caller can attach
-        # resources with --attach-only once archiving completes.
-        pending = len(classification.resource_dirs) + len(classification.misc_files)
-        rerun = (
-            f"xnatctl session upload-exam '{exam_root_path}' "
-            f"-P {project} -S {subject} -E {session} --attach-only"
-        )
-        if ctx.output_format == OutputFormat.JSON:
-            print_output(
-                {
-                    "project": project,
-                    "subject": subject,
-                    "session": session,
-                    "exam_root": str(exam_root_path),
-                    "dicom": {
-                        "skipped": attach_only,
-                        "total": dicom_total,
-                        "uploaded": dicom_uploaded,
-                    },
-                    "resources": {
-                        "skipped": False,
-                        "attached": False,
-                        "pending": pending,
-                        "resource_dirs": 0,
-                        "misc_files": 0,
-                        "misc_label": misc_label,
-                        "reason": "session not archived before wait timeout",
-                        "rerun": rerun,
-                    },
-                },
-                format=OutputFormat.JSON,
-            )
-        else:
-            dicom_msg = (
-                "DICOM skipped" if attach_only else f"DICOM uploaded {dicom_uploaded}/{dicom_total}"
-            )
-            waited = f" after waiting {wait_timeout}s" if wait_for_archive else ""
-            print_warning(
-                f"{dicom_msg}; session '{session}' not archived yet{waited}. "
-                f"{pending} resource item(s) not attached -- re-run once archived:\n  {rerun}"
-            )
-        # Deliberate exit 0: this is documented partial success --
-        # the DICOM upload succeeded and the emitted --attach-only command
-        # recovers the pending resources once archiving completes. Returning
-        # nonzero here would make callers treat a recoverable state as failure.
-        return
-
-    resource_service = ResourceService(client)
-
-    for resource_dir in classification.resource_dirs:
-        label = validate_resource_label(resource_dir.name)
-        resource_service.create(
-            session_id=resolved_experiment_id,
-            resource_label=label,
-            project=project,
-        )
-        resource_service.upload_directory(
-            session_id=resolved_experiment_id,
-            resource_label=label,
-            directory_path=resource_dir,
-            project=project,
-        )
-
-    if classification.misc_files:
-        import tempfile
-        from zipfile import ZIP_DEFLATED, ZipFile
-
-        resource_service.create(
-            session_id=resolved_experiment_id,
-            resource_label=misc_label,
-            project=project,
-        )
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            zip_path = Path(tmp_dir) / f"{misc_label}.zip"
-            with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
-                for misc_file in classification.misc_files:
-                    zf.write(misc_file, arcname=misc_file.name)
-            resource_service.upload_file(
-                session_id=resolved_experiment_id,
-                resource_label=misc_label,
-                file_path=zip_path,
-                project=project,
-                extract=True,
-            )
-
-    attached_resource_dirs = len(classification.resource_dirs)
-    attached_misc_files = len(classification.misc_files)
-
-    if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {
-                "project": project,
-                "subject": subject,
-                "session": session,
-                "exam_root": str(exam_root_path),
-                "dicom": {
-                    "skipped": attach_only,
-                    "total": dicom_total,
-                    "uploaded": dicom_uploaded,
-                },
-                "resources": {
-                    "skipped": False,
-                    "resource_dirs": attached_resource_dirs,
-                    "misc_files": attached_misc_files,
-                    "misc_label": misc_label,
-                },
-            },
-            format=OutputFormat.JSON,
-        )
-    else:
-        dicom_msg = (
-            f"DICOM uploaded {dicom_uploaded}/{dicom_total}" if not attach_only else "DICOM skipped"
-        )
-        resources_msg = (
-            f"resources attached {attached_resource_dirs} dirs + {attached_misc_files} files"
-        )
-        print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
+    _render_exam_upload_result(ctx, result)
 
 
 def _upload_gradual_dicom(

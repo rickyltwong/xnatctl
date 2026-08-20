@@ -347,7 +347,7 @@ def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
         monotonic_calls["i"] += 1
         return 0.0 if monotonic_calls["i"] == 1 else 9999.0
 
-    monkeypatch.setattr("xnatctl.cli.session.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("xnatctl.services.exam_upload.time.monotonic", fake_monotonic)
 
     def fake_get_json(path: str, *, params: dict[str, object] | None = None) -> object:
         # The hierarchy fallback (B01) issues a project listing when the
