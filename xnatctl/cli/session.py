@@ -1600,7 +1600,6 @@ def _do_single_upload(
     """
     import httpx
 
-    from xnatctl.core.client import RETRYABLE_STATUS_CODES
     from xnatctl.core.exceptions import (
         NetworkError,
         PermissionDeniedError,
@@ -1610,11 +1609,8 @@ def _do_single_upload(
         UploadError,
     )
     from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
-    from xnatctl.services.uploads import (
-        UPLOAD_MAX_RETRIES,
-        SessionRefresher,
-        upload_single_archive,
-    )
+    from xnatctl.core.retry import RETRYABLE_STATUS_CODES, UPLOAD_MAX_RETRIES
+    from xnatctl.services.uploads import SessionRefresher, upload_single_archive
 
     refresher = SessionRefresher(
         base_url=client.base_url,

@@ -362,6 +362,16 @@ sequential retry pass to maximize completion rate on flaky networks.
    :members:
    :undoc-members:
 
+Import Service Requests
+-----------------------
+
+Single construction point for ``POST /data/services/import`` querystrings,
+shared by the archive, gradual-DICOM, and cross-server transfer paths.
+
+.. automodule:: xnatctl.services.import_service
+   :members:
+   :undoc-members:
+
 Prearchive Service
 ------------------
 

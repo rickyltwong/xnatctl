@@ -11,7 +11,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from conftest import make_response
 
-from xnatctl.services.transfer.executor import TransferExecutor
+from xnatctl.core.exceptions import (
+    ClientRequestError,
+    NetworkError,
+    PermissionDeniedError,
+    RetryExhaustedError,
+    ServerError,
+)
+from xnatctl.services.transfer.executor import TransferExecutor, _retryable_import_failure
 
 
 def _make_valid_zip() -> bytes:
@@ -231,9 +238,9 @@ class TestTransferScanDicom:
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
 
-        # First import fails, second succeeds
+        # First import fails transiently, second succeeds
         dest_client.post.side_effect = [
-            RuntimeError("import failed"),
+            ServerError(502, "POST", "/data/services/import"),
             make_response(text="/data/experiments/E999"),
         ]
 
@@ -536,6 +543,147 @@ class TestUploadScanDicom:
                     retry_delay=0.01,
                 )
             assert zip_path.exists()
+
+    def test_sends_the_same_wire_params_as_before_the_builder(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """The shared params builder must not change what goes on the wire."""
+        dest_client.post.return_value = make_response(text="OK")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            executor.upload_scan_dicom(
+                zip_path=zip_path,
+                dest_project="DST",
+                dest_subject="SUB001",
+                dest_experiment_label="EXP001",
+            )
+
+        args, kwargs = dest_client.post.call_args
+        assert args[0] == "/data/services/import"
+        assert kwargs["params"] == {
+            "import-handler": "DICOM-zip",
+            "PROJECT_ID": "DST",
+            "SUBJECT_ID": "SUB001",
+            "EXPT_LABEL": "EXP001",
+            "overwrite": "append",
+            "destination": "/archive",
+        }
+
+    def test_a_programming_error_is_not_retried(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """A bug must fail on attempt one, not after three backoffs."""
+        dest_client.post.side_effect = RuntimeError("boom")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            with pytest.raises(RuntimeError, match="boom"):
+                executor.upload_scan_dicom(
+                    zip_path=zip_path,
+                    dest_project="DST",
+                    dest_subject="SUB001",
+                    dest_experiment_label="EXP001",
+                    retry_delay=0.01,
+                )
+        assert dest_client.post.call_count == 1
+
+    def test_a_transient_400_is_retried(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """XNAT's import-race 400s clear on their own, so they earn a retry."""
+        dest_client.post.side_effect = [
+            ClientRequestError(
+                400, "POST", "/data/services/import", body="Session processing in progress"
+            ),
+            make_response(text="/data/experiments/E999"),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            result = executor.upload_scan_dicom(
+                zip_path=zip_path,
+                dest_project="DST",
+                dest_subject="SUB001",
+                dest_experiment_label="EXP001",
+                retry_delay=0.01,
+            )
+        assert result == "/data/experiments/E999"
+        assert dest_client.post.call_count == 2
+
+    def test_a_permanent_400_fails_on_the_first_attempt(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """A misconfigured destination says the same thing after every backoff."""
+        dest_client.post.side_effect = ClientRequestError(
+            400, "POST", "/data/services/import", body="Unable to identify destination project"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            with pytest.raises(ClientRequestError):
+                executor.upload_scan_dicom(
+                    zip_path=zip_path,
+                    dest_project="DST",
+                    dest_subject="SUB001",
+                    dest_experiment_label="EXP001",
+                    retry_delay=0.01,
+                )
+        assert dest_client.post.call_count == 1
+
+
+class TestRetryableImportFailurePredicate:
+    """Classification table for the transfer import's retry predicate."""
+
+    def test_transient_conditions_are_retryable(self) -> None:
+        import httpx
+
+        path = "/data/services/import"
+        for exc in [
+            ClientRequestError(400, "POST", path, body="Session processing in progress"),
+            ClientRequestError(400, "POST", path, body=""),  # unrecognised 400: retried
+            ServerError(502, "POST", path),
+            RetryExhaustedError("request", 4),
+            NetworkError("https://x", "socket died"),
+            httpx.ReadError("mid-stream"),
+            OSError("NFS blip"),
+        ]:
+            assert _retryable_import_failure(exc) is True, exc
+
+    def test_permanent_conditions_fail_fast(self) -> None:
+        import httpx
+
+        path = "/data/services/import"
+        for exc in [
+            ClientRequestError(400, "POST", path, body="Unable to identify destination project"),
+            ClientRequestError(409, "POST", path),
+            PermissionDeniedError(path, "post"),
+            FileNotFoundError("scan_1_DICOM.zip"),
+            PermissionError("scan_1_DICOM.zip"),
+            httpx.UnsupportedProtocol("htp://typo"),
+            RuntimeError("bug"),
+        ]:
+            assert _retryable_import_failure(exc) is False, exc
 
 
 class TestDownloadResource:

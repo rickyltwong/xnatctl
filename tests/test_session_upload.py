@@ -16,7 +16,7 @@ from xnatctl.core.exceptions import PermissionDeniedError, SessionExpiredError, 
 from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.progress import UploadSummary
-from xnatctl.services.uploads import archive_destination_params
+from xnatctl.services.import_service import archive_destination_params
 
 
 class _FakeAuthClient:

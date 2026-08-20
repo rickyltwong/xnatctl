@@ -19,10 +19,51 @@ from urllib.parse import quote
 import defusedxml.ElementTree as DefusedET
 import httpx
 
+from xnatctl.core.exceptions import ClientRequestError, ServerError
+from xnatctl.core.exceptions import ConnectionError as XNATConnectionError
+from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, is_permanent_400, retry_call
+from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
+
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
 
 logger = logging.getLogger(__name__)
+
+
+def _retryable_import_failure(exc: Exception) -> bool:
+    """Whether a failed import POST is worth another attempt.
+
+    ``dest.post`` goes through ``XNATClient._request``, which raises typed
+    errors -- so what reaches this predicate has already been through the
+    client's own ladder (429/503 for a POST). What this ladder adds:
+
+    * Transient import-race 400s, which the client cannot know about -- only
+      the import service's 400s are retryable, discriminated by body.
+    * Server-side failures the client refuses to repeat for a non-idempotent
+      method (500/502/504) plus exhausted/connection failures. Re-importing
+      the same DICOM ZIP with ``overwrite=append`` re-sends the same SOP
+      instances, so a repeat is safe here even if the first attempt partially
+      ran.
+    * Local file reads (OSError) and any raw httpx failure from a
+      non-XNATClient transport.
+
+    Fail-fast cases: permanent 400s, auth/permission/not-found errors, a ZIP
+    that is missing or unreadable, transport errors that cannot self-heal, and
+    programming errors -- retrying a bug just makes it a slower bug. The
+    connection family is deliberately retried whole even though a slice of it
+    (e.g. a connect timeout the client already declared unrecoverable) is
+    likely permanent: the wrapped cause is not distinguishable by type, and a
+    transfer pipeline prefers a few bounded retries over dropping a scan.
+    """
+    if isinstance(exc, ClientRequestError):
+        return exc.status_code == 400 and not is_permanent_400(exc.body)
+    if isinstance(exc, FileNotFoundError | PermissionError | IsADirectoryError):
+        # The local ZIP is gone or unreadable; no backoff brings it back.
+        return False
+    if isinstance(exc, PERMANENT_TRANSPORT_ERRORS):
+        # Wrong scheme, malformed URL, redirect loop: same on every attempt.
+        return False
+    return isinstance(exc, XNATConnectionError | ServerError | httpx.HTTPError | OSError)
 
 
 def _strip_xnat_prefix(filename: str) -> str:
@@ -302,68 +343,49 @@ class TransferExecutor:
             Exception: If all retries exhausted.
         """
         scan_id = zip_path.stem.removeprefix("scan_").removesuffix("_DICOM")
-
-        last_error: Exception | None = None
-        for attempt in range(retry_count):
-            try:
-                with open(zip_path, "rb") as f:
-                    resp = self.dest.post(
-                        "/data/services/import",
-                        params={
-                            "import-handler": "DICOM-zip",
-                            "PROJECT_ID": dest_project,
-                            "SUBJECT_ID": dest_subject,
-                            "EXPT_LABEL": dest_experiment_label,
-                            "overwrite": "append",
-                            "destination": "/archive",
-                        },
-                        files={"file": (zip_path.name, f, "application/zip")},
-                    )
-                zip_path.unlink(missing_ok=True)
-                return resp.text.strip() if isinstance(resp.text, str) else str(resp)
-            except httpx.HTTPStatusError as e:
-                last_error = e
-                body = e.response.text[:500] if e.response else ""
-                if attempt < retry_count - 1:
-                    delay = retry_delay * (2**attempt)
-                    logger.warning(
-                        "Scan %s DICOM import failed (attempt %d/%d), "
-                        "retrying in %.1fs: %s — response: %s",
-                        scan_id,
-                        attempt + 1,
-                        retry_count,
-                        delay,
-                        e,
-                        body,
-                    )
-                    time.sleep(delay)
-            except Exception as e:
-                last_error = e
-                if attempt < retry_count - 1:
-                    delay = retry_delay * (2**attempt)
-                    logger.warning(
-                        "Scan %s DICOM import failed (attempt %d/%d), retrying in %.1fs: %s",
-                        scan_id,
-                        attempt + 1,
-                        retry_count,
-                        delay,
-                        e,
-                    )
-                    time.sleep(delay)
-
-        # Retain ZIP on final failure for debugging
-        body = ""
-        if isinstance(last_error, httpx.HTTPStatusError) and last_error.response:
-            body = last_error.response.text[:500]
-        logger.error(
-            "Scan %s DICOM import failed after %d attempts. "
-            "ZIP retained at %s for debugging. Last response: %s",
-            scan_id,
-            retry_count,
-            zip_path,
-            body or "(no response body)",
+        params = build_import_params(
+            import_handler="DICOM-zip",
+            project=dest_project,
+            subject=dest_subject,
+            session=dest_experiment_label,
+            entity_keys="experiment",
+            # append, never the CLI default "delete": a transfer must not wipe
+            # scans that already arrived in an earlier run of the same session.
+            overwrite="append",
+            destination="/archive",
         )
-        raise last_error  # type: ignore[misc]
+
+        def _import() -> str:
+            # Reopened per attempt: a retried POST must not resend an
+            # exhausted file handle.
+            with open(zip_path, "rb") as f:
+                resp = self.dest.post(
+                    IMPORT_ENDPOINT,
+                    params=params,
+                    files={"file": (zip_path.name, f, "application/zip")},
+                )
+            return resp.text.strip() if isinstance(resp.text, str) else str(resp)
+
+        try:
+            result = retry_call(
+                _import,
+                retryable=_retryable_import_failure,
+                max_attempts=retry_count,
+                backoff_base=retry_delay,
+                label=f"scan {scan_id} DICOM import",
+            )
+        except Exception as e:
+            # Retain ZIP on failure for debugging
+            logger.error(
+                "Scan %s DICOM import failed. ZIP retained at %s for debugging: %s",
+                scan_id,
+                zip_path,
+                e,
+            )
+            raise
+
+        zip_path.unlink(missing_ok=True)
+        return result
 
     def transfer_scan_dicom(
         self,

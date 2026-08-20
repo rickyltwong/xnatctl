@@ -52,6 +52,18 @@ connection pooling.
    :undoc-members:
    :special-members: __init__, __enter__, __exit__
 
+Retry Policy
+------------
+
+The single home for retry policy: the status-code sets and backoff helpers the
+client ladder consumes, the response-based upload ladder with its
+transient-vs-permanent HTTP 400 discrimination, and the generic
+``retry_call`` primitive.
+
+.. automodule:: xnatctl.core.retry
+   :members:
+   :undoc-members:
+
 Config
 ------
 

@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from xnatctl.services.uploads import (
+from xnatctl.core.retry import (
     PERMANENT_400_SIGNATURES,
     TRANSIENT_400_SIGNATURES,
     RetryBudget,

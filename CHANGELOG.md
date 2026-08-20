@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+**Fixes**
+
+- Cross-server transfer scan imports no longer retry unrecoverable failures.
+  The import step used to repeat *any* exception -- a permanent 400 (bad
+  project, missing subject), a permission error, even a programming error --
+  burning the full backoff ladder before reporting what the first attempt
+  already knew. It now retries only transient conditions, and gains the same
+  transient-vs-permanent HTTP 400 discrimination the upload paths use, so an
+  import-race 400 during a transfer is retried instead of failing the scan.
+
 ## 0.3.0 - 2026-08-07
 
 A large hardening release. The themes: credentials stop leaking, failures stop

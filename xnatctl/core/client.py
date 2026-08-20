@@ -6,14 +6,11 @@ Provides retry logic, pagination, and session-based authentication.
 from __future__ import annotations
 
 import logging
-import random
 import re
 import ssl
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -34,6 +31,15 @@ from xnatctl.core.exceptions import (
     TimeoutError as XNATTimeoutError,
 )
 from xnatctl.core.redact import redact_url_query
+from xnatctl.core.retry import (
+    _AMBIGUOUS_RETRY_CODES,
+    IDEMPOTENT_METHODS,
+    PERMANENT_TRANSPORT_ERRORS,
+    RETRYABLE_STATUS_CODES,
+    RETRYABLE_TRANSPORT_ERRORS,
+    _backoff_delay,
+    _retry_after_seconds,
+)
 from xnatctl.core.timeouts import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_HTTP_TIMEOUT_SECONDS,
@@ -47,79 +53,10 @@ from xnatctl.core.validation import validate_server_url
 
 DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
 DEFAULT_MAX_RETRIES = 3
-RETRY_BACKOFF_BASE = 2
-# Statuses safe to retry on the core client path. 429/500 join the original
-# 502/503/504; 400 stays upload-only (it encodes a transient XNAT
-# import-race quirk handled in services/uploads.py), so it is NOT listed here.
-RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-# Of those, the ones safe to retry on ANY method: both are refusals the server
-# issues *before* running the work, so no side effect can exist yet. That they
-# are also exactly the two codes carrying Retry-After semantics is not a
-# coincidence -- both say "I did not do this; come back later".
-_METHOD_AGNOSTIC_RETRY_CODES = {429, 503}
-_RETRY_AFTER_STATUS_CODES = {429, 503}
-# The rest are ambiguous, so they follow the same idempotency rule as a
-# send-phase transport failure. A 500 means the handler ran and crashed, which
-# may have left side effects behind. A 502 is a dropped connection mid-response
-# with a proxy in front of it, and a 504 is a read timeout with a proxy in
-# front of it -- and the client already refuses to retry both of those raw
-# forms on a POST. Without this the same wire event behaved differently
-# depending on whether nginx was in the path, which is not a policy anyone
-# chose. See docs/adr/0011.
-#
-# Derived, not written out, so the two sets cannot drift apart when a status is
-# added to RETRYABLE_STATUS_CODES: anything new is ambiguous until someone
-# deliberately declares it a pre-execution refusal.
-_AMBIGUOUS_RETRY_CODES = RETRYABLE_STATUS_CODES - _METHOD_AGNOSTIC_RETRY_CODES
-# Cap on how long an explicit Retry-After is honoured: 300 is
-# what shipped and what the tests pin. A server asking for longer than 5 minutes
-# is telling us to give up, so we fall back to normal backoff and let the retry
-# budget drain instead of sleeping for an unbounded time.
-_MAX_RETRY_AFTER_SECONDS = 300
-
-# Methods whose retry after a READ-phase failure is safe. The request reached the
-# server, so a retry re-executes it; only methods XNAT treats as idempotent may
-# be repeated. POST/PATCH are excluded -- retrying them risks a double archive or
-# a double pipeline launch.
-IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS"})
-
-# Transport failures that are NOT ConnectError/TimeoutException but are still
-# transient: the socket died mid-exchange, or a proxy hiccupped. These are the
-# classic long-transfer failure mode for this tool (a dropped connection during
-# a multi-GB DICOM read), so they retry like a read timeout rather than escaping
-# raw (contract: no httpx exception may leave XNATClient).
-RETRYABLE_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
-    httpx.ReadError,
-    httpx.WriteError,
-    httpx.RemoteProtocolError,
-    httpx.ProxyError,
-    # Failure tearing the connection down. Harmless on its own, but it aborts
-    # the request that was in flight, so it needs the same treatment.
-    httpx.CloseError,
-)
-# Permanent transport failures: a bad scheme or an undecodable body will not fix
-# itself, so they raise immediately instead of burning the retry budget.
-PERMANENT_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
-    httpx.UnsupportedProtocol,
-    httpx.DecodingError,
-    httpx.InvalidURL,
-    # A redirect loop is not hypothetical here: an uninitialized XNAT bounces
-    # essentially every request to /setup, and a misconfigured siteUrl or a
-    # login-wall proxy does the same.
-    httpx.TooManyRedirects,
-    # We built a malformed request. That is a bug rather than a network event,
-    # and repeating it produces the same bug, so it fails immediately -- but it
-    # still leaves as a typed error rather than a traceback.
-    httpx.LocalProtocolError,
-)
 _BODY_SNIPPET_CHARS = 200
 _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
 
 logger = logging.getLogger(__name__)
-
-# Module-level RNG for backoff jitter. Separate from the global `random` state so
-# seeding it in a test cannot be perturbed by unrelated code.
-_RNG = random.Random()
 
 
 def _body_snippet(resp: httpx.Response) -> str:
@@ -128,55 +65,6 @@ def _body_snippet(resp: httpx.Response) -> str:
         return redact_url_query(resp.text[:_BODY_SNIPPET_CHARS])
     except Exception:
         return ""
-
-
-def _retry_after_seconds(resp: httpx.Response) -> float | None:
-    """Return a bounded Retry-After delay in seconds, or None to use backoff.
-
-    RFC 9110 allows both forms of the header and real proxies emit both:
-    delta-seconds (``120``) and an HTTP-date (``Wed, 21 Oct 2026 07:28:00 GMT``).
-    Anything unparseable, negative, or beyond the cap returns None so the caller
-    falls back to exponential backoff.
-    """
-    if resp.status_code not in _RETRY_AFTER_STATUS_CODES:
-        return None
-    raw = resp.headers.get("Retry-After")
-    if raw is None:
-        return None
-
-    raw = raw.strip()
-    seconds: float | None = None
-    try:
-        seconds = float(int(raw))
-    except (ValueError, TypeError):
-        # HTTP-date form: convert to a delay relative to now.
-        try:
-            when = parsedate_to_datetime(raw)
-        except (TypeError, ValueError):
-            return None
-        if when is None:
-            return None
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=UTC)
-        seconds = (when - datetime.now(UTC)).total_seconds()
-
-    if seconds is None:
-        return None
-    # A date already in the past means "retry now", not "sleep negative".
-    seconds = max(seconds, 0.0)
-    if seconds <= _MAX_RETRY_AFTER_SECONDS:
-        return seconds
-    return None
-
-
-def _backoff_delay(attempt: int, rng: random.Random = _RNG) -> float:
-    """Full-jitter exponential backoff for retry ``attempt`` (0-based).
-
-    Without jitter every parallel worker retries on the same tick and
-    re-stampedes a server that is already struggling -- the exact failure mode
-    behind concurrent-session exhaustion under ``--workers``.
-    """
-    return rng.uniform(0.0, float(RETRY_BACKOFF_BASE ** (attempt + 1)))
 
 
 # =============================================================================

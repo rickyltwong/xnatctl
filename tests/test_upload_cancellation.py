@@ -194,7 +194,7 @@ class TestUploadRetryLadderIsCancellable:
         its own typed error instead.
         """
         from xnatctl.core.exceptions import OperationCancelledError
-        from xnatctl.services.uploads import upload_with_retry
+        from xnatctl.core.retry import upload_with_retry
 
         token = CancellationToken()
         token.cancel()
@@ -214,7 +214,7 @@ class TestUploadRetryLadderIsCancellable:
         assert "exhausted" not in str(excinfo.value)
 
     def test_cancelling_mid_ladder_abandons_the_remaining_rungs(self) -> None:
-        from xnatctl.services.uploads import upload_with_retry
+        from xnatctl.core.retry import upload_with_retry
 
         token = CancellationToken()
         calls: list[int] = []
@@ -238,7 +238,7 @@ class TestUploadRetryLadderIsCancellable:
 
     def test_without_a_token_the_ladder_is_unchanged(self, monkeypatch) -> None:
         """The default must not alter existing retry behaviour."""
-        import xnatctl.services.uploads as uploads
+        from xnatctl.core.retry import upload_with_retry
 
         slept: list[float] = []
         monkeypatch.setattr(
@@ -251,7 +251,7 @@ class TestUploadRetryLadderIsCancellable:
             calls.append(1)
             return self._always_503()
 
-        uploads.upload_with_retry(attempt, label="t", max_retries=3)
+        upload_with_retry(attempt, label="t", max_retries=3)
 
         assert len(calls) == 4, "should still make every attempt"
         assert slept == [2, 4, 8], "and still climb the same backoff ladder"

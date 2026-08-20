@@ -9,12 +9,11 @@ import httpx
 import pytest
 
 import xnatctl.services.uploads as uploads
+from xnatctl.core.retry import is_retryable_status, upload_with_retry
 from xnatctl.services.uploads import (
     collect_dicom_files,
-    is_retryable_status,
     split_into_batches,
     split_into_n_batches,
-    upload_with_retry,
 )
 
 # =============================================================================

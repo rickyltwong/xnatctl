@@ -32,15 +32,16 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import httpx
 
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken, cancellable_pool
-from xnatctl.core.client import RETRYABLE_STATUS_CODES as CLIENT_RETRYABLE_STATUS_CODES
 from xnatctl.core.client import XNATClient
 from xnatctl.core.exceptions import OperationCancelledError, UploadError
+from xnatctl.core.retry import upload_with_retry
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
 from xnatctl.models.progress import (
     OperationPhase,
     UploadProgress,
     UploadSummary,
 )
+from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
 
 from .base import BaseService
 
@@ -62,129 +63,6 @@ DEFAULT_DICOM_CALLING_AET = "XNATCTL"
 DEFAULT_DICOM_PORT = 104
 
 DICOM_EXTENSIONS = {".dcm", ".ima", ".img", ".dicom"}
-
-UPLOAD_MAX_RETRIES = 5
-UPLOAD_RETRY_BACKOFF_BASE = 2  # seconds: 2, 4, 8, 16, 32
-
-# One source of truth for the shared statuses: the core client
-# owns the base policy, uploads extend it. Previously both modules defined a
-# constant of the same name and they drifted -- the client did not retry 429/500
-# while uploads did.
-UPLOAD_ONLY_RETRYABLE_STATUS_CODES = {
-    # XNAT's import service returns a transient 400 while an archive operation
-    # races; retrying clears it. Deliberately NOT in the core client's set,
-    # where a 400 is a genuine client error. A follow-up will discriminate the
-    # transient 400s from the permanent ones.
-    400,
-}
-RETRYABLE_STATUS_CODES = CLIENT_RETRYABLE_STATUS_CODES | UPLOAD_ONLY_RETRYABLE_STATUS_CODES
-
-# Which 400s are worth retrying.
-#
-# Harvested 2026-08-04 from the messages compiled into the deployed XNAT
-# **1.9.2.1** on cnmdpxnatv01 (org.nrg.xnat.archive.PrearcSessionArchiver,
-# PrearcUtils, restlet.services.Importer), cross-checked against a real
-# ClientException in that host's prearchive.log. Read off the running server
-# rather than guessed, because the whole point is to tell two 400s apart.
-#
-# The transient ones are all concurrency: two uploads meeting in the same
-# session. Waiting genuinely clears them, which is why 400 was made retryable
-# in the first place.
-TRANSIENT_400_SIGNATURES = (
-    "session processing in progress",
-    "concurrent modification is discouraged",
-    "duplicate archive attempt",
-    "destination session in use",
-)
-
-# The permanent ones are configuration or data errors. No amount of waiting
-# fixes a project that does not exist, and retrying is what made a mislabeled
-# upload burn 62s per file across three passes before reporting the failure.
-PERMANENT_400_SIGNATURES = (
-    "unable to deduce session label",
-    "unable to identify subject",
-    "unable to identify destination project",
-    "not allowed to create new subjects",
-    "unable to create new subject id",
-    "unable to create new session id",
-    "session already exists, retry with overwrite enabled",
-    "via archive process",  # "Invalid modification of session {label,project,UID,...}"
-    "session already contains a scan",
-    "already exists for another subject",
-    "src uri is invalid",
-    "expected a catalog file, however it was missing",
-    "non-standard prearchive structure",
-    "or non-parsable dicom) files",
-    "is required when requesting",
-)
-
-
-def is_permanent_400(body: str) -> bool:
-    """Whether a 400 body names a fault that retrying cannot fix.
-
-    Deliberately a denylist of *known-permanent* messages rather than an
-    allowlist of known-transient ones. Both fix the pathology this addresses --
-    a misconfigured upload always produces one of the messages above, and now
-    fails on the first attempt instead of the sixth. The difference is how each
-    behaves when XNAT's wording drifts:
-
-    * denylist: an unrecognised 400 is retried, as it is today. A new transient
-      message costs some backoff.
-    * allowlist: an unrecognised 400 fails immediately. A new transient message
-      turns uploads that currently succeed into failures.
-
-    Slow is recoverable; spuriously refusing a good upload is not. The retry
-    budget bounds the slow case, so drift degrades rather than breaks.
-    """
-    if not body:
-        return False
-    haystack = body.lower()
-    # Transient wins a tie: "duplicate archive attempt" and the modification
-    # errors can co-occur in one body, and the concurrent case is the one that
-    # clears on its own.
-    if any(sig in haystack for sig in TRANSIENT_400_SIGNATURES):
-        return False
-    return any(sig in haystack for sig in PERMANENT_400_SIGNATURES)
-
-
-class RetryBudget:
-    """A ceiling on total backoff across one upload operation.
-
-    The signature lists above are read off one XNAT version; a future release
-    can word things differently, and an unrecognised permanent 400 would then
-    be retried on every file again. This bounds that worst case regardless of
-    what the server says: once the operation has spent its budget sleeping,
-    further retries are abandoned and the failures reported.
-    """
-
-    __slots__ = ("_lock", "_remaining", "_total")
-
-    def __init__(self, seconds: float = 900.0) -> None:
-        self._total = seconds
-        self._remaining = seconds
-        self._lock = threading.Lock()
-
-    def claim(self, seconds: float) -> bool:
-        """Reserve a backoff sleep. False when the budget is exhausted."""
-        with self._lock:
-            if self._remaining < seconds:
-                return False
-            self._remaining -= seconds
-            return True
-
-    @property
-    def exhausted(self) -> bool:
-        """Whether any budget remains."""
-        with self._lock:
-            return self._remaining <= 0
-
-
-# When running with --verbose, we can log small snippets of retryable HTTP 400
-# response bodies to help diagnose transient XNAT import races. Keep this capped
-# to avoid flooding logs on very large uploads.
-_RETRY_DEBUG_MAX_SNIPPETS = 20
-_retry_debug_snippets_emitted = 0
-_retry_debug_lock = threading.Lock()
 
 # Gradual-DICOM uses one HTTP request per DICOM file; creating a new httpx.Client
 # per file is expensive and can trigger transient ConnectError bursts under high
@@ -489,32 +367,6 @@ def _is_dicom_like_path(path: Path, *, include_extensionless: bool = True) -> bo
     return False
 
 
-def archive_destination_params(project: str, direct_archive: bool) -> dict[str, str]:
-    """Return the querystring keys that route a POST /data/services/import.
-
-    * Direct-archive path: ``Direct-Archive=true`` — handled by the
-      ``DICOM-zip`` and ``gradual-DICOM`` import handlers; bypasses the
-      prearchive and writes straight to the project archive.
-    * Prearchive path: ``dest=/prearchive/projects/{project}`` — the
-      documented destination form. ``Direct-Archive=false`` alone is
-      equivalent to "use standard upload mechanism"; we prefer the
-      explicit ``dest`` because it is self-describing and matches the
-      ``PrearchiveService`` pattern used elsewhere in this repo.
-
-    Caveat: neither form can prevent a *project-configured* auto-archive.
-    XNAT's ``prearchive_code`` on the project (0=manual, 4/5=auto) is the
-    authoritative switch. When a project has auto-archive enabled, a
-    session uploaded via either of these paths will land in prearchive
-    momentarily then be auto-archived by the server. To force
-    prearchive-only behaviour, the project's prearchive setting must be
-    changed to "Leave in prearchive" (prearchive_code=0). There is no
-    per-upload import-service override for this on XNAT 1.8+.
-    """
-    if direct_archive:
-        return {"Direct-Archive": "true"}
-    return {"dest": f"/prearchive/projects/{project}"}
-
-
 def split_into_batches(
     files: Sequence[Path],
     batch_size: int,
@@ -577,15 +429,6 @@ def split_into_n_batches(
     return batches
 
 
-def is_retryable_status(status_code: int) -> bool:
-    """Check if an HTTP status code warrants a retry.
-
-    Retryable: 400 (XNAT transient), 429 (rate limit), 5xx (server errors).
-    Non-retryable: 2xx (success), 401/403 (auth), other 4xx (client error).
-    """
-    return status_code in RETRYABLE_STATUS_CODES
-
-
 def _error_signature(error: str) -> str:
     """Collapse an error message to something comparable across files.
 
@@ -595,140 +438,6 @@ def _error_signature(error: str) -> str:
     reach the variable tail.
     """
     return error.strip()[:200]
-
-
-def _safe_body(resp: httpx.Response) -> str:
-    """Response text, or empty if it cannot be read.
-
-    A body that will not decode must not turn a plain HTTP failure into an
-    exception from the retry helper.
-    """
-    try:
-        return resp.text
-    except Exception:
-        return ""
-
-
-def upload_with_retry(  # noqa: C901  # pre-existing; see pyproject
-    upload_fn: Callable[[], httpx.Response],
-    *,
-    max_retries: int = UPLOAD_MAX_RETRIES,
-    backoff_base: int = UPLOAD_RETRY_BACKOFF_BASE,
-    label: str = "upload",
-    cancel_token: CancellationToken = NULL_TOKEN,
-    retry_budget: RetryBudget | None = None,
-) -> httpx.Response:
-    """Execute an upload function with retry on transient HTTP errors.
-
-    Args:
-        upload_fn: Callable that performs the upload and returns an httpx.Response.
-                   Will be called multiple times on retry -- must be idempotent.
-        max_retries: Maximum number of retries (default: 5).
-        backoff_base: Base for exponential backoff in seconds (default: 2).
-        label: Label for log messages.
-        cancel_token: Checked before each attempt, and slept against instead of
-            ``time.sleep``. The ladder is 2+4+8+16+32s, so without this a
-            cancelled upload sits in a backoff for up to a minute per in-flight
-            batch after the user has already asked it to stop.
-        retry_budget: Shared ceiling on total backoff for the whole operation.
-            When it runs out, the last response is returned instead of sleeping
-            again. Bounds the damage if a permanent 400 goes unrecognised.
-
-    Returns:
-        The httpx.Response from a successful attempt.
-
-    Raises:
-        The last exception if all retries are exhausted and no response was obtained.
-    """
-    last_resp = None
-    last_exc: Exception | None = None
-
-    for attempt in range(max_retries + 1):
-        if cancel_token.cancelled:
-            break
-        try:
-            resp = upload_fn()
-            if not is_retryable_status(resp.status_code):
-                return resp
-            if resp.status_code == 400 and is_permanent_400(_safe_body(resp)):
-                # A bad project, an unknown subject, a session that needs
-                # --overwrite: the server will say the same thing in 62
-                # seconds. Report it now, on attempt one.
-                logger.debug("%s: permanent HTTP 400, not retrying", label)
-                return resp
-            last_resp = resp
-            last_exc = None
-            if attempt < max_retries:
-                delay = backoff_base ** (attempt + 1)
-                # Optional debug detail for transient XNAT 400s
-                if resp.status_code == 400 and logger.isEnabledFor(logging.DEBUG):
-                    global _retry_debug_snippets_emitted
-                    with _retry_debug_lock:
-                        should_log = _retry_debug_snippets_emitted < _RETRY_DEBUG_MAX_SNIPPETS
-                        if should_log:
-                            _retry_debug_snippets_emitted += 1
-                    if should_log:
-                        try:
-                            snippet = resp.text.strip().replace("\n", " ")
-                            if snippet:
-                                logger.debug(
-                                    "%s: retryable HTTP 400 body: %s",
-                                    label,
-                                    snippet[:200],
-                                )
-                        except Exception:
-                            pass
-                logger.warning(
-                    "%s: HTTP %d on attempt %d/%d, retrying in %ds",
-                    label,
-                    resp.status_code,
-                    attempt + 1,
-                    max_retries + 1,
-                    delay,
-                )
-                if retry_budget is not None and not retry_budget.claim(delay):
-                    logger.warning("%s: retry budget exhausted, giving up", label)
-                    break
-                if cancel_token.sleep(delay):
-                    break
-        except httpx.ConnectTimeout:
-            # Fail fast: a connect-phase timeout means the host is
-            # unreachable and will not recover within the backoff window -- unlike
-            # the transient ConnectError bursts XNAT throws during cold start,
-            # which stay retryable below. Re-raise immediately instead of burning
-            # ~120s of retries. (Typed-error conversion on the upload path is
-            # the shared retry policy.)
-            logger.warning("%s: connect timed out; not retrying", label)
-            raise
-        except (httpx.TimeoutException, httpx.ConnectError) as e:
-            last_exc = e
-            last_resp = None
-            if attempt < max_retries:
-                delay = backoff_base ** (attempt + 1)
-                detail = f"{type(e).__name__}: {str(e).strip().replace(chr(10), ' ')}"
-                logger.warning(
-                    "%s: %s on attempt %d/%d, retrying in %ds",
-                    label,
-                    detail,
-                    attempt + 1,
-                    max_retries + 1,
-                    delay,
-                )
-                if retry_budget is not None and not retry_budget.claim(delay):
-                    logger.warning("%s: retry budget exhausted, giving up", label)
-                    break
-                if cancel_token.sleep(delay):
-                    break
-
-    if last_resp is not None:
-        return last_resp
-    if last_exc is not None:
-        raise last_exc
-    if cancel_token.cancelled:
-        # Cancelled before any attempt produced a response. Saying "all retries
-        # exhausted" here would blame the server for the user's Ctrl+C.
-        raise OperationCancelledError(label)
-    raise RuntimeError(f"{label}: all retries exhausted with no response")
 
 
 # =============================================================================
@@ -861,20 +570,20 @@ def upload_single_archive(
     # default for those. The batch path only ever generates .tar/.zip names.
     content_type = "application/zip" if name.endswith(".zip") else "application/x-tar"
 
-    params = {
-        "import-handler": import_handler,
-        "Ignore-Unparsable": "true" if ignore_unparsable else "false",
-        "project": project,
-        "subject": subject,
-        "session": session,
-        "overwrite": overwrite,
-        "overwrite_files": "true",
-        "quarantine": "false",
-        "triggerPipelines": "true",
-        "rename": "false",
-        "inbody": "true",
-        **archive_destination_params(project, direct_archive),
-    }
+    params = build_import_params(
+        import_handler=import_handler,
+        project=project,
+        subject=subject,
+        session=session,
+        overwrite=overwrite,
+        overwrite_files=True,
+        quarantine=False,
+        trigger_pipelines=True,
+        rename=False,
+        inbody=True,
+        ignore_unparsable=ignore_unparsable,
+        direct_archive=direct_archive,
+    )
 
     with httpx.Client(
         base_url=base_url,
@@ -912,7 +621,7 @@ def upload_single_archive(
             def _attempt_with(jar: dict[str, str]) -> httpx.Response:
                 with archive_path.open("rb") as data:
                     return client.post(
-                        "/data/services/import",
+                        IMPORT_ENDPOINT,
                         params=params,
                         headers={"Content-Type": content_type},
                         content=data,
@@ -1350,15 +1059,16 @@ def _upload_single_file_gradual(
             def _attempt() -> httpx.Response:
                 with open(file_path, "rb") as f:
                     return client.post(
-                        "/data/services/import",
-                        params={
-                            "inbody": "true",
-                            "import-handler": "gradual-DICOM",
-                            "PROJECT_ID": project,
-                            "SUBJECT_ID": subject,
-                            "EXPT_LABEL": session,
-                            **archive_destination_params(project, direct_archive),
-                        },
+                        IMPORT_ENDPOINT,
+                        params=build_import_params(
+                            import_handler="gradual-DICOM",
+                            project=project,
+                            subject=subject,
+                            session=session,
+                            entity_keys="experiment",
+                            inbody=True,
+                            direct_archive=direct_archive,
+                        ),
                         content=f,
                         headers={"Content-Type": "application/dicom"},
                         cookies=cookies,
