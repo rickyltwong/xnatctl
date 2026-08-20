@@ -221,3 +221,44 @@ class TestScanSetNote:
         assert service.set_note("E001", "1", "test note") is True
         put_params = mock_client.put.call_args[1]["params"]
         assert put_params["xnat:imageScanData/note"] == "test note"
+
+
+class TestScanRefAccessors:
+    """Tests for the ref-based accessors the CLI routes through (ADR-0010)."""
+
+    def _scan_ref(self):
+        from xnatctl.models.hierarchy import ExperimentRef, ScanRef
+
+        return ScanRef(experiment=ExperimentRef(experiment="EXP01"), scan_id="1")
+
+    def test_get_scan_document_items(self, service: ScanService, mock_client: MagicMock) -> None:
+        """An items[] detail document is unwrapped to its data_fields."""
+        mock_client.get_json.return_value = {"items": [{"data_fields": {"ID": "1", "type": "T1"}}]}
+
+        doc = service.get_scan_document(self._scan_ref())
+
+        assert doc == {"ID": "1", "type": "T1"}
+        mock_client.get_json.assert_called_once_with("/data/experiments/EXP01/scans/1")
+
+    def test_get_scan_document_resultset(
+        self, service: ScanService, mock_client: MagicMock
+    ) -> None:
+        """A ResultSet response returns its first row."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "1"}]}}
+
+        assert service.get_scan_document(self._scan_ref()) == {"ID": "1"}
+
+    def test_get_scan_document_missing(self, service: ScanService, mock_client: MagicMock) -> None:
+        """An empty response returns None."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        assert service.get_scan_document(self._scan_ref()) is None
+
+    def test_delete_scan_ref(self, service: ScanService, mock_client: MagicMock) -> None:
+        """delete_scan_ref DELETEs the ref's scan path and returns the response."""
+        mock_client.delete.return_value = make_response("", status_code=200)
+
+        resp = service.delete_scan_ref(self._scan_ref())
+
+        assert resp.status_code == 200
+        mock_client.delete.assert_called_once_with("/data/experiments/EXP01/scans/1")

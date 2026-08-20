@@ -6,6 +6,8 @@ import builtins
 import re
 from typing import Any
 
+import httpx
+
 from xnatctl.core.exceptions import ResourceNotFoundError, ValidationError
 from xnatctl.models.subject import Subject
 
@@ -535,3 +537,39 @@ class SubjectService(BaseService):
         result["source_deleted"] = True
 
         return result
+
+    # -------------------------------------------------------------------------
+    # Raw-row / raw-response accessors
+    #
+    # The typed ``list``/``rename``/``delete`` above return models or run extra
+    # safety round-trips. These issue exactly the request the CLI has always
+    # sent and hand back the untyped rows (or the raw response, for mutations
+    # whose status code the CLI branches on).
+    # -------------------------------------------------------------------------
+
+    def list_rows(
+        self, project: str | None, columns: str | None = None
+    ) -> builtins.list[dict[str, Any]]:
+        """Return raw subject rows for a project."""
+        path = HierarchyService.build_subject_collection_path(project)
+        if columns:
+            data = self.client.get_json(path, params={"columns": columns})
+        else:
+            data = self.client.get_json(path)
+        return HierarchyService.extract_rows(data)
+
+    def experiment_rows(self, project: str | None, subject: str) -> builtins.list[dict[str, Any]]:
+        """Return raw experiment rows for a subject."""
+        path = HierarchyService.build_experiment_collection_path(project, subject)
+        return HierarchyService.extract_rows(self.client.get_json(path))
+
+    def delete_raw(self, project: str, subject_id: str) -> httpx.Response:
+        """DELETE a subject and return the raw response for status inspection."""
+        return self.client.delete(f"/data/projects/{project}/subjects/{subject_id}")
+
+    def rename_raw(self, project: str, label: str, new_label: str) -> httpx.Response:
+        """PUT a new label on a subject and return the raw response."""
+        return self.client.put(
+            f"/data/projects/{project}/subjects/{label}",
+            params={"label": new_label},
+        )

@@ -137,6 +137,23 @@ class HierarchyService(BaseService):
         """Build a scan collection path."""
         return cls.build_experiment_path(cls.routable_scan_parent(ref), "scans")
 
+    def get_experiment_json(
+        self,
+        ref: ExperimentRef,
+        *parts: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        """Fetch an experiment document, or one of its sub-resources, as JSON.
+
+        The single raw read behind experiment inspection and the session-show
+        scans/resources listings. Keeping it here lets the CLI operate on
+        hierarchy refs without reaching through ``service.client``.
+        """
+        path = self.build_experiment_path(ref, *parts)
+        if params is None:
+            return self.client.get_json(path)
+        return self.client.get_json(path, params=params)
+
     @classmethod
     def build_scan_path(cls, ref: ScanRef, *parts: str) -> str:
         """Build a scan item path."""

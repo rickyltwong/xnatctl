@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import click
 
@@ -19,8 +18,7 @@ from xnatctl.cli.common import (
     resolve_workers_from_context,
 )
 from xnatctl.core.output import print_error, print_output, print_success
-from xnatctl.models.hierarchy import ProjectRef
-from xnatctl.services.hierarchy import HierarchyService
+from xnatctl.services.projects import ProjectService
 
 
 @click.group()
@@ -42,14 +40,8 @@ def project_list(ctx: Context) -> None:
         xnatctl project list -o json
         xnatctl project list -q  # IDs only
     """
-    client = ctx.get_client()
-
-    # Get projects
-    resp = client.get_json(
-        "/data/projects",
-        params={"columns": "ID,name,pi_lastname,description"},
-    )
-    results = HierarchyService.extract_rows(resp)
+    service = ProjectService(ctx.get_client())
+    results = service.list_rows("ID,name,pi_lastname,description")
 
     # Transform for output
     projects = []
@@ -88,18 +80,10 @@ def project_show(ctx: Context, project_id: str) -> None:
     from xnatctl.core.validation import validate_project_id
 
     project_id = validate_project_id(project_id)
-    client = ctx.get_client()
-    hierarchy = HierarchyService(client)
+    service = ProjectService(ctx.get_client())
 
     # Get project details
-    resp = client.get_json(hierarchy.build_project_path(ProjectRef(project_id=project_id)))
-    project_data: dict[str, Any] | None
-    project_item = hierarchy.extract_first_item(resp)
-    if project_item is not None:
-        project_data, _project_meta = project_item
-    else:
-        results = HierarchyService.extract_rows(resp)
-        project_data = results[0] if results else None
+    project_data = service.get_detail(project_id)
 
     if not project_data:
         print_error(f"Project not found: {project_id}")
@@ -107,18 +91,12 @@ def project_show(ctx: Context, project_id: str) -> None:
 
     # Get counts
     try:
-        subjects_resp = client.get_json(
-            hierarchy.build_project_path(ProjectRef(project_id=project_id), "subjects")
-        )
-        subject_count: int | str = len(HierarchyService.extract_rows(subjects_resp))
+        subject_count: int | str = len(service.subject_rows(project_id))
     except Exception:
         subject_count = "?"
 
     try:
-        sessions_resp = client.get_json(
-            hierarchy.build_project_path(ProjectRef(project_id=project_id), "experiments")
-        )
-        session_count: int | str = len(HierarchyService.extract_rows(sessions_resp))
+        session_count: int | str = len(service.experiment_rows(project_id))
     except Exception:
         session_count = "?"
 
@@ -169,26 +147,14 @@ def project_create(
     from xnatctl.core.validation import validate_project_id
 
     project_id = validate_project_id(project_id)
-    client = ctx.get_client()
+    service = ProjectService(ctx.get_client())
 
-    # Build project XML
-    name = name or project_id
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<xnat:Project ID="{project_id}" xmlns:xnat="http://nrg.wustl.edu/xnat">
-    <xnat:name>{name}</xnat:name>
-"""
-    if description:
-        xml += f"    <xnat:description>{description}</xnat:description>\n"
-    if pi:
-        xml += f"    <xnat:PI><xnat:lastname>{pi}</xnat:lastname></xnat:PI>\n"
-    xml += "</xnat:Project>"
-
-    # Create project
-    resp = client.post(
-        f"/data/projects/{project_id}",
-        params={"accessibility": accessibility},
-        data=xml,
-        headers={"Content-Type": "text/xml"},
+    resp = service.create_via_post(
+        project_id,
+        name=name,
+        description=description,
+        pi_lastname=pi,
+        accessibility=accessibility,
     )
 
     if resp.status_code in (200, 201):

@@ -240,6 +240,123 @@ class TestProjectGetSessions:
         assert result[0]["ID"] == "EXP01"
 
 
+class TestProjectRawAccessors:
+    """Tests for the raw-row / raw-response accessors the CLI routes through."""
+
+    def test_list_rows_returns_raw_rows(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """list_rows returns untyped rows and requests the given columns."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [SAMPLE_PROJECT_ROW]}}
+
+        rows = service.list_rows("ID,name,pi_lastname,description")
+
+        assert rows == [SAMPLE_PROJECT_ROW]
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects", params={"columns": "ID,name,pi_lastname,description"}
+        )
+
+    def test_list_rows_tolerates_top_level_array(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """A bare JSON array is still extracted to rows."""
+        mock_client.get_json.return_value = [SAMPLE_PROJECT_ROW]
+
+        assert service.list_rows("ID") == [SAMPLE_PROJECT_ROW]
+
+    def test_get_detail_items_response(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """get_detail unwraps an items[] detail document to data_fields."""
+        mock_client.get_json.return_value = {
+            "items": [{"data_fields": {"ID": "PROJ01", "secondary_ID": "SEC01"}}]
+        }
+
+        detail = service.get_detail("PROJ01")
+
+        assert detail == {"ID": "PROJ01", "secondary_ID": "SEC01"}
+        mock_client.get_json.assert_called_once_with("/data/projects/PROJ01")
+
+    def test_get_detail_resultset_response(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """get_detail returns the first ResultSet row."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [SAMPLE_PROJECT_ROW]}}
+
+        assert service.get_detail("PROJ01") == SAMPLE_PROJECT_ROW
+
+    def test_get_detail_missing_returns_none(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """get_detail returns None when nothing matches."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        assert service.get_detail("GONE") is None
+
+    def test_subject_rows(self, service: ProjectService, mock_client: MagicMock) -> None:
+        """subject_rows returns raw subject rows from the subjects collection."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "SUBJ01"}]}}
+
+        rows = service.subject_rows("PROJ01")
+
+        assert rows == [{"ID": "SUBJ01"}]
+        mock_client.get_json.assert_called_once_with("/data/projects/PROJ01/subjects")
+
+    def test_experiment_rows(self, service: ProjectService, mock_client: MagicMock) -> None:
+        """experiment_rows returns raw experiment rows from the experiments collection."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "EXP01"}]}}
+
+        rows = service.experiment_rows("PROJ01")
+
+        assert rows == [{"ID": "EXP01"}]
+        mock_client.get_json.assert_called_once_with("/data/projects/PROJ01/experiments")
+
+    def test_create_via_post_success(self, service: ProjectService, mock_client: MagicMock) -> None:
+        """create_via_post POSTs the exact XML wire body and returns the raw response.
+
+        The body is pinned byte-for-byte: whitespace, element order, and the
+        declaration are all part of the wire contract this method preserves.
+        """
+        mock_client.post.return_value = make_response("", status_code=201)
+
+        resp = service.create_via_post(
+            "NEWPROJ",
+            name="New Project",
+            description="A test",
+            pi_lastname="Smith",
+            accessibility="protected",
+        )
+
+        assert resp.status_code == 201
+        call = mock_client.post.call_args
+        assert call[0][0] == "/data/projects/NEWPROJ"
+        assert call[1]["params"] == {"accessibility": "protected"}
+        assert call[1]["headers"] == {"Content-Type": "text/xml"}
+        assert call[1]["data"] == (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<xnat:Project ID="NEWPROJ" xmlns:xnat="http://nrg.wustl.edu/xnat">\n'
+            "    <xnat:name>New Project</xnat:name>\n"
+            "    <xnat:description>A test</xnat:description>\n"
+            "    <xnat:PI><xnat:lastname>Smith</xnat:lastname></xnat:PI>\n"
+            "</xnat:Project>"
+        )
+
+    def test_create_via_post_defaults_name_and_omits_optional_xml(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """Name defaults to the ID; optional elements are absent, not empty."""
+        mock_client.post.return_value = make_response("", status_code=200)
+
+        service.create_via_post("NEWPROJ")
+
+        assert mock_client.post.call_args[1]["data"] == (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<xnat:Project ID="NEWPROJ" xmlns:xnat="http://nrg.wustl.edu/xnat">\n'
+            "    <xnat:name>NEWPROJ</xnat:name>\n"
+            "</xnat:Project>"
+        )
+
+
 class TestProjectSetAccessibility:
     """Tests for ProjectService.set_accessibility."""
 

@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import as_completed
 from typing import Any, cast
+from urllib.parse import quote
+
+import httpx
 
 from xnatctl.core.cancellation import cancellable_pool
 
@@ -297,6 +300,55 @@ class AdminService(BaseService):
             path = "/xapi/siteConfig"
 
         return cast(dict[str, Any], self._get(path))
+
+    # -------------------------------------------------------------------------
+    # Raw accessors used by the CLI
+    #
+    # These target the specific endpoints the CLI has always called, which
+    # differ from the typed methods above: ``refresh_catalogs`` PUTs each
+    # experiment, whereas the CLI POSTs the catalog-refresh service; ``audit_log``
+    # reads ``/data/audit``, whereas the CLI reads ``/xapi/audit``;
+    # ``add_user_to_groups`` PUTs per-project group paths, whereas the CLI PUTs
+    # the ``/xapi/users/{u}/groups`` list. The endpoints are not interchangeable,
+    # so the CLI's wire calls live here rather than being repointed.
+    # -------------------------------------------------------------------------
+
+    def list_experiments_for_refresh(self, project: str) -> list[dict[str, Any]]:
+        """Return raw ``(ID, subject_ID, label)`` experiment rows for a project."""
+        resp = self.client.get_json(
+            f"/data/projects/{project}/experiments",
+            params={"columns": "ID,subject_ID,label"},
+        )
+        rows: list[dict[str, Any]] = resp.get("ResultSet", {}).get("Result", [])
+        return rows
+
+    def refresh_catalog(self, resource: str, options: str | None = None) -> httpx.Response:
+        """POST a single catalog-refresh request and return the raw response."""
+        params: dict[str, str] = {"resource": resource}
+        if options:
+            params["options"] = options
+        return self.client.post("/data/services/refresh/catalog", params=params)
+
+    def put_user_groups(self, username: str, groups: list[str]) -> httpx.Response:
+        """PUT the group list for a user and return the raw response."""
+        return self.client.put(f"/xapi/users/{quote(username)}/groups", json=groups)
+
+    def get_xapi_audit(
+        self,
+        limit: int,
+        project: str | None = None,
+        username: str | None = None,
+        action: str | None = None,
+    ) -> Any:
+        """GET ``/xapi/audit`` with the CLI's filters and return raw JSON."""
+        params: dict[str, Any] = {"limit": limit}
+        if project:
+            params["project"] = project
+        if username:
+            params["user"] = username
+        if action:
+            params["action"] = action
+        return self.client.get_json("/xapi/audit", params=params)
 
     def set_site_config(
         self,

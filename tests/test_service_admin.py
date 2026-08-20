@@ -285,3 +285,87 @@ class TestSetSiteConfig:
         call_path = mock_client.put.call_args[0][0]
         assert "/xapi/siteConfig/siteId" in call_path
         assert mock_client.put.call_args[1]["json"] == "NEW_XNAT"
+
+
+class TestAdminRawAccessors:
+    """Tests for the raw accessors the admin/resource CLI routes through."""
+
+    def test_list_experiments_for_refresh(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """Returns the raw (ID, subject_ID, label) rows for the project."""
+        rows = [{"ID": "EXP01", "subject_ID": "SUBJ01", "label": "s1"}]
+        mock_client.get_json.return_value = {"ResultSet": {"Result": rows}}
+
+        result = service.list_experiments_for_refresh("PROJ01")
+
+        assert result == rows
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/experiments", params={"columns": "ID,subject_ID,label"}
+        )
+
+    def test_list_experiments_for_refresh_missing_resultset(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """A response without a ResultSet yields an empty list."""
+        mock_client.get_json.return_value = {}
+
+        assert service.list_experiments_for_refresh("PROJ01") == []
+
+    def test_refresh_catalog_with_options(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """refresh_catalog POSTs the resource + options and returns the response."""
+        mock_client.post.return_value = make_response("", status_code=200)
+
+        resp = service.refresh_catalog("/archive/projects/PROJ01", options="append,checksum")
+
+        assert resp.status_code == 200
+        mock_client.post.assert_called_once_with(
+            "/data/services/refresh/catalog",
+            params={"resource": "/archive/projects/PROJ01", "options": "append,checksum"},
+        )
+
+    def test_refresh_catalog_without_options(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """Without options the options param is omitted."""
+        mock_client.post.return_value = make_response("", status_code=200)
+
+        service.refresh_catalog("/archive/projects/PROJ01")
+
+        assert mock_client.post.call_args[1]["params"] == {"resource": "/archive/projects/PROJ01"}
+
+    def test_put_user_groups_quotes_username(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """put_user_groups URL-encodes the username and sends the group list as JSON."""
+        mock_client.put.return_value = make_response("", status_code=200)
+
+        resp = service.put_user_groups("jane doe", ["PROJ1_member"])
+
+        assert resp.status_code == 200
+        call = mock_client.put.call_args
+        assert call[0][0] == "/xapi/users/jane%20doe/groups"
+        assert call[1]["json"] == ["PROJ1_member"]
+
+    def test_get_xapi_audit_builds_filters(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """get_xapi_audit forwards only the filters that were provided."""
+        mock_client.get_json.return_value = []
+
+        service.get_xapi_audit(20, project="PROJ01", action="delete")
+
+        params = mock_client.get_json.call_args[1]["params"]
+        assert params == {"limit": 20, "project": "PROJ01", "action": "delete"}
+        assert "user" not in params
+
+    def test_get_xapi_audit_returns_raw_payload(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """The raw JSON (list or dict) is returned unchanged."""
+        payload = [{"timestamp": "t", "action": "delete"}]
+        mock_client.get_json.return_value = payload
+
+        assert service.get_xapi_audit(10) is payload

@@ -5,7 +5,10 @@ from __future__ import annotations
 import builtins
 from typing import Any
 
+import httpx
+
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.models.hierarchy import ProjectRef
 from xnatctl.models.project import Project
 
 from .base import BaseService
@@ -206,3 +209,74 @@ class ProjectService(BaseService):
         path = f"/data/projects/{project_id}/accessibility/{accessibility}"
         self._put(path)
         return True
+
+    # -------------------------------------------------------------------------
+    # Raw-row accessors
+    #
+    # These return the untyped rows XNAT sends so the CLI can render every key
+    # it prints today. The typed ``list``/``get`` above drop unknown keys
+    # (``extra="ignore"``) and issue a different query (``accessible=true``),
+    # which would change both the wire request and the rendered output.
+    # -------------------------------------------------------------------------
+
+    def list_rows(self, columns: str) -> builtins.list[dict[str, Any]]:
+        """Return raw project rows for the requested columns."""
+        data = self.client.get_json("/data/projects", params={"columns": columns})
+        return HierarchyService.extract_rows(data)
+
+    def get_detail(self, project_id: str) -> dict[str, Any] | None:
+        """Return a project's raw detail row, or ``None`` if not found."""
+        data = self.client.get_json(
+            HierarchyService.build_project_path(ProjectRef(project_id=project_id))
+        )
+        item = HierarchyService.extract_first_item(data)
+        if item is not None:
+            return item[0]
+        rows = HierarchyService.extract_rows(data)
+        return rows[0] if rows else None
+
+    def subject_rows(self, project_id: str) -> builtins.list[dict[str, Any]]:
+        """Return raw subject rows for a project."""
+        data = self.client.get_json(
+            HierarchyService.build_project_path(ProjectRef(project_id=project_id), "subjects")
+        )
+        return HierarchyService.extract_rows(data)
+
+    def experiment_rows(self, project_id: str) -> builtins.list[dict[str, Any]]:
+        """Return raw experiment rows for a project."""
+        data = self.client.get_json(
+            HierarchyService.build_project_path(ProjectRef(project_id=project_id), "experiments")
+        )
+        return HierarchyService.extract_rows(data)
+
+    def create_via_post(
+        self,
+        project_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        pi_lastname: str | None = None,
+        accessibility: str = "private",
+    ) -> httpx.Response:
+        """Create a project by POSTing its XML document.
+
+        Distinct from :meth:`create`, which PUTs querystring params. This mirrors
+        the XML-body POST the CLI has always sent; the caller inspects the
+        returned response's status code.
+        """
+        name = name or project_id
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<xnat:Project ID="{project_id}" xmlns:xnat="http://nrg.wustl.edu/xnat">
+    <xnat:name>{name}</xnat:name>
+"""
+        if description:
+            xml += f"    <xnat:description>{description}</xnat:description>\n"
+        if pi_lastname:
+            xml += f"    <xnat:PI><xnat:lastname>{pi_lastname}</xnat:lastname></xnat:PI>\n"
+        xml += "</xnat:Project>"
+
+        return self.client.post(
+            f"/data/projects/{project_id}",
+            params={"accessibility": accessibility},
+            data=xml,
+            headers={"Content-Type": "text/xml"},
+        )

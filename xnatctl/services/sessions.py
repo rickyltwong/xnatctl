@@ -280,3 +280,49 @@ class SessionService(BaseService):
 
         self._put(path, params=params)
         return True
+
+    # -------------------------------------------------------------------------
+    # Raw-row accessors
+    #
+    # The typed ``list``/``get_scans``/``get_resources`` above return models or
+    # take a different scope than the CLI's screens need. These issue exactly
+    # the request each CLI command sends and hand back the untyped rows it
+    # renders.
+    # -------------------------------------------------------------------------
+
+    def list_project_experiment_rows(
+        self, project: str, subject: str | None = None
+    ) -> builtins.list[dict[str, Any]]:
+        """Return raw experiment rows for the ``session list`` screen."""
+        params = {"columns": "ID,label,subject_label,date,xsiType"}
+        if subject:
+            params["subject_label"] = subject
+        resp = self.client.get_json(f"/data/projects/{project}/experiments", params=params)
+        rows: builtins.list[dict[str, Any]] = resp.get("ResultSet", {}).get("Result", [])
+        return rows
+
+    def scan_rows(
+        self, session_id: str, project: str | None = None
+    ) -> builtins.list[dict[str, Any]]:
+        """Return raw scan rows for a session via a routable scans URL."""
+        path = HierarchyService.build_scan_collection_path(
+            ExperimentRef(experiment=session_id, project_id=project)
+        )
+        resp = self.client.get_json(path)
+        rows: builtins.list[dict[str, Any]] = resp.get("ResultSet", {}).get("Result", [])
+        return rows
+
+    def experiment_resource_rows(
+        self,
+        session_id: str,
+        project: str | None = None,
+        subject: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
+        """Return raw session-level resource rows (subject-scoped URL)."""
+        path = HierarchyService.build_experiment_path(
+            ExperimentRef(experiment=session_id, project_id=project, subject=subject),
+            "resources",
+        )
+        resp = self.client.get_json(path)
+        rows: builtins.list[dict[str, Any]] = resp.get("ResultSet", {}).get("Result", [])
+        return rows

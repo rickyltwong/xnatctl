@@ -274,3 +274,64 @@ class TestSessionShare:
 
         put_params = mock_client.put.call_args[1]["params"]
         assert put_params["primary"] == "true"
+
+
+class TestSessionRawAccessors:
+    """Tests for the raw-row accessors the CLI screens/engine route through."""
+
+    def test_list_project_experiment_rows_no_subject(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """The session-list rows carry the fixed column set and no subject filter."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "EXP01"}]}}
+
+        rows = service.list_project_experiment_rows("PROJ01")
+
+        assert rows == [{"ID": "EXP01"}]
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/experiments",
+            params={"columns": "ID,label,subject_label,date,xsiType"},
+        )
+
+    def test_list_project_experiment_rows_with_subject(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """A subject adds a subject_label filter to the same request."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        service.list_project_experiment_rows("PROJ01", subject="SUBJ01")
+
+        params = mock_client.get_json.call_args[1]["params"]
+        assert params["subject_label"] == "SUBJ01"
+
+    def test_list_project_experiment_rows_missing_resultset(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """A response without a ResultSet yields an empty list."""
+        mock_client.get_json.return_value = {}
+
+        assert service.list_project_experiment_rows("PROJ01") == []
+
+    def test_scan_rows_uses_flat_experiment_url(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Without a project the scans URL is the routable flat form."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "1"}]}}
+
+        rows = service.scan_rows("EXP01")
+
+        assert rows == [{"ID": "1"}]
+        mock_client.get_json.assert_called_once_with("/data/experiments/EXP01/scans")
+
+    def test_experiment_resource_rows_subject_scoped(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Session-level resources are read from the subject-scoped experiment URL."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"label": "MISC"}]}}
+
+        rows = service.experiment_resource_rows("EXP01", project="PROJ01", subject="SUBJ01")
+
+        assert rows == [{"label": "MISC"}]
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/subjects/SUBJ01/experiments/EXP01/resources"
+        )

@@ -249,6 +249,27 @@ class ResourceService(BaseService):
 
         return [ResourceFile(**r) for r in results]
 
+    def list_rows(self, parent: HierarchyParentRef) -> builtins.list[dict[str, object]]:
+        """Return raw resource rows for a parent (renders in the CLI).
+
+        Unlike :meth:`list`, this keeps every key XNAT sends and skips the
+        ``Resource`` normalization, matching what the resource/scan screens
+        print today.
+        """
+        data = self.client.get_json(HierarchyService.build_resource_collection_path(parent))
+        return HierarchyService.extract_rows(data)
+
+    def list_file_rows(
+        self, parent: HierarchyParentRef, resource_label: str
+    ) -> builtins.list[dict[str, object]]:
+        """Return raw file rows for a resource (``resource_label`` pre-encoded)."""
+        data = self.client.get_json(
+            HierarchyService.build_resource_path(
+                ResourceRef(parent=parent, resource_label=resource_label), "files"
+            )
+        )
+        return HierarchyService.extract_rows(data)
+
     def create(
         self,
         session_id: str | None = None,

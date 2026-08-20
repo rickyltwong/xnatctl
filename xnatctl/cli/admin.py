@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import click
 
 from xnatctl.cli.common import (
@@ -16,6 +14,7 @@ from xnatctl.cli.common import (
 )
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
+from xnatctl.services.admin import AdminService
 
 
 @click.group()
@@ -68,16 +67,12 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
     from xnatctl.core.validation import validate_project_id
 
     project = validate_project_id(project)
-    client = ctx.get_client()
+    service = AdminService(ctx.get_client())
     options = list(option) if option else None
     experiment_ids = list(experiment) if experiment else None
 
     # Get experiments
-    resp = client.get_json(
-        f"/data/projects/{project}/experiments",
-        params={"columns": "ID,subject_ID,label"},
-    )
-    results = resp.get("ResultSet", {}).get("Result", [])
+    results = service.list_experiments_for_refresh(project)
 
     experiments = []
     for entry in results:
@@ -116,12 +111,8 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
         """Refresh a single experiment catalog and return status."""
         subject_id, exp_id = exp
         resource_path = f"/archive/projects/{project}/subjects/{subject_id}/experiments/{exp_id}"
-        params = {"resource": resource_path}
-        if options_param:
-            params["options"] = options_param
-
         try:
-            resp = client.post("/data/services/refresh/catalog", params=params)
+            resp = service.refresh_catalog(resource_path, options_param)
             return exp_id, resp.status_code == 200, ""
         except Exception as e:
             return exp_id, False, str(e)
@@ -197,9 +188,7 @@ def user_add(
         xnatctl admin user add jsmith PROJ1_member PROJ2_owner
         xnatctl admin user add jsmith --projects PROJ1,PROJ2 --role member
     """
-    from urllib.parse import quote
-
-    client = ctx.get_client()
+    service = AdminService(ctx.get_client())
     group_list = list(groups)
 
     # Generate groups from projects if specified
@@ -214,10 +203,7 @@ def user_add(
         raise SystemExit(1)
 
     # Add user to groups
-    resp = client.put(
-        f"/xapi/users/{quote(username)}/groups",
-        json=group_list,
-    )
+    resp = service.put_user_groups(username, group_list)
 
     if resp.status_code == 200:
         print_success(f"Added {username} to {len(group_list)} groups")
@@ -273,20 +259,11 @@ def admin_audit(
         xnatctl admin audit --project MYPROJ --limit 20
         xnatctl admin audit --user admin --since 7d
     """
-    client = ctx.get_client()
-
-    # Build query params
-    params: dict[str, Any] = {"limit": limit}
-    if project:
-        params["project"] = project
-    if username:
-        params["user"] = username
-    if action:
-        params["action"] = action
+    service = AdminService(ctx.get_client())
 
     try:
         # Try the audit API endpoint
-        resp = client.get_json("/xapi/audit", params=params)
+        resp = service.get_xapi_audit(limit, project=project, username=username, action=action)
 
         if isinstance(resp, list):
             entries = resp

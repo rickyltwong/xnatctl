@@ -123,9 +123,9 @@ def resource_list(
         validate_session_id,
         validate_subject_id,
     )
+    from xnatctl.services.resources import ResourceService
 
     client = ctx.get_client()
-    hierarchy = HierarchyService(client)
 
     if project_id:
         project_id = validate_project_id(project_id)
@@ -140,8 +140,7 @@ def resource_list(
         session_id=session_id, project_id=project_id, subject=subject, scan=scan
     )
 
-    resp = client.get_json(hierarchy.build_resource_collection_path(resource_parent))
-    results = HierarchyService.extract_rows(resp)
+    results = ResourceService(client).list_rows(resource_parent)
 
     resources = []
     for r in results:
@@ -191,11 +190,11 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
         validate_scan_id,
         validate_session_id,
     )
+    from xnatctl.services.resources import ResourceService
 
     session_id = validate_session_id(session_id)
     resource_label = validate_resource_label(resource_label)
-    client = ctx.get_client()
-    hierarchy = HierarchyService(client)
+    service = ResourceService(ctx.get_client())
     experiment_ref = ExperimentRef(experiment=session_id)
 
     resource_parent: HierarchyParentRef
@@ -208,8 +207,7 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
 
     # Get resource info from the collection endpoint. The direct
     # /resources/{label} endpoint often returns XML catalogs instead of JSON.
-    resp = client.get_json(hierarchy.build_resource_collection_path(resource_parent))
-    results = HierarchyService.extract_rows(resp)
+    results = service.list_rows(resource_parent)
     resource_data = next((row for row in results if row.get("label") == resource_label), None)
 
     if resource_data is None:
@@ -218,13 +216,7 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
 
     # Get files
     try:
-        files_resp = client.get_json(
-            hierarchy.build_resource_path(
-                ResourceRef(parent=resource_parent, resource_label=encoded_label),
-                "files",
-            )
-        )
-        files = HierarchyService.extract_rows(files_resp)
+        files = service.list_file_rows(resource_parent, encoded_label)
     except Exception:
         files = []
 
@@ -396,11 +388,10 @@ def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
           /archive/projects/MYPROJ/subjects/SUBJ/experiments/EXP/scans/1/resources/DICOM \\
           --options append --options populateStats
     """
-    client = ctx.get_client()
-    params: dict[str, str] = {"resource": uri}
-    if options:
-        params["options"] = ",".join(options)
-    resp = client.post("/data/services/refresh/catalog", params=params)
+    from xnatctl.services.admin import AdminService
+
+    options_str = ",".join(options) if options else None
+    resp = AdminService(ctx.get_client()).refresh_catalog(uri, options_str)
     if resp.status_code != 200:
         raise click.ClickException(f"Refresh failed [{resp.status_code}]: {resp.text}")
     payload = {"resource": uri, "options": list(options), "status": "ok"}

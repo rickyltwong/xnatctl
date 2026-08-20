@@ -43,6 +43,7 @@ from xnatctl.core.timeouts import DEFAULT_ARCHIVE_WAIT_SECONDS, DEFAULT_HTTP_TIM
 from xnatctl.models.hierarchy import ExperimentRef
 from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.hierarchy import HierarchyService
+from xnatctl.services.sessions import SessionService
 
 
 @click.group()
@@ -77,16 +78,10 @@ def session_list(
     from xnatctl.core.validation import validate_project_id
 
     project = validate_project_id(require_project_from_context(ctx, project))
-    client = ctx.get_client()
-
-    # Build query
-    params = {"columns": "ID,label,subject_label,date,xsiType"}
-    if subject:
-        params["subject_label"] = subject
+    service = SessionService(ctx.get_client())
 
     # Get sessions
-    resp = client.get_json(f"/data/projects/{project}/experiments", params=params)
-    results = resp.get("ResultSet", {}).get("Result", [])
+    results = service.list_project_experiment_rows(project, subject=subject)
 
     # Filter and transform
     sessions = []
@@ -195,16 +190,14 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
         scan_xsi = hierarchy.resolve_scan_xsi_type(resolved.xsi_type)
         if scan_xsi:
             scan_params["xsiType"] = scan_xsi
-        scans_resp = client.get_json(
-            hierarchy.build_experiment_path(nested_ref, "scans"), params=scan_params
-        )
+        scans_resp = hierarchy.get_experiment_json(nested_ref, "scans", params=scan_params)
         scans = HierarchyService.extract_rows(scans_resp)
     except Exception:
         scans = []
 
     # Get resources
     try:
-        res_resp = client.get_json(hierarchy.build_experiment_path(nested_ref, "resources"))
+        res_resp = hierarchy.get_experiment_json(nested_ref, "resources")
         resources = HierarchyService.extract_rows(res_resp)
     except Exception:
         resources = []
@@ -453,9 +446,8 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     import tempfile
     from concurrent.futures import as_completed
 
-    scans_resp = client.get_json(f"/data/experiments/{resolved_session_id}/scans")
-    results = scans_resp.get("ResultSet", {}).get("Result", [])
-    scan_ids = [r.get("ID") for r in results if r.get("ID")]
+    results = SessionService(client).scan_rows(resolved_session_id)
+    scan_ids = [r["ID"] for r in results if r.get("ID")]
 
     if not scan_ids:
         if not quiet:
@@ -802,8 +794,9 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 f"/data/projects/{session_project}/subjects/{subject}"
                 f"/experiments/{resolved_session_id}/resources"
             )
-            res_resp = client.get_json(res_url)
-            sess_resources = res_resp.get("ResultSet", {}).get("Result", [])
+            sess_resources = SessionService(client).experiment_resource_rows(
+                resolved_session_id, project=session_project, subject=subject
+            )
 
             for res in sess_resources:
                 label = res.get("label", "resource")

@@ -517,3 +517,58 @@ class TestSubjectMerge:
             service.merge_subjects("PROJ01", "SRC", "TGT")
 
         mock_client.delete.assert_not_called()
+
+
+class TestSubjectRawAccessors:
+    """Tests for the raw-row / raw-response accessors the CLI routes through."""
+
+    def test_list_rows_with_columns(self, service: SubjectService, mock_client: MagicMock) -> None:
+        """list_rows requests the given columns and returns raw rows."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "SUBJ01"}]}}
+
+        rows = service.list_rows("PROJ01", columns="ID,label,src")
+
+        assert rows == [{"ID": "SUBJ01"}]
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/subjects", params={"columns": "ID,label,src"}
+        )
+
+    def test_list_rows_without_columns(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """Without columns, list_rows issues a plain GET (no params kwarg)."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        assert service.list_rows("PROJ01") == []
+        mock_client.get_json.assert_called_once_with("/data/projects/PROJ01/subjects")
+
+    def test_experiment_rows(self, service: SubjectService, mock_client: MagicMock) -> None:
+        """experiment_rows lists a subject's experiments."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "EXP01"}]}}
+
+        rows = service.experiment_rows("PROJ01", "SUBJ01")
+
+        assert rows == [{"ID": "EXP01"}]
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/subjects/SUBJ01/experiments"
+        )
+
+    def test_delete_raw(self, service: SubjectService, mock_client: MagicMock) -> None:
+        """delete_raw DELETEs the subject and returns the raw response."""
+        mock_client.delete.return_value = make_response("", status_code=200)
+
+        resp = service.delete_raw("PROJ01", "SUBJ01")
+
+        assert resp.status_code == 200
+        mock_client.delete.assert_called_once_with("/data/projects/PROJ01/subjects/SUBJ01")
+
+    def test_rename_raw(self, service: SubjectService, mock_client: MagicMock) -> None:
+        """rename_raw PUTs the new label and returns the raw response."""
+        mock_client.put.return_value = make_response("", status_code=200)
+
+        resp = service.rename_raw("PROJ01", "OLD", "NEW")
+
+        assert resp.status_code == 200
+        mock_client.put.assert_called_once_with(
+            "/data/projects/PROJ01/subjects/OLD", params={"label": "NEW"}
+        )

@@ -31,6 +31,8 @@ from xnatctl.core.output import (
 )
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 from xnatctl.services.hierarchy import HierarchyService
+from xnatctl.services.resources import ResourceService
+from xnatctl.services.scans import ScanService
 
 
 def _inspect_experiment(
@@ -57,7 +59,7 @@ def _inspect_experiment(
         Tuple of (canonical experiment ref, experiment xsiType).
     """
     try:
-        data = hierarchy.client.get_json(hierarchy.build_experiment_path(experiment_ref))
+        data = hierarchy.get_experiment_json(experiment_ref)
     except ResourceNotFoundError:
         return experiment_ref, None
     if not isinstance(data, dict):
@@ -296,14 +298,7 @@ def scan_show(
     experiment_ref, _session_xsi = _inspect_experiment(hierarchy, source_ref)
     _require_scan_addressable(experiment_ref)
     scan_ref = ScanRef(experiment=experiment_ref, scan_id=scan_id)
-    resp = client.get_json(hierarchy.build_scan_path(scan_ref))
-    scan_data: dict[str, Any] | None
-    scan_item = hierarchy.extract_first_item(resp)
-    if scan_item is not None:
-        scan_data, _scan_meta = scan_item
-    else:
-        results = HierarchyService.extract_rows(resp)
-        scan_data = results[0] if results else None
+    scan_data = ScanService(client).get_scan_document(scan_ref)
 
     if not scan_data:
         print_error(f"Scan not found: {scan_id}")
@@ -311,8 +306,7 @@ def scan_show(
 
     # Get resources
     try:
-        res_resp = client.get_json(hierarchy.build_resource_collection_path(scan_ref))
-        resources = HierarchyService.extract_rows(res_resp)
+        resources = ResourceService(client).list_rows(scan_ref)
     except Exception:
         resources = []
 
@@ -409,13 +403,12 @@ def scan_delete(
 
     deleted = []
     failed = []
+    scan_svc = ScanService(client)
 
     def delete_scan(scan_id: str) -> tuple[str, bool, str]:
         """Delete a scan and return status and error message."""
         try:
-            resp = client.delete(
-                hierarchy.build_scan_path(ScanRef(experiment=experiment_ref, scan_id=scan_id))
-            )
+            resp = scan_svc.delete_scan_ref(ScanRef(experiment=experiment_ref, scan_id=scan_id))
             return scan_id, resp.status_code in (200, 204), ""
         except Exception as e:
             return scan_id, False, str(e)
