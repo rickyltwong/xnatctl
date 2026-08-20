@@ -3,7 +3,10 @@
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from xnatctl.cli.session import _extract_session_zips
+from xnatctl.core.exceptions import DownloadError
 
 
 def test_extract_strips_session_label(tmp_path: Path) -> None:
@@ -212,8 +215,8 @@ def test_extract_preserves_binary_content(tmp_path: Path) -> None:
     assert extracted.read_bytes() == binary_content
 
 
-def test_extract_continues_on_bad_zip(tmp_path: Path) -> None:
-    """Test that extraction continues if one ZIP is corrupted."""
+def test_extract_raises_on_bad_zip(tmp_path: Path) -> None:
+    """A corrupt ZIP fails the extraction instead of being silently skipped."""
     session_dir = tmp_path / "session"
     session_dir.mkdir()
 
@@ -226,14 +229,40 @@ def test_extract_continues_on_bad_zip(tmp_path: Path) -> None:
     bad_zip = session_dir / "bad.zip"
     bad_zip.write_bytes(b"not a zip file")
 
-    # Should not raise, should process what it can
-    _extract_session_zips(session_dir, cleanup=False, quiet=True)
+    with pytest.raises(DownloadError, match="bad.zip"):
+        _extract_session_zips(session_dir, cleanup=False, quiet=True)
 
-    # Good file should be extracted
-    assert (session_dir / "good.txt").exists()
-
-    # Bad ZIP should still exist (not cleaned up due to error)
+    # Corrupt ZIP is left on disk, not cleaned up.
     assert bad_zip.exists()
+
+
+def test_extract_raises_on_truncated_zip(tmp_path: Path) -> None:
+    """A truncated ZIP (parseable structure, bad member CRC) fails the command.
+
+    testzip() catches the corruption that opening the archive does not.
+    """
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+
+    zip_path = session_dir / "truncated.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("SESSION01/scans/1/data.dcm", b"a" * 4096)
+
+    # Corrupt the stored member payload (located by content, not a guessed
+    # offset -- flipping a header byte would exercise BadZipFile instead)
+    # while leaving the ZIP structure parseable, so the archive opens fine
+    # but fails the CRC check.
+    raw = bytearray(zip_path.read_bytes())
+    payload_at = raw.find(b"a" * 64)
+    assert payload_at > 0, "stored payload not found in the archive bytes"
+    raw[payload_at] ^= 0xFF
+    zip_path.write_bytes(raw)
+
+    with pytest.raises(DownloadError, match="truncated.zip"):
+        _extract_session_zips(session_dir, cleanup=True, quiet=True)
+
+    # Nothing was extracted from the corrupt archive.
+    assert not (session_dir / "scans").exists()
 
 
 def test_extract_handles_special_characters_in_filenames(tmp_path: Path) -> None:

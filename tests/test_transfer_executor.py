@@ -65,19 +65,15 @@ def _make_nested_zip(
 
 
 def _mock_stream_download(source_client: MagicMock, data: bytes) -> None:
-    """Configure source_client to return data from streaming download."""
+    """Configure source_client.stream() to yield ``data`` for stream_to_file."""
     stream_ctx = MagicMock()
     stream_resp = MagicMock()
     stream_resp.headers = {"content-length": str(len(data))}
     stream_resp.iter_bytes.return_value = [data]
-    stream_resp.raise_for_status = MagicMock()
     stream_ctx.__enter__ = MagicMock(return_value=stream_resp)
     stream_ctx.__exit__ = MagicMock(return_value=False)
 
-    inner_client = MagicMock()
-    inner_client.stream.return_value = stream_ctx
-    source_client._get_client.return_value = inner_client
-    source_client._get_cookies.return_value = {}
+    source_client.stream.return_value = stream_ctx
 
 
 @pytest.fixture
@@ -434,8 +430,7 @@ class TestDownloadScanDicom:
             )
 
         assert result == Path(tmpdir) / "scan_1_secondary.zip"
-        inner_client = source_client._get_client.return_value
-        call_path = inner_client.stream.call_args[0][1]
+        call_path = source_client.stream.call_args[0][1]
         assert call_path == "/data/experiments/XNAT_E001/scans/1/resources/secondary/files"
 
     def test_raises_on_invalid_zip(
@@ -887,17 +882,31 @@ class TestValidateZip:
         bad.write_bytes(b"not a zip at all")
         assert TransferExecutor.validate_zip(bad) is False
 
-    def test_content_length_mismatch_fails(self, tmp_path: Path) -> None:
-        zip_path = tmp_path / "test.zip"
-        data = _make_valid_zip()
-        zip_path.write_bytes(data)
-        assert TransferExecutor.validate_zip(zip_path, expected_size=999) is False
+    @pytest.mark.parametrize("compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+    def test_corrupt_member_payload_fails(self, tmp_path: Path, compression: int) -> None:
+        """A structurally parseable archive with a corrupt member is rejected.
 
-    def test_content_length_match_passes(self, tmp_path: Path) -> None:
+        Structure-only checks pass this file; only ``testzip()`` catches it,
+        and without that a same-length corrupt archive gets imported. A
+        STORED member fails its CRC; a DEFLATED one raises from the
+        decompressor (``zlib.error``) -- both must come back False.
+        """
+        payload = bytes(range(256)) * 16
         zip_path = tmp_path / "test.zip"
-        data = _make_valid_zip()
-        zip_path.write_bytes(data)
-        assert TransferExecutor.validate_zip(zip_path, expected_size=len(data)) is True
+        with zipfile.ZipFile(zip_path, "w", compression=compression) as zf:
+            zf.writestr("scan.dcm", payload)
+        raw = bytearray(zip_path.read_bytes())
+        # Locate the member data by slicing between the local header and the
+        # central directory, then flip bytes in its middle.
+        start = raw.find(b"scan.dcm") + len("scan.dcm")
+        end = raw.rfind(b"PK\x01\x02")
+        assert 0 < start < end
+        mid = (start + end) // 2
+        for i in range(mid, mid + 8):
+            raw[i] ^= 0xFF
+        zip_path.write_bytes(raw)
+
+        assert TransferExecutor.validate_zip(zip_path) is False
 
 
 class TestFindPrearchiveEntry:

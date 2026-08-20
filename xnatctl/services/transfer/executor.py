@@ -12,6 +12,7 @@ import shutil
 import time
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -22,6 +23,7 @@ import httpx
 from xnatctl.core.exceptions import ClientRequestError, ServerError
 from xnatctl.core.exceptions import ConnectionError as XNATConnectionError
 from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, is_permanent_400, retry_call
+from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
 
 if TYPE_CHECKING:
@@ -301,18 +303,20 @@ class TransferExecutor:
         zip_path = work_dir / f"scan_{scan_id}_{safe_label}.zip"
         encoded_label = _quote_path_segment(resource_label)
 
-        total_bytes, content_length = self._stream_download(
+        stream_to_file(
             self.source,
             f"/data/experiments/{source_experiment_id}"
             f"/scans/{scan_id}/resources/{encoded_label}/files",
-            {"format": "zip"},
             zip_path,
+            params={"format": "zip"},
         )
 
-        if not self.validate_zip(zip_path, content_length):
+        # stream_to_file already enforced the Content-Length match; validate_zip
+        # adds the zipfile-integrity check on top.
+        if not self.validate_zip(zip_path):
             raise ValueError(
                 f"ZIP validation failed for scan {scan_id}/{resource_label}: "
-                f"downloaded {total_bytes} bytes, expected {content_length}"
+                "downloaded content is not a valid ZIP"
             )
 
         return zip_path
@@ -455,14 +459,16 @@ class TransferExecutor:
         work_dir.mkdir(parents=True, exist_ok=True)
         zip_path = work_dir / f"{resource_label}.zip"
 
-        total_bytes, content_length = self._stream_download(
-            self.source, source_path, {"format": "zip"}, zip_path
-        )
+        total_bytes = stream_to_file(
+            self.source, source_path, zip_path, params={"format": "zip"}
+        ).bytes_written
 
-        if not self.validate_zip(zip_path, content_length):
+        # stream_to_file already enforced the Content-Length match; validate_zip
+        # adds the zipfile-integrity check on top.
+        if not self.validate_zip(zip_path):
             raise ValueError(
                 f"ZIP validation failed for resource {resource_label}: "
-                f"downloaded {total_bytes} bytes, expected {content_length}"
+                "downloaded content is not a valid ZIP"
             )
 
         flat_zip_path = work_dir / f"{resource_label}_flat.zip"
@@ -1075,55 +1081,24 @@ class TransferExecutor:
             time.sleep(interval)
 
     @staticmethod
-    def validate_zip(zip_path: Path, expected_size: int | None = None) -> bool:
-        """Validate a downloaded ZIP file.
+    def validate_zip(zip_path: Path) -> bool:
+        """Check that a downloaded file is a ZIP whose members pass their CRCs.
+
+        Size verification against Content-Length happens in
+        ``stream_to_file``; this guards the archive itself -- structure AND
+        member checksums, because a same-length corrupt archive would
+        otherwise be imported into the destination server.
 
         Args:
             zip_path: Path to the ZIP file.
-            expected_size: Expected file size from Content-Length header.
 
         Returns:
             True if the ZIP is valid.
         """
-        if not zip_path.exists():
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                return zf.testzip() is None
+        except (zipfile.BadZipFile, OSError, zlib.error):
+            # zlib.error: corruption inside a DEFLATED member surfaces from the
+            # decompressor, not as BadZipFile.
             return False
-        if not zipfile.is_zipfile(zip_path):
-            return False
-        if expected_size is not None:
-            actual_size = zip_path.stat().st_size
-            if actual_size != expected_size:
-                return False
-        return True
-
-    @staticmethod
-    def _stream_download(
-        client: XNATClient,
-        path: str,
-        params: dict[str, str],
-        dest: Path,
-    ) -> tuple[int, int | None]:
-        """Stream a file download from an XNAT client.
-
-        Args:
-            client: XNATClient to download from.
-            path: API endpoint path.
-            params: Query parameters.
-            dest: Local file path to write to.
-
-        Returns:
-            Tuple of (total_bytes_written, content_length_from_header).
-        """
-        http_client = client._get_client()
-        cookies = client._get_cookies()
-        total_bytes = 0
-        content_length: int | None = None
-        with http_client.stream("GET", path, params=params, cookies=cookies) as response:
-            response.raise_for_status()
-            cl_header = response.headers.get("content-length")
-            if cl_header is not None:
-                content_length = int(cl_header)
-            with open(dest, "wb") as f:
-                for chunk in response.iter_bytes(chunk_size=8192):
-                    f.write(chunk)
-                    total_bytes += len(chunk)
-        return total_bytes, content_length

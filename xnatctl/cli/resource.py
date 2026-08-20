@@ -23,6 +23,7 @@ from xnatctl.models.hierarchy import (
     ScanRef,
     SubjectRef,
 )
+from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.hierarchy import HierarchyService
 
 
@@ -481,19 +482,11 @@ def resource_download(
     with create_progress() as progress:
         task = progress.add_task(f"Downloading {resource_label}...", total=100)
 
-        with client._get_client().stream(
-            "GET", url, params={"format": "zip"}, cookies=client._get_cookies()
-        ) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-            downloaded = 0
+        def on_progress(written: int, total: int | None) -> None:
+            if total:
+                progress.update(task, completed=int(written / total * 100))
 
-            with open(out_path, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        progress.update(task, completed=int(downloaded / total * 100))
+        stream_to_file(client, url, out_path, params={"format": "zip"}, progress_cb=on_progress)
 
         progress.update(task, completed=100)
 

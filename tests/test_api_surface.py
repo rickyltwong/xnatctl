@@ -41,3 +41,23 @@ def test_uploaders_directory_is_gone() -> None:
 def test_version_is_sourced_from_installed_metadata() -> None:
     """``__version__`` comes from distribution metadata, not a hand-edited literal."""
     assert xnatctl.__version__ == version("xnatctl")
+
+
+def test_download_sites_use_the_public_client_surface() -> None:
+    """No service or CLI module reaches into XNATClient privates for streaming.
+
+    ``_get_client()`` / ``_get_cookies()`` / ``_get_auth(`` are the internals
+    that streamed downloads used to bypass the retry/auth/typed-error path
+    with; they must stay inside ``core/``. The public ``stream()`` and
+    ``stream_to_file`` are the sanctioned entry points now.
+    """
+    forbidden = ("_get_client()", "_get_cookies()", "_get_auth(")
+    offenders: list[str] = []
+    for area in ("services", "cli"):
+        for source in (_PACKAGE_ROOT / area).rglob("*.py"):
+            text = source.read_text()
+            for token in forbidden:
+                if token in text:
+                    offenders.append(f"{source.relative_to(_PACKAGE_ROOT.parent)}: {token}")
+
+    assert not offenders, f"private XNATClient access outside core/: {offenders}"

@@ -41,6 +41,7 @@ from xnatctl.core.output import (
 )
 from xnatctl.core.timeouts import DEFAULT_ARCHIVE_WAIT_SECONDS, DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.hierarchy import ExperimentRef
+from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.hierarchy import HierarchyService
 
 
@@ -452,10 +453,6 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     import tempfile
     from concurrent.futures import as_completed
 
-    import httpx
-
-    from xnatctl.core.timeouts import build_httpx_timeout
-
     scans_resp = client.get_json(f"/data/experiments/{resolved_session_id}/scans")
     results = scans_resp.get("ResultSet", {}).get("Result", [])
     scan_ids = [r.get("ID") for r in results if r.get("ID")]
@@ -468,10 +465,6 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     if not quiet:
         click.echo(f"Downloading {len(scan_ids)} scans in parallel...", err=True)
 
-    base_url = client.base_url
-    session_token = client.session_token
-    verify_ssl = client.httpx_verify()  # inherits ca_bundle, not just the bool
-    timeout = client.timeout
     exclude_set = frozenset(exclude_resources)
 
     # Two-tier task list: (scan_id, resource_label_or_None)
@@ -498,29 +491,16 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
         else:
             scan_url = f"{base}/files"
 
+        # One shared XNATClient across worker threads: httpx.Client is
+        # thread-safe and XNATClient.stream sends the session cookie per call
+        # instead of mutating shared state, so the retry/auth/typed-error path
+        # is reused here without a per-thread raw client.
         try:
-            with httpx.Client(
-                base_url=base_url,
-                timeout=build_httpx_timeout(timeout),  # connect fails fast
-                verify=verify_ssl,
-            ) as http:
-                cookies = {"JSESSIONID": session_token} if session_token else {}
-                with http.stream(
-                    "GET",
-                    scan_url,
-                    params={"format": "zip"},
-                    cookies=cookies,
-                ) as resp:
-                    resp.raise_for_status()
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".zip",
-                        delete=False,
-                    ) as tmp:
-                        tmp_path = Path(tmp.name)
-                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                            tmp.write(chunk)
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
 
             try:
+                stream_to_file(client, scan_url, tmp_path, params={"format": "zip"})
                 scan_base = session_dir / "scans" / scan_id
                 extracted, renamed = _extract_scan_zip(
                     tmp_path,
@@ -540,15 +520,13 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
                 parts.append(f"renamed {renamed} duplicates")
             status = ", ".join(parts) if parts else ""
             return _ScanResult(scan_id, True, extracted, status)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                # A scan with no files of the requested type is normal under
-                # -r, so this is not an error -- but it downloaded nothing,
-                # and the zero is what stops an all-404 session (the failure
-                # mode ADR-0010 describes) reading as a complete download.
-                label_desc = f" ({resource_label})" if resource_label else ""
-                return _ScanResult(scan_id, True, 0, f"no files{label_desc}")
-            return _ScanResult(scan_id, False, 0, str(e))
+        except ResourceNotFoundError:
+            # A scan with no files of the requested type is normal under -r, so
+            # this is not an error -- but it downloaded nothing, and the zero is
+            # what stops an all-404 session (the failure mode ADR-0010
+            # describes) reading as a complete download.
+            label_desc = f" ({resource_label})" if resource_label else ""
+            return _ScanResult(scan_id, True, 0, f"no files{label_desc}")
         except Exception as e:
             return _ScanResult(scan_id, False, 0, str(e))
 
@@ -801,22 +779,17 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
             )
             scans_zip = session_dir / "scans.zip"
 
-            with client._get_client().stream(
-                "GET",
-                scans_url,
-                params={"format": "zip"},
-                cookies=client._get_cookies(),
-            ) as resp:
-                resp.raise_for_status()
-                total = int(resp.headers.get("content-length", 0))
-                downloaded = 0
+            def on_scan_progress(written: int, total: int | None) -> None:
+                if total:
+                    progress.update(task, completed=int(written / total * 100))
 
-                with open(scans_zip, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total:
-                            progress.update(task, completed=int(downloaded / total * 100))
+            stream_to_file(
+                client,
+                scans_url,
+                scans_zip,
+                params={"format": "zip"},
+                progress_cb=on_scan_progress,
+            )
 
             progress.update(task, completed=100, description="Scans downloaded")
 
@@ -837,16 +810,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 res_zip = session_dir / f"resources_{label}.zip"
                 files_url = f"{res_url}/{label}/files"
 
-                with client._get_client().stream(
-                    "GET",
-                    files_url,
-                    params={"format": "zip"},
-                    cookies=client._get_cookies(),
-                ) as resp:
-                    resp.raise_for_status()
-                    with open(res_zip, "wb") as f:
-                        for chunk in resp.iter_bytes():
-                            f.write(chunk)
+                stream_to_file(client, files_url, res_zip, params={"format": "zip"})
 
             if not ctx.quiet:
                 click.echo(f"  Session resources downloaded ({len(sess_resources)})", err=True)
@@ -2118,12 +2082,20 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
     if not zip_files:
         return
 
+    failed_zips: list[str] = []
     for zip_path in zip_files:
         if not quiet:
             click.echo(f"Extracting {zip_path.name}...", err=True)
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
+                # CRC-check every member before writing anything: testzip()
+                # returns the first corrupt name, or None when the archive is
+                # whole. Without it a truncated download extracted partially and
+                # the command still reported success.
+                if zf.testzip() is not None:
+                    failed_zips.append(zip_path.name)
+                    continue
                 for member in zf.namelist():
                     if member.endswith("/"):
                         continue
@@ -2152,7 +2124,18 @@ def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool =
                 if not quiet:
                     click.echo(f"  Removed {zip_path.name}", err=True)
         except zipfile.BadZipFile:
-            print_error(f"Invalid ZIP file: {zip_path.name}")
+            failed_zips.append(zip_path.name)
+
+    if failed_zips:
+        # A corrupt archive must fail the command, not print and exit 0:
+        # @handle_errors turns this into a nonzero exit so a broken download is
+        # never mistaken for a complete one.
+        raise DownloadError(
+            "Corrupt ZIP archive(s) in the session download: "
+            + ", ".join(failed_zips)
+            + ". Extraction did not complete.",
+            details={"corrupt_zips": failed_zips},
+        )
 
 
 # =============================================================================

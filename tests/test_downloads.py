@@ -17,10 +17,7 @@ class TestDownloadService:
     @pytest.fixture
     def mock_client(self):
         """Create a mock XNAT client."""
-        client = MagicMock()
-        client._get_client.return_value = MagicMock()
-        client._get_cookies.return_value = {"JSESSIONID": "test-token"}
-        return client
+        return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):
@@ -39,10 +36,7 @@ class TestDownloadResourceSessionResolution:
     @pytest.fixture
     def mock_client(self):
         """Create a mock XNAT client."""
-        client = MagicMock()
-        client._get_client.return_value = MagicMock()
-        client._get_cookies.return_value = {"JSESSIONID": "test-token"}
-        return client
+        return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):
@@ -62,12 +56,10 @@ class TestDownloadResourceSessionResolution:
         )
 
         # Mock the HTTP client stream to fail (we just want to test resolution)
-        mock_http_client = MagicMock()
-        mock_stream_ctx = MagicMock()
-        mock_stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
-        mock_stream_ctx.__exit__ = MagicMock(return_value=False)
-        mock_http_client.stream.return_value = mock_stream_ctx
-        download_service.client._get_client.return_value = mock_http_client
+        stream_ctx = MagicMock()
+        stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
+        stream_ctx.__exit__ = MagicMock(return_value=False)
+        download_service.client.stream.return_value = stream_ctx
 
         # When: download_resource is called
         result = download_service.download_resource(
@@ -96,12 +88,10 @@ class TestDownloadResourceSessionResolution:
         download_service._get = MagicMock()
 
         # Mock HTTP to fail
-        mock_http_client = MagicMock()
-        mock_stream_ctx = MagicMock()
-        mock_stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
-        mock_stream_ctx.__exit__ = MagicMock(return_value=False)
-        mock_http_client.stream.return_value = mock_stream_ctx
-        download_service.client._get_client.return_value = mock_http_client
+        stream_ctx = MagicMock()
+        stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
+        stream_ctx.__exit__ = MagicMock(return_value=False)
+        download_service.client.stream.return_value = stream_ctx
 
         # When: download_resource is called
         download_service.download_resource(
@@ -125,12 +115,10 @@ class TestDownloadResourceSessionResolution:
             return_value={"ResultSet": {"Result": [{"ID": internal_id}]}}
         )
 
-        mock_http_client = MagicMock()
-        mock_stream_ctx = MagicMock()
-        mock_stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
-        mock_stream_ctx.__exit__ = MagicMock(return_value=False)
-        mock_http_client.stream.return_value = mock_stream_ctx
-        download_service.client._get_client.return_value = mock_http_client
+        stream_ctx = MagicMock()
+        stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
+        stream_ctx.__exit__ = MagicMock(return_value=False)
+        download_service.client.stream.return_value = stream_ctx
 
         result = download_service.download_resource(
             session_id=session_label,
@@ -153,10 +141,7 @@ class TestDownloadScan:
     @pytest.fixture
     def mock_client(self):
         """Create a mock XNAT client."""
-        client = MagicMock()
-        client._get_client.return_value = MagicMock()
-        client._get_cookies.return_value = {"JSESSIONID": "test-token"}
-        return client
+        return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):
@@ -205,10 +190,7 @@ class TestDownloadScansSessionResolution:
     @pytest.fixture
     def mock_client(self):
         """Create a mock XNAT client."""
-        client = MagicMock()
-        client._get_client.return_value = MagicMock()
-        client._get_cookies.return_value = {"JSESSIONID": "test-token"}
-        return client
+        return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):
@@ -225,18 +207,14 @@ class TestDownloadScansSessionResolution:
             return_value={"ResultSet": {"Result": [{"ID": internal_id}]}}
         )
 
-        mock_http_client = MagicMock()
         mock_response = MagicMock()
         mock_response.headers = {"content-length": "0"}
         mock_response.iter_bytes.return_value = []
-        mock_response.raise_for_status = MagicMock()
 
         mock_stream_ctx = MagicMock()
         mock_stream_ctx.__enter__ = MagicMock(return_value=mock_response)
         mock_stream_ctx.__exit__ = MagicMock(return_value=False)
-        mock_http_client.stream.return_value = mock_stream_ctx
-        download_service.client._get_client.return_value = mock_http_client
-        download_service.client._get_cookies.return_value = {}
+        download_service.client.stream.return_value = mock_stream_ctx
 
         download_service.download_scans(
             session_id=session_label,
@@ -250,7 +228,7 @@ class TestDownloadScansSessionResolution:
             params={"format": "json"},
         )
 
-        stream_call_args = mock_http_client.stream.call_args
+        stream_call_args = download_service.client.stream.call_args
         path_arg = stream_call_args[0][1]
         assert path_arg == f"/data/experiments/{internal_id}/scans/6/files"
 
@@ -275,7 +253,6 @@ class TestDownloadResourcePathConstruction:
             return_value={"items": [{"data_fields": {"ID": "INTERNAL_ID"}}]}
         )
 
-        mock_http_client = MagicMock()
         mock_response = MagicMock()
         mock_response.headers = {"content-length": "0"}
         mock_response.iter_bytes.return_value = []
@@ -283,9 +260,7 @@ class TestDownloadResourcePathConstruction:
         mock_stream_ctx = MagicMock()
         mock_stream_ctx.__enter__ = MagicMock(return_value=mock_response)
         mock_stream_ctx.__exit__ = MagicMock(return_value=False)
-        mock_http_client.stream.return_value = mock_stream_ctx
-        download_service.client._get_client.return_value = mock_http_client
-        download_service.client._get_cookies.return_value = {}
+        download_service.client.stream.return_value = mock_stream_ctx
 
         # Create a valid empty ZIP file for extraction
         zip_path = tmp_path / "DICOM.zip"
@@ -309,7 +284,7 @@ class TestDownloadResourcePathConstruction:
                 )
 
         # Then: Stream was called with experiments-based path
-        stream_call_args = mock_http_client.stream.call_args
+        stream_call_args = download_service.client.stream.call_args
         path_arg = stream_call_args[0][1]
         assert path_arg == "/data/experiments/INTERNAL_ID/scans/1/resources/DICOM/files"
 
@@ -320,7 +295,6 @@ class TestDownloadResourcePathConstruction:
             return_value={"items": [{"data_fields": {"ID": "INTERNAL_ID"}}]}
         )
 
-        mock_http_client = MagicMock()
         mock_response = MagicMock()
         mock_response.headers = {"content-length": "0"}
         mock_response.iter_bytes.return_value = []
@@ -328,9 +302,7 @@ class TestDownloadResourcePathConstruction:
         mock_stream_ctx = MagicMock()
         mock_stream_ctx.__enter__ = MagicMock(return_value=mock_response)
         mock_stream_ctx.__exit__ = MagicMock(return_value=False)
-        mock_http_client.stream.return_value = mock_stream_ctx
-        download_service.client._get_client.return_value = mock_http_client
-        download_service.client._get_cookies.return_value = {}
+        download_service.client.stream.return_value = mock_stream_ctx
 
         with patch("builtins.open", create=True):
             with patch.object(zipfile, "ZipFile") as mock_zipfile:
@@ -348,6 +320,6 @@ class TestDownloadResourcePathConstruction:
                 )
 
         # Then: Stream was called with session-level path
-        stream_call_args = mock_http_client.stream.call_args
+        stream_call_args = download_service.client.stream.call_args
         path_arg = stream_call_args[0][1]
         assert path_arg == "/data/experiments/INTERNAL_ID/resources/SNAPSHOTS/files"

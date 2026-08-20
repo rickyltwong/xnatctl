@@ -4,8 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+**Breaking**
+
+- `DownloadService.download_session` no longer accepts a `resume` argument. It
+  was documented as "resume interrupted download" but never implemented and no
+  command exposed it. Callers passing `resume=` must drop it.
+
 **Fixes**
 
+- Downloads now go through the client's retry, auth, and typed-error path. Every
+  streamed download (session, scan, resource, and cross-server transfer) used to
+  bypass the client and talk to `httpx` directly, so it got no retry ladder, no
+  401/403/404 mapping, and -- most visibly -- no basic-auth fallback: a client
+  built from a username and password but not yet logged in failed every download
+  while plain requests succeeded. Those downloads now reuse the same path as the
+  rest of the client.
+- Downloads are written atomically. Bytes stream to a temporary `.part` file that
+  is renamed into place only after the transfer completes and its byte count
+  matches the server's `Content-Length`; a dropped connection can no longer leave
+  a truncated file that looks whole, and a size mismatch fails loudly.
+- A corrupt session ZIP now fails the command. `session download` used to print
+  an "invalid ZIP" note, keep going, and still exit 0; a truncated or corrupt
+  archive is now CRC-checked before extraction and aborts with a nonzero exit.
 - Cross-server transfer scan imports no longer retry unrecoverable failures.
   The import step used to repeat *any* exception -- a permanent 400 (bad
   project, missing subject), a permission error, even a programming error --

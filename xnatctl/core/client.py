@@ -8,8 +8,10 @@ from __future__ import annotations
 import logging
 import re
 import ssl
+import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
@@ -67,6 +69,30 @@ def _body_snippet(resp: httpx.Response) -> str:
         return ""
 
 
+def _read_stream_body(resp: httpx.Response) -> None:
+    """Buffer a streaming response's body so ``.text`` is available for errors.
+
+    httpx will not expose ``.text`` on a streamed response until it is read.
+    Guarded because a truncated error body must not eclipse the status it
+    describes.
+    """
+    try:
+        resp.read()
+    except Exception:
+        pass
+
+
+# Transport failures worth translating when opening a stream: the same set
+# ``_request`` handles, so no raw httpx exception escapes either path.
+_STREAM_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ConnectTimeout,
+    httpx.ConnectError,
+    httpx.TimeoutException,
+    *PERMANENT_TRANSPORT_ERRORS,
+    *RETRYABLE_TRANSPORT_ERRORS,
+)
+
+
 # =============================================================================
 # XNATClient
 # =============================================================================
@@ -91,6 +117,10 @@ class XNATClient:
     transport: httpx.BaseTransport | None = None
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
     _ssl_context: ssl.SSLContext | None = field(init=False, default=None, repr=False)
+    # Serializes session refresh across parallel streams: without it, N workers
+    # hitting one expiry each open their own fresh session, which is exactly
+    # the concurrent-session exhaustion that locks out shared service accounts.
+    _reauth_lock: threading.Lock = field(init=False, default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
         """Validate and normalize URL."""
@@ -238,6 +268,272 @@ class XNATClient:
             return (self.username, self.password)
         return None
 
+    def _raise_for_xnat_status(self, resp: httpx.Response, method: str, path: str) -> None:
+        """Raise the typed exception a terminal error status maps to.
+
+        The single home for XNAT's status->exception mapping, shared by the
+        ``_request`` ladder and ``stream``. Returns without raising for 2xx and
+        for retryable statuses, whose retry/reauth control flow stays with each
+        caller -- this helper only owns the raising. A 401 maps straight to
+        :class:`SessionExpiredError`; the decision to reauth first belongs to
+        the caller. For 4xx/5xx bodies used in the message, the response must
+        already be readable (a streaming response needs ``read()`` first).
+        """
+        code = resp.status_code
+        if code == 401:
+            expired_err = SessionExpiredError(self.base_url)
+            expired_err.details.update({"status_code": code, "method": method, "path": path})
+            raise expired_err
+        if code == 403:
+            denied_err = PermissionDeniedError(
+                resource=path,
+                operation=method.lower(),
+                url=self.base_url,
+            )
+            denied_err.details.update({"status_code": code, "method": method, "path": path})
+            raise denied_err
+        if code == 404:
+            raise ResourceNotFoundError("resource", path)
+        if code in RETRYABLE_STATUS_CODES:
+            return
+        if code >= 400:
+            if code < 500:
+                raise ClientRequestError(code, method, path, _body_snippet(resp))
+            raise ServerError(code, method, path, _body_snippet(resp))
+
+    def _stream_transport_error(
+        self,
+        exc: Exception,
+        *,
+        method_upper: str,
+        path: str,
+        read_timeout: int,
+        may_retry_after_send: bool,
+    ) -> Exception:
+        """Translate a stream-open transport failure, mirroring ``_request``.
+
+        Returns a retryable ``last_error`` for failures that may be retried, or
+        raises the terminal typed error for the fail-fast cases (connect
+        timeout, permanent transport errors, and send-phase failures on a
+        non-idempotent method).
+        """
+        if isinstance(exc, httpx.ConnectTimeout):
+            raise XNATTimeoutError(self.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from exc
+        if isinstance(exc, httpx.ConnectError):
+            return ServerUnreachableError(self.base_url)
+        if isinstance(exc, PERMANENT_TRANSPORT_ERRORS):
+            raise NetworkError(self.base_url, f"{type(exc).__name__}: {exc}") from exc
+        if isinstance(exc, httpx.TimeoutException):
+            if not may_retry_after_send:
+                raise XNATTimeoutError(
+                    self.base_url,
+                    read_timeout,
+                    f"{method_upper} {path} timed out after the request was sent; "
+                    "it may have partially executed on the server. Not retried "
+                    "automatically - check server state before repeating it.",
+                ) from exc
+            return NetworkError(self.base_url, f"Timeout after {read_timeout}s")
+        # RETRYABLE_TRANSPORT_ERRORS: send-phase hazard, same idempotency rule.
+        if not may_retry_after_send:
+            raise NetworkError(
+                self.base_url,
+                f"{type(exc).__name__} on {method_upper} {path} after the request "
+                "was sent; it may have partially executed on the server. "
+                "Not retried automatically.",
+            ) from exc
+        return NetworkError(self.base_url, f"{type(exc).__name__}: {exc}")
+
+    @contextmanager
+    def stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: int | None = None,
+    ) -> Iterator[httpx.Response]:
+        """Stream a response through the client's retry/auth/error contract.
+
+        The public streaming entry point every download path uses instead of
+        reaching for ``_get_client()`` and raw ``httpx`` -- so streamed reads
+        get the same retry ladder, typed-error mapping, and basic-auth fallback
+        as ``_request``.
+
+        Retries (retryable statuses, connect drops, and read-phase failures for
+        idempotent methods) happen ONLY before the body is yielded; a mid-body
+        transport failure is translated to the matching typed error but never
+        retried, because a consumed stream cannot be resumed. Error statuses
+        are mapped to the same typed exceptions ``_request`` raises. No raw
+        ``httpx`` exception escapes.
+
+        Args:
+            method: HTTP method (GET in practice; the idempotency check stays
+                honest for anything else).
+            path: API path.
+            params: Query parameters.
+            headers: Additional request headers.
+            timeout: Read-timeout override in seconds.
+
+        Yields:
+            The open streaming response (2xx). Closed on context exit.
+
+        Raises:
+            SessionExpiredError, PermissionDeniedError, ResourceNotFoundError,
+            ClientRequestError, ServerError: mapped from the error status.
+            TimeoutError, NetworkError, ServerUnreachableError: from transport
+                failures, mirroring ``_request``.
+            RetryExhaustedError: when retries drain.
+        """
+        client = self._get_client()
+        read_timeout = timeout or self.timeout
+        request_timeout = build_httpx_timeout(read_timeout)
+        method_upper = method.upper()
+        may_retry_after_send = method_upper in IDEMPOTENT_METHODS
+        last_error: Exception | None = None
+        did_reauth = False
+
+        attempt = 0
+        while attempt <= self.max_retries:
+            # Send the session cookie explicitly per call rather than mutating
+            # the shared ``client.cookies`` jar (the httpx-0.28 workaround
+            # ``_request`` uses): stream() runs on parallel worker threads over
+            # one shared httpx.Client, and mutating the shared jar there races.
+            # The token is read once so the reauth path below can tell whether
+            # another thread already refreshed it while this call was in flight.
+            token_at_send = self.session_token
+            call_headers = dict(headers) if headers else {}
+            if token_at_send:
+                cookie = f"JSESSIONID={token_at_send}"
+                existing = call_headers.get("Cookie")
+                call_headers["Cookie"] = f"{existing}; {cookie}" if existing else cookie
+            auth = self._get_auth()
+
+            try:
+                request = client.build_request(
+                    method,
+                    path,
+                    params=params,
+                    headers=call_headers,
+                    timeout=request_timeout,
+                )
+                response = client.send(request, auth=auth, stream=True)
+            except _STREAM_TRANSPORT_ERRORS as e:
+                last_error = self._stream_transport_error(
+                    e,
+                    method_upper=method_upper,
+                    path=path,
+                    read_timeout=read_timeout,
+                    may_retry_after_send=may_retry_after_send,
+                )
+            else:
+                code = response.status_code
+                logger.debug(
+                    "%s %s -> %d (stream, attempt %d/%d)",
+                    method_upper,
+                    redact_url_query(str(response.request.url)),
+                    code,
+                    attempt + 1,
+                    self.max_retries + 1,
+                )
+
+                can_reauth = (
+                    self.auto_reauth and not did_reauth and bool(self.username and self.password)
+                )
+                if code == 401 and can_reauth:
+                    response.close()
+                    with self._reauth_lock:
+                        # A parallel stream may have refreshed the session
+                        # while this request was in flight; reuse its token
+                        # instead of opening yet another server session.
+                        if self.session_token == token_at_send:
+                            self.authenticate()
+                    did_reauth = True
+                    continue
+
+                if code in RETRYABLE_STATUS_CODES:
+                    _read_stream_body(response)
+                    last_error = ServerError(code, method, path, _body_snippet(response))
+
+                    if code in _AMBIGUOUS_RETRY_CODES and not may_retry_after_send:
+                        response.close()
+                        ambiguous = ServerError(code, method, path, _body_snippet(response))
+                        ambiguous.hint = (
+                            f"The server sent {code} after receiving the "
+                            f"{method_upper}, so it may have partially executed. It was "
+                            "not retried automatically -- check server state before "
+                            "repeating it."
+                        )
+                        raise ambiguous
+
+                    if attempt < self.max_retries:
+                        retry_after = _retry_after_seconds(response)
+                        delay = retry_after if retry_after is not None else _backoff_delay(attempt)
+                        response.close()
+                        # WARNING for the same reason _request warns: a silent
+                        # retry storm reads as "the download is hanging".
+                        logger.warning(
+                            "HTTP %d on %s %s; retrying in %.1fs%s (attempt %d/%d)",
+                            code,
+                            method_upper,
+                            path,
+                            delay,
+                            " per Retry-After" if retry_after is not None else "",
+                            attempt + 1,
+                            self.max_retries + 1,
+                        )
+                        time.sleep(delay)
+                        attempt += 1
+                        continue
+                    response.close()
+                    raise RetryExhaustedError("request", self.max_retries + 1, last_error)
+
+                if code >= 400:
+                    # Terminal error: read the body so the typed exception can
+                    # quote it, then map and raise through the shared helper.
+                    _read_stream_body(response)
+                    try:
+                        self._raise_for_xnat_status(response, method, path)
+                    finally:
+                        response.close()
+
+                try:
+                    yield response
+                except httpx.TimeoutException as e:
+                    # Mid-body failures are translated but never retried: a
+                    # partially consumed stream cannot be resumed.
+                    raise XNATTimeoutError(
+                        self.base_url,
+                        read_timeout,
+                        f"{method_upper} {path} timed out while streaming the body; "
+                        "the partial download was discarded.",
+                    ) from e
+                except httpx.HTTPError as e:
+                    raise NetworkError(
+                        self.base_url,
+                        f"{type(e).__name__} while streaming the {method_upper} {path} body",
+                    ) from e
+                finally:
+                    response.close()
+                return
+
+            # Transport failure left a retryable ``last_error``; back off.
+            if attempt < self.max_retries:
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    "%s on %s %s; retrying in %.1fs (attempt %d/%d)",
+                    type(last_error).__name__ if last_error else "Transport error",
+                    method_upper,
+                    path,
+                    delay,
+                    attempt + 1,
+                    self.max_retries + 1,
+                )
+                time.sleep(delay)
+            attempt += 1
+
+        raise RetryExhaustedError("request", self.max_retries + 1, last_error)
+
     def _request(  # noqa: C901  # pre-existing; see pyproject
         self,
         method: str,
@@ -355,26 +651,10 @@ class XNATClient:
                         bool(self.username and self.password),
                     )
 
-                    expired_err = SessionExpiredError(self.base_url)
-                    expired_err.details.update(
-                        {"status_code": resp.status_code, "method": method, "path": path}
-                    )
-                    raise expired_err
+                    self._raise_for_xnat_status(resp, method, path)
 
-                if resp.status_code == 403:
-                    denied_err = PermissionDeniedError(
-                        resource=path,
-                        operation=method.lower(),
-                        url=self.base_url,
-                    )
-                    denied_err.details.update(
-                        {"status_code": resp.status_code, "method": method, "path": path}
-                    )
-                    raise denied_err
-
-                # Handle 404
-                if resp.status_code == 404:
-                    raise ResourceNotFoundError("resource", path)
+                if resp.status_code in (403, 404):
+                    self._raise_for_xnat_status(resp, method, path)
 
                 # Retry on retryable statuses; on exhaustion raise a typed
                 # RetryExhaustedError rather than leaking httpx.HTTPStatusError.
@@ -424,11 +704,7 @@ class XNATClient:
                 # Non-retryable error status: surface a typed error, never a raw
                 # httpx.HTTPStatusError (401/403/404 are already handled above).
                 if resp.status_code >= 400:
-                    if resp.status_code < 500:
-                        raise ClientRequestError(
-                            resp.status_code, method, path, _body_snippet(resp)
-                        )
-                    raise ServerError(resp.status_code, method, path, _body_snippet(resp))
+                    self._raise_for_xnat_status(resp, method, path)
 
                 return resp
 

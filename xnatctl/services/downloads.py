@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
+import threading
 import time
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
-from xnatctl.core.exceptions import AuthenticationError
+import httpx
+
+from xnatctl.core.client import XNATClient
+from xnatctl.core.exceptions import AuthenticationError, DownloadError
 from xnatctl.models.hierarchy import ExperimentRef, ResourceRef, ScanRef
 from xnatctl.models.progress import (
     DownloadProgress,
@@ -20,6 +25,104 @@ from xnatctl.models.progress import (
 
 from .base import BaseService
 from .hierarchy import HierarchyService
+
+_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+class StreamedFile(NamedTuple):
+    """Result of :func:`stream_to_file`.
+
+    Attributes:
+        bytes_written: Bytes written to the destination.
+        content_length: The response Content-Length, or None when the server
+            did not send one.
+    """
+
+    bytes_written: int
+    content_length: int | None
+
+
+def _declared_content_length(response: httpx.Response) -> int | None:
+    """The Content-Length usable for byte-count verification, or None.
+
+    None when the header is absent, malformed, or negative -- and when a
+    non-identity Content-Encoding means httpx's decoded byte count would not
+    match the wire length anyway.
+    """
+    if response.headers.get("content-encoding", "identity").lower() not in ("", "identity"):
+        return None
+    raw_length = response.headers.get("content-length")
+    if raw_length is None:
+        return None
+    try:
+        length = int(raw_length)
+    except ValueError:
+        return None
+    return length if length >= 0 else None
+
+
+def stream_to_file(
+    client: XNATClient,
+    path: str,
+    dest: Path,
+    *,
+    params: dict[str, Any] | None = None,
+    progress_cb: Callable[[int, int | None], None] | None = None,
+    chunk_size: int = _DOWNLOAD_CHUNK_SIZE,
+) -> StreamedFile:
+    """Stream a GET to ``dest`` atomically, through the client's retry/auth path.
+
+    Writes to a sibling ``.part`` file and renames on success, so a network
+    drop never leaves a truncated file that looks complete. If the response
+    carries a nonzero Content-Length that disagrees with the bytes written, the
+    download is rejected. On any failure the ``.part`` is removed and no
+    ``dest`` is produced.
+
+    Args:
+        client: Client to stream through (retry ladder, typed errors, auth).
+        path: API path.
+        dest: Final destination path.
+        params: Query parameters.
+        progress_cb: Called after each chunk with
+            ``(bytes_written, content_length)``.
+        chunk_size: Read chunk size in bytes.
+
+    Returns:
+        The bytes written and the response Content-Length.
+
+    Raises:
+        DownloadError: On a Content-Length mismatch.
+    """
+    # Unique per process and thread, so parallel workers (or two commands)
+    # aiming at the same destination cannot truncate or unlink each other's
+    # in-flight temporary.
+    part = dest.with_name(f"{dest.name}.{os.getpid()}-{threading.get_ident()}.part")
+    bytes_written = 0
+    content_length: int | None = None
+    try:
+        with client.stream("GET", path, params=params) as response:
+            content_length = _declared_content_length(response)
+
+            with open(part, "wb") as f:
+                for chunk in response.iter_bytes(chunk_size=chunk_size):
+                    f.write(chunk)
+                    bytes_written += len(chunk)
+                    if progress_cb is not None:
+                        progress_cb(bytes_written, content_length)
+
+        if content_length is not None and content_length != 0 and bytes_written != content_length:
+            raise DownloadError(
+                f"Incomplete download of {path}: wrote {bytes_written} bytes but the "
+                f"server declared Content-Length {content_length}",
+                path,
+            )
+
+        os.replace(part, dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+
+    return StreamedFile(bytes_written, content_length)
 
 
 def _md5_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -84,7 +187,6 @@ class DownloadService(BaseService):
         include_resources: bool = True,
         include_assessors: bool = False,
         pattern: str | None = None,
-        resume: bool = False,
         verify: bool = False,
         parallel: bool = True,
         workers: int = 4,
@@ -105,7 +207,6 @@ class DownloadService(BaseService):
             include_resources: Include session-level resources
             include_assessors: Include assessor data
             pattern: File pattern filter
-            resume: Resume interrupted download
             verify: Verify checksums after download
             parallel: Use parallel downloads
             workers: Number of parallel workers
@@ -143,29 +244,24 @@ class DownloadService(BaseService):
         zip_path = output_dir / f"{session_id}.zip"
 
         try:
-            # Stream download
-            total_bytes = 0
-            client = self.client._get_client()
-            cookies = self.client._get_cookies()
-            with client.stream("GET", path, params=params, cookies=cookies) as response:
-                response.raise_for_status()
-                total_size = int(response.headers.get("content-length", 0))
+            progress_cb: Callable[[int, int | None], None] | None = None
+            if progress_callback is not None:
+                emit = progress_callback
 
-                with open(zip_path, "wb") as f:
-                    for chunk in response.iter_bytes(chunk_size=8192):
-                        f.write(chunk)
-                        total_bytes += len(chunk)
+                def progress_cb(written: int, total: int | None) -> None:
+                    emit(
+                        DownloadProgress(
+                            phase=OperationPhase.DOWNLOADING,
+                            bytes_received=written,
+                            total_bytes=total or 0,
+                            file_path=str(zip_path),
+                            message=f"Downloading {session_id}",
+                        )
+                    )
 
-                        if progress_callback:
-                            progress_callback(
-                                DownloadProgress(
-                                    phase=OperationPhase.DOWNLOADING,
-                                    bytes_received=total_bytes,
-                                    total_bytes=total_size,
-                                    file_path=str(zip_path),
-                                    message=f"Downloading {session_id}",
-                                )
-                            )
+            total_bytes = stream_to_file(
+                self.client, path, zip_path, params=params, progress_cb=progress_cb
+            ).bytes_written
 
             # Extract if needed
             if progress_callback:
@@ -297,27 +393,23 @@ class DownloadService(BaseService):
         zip_path = output_dir / (zip_filename or f"{resource_label}.zip")
 
         try:
-            total_bytes = 0
-            client = self.client._get_client()
-            cookies = self.client._get_cookies()
-            with client.stream("GET", path, params=params, cookies=cookies) as response:
-                response.raise_for_status()
-                total_size = int(response.headers.get("content-length", 0))
+            progress_cb: Callable[[int, int | None], None] | None = None
+            if progress_callback is not None:
+                emit = progress_callback
 
-                with open(zip_path, "wb") as f:
-                    for chunk in response.iter_bytes(chunk_size=8192):
-                        f.write(chunk)
-                        total_bytes += len(chunk)
+                def progress_cb(written: int, total: int | None) -> None:
+                    emit(
+                        DownloadProgress(
+                            phase=OperationPhase.DOWNLOADING,
+                            bytes_received=written,
+                            total_bytes=total or 0,
+                            file_path=str(zip_path),
+                        )
+                    )
 
-                        if progress_callback:
-                            progress_callback(
-                                DownloadProgress(
-                                    phase=OperationPhase.DOWNLOADING,
-                                    bytes_received=total_bytes,
-                                    total_bytes=total_size,
-                                    file_path=str(zip_path),
-                                )
-                            )
+            total_bytes = stream_to_file(
+                self.client, path, zip_path, params=params, progress_cb=progress_cb
+            ).bytes_written
 
             file_count = 1
             if extract:
@@ -461,27 +553,23 @@ class DownloadService(BaseService):
         zip_path = output_dir / (zip_filename or "scans.zip")
 
         try:
-            total_bytes = 0
-            client = self.client._get_client()
-            cookies = self.client._get_cookies()
-            with client.stream("GET", path, params=params, cookies=cookies) as response:
-                response.raise_for_status()
-                total_size = int(response.headers.get("content-length", 0))
+            progress_cb: Callable[[int, int | None], None] | None = None
+            if progress_callback is not None:
+                emit = progress_callback
 
-                with open(zip_path, "wb") as f:
-                    for chunk in response.iter_bytes(chunk_size=8192):
-                        f.write(chunk)
-                        total_bytes += len(chunk)
+                def progress_cb(written: int, total: int | None) -> None:
+                    emit(
+                        DownloadProgress(
+                            phase=OperationPhase.DOWNLOADING,
+                            bytes_received=written,
+                            total_bytes=total or 0,
+                            file_path=str(zip_path),
+                        )
+                    )
 
-                        if progress_callback:
-                            progress_callback(
-                                DownloadProgress(
-                                    phase=OperationPhase.DOWNLOADING,
-                                    bytes_received=total_bytes,
-                                    total_bytes=total_size,
-                                    file_path=str(zip_path),
-                                )
-                            )
+            total_bytes = stream_to_file(
+                self.client, path, zip_path, params=params, progress_cb=progress_cb
+            ).bytes_written
 
             file_count = 1
             output_path = str(zip_path)

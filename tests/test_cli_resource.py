@@ -554,9 +554,8 @@ class TestResourceRefresh:
 
 
 def _wire_stream(client: MagicMock, capture: dict) -> None:
-    """Wire ``client._get_client().stream(...)`` to capture the requested URL."""
+    """Wire ``client.stream(...)`` to capture the requested URL."""
     resp = MagicMock()
-    resp.raise_for_status.return_value = None
     resp.headers = {"content-length": "0"}
     resp.iter_bytes.return_value = iter([b""])
     cm = MagicMock()
@@ -568,10 +567,7 @@ def _wire_stream(client: MagicMock, capture: dict) -> None:
         capture["url"] = url
         return cm
 
-    inner = MagicMock()
-    inner.stream.side_effect = stream
-    client._get_client.return_value = inner
-    client._get_cookies.return_value = {}
+    client.stream.side_effect = stream
 
 
 class TestResourceScopeLevels:
