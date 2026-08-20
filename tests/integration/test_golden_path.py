@@ -272,17 +272,15 @@ class TestRoundTrip:
         """
         import pydicom
 
-        from xnatctl.cli.session import _download_session_fast
+        from xnatctl.services.downloads import DownloadService
 
         out = tmp_path / "downloaded"
-        _download_session_fast(
-            client=xnat_client,
+        DownloadService(xnat_client).download_session_fast(
             session_project=integration_project,
             subject=uploaded["subject"],
             resolved_session_id=archived,
             session_dir=out,
             workers=2,
-            quiet=True,
         )
 
         got = {}
@@ -312,17 +310,15 @@ class TestRoundTrip:
         tmp_path: Path,
     ) -> None:
         """scans/{id}/resources/{label}/files/ -- what the docs promise users."""
-        from xnatctl.cli.session import _download_session_fast
+        from xnatctl.services.downloads import DownloadService
 
         out = tmp_path / "layout"
-        _download_session_fast(
-            client=xnat_client,
+        DownloadService(xnat_client).download_session_fast(
             session_project=integration_project,
             subject=uploaded["subject"],
             resolved_session_id=archived,
             session_dir=out,
             workers=2,
-            quiet=True,
         )
 
         for scan_id in SCAN_IDS:

@@ -1,12 +1,12 @@
-"""Tests for _extract_session_zips function in session.py."""
+"""Tests for extract_session_zips in xnatctl.services.downloads."""
 
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from xnatctl.cli.session import _extract_session_zips
 from xnatctl.core.exceptions import DownloadError
+from xnatctl.services.downloads import extract_session_zips
 
 
 def test_extract_strips_session_label(tmp_path: Path) -> None:
@@ -20,7 +20,7 @@ def test_extract_strips_session_label(tmp_path: Path) -> None:
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("SESSION01/scans/1/resources/DICOM/files/test.dcm", b"test content")
 
-    _extract_session_zips(session_dir, cleanup=False, quiet=True)
+    extract_session_zips(session_dir, cleanup=False)
 
     # Verify the output is stripped: session_dir/scans/1/resources/DICOM/files/test.dcm
     expected_file = session_dir / "scans" / "1" / "resources" / "DICOM" / "files" / "test.dcm"
@@ -40,7 +40,7 @@ def test_extract_cleanup_removes_zip(tmp_path: Path) -> None:
 
     assert zip_path.exists()
 
-    _extract_session_zips(session_dir, cleanup=True, quiet=True)
+    extract_session_zips(session_dir, cleanup=True)
 
     # ZIP should be removed
     assert not zip_path.exists()
@@ -60,7 +60,7 @@ def test_extract_no_cleanup_keeps_zip(tmp_path: Path) -> None:
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("SESSION01/scans/1/test.dcm", b"test")
 
-    _extract_session_zips(session_dir, cleanup=False, quiet=True)
+    extract_session_zips(session_dir, cleanup=False)
 
     # ZIP should still exist
     assert zip_path.exists()
@@ -83,7 +83,7 @@ def test_extract_skips_hidden_files(tmp_path: Path) -> None:
         zf.writestr("SESSION01/.gitkeep", b"git")
         zf.writestr("SESSION01/scans/visible.dcm", b"visible")
 
-    _extract_session_zips(session_dir, cleanup=False, quiet=True)
+    extract_session_zips(session_dir, cleanup=False)
 
     # Hidden files should not be extracted
     assert not (session_dir / "scans" / ".hidden").exists()
@@ -105,7 +105,7 @@ def test_extract_handles_single_component_path(tmp_path: Path) -> None:
         # File with only one component (no session label to strip)
         zf.writestr("file.dcm", b"single component")
 
-    _extract_session_zips(session_dir, cleanup=False, quiet=True)
+    extract_session_zips(session_dir, cleanup=False)
 
     # Should extract as-is
     extracted = session_dir / "file.dcm"
@@ -122,7 +122,7 @@ def test_extract_no_zips_is_noop(tmp_path: Path) -> None:
     (session_dir / "readme.txt").write_text("test")
 
     # Should not raise error and should be a no-op
-    _extract_session_zips(session_dir, cleanup=True, quiet=True)
+    extract_session_zips(session_dir, cleanup=True)
 
     # Regular file should still exist
     assert (session_dir / "readme.txt").exists()
@@ -143,7 +143,7 @@ def test_extract_skips_directories(tmp_path: Path) -> None:
         # Add actual file
         zf.writestr("SESSION01/scans/1/test.dcm", b"content")
 
-    _extract_session_zips(session_dir, cleanup=False, quiet=True)
+    extract_session_zips(session_dir, cleanup=False)
 
     # File should be extracted
     extracted = session_dir / "scans" / "1" / "test.dcm"
@@ -166,7 +166,7 @@ def test_extract_multiple_zips(tmp_path: Path) -> None:
     with zipfile.ZipFile(zip2, "w") as zf:
         zf.writestr("SESSION01/resources/QC/report.pdf", b"qc data")
 
-    _extract_session_zips(session_dir, cleanup=True, quiet=True)
+    extract_session_zips(session_dir, cleanup=True)
 
     # Both should be extracted
     assert (session_dir / "scans" / "1" / "file1.dcm").exists()
@@ -187,7 +187,7 @@ def test_extract_handles_deep_nesting(tmp_path: Path) -> None:
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("SESSION01/a/b/c/d/e/f/g/deep.txt", b"deeply nested")
 
-    _extract_session_zips(session_dir, cleanup=False, quiet=True)
+    extract_session_zips(session_dir, cleanup=False)
 
     # Should strip only first component
     extracted = session_dir / "a" / "b" / "c" / "d" / "e" / "f" / "g" / "deep.txt"
@@ -208,7 +208,7 @@ def test_extract_preserves_binary_content(tmp_path: Path) -> None:
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("SESSION01/scans/1/binary.dcm", binary_content)
 
-    _extract_session_zips(session_dir, cleanup=False, quiet=True)
+    extract_session_zips(session_dir, cleanup=False)
 
     extracted = session_dir / "scans" / "1" / "binary.dcm"
     assert extracted.exists()
@@ -230,7 +230,7 @@ def test_extract_raises_on_bad_zip(tmp_path: Path) -> None:
     bad_zip.write_bytes(b"not a zip file")
 
     with pytest.raises(DownloadError, match="bad.zip"):
-        _extract_session_zips(session_dir, cleanup=False, quiet=True)
+        extract_session_zips(session_dir, cleanup=False)
 
     # Corrupt ZIP is left on disk, not cleaned up.
     assert bad_zip.exists()
@@ -259,7 +259,7 @@ def test_extract_raises_on_truncated_zip(tmp_path: Path) -> None:
     zip_path.write_bytes(raw)
 
     with pytest.raises(DownloadError, match="truncated.zip"):
-        _extract_session_zips(session_dir, cleanup=True, quiet=True)
+        extract_session_zips(session_dir, cleanup=True)
 
     # Nothing was extracted from the corrupt archive.
     assert not (session_dir / "scans").exists()
@@ -278,7 +278,7 @@ def test_extract_handles_special_characters_in_filenames(tmp_path: Path) -> None
         zf.writestr("SESSION01/scans/1/file-with-hyphens.dcm", b"hyphens")
         zf.writestr("SESSION01/scans/1/file_with_underscores.dcm", b"underscores")
 
-    _extract_session_zips(session_dir, cleanup=False, quiet=True)
+    extract_session_zips(session_dir, cleanup=False)
 
     assert (session_dir / "scans" / "1" / "file with spaces.dcm").exists()
     assert (session_dir / "scans" / "1" / "file-with-hyphens.dcm").exists()

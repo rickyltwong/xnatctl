@@ -222,7 +222,7 @@ def run_download(
     workers: int, scans: int, files_per_scan: int, file_kib: int, latency_ms: int
 ) -> Result:
     """Time ``session download``'s parallel path end to end, including extraction."""
-    from xnatctl.cli.session import _download_session_fast
+    from xnatctl.services.downloads import DownloadService
 
     payloads = _Payloads(scans, files_per_scan, file_kib * 1024, latency_ms)
     server = _start_server(payloads)
@@ -233,14 +233,12 @@ def run_download(
     try:
         client = _make_client(server.url)
         start = time.perf_counter()
-        _download_session_fast(
-            client=client,
+        DownloadService(client).download_session_fast(
             session_project=PROJECT,
             subject=SUBJECT,
             resolved_session_id=EXPERIMENT,
             session_dir=out_dir,
             workers=workers,
-            quiet=True,
         )
         elapsed = time.perf_counter() - start
 

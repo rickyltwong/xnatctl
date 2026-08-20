@@ -274,8 +274,8 @@ the documentation:
 - :doc:`concepts` -- Understand the XNAT data model, the prearchive, and how
   IDs and labels work.
 - :doc:`cli-reference` -- Full reference for every command and flag.
-- :doc:`downloading` -- Advanced download options including scan filtering,
-  checksum verification, and parallel workers.
+- :doc:`downloading` -- Advanced download options including scan filtering
+  and parallel workers.
 - :doc:`uploading` -- Upload DICOM files, manage the prearchive, and configure
   direct archive mode.
 - :doc:`workflows` -- End-to-end recipes for common tasks like bulk downloads,

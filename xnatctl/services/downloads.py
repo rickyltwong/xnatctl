@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
+import tempfile
 import threading
 import time
 import zipfile
 from collections.abc import Callable
+from concurrent.futures import as_completed
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import httpx
 
+from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.client import XNATClient
-from xnatctl.core.exceptions import AuthenticationError, DownloadError
+from xnatctl.core.exceptions import AuthenticationError, DownloadError, ResourceNotFoundError
 from xnatctl.models.hierarchy import ExperimentRef, ResourceRef, ScanRef
 from xnatctl.models.progress import (
     DownloadProgress,
@@ -25,6 +27,7 @@ from xnatctl.models.progress import (
 
 from .base import BaseService
 from .hierarchy import HierarchyService
+from .sessions import SessionService
 
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
@@ -125,15 +128,6 @@ def stream_to_file(
     return StreamedFile(bytes_written, content_length)
 
 
-def _md5_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
-    """Compute MD5 checksum of a file without reading it entirely into memory."""
-    h = hashlib.md5()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(chunk_size), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _safe_extract_zip(zip_path: Path, extract_dir: Path) -> None:
     """Extract ZIP contents safely, guarding against path traversal."""
     resolved_root = extract_dir.resolve()
@@ -147,6 +141,205 @@ def _safe_extract_zip(zip_path: Path, extract_dir: Path) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
+
+
+def _extract_scan_zip(  # noqa: C901  # pre-existing; see pyproject
+    zip_path: Path,
+    scan_base: Path,
+    *,
+    resource_label: str | None = None,
+    exclude_resources: frozenset[str] = frozenset(),
+) -> tuple[int, int]:
+    """Extract a scan ZIP into standard XNAT layout.
+
+    Handles both filtered ZIPs (single resource) and unfiltered ZIPs
+    (multiple resources).  XNAT ZIP structure:
+        {exp}/scans/{id}/resources/{label}/files/{filename...}
+
+    Args:
+        zip_path: Path to the downloaded ZIP file.
+        scan_base: Target directory (e.g. session_dir/scans/{scan_id}).
+        resource_label: If set, all files go under resources/{label}/files/.
+            When None, resource labels are inferred from ZIP paths.
+        exclude_resources: Resource labels to skip during extraction.
+
+    Returns:
+        Tuple of (files_extracted, duplicates_renamed).
+    """
+    files_extracted = 0
+    duplicates_renamed = 0
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for member in zf.infolist():
+            if member.is_dir():
+                continue
+            member_path = Path(member.filename)
+            if any(part.startswith(".") for part in member_path.parts):
+                continue
+
+            parts = member_path.parts
+
+            # Detect resource label and relative file path from ZIP entry.
+            detected_label: str | None = None
+            rel: Path | None = None
+            if "resources" in parts and "files" in parts:
+                res_idx = parts.index("resources")
+                files_idx = parts.index("files")
+                if files_idx > res_idx + 1:
+                    detected_label = parts[res_idx + 1]
+                    rel_parts = parts[files_idx + 1 :]
+                    if rel_parts:
+                        rel = Path(*rel_parts)
+
+            # Fallback: strip up to "files/" if present, else strip top folder.
+            if rel is None:
+                if "files" in parts:
+                    idx = parts.index("files")
+                    rel_parts = parts[idx + 1 :]
+                    if not rel_parts:
+                        continue
+                    rel = Path(*rel_parts)
+                elif len(parts) > 1:
+                    rel = Path(*parts[1:])
+                else:
+                    rel = member_path
+
+            if not rel.name or rel.name.startswith("."):
+                continue
+
+            effective_label = resource_label or detected_label or "UNKNOWN"
+
+            if effective_label in exclude_resources:
+                continue
+
+            target_dir = scan_base / "resources" / effective_label / "files"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            resolved_root = target_dir.resolve()
+
+            dest = (target_dir / rel).resolve()
+            if not dest.is_relative_to(resolved_root):
+                continue
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            final_dest = dest
+            if final_dest.exists():
+                duplicates_renamed += 1
+                stem = final_dest.stem
+                suffix = final_dest.suffix
+                i = 1
+                while True:
+                    candidate = final_dest.with_name(f"{stem}__dup{i}{suffix}")
+                    if not candidate.exists():
+                        final_dest = candidate
+                        break
+                    i += 1
+
+            with zf.open(member) as src, open(final_dest, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            files_extracted += 1
+
+    return files_extracted, duplicates_renamed
+
+
+def extract_session_zips(
+    session_dir: Path,
+    *,
+    cleanup: bool = True,
+    on_message: Callable[[str], None] | None = None,
+) -> None:
+    """Extract all ZIP files in a session directory.
+
+    Args:
+        session_dir: Path to session directory containing ZIPs.
+        cleanup: Remove ZIPs after successful extraction.
+        on_message: Called with each user-facing progress line (rendering is
+            the caller's concern; the service prints nothing).
+
+    Raises:
+        DownloadError: If any archive is corrupt; extraction of a truncated
+            download must fail the command rather than report a partial success.
+    """
+    zip_files = list(session_dir.glob("*.zip"))
+    if not zip_files:
+        return
+
+    failed_zips: list[str] = []
+    for zip_path in zip_files:
+        if on_message is not None:
+            on_message(f"Extracting {zip_path.name}...")
+
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                # CRC-check every member before writing anything: testzip()
+                # returns the first corrupt name, or None when the archive is
+                # whole. Without it a truncated download extracted partially and
+                # the command still reported success.
+                if zf.testzip() is not None:
+                    failed_zips.append(zip_path.name)
+                    continue
+                for member in zf.namelist():
+                    if member.endswith("/"):
+                        continue
+
+                    member_path = Path(member)
+                    if any(part.startswith(".") for part in member_path.parts):
+                        continue
+
+                    parts = member_path.parts
+                    if len(parts) > 1:
+                        stripped_path = Path(*parts[1:])
+                    else:
+                        stripped_path = member_path
+
+                    target_path = session_dir / stripped_path
+                    # Guard against ZipSlip path traversal
+                    if not target_path.resolve().is_relative_to(session_dir.resolve()):
+                        continue
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    with zf.open(member) as source, open(target_path, "wb") as target:
+                        shutil.copyfileobj(source, target)
+
+            if cleanup:
+                zip_path.unlink()
+                if on_message is not None:
+                    on_message(f"  Removed {zip_path.name}")
+        except zipfile.BadZipFile:
+            failed_zips.append(zip_path.name)
+
+    if failed_zips:
+        # A corrupt archive must fail the command, not print and exit 0:
+        # @handle_errors turns this into a nonzero exit so a broken download is
+        # never mistaken for a complete one.
+        raise DownloadError(
+            "Corrupt ZIP archive(s) in the session download: "
+            + ", ".join(failed_zips)
+            + ". Extraction did not complete.",
+            details={"corrupt_zips": failed_zips},
+        )
+
+
+class ScanResult(NamedTuple):
+    """One scan download attempt."""
+
+    scan_id: str
+    ok: bool
+    files: int
+    message: str
+
+
+class DownloadOutcome(NamedTuple):
+    """What a parallel session download actually achieved.
+
+    Returned rather than discarded because the caller has to decide the exit
+    code: a download that lost scans is not a success, and for a long time it
+    was reported as one.
+    """
+
+    succeeded: int
+    failed: list[tuple[str, str]]
+    files: int
 
 
 class DownloadService(BaseService):
@@ -179,157 +372,138 @@ class DownloadService(BaseService):
 
         return ExperimentRef(experiment=session_id)
 
-    def download_session(
+    def download_session_fast(  # noqa: C901  # pre-existing; see pyproject
         self,
-        session_id: str,
-        output_dir: Path,
-        project: str | None = None,
-        include_resources: bool = True,
-        include_assessors: bool = False,
-        pattern: str | None = None,
-        verify: bool = False,
-        parallel: bool = True,
-        workers: int = 4,
-        progress_callback: Callable[[DownloadProgress], None] | None = None,
-    ) -> DownloadSummary:
-        """Download session data.
+        *,
+        session_project: str,
+        subject: str,
+        resolved_session_id: str,
+        session_dir: Path,
+        workers: int = 8,
+        include_resources: tuple[str, ...] = (),
+        exclude_resources: tuple[str, ...] = (),
+        on_start: Callable[[int], None] | None = None,
+        on_scan_result: Callable[[ScanResult], None] | None = None,
+    ) -> DownloadOutcome:
+        """Download session scans in parallel and extract to standard structure.
 
-        TODO: currently has no CLI caller -- ``session download`` runs
-        the inline fast path in ``cli/session.py``. A planned refactor folds that engine
-        into this method (routed through the client for retry/auth) rather than
-        deleting it; kept intentionally per the M1 dead-code carve-out.
+        Uses a two-tier strategy:
+        - No filter / exclude filter: one unfiltered request per scan
+          (``/scans/{id}/files``), exclude applied during extraction.
+        - Include filter: one request per (scan, resource) pair
+          (``/scans/{id}/resources/{label}/files``).
 
         Args:
-            session_id: Session ID
-            output_dir: Output directory path
-            project: Kept for call compatibility; not used to build the URL,
-                because the project-scoped file listing does not route.
-            include_resources: Include session-level resources
-            include_assessors: Include assessor data
-            pattern: File pattern filter
-            verify: Verify checksums after download
-            parallel: Use parallel downloads
-            workers: Number of parallel workers
-            progress_callback: Progress callback function
+            session_project: Project ID.
+            subject: Subject ID.
+            resolved_session_id: Resolved XNAT experiment ID.
+            session_dir: Output directory for session data.
+            workers: Maximum parallel download workers.
+            include_resources: Resource types to include (empty = all).
+            exclude_resources: Resource types to exclude.
+            on_start: Called once with the number of scans discovered, before
+                downloading begins (including zero). Rendering is the caller's
+                concern; the service prints nothing.
+            on_scan_result: Called with each scan's result as it completes.
 
-        Returns:
-            DownloadSummary with results
+        Produces the XNAT compressed-uploader layout:
+            {session_dir}/scans/{scan_id}/resources/{label}/files/{files...}
         """
-        start_time = time.time()
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        results = SessionService(self.client).scan_rows(resolved_session_id)
+        scan_ids = [r["ID"] for r in results if r.get("ID")]
 
-        # Build download URL. The flat form is the only one that routes: XNAT
-        # answers /data/projects/{P}/experiments/{E}/scans/ALL/files with the
-        # experiment document instead of the file listing, so the project-scoped
-        # variant downloaded a ZIP of nothing.
-        path = HierarchyService.build_scan_path(
-            ScanRef(experiment=ExperimentRef(experiment=session_id), scan_id="ALL"),
-            "files",
-        )
+        if on_start is not None:
+            on_start(len(scan_ids))
 
-        params: dict[str, Any] = {"format": "zip"}
-        if pattern:
-            params["file_format"] = pattern
+        if not scan_ids:
+            return DownloadOutcome(succeeded=0, failed=[], files=0)
 
-        # Download ZIP
-        if progress_callback:
-            progress_callback(
-                DownloadProgress(
-                    phase=OperationPhase.PREPARING,
-                    message=f"Preparing download for {session_id}",
-                )
+        exclude_set = frozenset(exclude_resources)
+
+        # Two-tier task list: (scan_id, resource_label_or_None)
+        download_tasks: list[tuple[str, str | None]] = []
+        if include_resources:
+            for sid in scan_ids:
+                for res in include_resources:
+                    download_tasks.append((sid, res))
+        else:
+            for sid in scan_ids:
+                download_tasks.append((sid, None))
+
+        def download_and_extract(
+            scan_id: str,
+            resource_label: str | None,
+        ) -> ScanResult:
+            """Download a scan ZIP and extract into standard layout."""
+            base = (
+                f"/data/projects/{session_project}/subjects/{subject}"
+                f"/experiments/{resolved_session_id}/scans/{scan_id}"
             )
+            if resource_label:
+                scan_url = f"{base}/resources/{resource_label}/files"
+            else:
+                scan_url = f"{base}/files"
 
-        zip_path = output_dir / f"{session_id}.zip"
+            # One shared XNATClient across worker threads: httpx.Client is
+            # thread-safe and XNATClient.stream sends the session cookie per call
+            # instead of mutating shared state, so the retry/auth/typed-error path
+            # is reused here without a per-thread raw client.
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
 
-        try:
-            progress_cb: Callable[[int, int | None], None] | None = None
-            if progress_callback is not None:
-                emit = progress_callback
-
-                def progress_cb(written: int, total: int | None) -> None:
-                    emit(
-                        DownloadProgress(
-                            phase=OperationPhase.DOWNLOADING,
-                            bytes_received=written,
-                            total_bytes=total or 0,
-                            file_path=str(zip_path),
-                            message=f"Downloading {session_id}",
-                        )
+                try:
+                    stream_to_file(self.client, scan_url, tmp_path, params={"format": "zip"})
+                    scan_base = session_dir / "scans" / scan_id
+                    extracted, renamed = _extract_scan_zip(
+                        tmp_path,
+                        scan_base,
+                        resource_label=resource_label,
+                        exclude_resources=exclude_set,
                     )
+                finally:
+                    tmp_path.unlink(missing_ok=True)
 
-            total_bytes = stream_to_file(
-                self.client, path, zip_path, params=params, progress_cb=progress_cb
-            ).bytes_written
+                parts = []
+                if resource_label:
+                    parts.append(resource_label)
+                if extracted == 0:
+                    parts.append("empty")
+                if renamed:
+                    parts.append(f"renamed {renamed} duplicates")
+                status = ", ".join(parts) if parts else ""
+                return ScanResult(scan_id, True, extracted, status)
+            except ResourceNotFoundError:
+                # A scan with no files of the requested type is normal under -r, so
+                # this is not an error -- but it downloaded nothing, and the zero is
+                # what stops an all-404 session (the failure mode ADR-0010
+                # describes) reading as a complete download.
+                label_desc = f" ({resource_label})" if resource_label else ""
+                return ScanResult(scan_id, True, 0, f"no files{label_desc}")
+            except Exception as e:
+                return ScanResult(scan_id, False, 0, str(e))
 
-            # Extract if needed
-            if progress_callback:
-                progress_callback(
-                    DownloadProgress(
-                        phase=OperationPhase.PROCESSING,
-                        message=f"Extracting {session_id}",
-                    )
-                )
+        succeeded: list[str] = []
+        failed: list[tuple[str, str]] = []
+        total_files = 0
 
-            extract_dir = output_dir / session_id
-            _safe_extract_zip(zip_path, extract_dir)
+        pool_size = min(len(download_tasks), workers)
+        with cancellable_pool(pool_size) as (executor, _token):
+            futures = {
+                executor.submit(download_and_extract, sid, res): (sid, res)
+                for sid, res in download_tasks
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                if result.ok:
+                    succeeded.append(result.scan_id)
+                    total_files += result.files
+                else:
+                    failed.append((result.scan_id, result.message))
+                if on_scan_result is not None:
+                    on_scan_result(result)
 
-            # Count files
-            file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
-
-            # Clean up ZIP
-            zip_path.unlink()
-
-            # Verify if requested
-            verified = False
-            if verify:
-                verified = self._verify_download(session_id, extract_dir, project)
-
-            if progress_callback:
-                progress_callback(
-                    DownloadProgress(
-                        phase=OperationPhase.COMPLETE,
-                        message=f"Download complete: {file_count} files",
-                        success=True,
-                    )
-                )
-
-            duration = time.time() - start_time
-            return DownloadSummary(
-                success=True,
-                total=1,
-                succeeded=1,
-                failed=0,
-                duration=duration,
-                total_files=file_count,
-                total_size_mb=total_bytes / (1024 * 1024),
-                output_path=str(extract_dir),
-                session_id=session_id,
-                verified=verified,
-            )
-
-        except Exception as e:
-            if progress_callback:
-                progress_callback(
-                    DownloadProgress(
-                        phase=OperationPhase.ERROR,
-                        message=str(e),
-                        success=False,
-                        errors=[str(e)],
-                    )
-                )
-
-            duration = time.time() - start_time
-            return DownloadSummary(
-                success=False,
-                total=1,
-                succeeded=0,
-                failed=1,
-                duration=duration,
-                errors=[str(e)],
-                session_id=session_id,
-            )
+        return DownloadOutcome(succeeded=len(succeeded), failed=failed, files=total_files)
 
     def download_resource(
         self,
@@ -605,75 +779,3 @@ class DownloadService(BaseService):
                 errors=[str(e)],
                 session_id=session_id,
             )
-
-    def _verify_download(
-        self,
-        session_id: str,
-        download_dir: Path,
-        project: str | None = None,
-    ) -> bool:
-        """Verify downloaded files against server checksums.
-
-        Both file listings are consulted. ``/files`` returns only the
-        session-level resources, while the scan files this method is usually
-        asked to verify live under ``/scans/ALL/files`` -- checking just the
-        former meant nothing downloaded was ever compared, and verification
-        reported success without doing any (verified live: a session whose
-        ``/files`` listed 12 resource files and whose ``/scans/ALL/files``
-        listed 3112).
-
-        Names are matched on basename against the *set* of digests recorded
-        for that name. XNAT sites that number DICOM files per scan repeat
-        names like ``00001.dcm`` in every scan, so a single-digest map would
-        report a byte-perfect download as corrupt.
-
-        Args:
-            session_id: Session ID (accession ID; a label cannot be listed here)
-            download_dir: Directory with downloaded files
-            project: Accepted for call compatibility but deliberately not used
-                to build the listing URL -- see below.
-
-        Returns:
-            True if every file that could be checked matched, and at least one
-            file was checked. Verifying nothing is not a pass.
-        """
-        # Always the flat form. XNAT does not route file listings under
-        # /data/projects/{P}/experiments/{E}: both /files and /scans/ALL/files
-        # return 200 with the experiment document there (verified live -- the
-        # flat URLs returned 12 and 3112 rows, the project-scoped ones a single
-        # items[] record). Building the project-scoped URL would yield zero
-        # checksums and report a byte-perfect download as unverifiable.
-        base = f"/data/experiments/{session_id}"
-
-        server_checksums: dict[str, set[str]] = {}
-        for path in (f"{base}/scans/ALL/files", f"{base}/files"):
-            try:
-                results = self._extract_results(self._get(path, params={"format": "json"}))
-            except Exception:
-                # A session with no scans 404s on the scans listing; the other
-                # listing may still cover what was downloaded.
-                continue
-            for r in results:
-                name = r.get("Name", "")
-                digest = r.get("digest", "")
-                if name and digest:
-                    server_checksums.setdefault(name, set()).add(digest)
-
-        if not server_checksums:
-            return False
-
-        checked = 0
-        all_valid = True
-        for file_path in download_dir.rglob("*"):
-            if not file_path.is_file():
-                continue
-
-            digests = server_checksums.get(file_path.name)
-            if not digests:
-                continue
-
-            checked += 1
-            if _md5_file(file_path) not in digests:
-                all_valid = False
-
-        return all_valid and checked > 0

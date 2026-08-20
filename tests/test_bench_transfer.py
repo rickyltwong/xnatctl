@@ -1,7 +1,7 @@
 """Keep the benchmark from bitrotting.
 
-``scripts/bench_transfer.py`` drives private internals -- ``_download_session_fast``
-in the session CLI, ``upload_dicom_parallel`` and ``upload_dicom_gradual_files``
+``scripts/bench_transfer.py`` drives internals -- ``DownloadService.download_session_fast``
+in the download service, ``upload_dicom_parallel`` and ``upload_dicom_gradual_files``
 in the upload service. Those move, and a benchmark nobody runs between releases
 would break silently and only be noticed when someone needed a number.
 

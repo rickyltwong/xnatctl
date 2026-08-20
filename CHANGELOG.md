@@ -6,9 +6,12 @@ All notable changes to this project will be documented in this file.
 
 **Breaking**
 
-- `DownloadService.download_session` no longer accepts a `resume` argument. It
-  was documented as "resume interrupted download" but never implemented and no
-  command exposed it. Callers passing `resume=` must drop it.
+- `DownloadService.download_session` is removed. It was never wired to any
+  command (`session download` runs its own engine, now
+  `DownloadService.download_session_fast`) and its checksum-verification path
+  (`verify=`) was unreachable with it. Library callers should use
+  `download_session_fast`, `download_scans`, or `download_resource`.
+  (Supersedes the earlier note about its `resume` argument.)
 
 **Fixes**
 

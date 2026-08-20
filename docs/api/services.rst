@@ -285,32 +285,36 @@ Common resource categories:
 Downloads Service
 -----------------
 
-High-performance parallel download operations with resume support.
+Parallel, atomic download operations.
 
 **Features:**
 
-- Multi-threaded parallel downloads
-- Resume support for interrupted transfers
-- Progress tracking with Rich progress bars
-- Automatic retry on transient failures
-- Checksum verification
+- Multi-threaded parallel per-scan downloads
+- Atomic writes: data streams to a temporary ``.part`` file that is renamed
+  into place only after the byte count matches the server's Content-Length
+- Automatic retry on transient failures (through the client's retry ladder)
+- Progress via caller-supplied callbacks; rendering stays with the caller
 
 **Parallel Download Example:**
 
 .. code-block:: python
 
+   from pathlib import Path
+
    from xnatctl.services.downloads import DownloadService
 
    service = DownloadService(client)
 
-   # Download with 8 parallel workers
-   service.download_session(
-       project="MYPROJECT",
-       session="SESSION01",
-       dest="./data/",
+   # Download every scan of a session with 8 parallel workers
+   outcome = service.download_session_fast(
+       session_project="MYPROJECT",
+       subject="SUBJ01",
+       resolved_session_id="XNAT_E00001",
+       session_dir=Path("./data/SESSION01"),
        workers=8,
-       show_progress=True
    )
+   if outcome.failed:
+       raise SystemExit(f"{len(outcome.failed)} scan downloads failed")
 
 .. automodule:: xnatctl.services.downloads
    :members:
