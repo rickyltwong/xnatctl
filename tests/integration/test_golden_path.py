@@ -180,7 +180,7 @@ class TestRoundTrip:
     def uploaded(
         self, xnat_client: Any, integration_project: str, tmp_path_factory: Any
     ) -> dict[str, Any]:
-        from xnatctl.services.uploads import UploadService
+        from xnatctl.services.upload import UploadService
 
         subject = "RTSUBJ"
         session = "RTSESS"
@@ -350,7 +350,7 @@ class TestPrearchive:
         it -- which is exactly what the docstring says to do.
         """
         from xnatctl.services.prearchive import PrearchiveService
-        from xnatctl.services.uploads import UploadService
+        from xnatctl.services.upload import UploadService
 
         xnat_client.put(f"/data/projects/{integration_project}/prearchive_code/0")
 

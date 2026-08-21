@@ -102,7 +102,7 @@ if TYPE_CHECKING:
     from xnatctl.services.scans import ScanService
     from xnatctl.services.sessions import SessionService
     from xnatctl.services.subjects import SubjectService
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
 _LAZY_EXPORTS = {
     "DownloadProgress": "xnatctl.models.progress",
@@ -130,7 +130,7 @@ _LAZY_EXPORTS = {
     "ScanService": "xnatctl.services.scans",
     "SessionService": "xnatctl.services.sessions",
     "SubjectService": "xnatctl.services.subjects",
-    "UploadService": "xnatctl.services.uploads",
+    "UploadService": "xnatctl.services.upload",
 }
 
 

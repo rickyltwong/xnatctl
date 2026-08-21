@@ -66,7 +66,7 @@ class TestScenarios:
 class TestHarness:
     def test_the_synthetic_files_look_like_dicom_to_the_collector(self, tmp_path: Path) -> None:
         """The collector accepts them, or every upload scenario measures zero files."""
-        from xnatctl.services.uploads import collect_dicom_files
+        from xnatctl.services.upload import collect_dicom_files
 
         bench._write_synthetic_dicom(tmp_path, 5, 2048)
 

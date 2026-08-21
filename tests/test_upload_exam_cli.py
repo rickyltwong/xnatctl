@@ -114,7 +114,7 @@ def test_session_upload_exam_only_dicoms_does_not_resolve_experiment_id(
                 errors=[],
             )
 
-    monkeypatch.setattr("xnatctl.services.uploads.UploadService", UploadServiceSpy)
+    monkeypatch.setattr("xnatctl.services.upload.UploadService", UploadServiceSpy)
 
     with runner.isolated_filesystem():
         monkeypatch.setenv("HOME", str(Path.cwd()))
@@ -233,7 +233,7 @@ def test_session_upload_exam_wait_for_archive_default_succeeds(
                 )
             )
 
-    monkeypatch.setattr("xnatctl.services.uploads.UploadService", UploadServiceStub)
+    monkeypatch.setattr("xnatctl.services.upload.UploadService", UploadServiceStub)
     monkeypatch.setattr("xnatctl.services.resources.ResourceService", ResourceServiceSpy)
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
@@ -338,7 +338,7 @@ def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
                 errors=[],
             )
 
-    monkeypatch.setattr("xnatctl.services.uploads.UploadService", UploadServiceStub)
+    monkeypatch.setattr("xnatctl.services.upload.UploadService", UploadServiceStub)
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
     monotonic_calls = {"i": 0}

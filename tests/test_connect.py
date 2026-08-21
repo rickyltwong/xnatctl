@@ -27,7 +27,7 @@ from xnatctl.services.resources import ResourceService
 from xnatctl.services.scans import ScanService
 from xnatctl.services.sessions import SessionService
 from xnatctl.services.subjects import SubjectService
-from xnatctl.services.uploads import UploadService
+from xnatctl.services.upload import UploadService
 
 _URL = "https://xnat.example.org"
 

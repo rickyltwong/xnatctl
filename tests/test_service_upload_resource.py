@@ -17,7 +17,7 @@ import pytest
 
 from xnatctl.core.exceptions import BatchOperationError, SessionExpiredError, UploadError
 from xnatctl.models.progress import OperationPhase, UploadProgress, UploadSummary
-from xnatctl.services.uploads import UploadService
+from xnatctl.services.upload import UploadService
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def temp_zips(tmp_path: Path) -> list[Path]:
         created.append(Path(handle.name))
         return handle
 
-    with patch("xnatctl.services.uploads.tempfile.NamedTemporaryFile", tracking):
+    with patch("xnatctl.services.upload.resources.tempfile.NamedTemporaryFile", tracking):
         yield created
 
 
@@ -72,7 +72,7 @@ def _mock_http(status: int = 200) -> MagicMock:
 def test_temp_zip_removed_after_successful_upload(
     service: UploadService, source_dir: Path, temp_zips: list[Path]
 ) -> None:
-    with patch("xnatctl.services.uploads.httpx.Client", return_value=_mock_http(200)):
+    with patch("xnatctl.services.upload.resources.httpx.Client", return_value=_mock_http(200)):
         summary = service.upload_resource("XNAT_E00001", "BIDS", source_dir)
 
     assert summary.success is True
@@ -90,7 +90,7 @@ def test_temp_zip_removed_when_upload_fails(
     so it covers the raising branch too.
     """
     with patch(
-        "xnatctl.services.uploads.httpx.Client",
+        "xnatctl.services.upload.resources.httpx.Client",
         side_effect=RuntimeError("connection exploded"),
     ):
         with pytest.raises(UploadError):
@@ -134,7 +134,7 @@ def test_file_source_is_not_deleted(
     src = tmp_path / "payload.txt"
     src.write_text("keep me")
 
-    with patch("xnatctl.services.uploads.httpx.Client", return_value=_mock_http(200)):
+    with patch("xnatctl.services.upload.resources.httpx.Client", return_value=_mock_http(200)):
         summary = service.upload_resource("XNAT_E00001", "MISC", src)
 
     assert summary.success is True
@@ -147,7 +147,7 @@ def test_typed_failure_propagates_unwrapped(
 ) -> None:
     """A typed client-layer failure passes through instead of being stringified."""
     with patch(
-        "xnatctl.services.uploads.httpx.Client",
+        "xnatctl.services.upload.resources.httpx.Client",
         side_effect=SessionExpiredError("https://xnat.example.org"),
     ):
         with pytest.raises(SessionExpiredError):
@@ -189,7 +189,7 @@ def test_unexpected_failure_wraps_with_cause_and_source_path(
 ) -> None:
     """The wrapper preserves the original exception and names the source."""
     boom = RuntimeError("connection exploded")
-    with patch("xnatctl.services.uploads.httpx.Client", side_effect=boom):
+    with patch("xnatctl.services.upload.resources.httpx.Client", side_effect=boom):
         with pytest.raises(UploadError) as excinfo:
             service.upload_resource("XNAT_E00001", "BIDS", source_dir)
 
@@ -202,7 +202,7 @@ def test_typed_failure_is_the_same_exception_object(
 ) -> None:
     """Pass-through means the identical object, not a lookalike."""
     exc = SessionExpiredError("https://xnat.example.org")
-    with patch("xnatctl.services.uploads.httpx.Client", side_effect=exc):
+    with patch("xnatctl.services.upload.resources.httpx.Client", side_effect=exc):
         with pytest.raises(SessionExpiredError) as excinfo:
             service.upload_resource("XNAT_E00001", "BIDS", source_dir)
 
@@ -214,7 +214,7 @@ def test_archive_build_failure_wraps_and_cleans_the_temp_zip(
 ) -> None:
     """A failed zip build is part of the upload contract and must not leak."""
     with patch(
-        "xnatctl.services.uploads.shutil.make_archive",
+        "xnatctl.services.upload.resources.shutil.make_archive",
         side_effect=OSError("No space left on device"),
     ):
         with pytest.raises(UploadError) as excinfo:
@@ -240,7 +240,7 @@ def test_error_progress_fires_and_a_raising_callback_cannot_mask(
             raise RuntimeError("callback exploded")
 
     exc = SessionExpiredError("https://xnat.example.org")
-    with patch("xnatctl.services.uploads.httpx.Client", side_effect=exc):
+    with patch("xnatctl.services.upload.resources.httpx.Client", side_effect=exc):
         with pytest.raises(SessionExpiredError) as excinfo:
             service.upload_resource("XNAT_E00001", "BIDS", source_dir, progress_callback=callback)
 

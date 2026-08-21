@@ -58,7 +58,7 @@ failure differently:
 
 **Single-target operations raise.** A method that downloads or uploads one thing
 (:meth:`~xnatctl.services.downloads.DownloadService.download_resource`,
-:meth:`~xnatctl.services.uploads.UploadService.upload_resource`, and
+:meth:`~xnatctl.services.upload.UploadService.upload_resource`, and
 :meth:`~xnatctl.services.downloads.DownloadService.download_scan` when a
 resource label is given -- with ``resource=None`` it delegates to the batch
 ``download_scans`` and returns that summary) returns its summary only on
@@ -403,7 +403,7 @@ xnatctl supports two DICOM upload strategies:
 
 .. code-block:: python
 
-   from xnatctl.services.uploads import UploadService
+   from xnatctl.services.upload import UploadService
 
    service = UploadService(client)
 
@@ -421,7 +421,7 @@ xnatctl supports two DICOM upload strategies:
 Failed uploads are automatically retried at lower concurrency, with a final
 sequential retry pass to maximize completion rate on flaky networks.
 
-.. automodule:: xnatctl.services.uploads
+.. automodule:: xnatctl.services.upload
    :members:
    :undoc-members:
 

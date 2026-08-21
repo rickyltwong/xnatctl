@@ -1,4 +1,4 @@
-"""Tests for xnatctl.services.uploads utility functions."""
+"""Tests for xnatctl.services.upload shared utility functions."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-import xnatctl.services.uploads as uploads
 from xnatctl.core.retry import is_retryable_status, upload_with_retry
-from xnatctl.services.uploads import (
+from xnatctl.services.upload import (
     collect_dicom_files,
     split_into_batches,
     split_into_n_batches,
 )
+from xnatctl.services.upload.gradual_client import GradualClientPool
 
 # =============================================================================
 # collect_dicom_files Tests
@@ -395,15 +395,16 @@ class TestUploadWithRetry:
 
 
 def test_get_gradual_http_client_recreates_if_closed() -> None:
-    with uploads._gradual_http_clients_scope():
-        c1 = uploads._get_gradual_http_client(
+    pool = GradualClientPool()
+    with pool.scope():
+        c1 = pool.get_client(
             base_url="https://example.org",
             verify_ssl=True,
         )
         c1.close()
         assert c1.is_closed
 
-        c2 = uploads._get_gradual_http_client(
+        c2 = pool.get_client(
             base_url="https://example.org",
             verify_ssl=True,
         )

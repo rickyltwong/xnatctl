@@ -166,9 +166,9 @@ class ExamUploadService(BaseService):
         raise as a ``ClickException``. On a wait timeout the DICOM upload is kept
         and the unattached resources are reported for an ``--attach-only`` rerun.
         """
-        # Imported here so tests that monkeypatch ``xnatctl.services.uploads``
+        # Imported here so tests that monkeypatch ``xnatctl.services.upload``
         # /``xnatctl.services.resources`` still intercept the lookup.
-        from xnatctl.services.uploads import UploadService
+        from xnatctl.services.upload import UploadService
 
         classification = plan.classification
         exam_root_path = plan.exam_root

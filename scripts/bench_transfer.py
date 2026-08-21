@@ -272,7 +272,7 @@ def run_gradual(workers: int, files: int, file_kib: int, latency_ms: int) -> Res
     latency and connection reuse decide the wall time -- and the case the
     performance audit never examined.
     """
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
     payloads = _Payloads(scans=1, files_per_scan=1, file_bytes=1024, latency_ms=latency_ms)
     server = _start_server(payloads)
@@ -317,7 +317,7 @@ def run_upload(
     workers: int, files: int, file_kib: int, archive_format: str, latency_ms: int
 ) -> Result:
     """Time the parallel REST upload: batching, archiving, and POSTing."""
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
     payloads = _Payloads(scans=1, files_per_scan=1, file_bytes=1024, latency_ms=latency_ms)
     server = _start_server(payloads)

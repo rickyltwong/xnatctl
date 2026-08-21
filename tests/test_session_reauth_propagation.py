@@ -146,7 +146,7 @@ class TestRefreshPropagation:
 
     @staticmethod
     def _refresher(owner: object | None, token: str = "OLD"):
-        from xnatctl.services.uploads import SessionRefresher
+        from xnatctl.services.upload.shared import SessionRefresher
 
         return SessionRefresher(
             base_url="https://x",
@@ -165,7 +165,7 @@ class TestRefreshPropagation:
         module, so patching ``Client`` on it is a global patch, and a
         replacement that called ``httpx.Client`` would call itself.
         """
-        import xnatctl.services.uploads as uploads
+        import xnatctl.services.upload.shared as uploads
 
         real_client = httpx.Client
 
@@ -258,7 +258,7 @@ class TestTheBatchPathAlsoReauthenticates:
         """Upload one archive whose first attempt 401s, and report the calls."""
         import httpx
 
-        import xnatctl.services.uploads as uploads
+        import xnatctl.services.upload.rest_batch as uploads
 
         archive = tmp_path / "batch_1.tar"
         archive.write_bytes(b"tar-ish")

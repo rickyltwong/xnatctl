@@ -16,7 +16,7 @@ from .resources import ResourceService
 from .scans import ScanService
 from .sessions import SessionService
 from .subjects import SubjectService
-from .uploads import UploadService
+from .upload import UploadService
 
 __all__ = [
     "BaseService",

@@ -453,7 +453,7 @@ def _upload_gradual_dicom(
 ) -> None:
     """Upload DICOM files using gradual-DICOM handler (parallel per-file)."""
     from xnatctl.models.progress import UploadProgress
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
     client = ctx.get_client()
     service = UploadService(client)
@@ -520,7 +520,7 @@ def _upload_single_archive(
 ) -> None:
     """Upload a single archive file."""
     from xnatctl.core.output import create_progress
-    from xnatctl.services.uploads import upload_archive_or_raise
+    from xnatctl.services.upload import upload_archive_or_raise
 
     client = ctx.get_client()
 
@@ -584,7 +584,7 @@ def _upload_directory_parallel(
     """Upload a directory of DICOM files using parallel batching."""
     from xnatctl.core.config import get_credentials
     from xnatctl.models.progress import UploadProgress
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
     client = ctx.get_client()
 
@@ -710,7 +710,7 @@ def _upload_dicom_store(
         print_error("DICOM C-STORE requires a directory of DICOM files, not an archive")
         raise SystemExit(1)
 
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
     if tls_key and not tls_cert:
         raise click.UsageError("--tls-key requires --tls-cert")

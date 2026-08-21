@@ -40,6 +40,15 @@ All notable changes to this project will be documented in this file.
   `list[tuple[str, Path]]` (the `(label, path)` pairs it actually downloaded)
   instead of an `int` count. Library callers that used the return value only
   as a count should switch to `len(...)`.
+- `xnatctl.services.uploads` is gone; `UploadService` and its module-level
+  helpers (`collect_dicom_files`, `upload_archive_or_raise`,
+  `upload_single_archive`, `SessionRefresher`, `ArchiveUploadResult`,
+  `DICOMStoreSummary`, `build_dicom_tls_context`, `split_into_batches`,
+  `split_into_n_batches`) now live in `xnatctl.services.upload`, split across
+  one module per transport (`rest_batch`, `gradual`, `dicom_store`,
+  `resources`). Library callers importing from the old module path should
+  update to `xnatctl.services.upload` (or `import xnatctl; xnatctl.UploadService`,
+  which is unaffected). CLI behavior is unchanged.
 
 **Features**
 

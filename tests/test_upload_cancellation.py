@@ -13,9 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator
 from concurrent.futures import as_completed
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -264,7 +262,7 @@ class TestBatchWorkerHonoursCancellation:
         Reporting it as a failure would tell the user their data was refused
         when in fact they stopped it themselves.
         """
-        from xnatctl.services.uploads import _create_and_upload_batch
+        from xnatctl.services.upload.rest_batch import _create_and_upload_batch
 
         token = CancellationToken()
         token.cancel()
@@ -311,16 +309,10 @@ def test_cancellation_maps_to_the_user_cancelled_exit_code() -> None:
     assert exit_code_for(OperationCancelledError("upload")) == ExitCode.USER_CANCELLED
 
 
-@contextmanager
-def _null_scope() -> Iterator[None]:
-    """Stand in for the thread-local HTTP client scope; nothing to set up."""
-    yield
-
-
 def _service() -> Any:
     """An UploadService whose client is never actually called."""
     from xnatctl.core.client import XNATClient
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
     client = MagicMock(spec=XNATClient)
     client.base_url = "https://xnat.example.org"
@@ -350,7 +342,7 @@ class TestTheSalvagePassIsAlsoCancellable:
     def test_the_retry_worker_is_given_the_shared_token(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import xnatctl.services.uploads as uploads
+        import xnatctl.services.upload.gradual as uploads
         from xnatctl.core.cancellation import NULL_TOKEN
 
         # The first five files are the warmup batch; they must succeed or the
@@ -367,7 +359,6 @@ class TestTheSalvagePassIsAlsoCancellable:
             return (name, ok, "" if ok else "transient 400")
 
         monkeypatch.setattr(uploads, "_upload_single_file_gradual", fake_upload)
-        monkeypatch.setattr(uploads, "_gradual_http_clients_scope", _null_scope)
 
         files = []
         for i in range(warmup + 5):

@@ -23,9 +23,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import xnatctl.services.uploads as uploads
+import xnatctl.services.upload.gradual as uploads
 from xnatctl.models.progress import OperationPhase, UploadProgress
-from xnatctl.services.uploads import UploadService
+from xnatctl.services.upload import UploadService
 
 
 @pytest.fixture
@@ -316,3 +316,84 @@ def test_empty_directory_reports_failure_without_uploading(
 
     assert summary.success is False
     assert order == []
+
+
+# =============================================================================
+# Instance reuse (GradualUploadRun.run() must not leak state between calls)
+# =============================================================================
+
+
+def test_reusing_a_run_instance_does_not_leak_state_between_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second ``run()`` on the same ``GradualUploadRun`` must start clean.
+
+    ``UploadService`` always builds a fresh ``GradualUploadRun`` per call, so
+    this never happens through the CLI or the service layer -- but the class
+    is directly importable, and nothing about its constructor signals that an
+    instance is single-use. Without a reset, a second run would retry the
+    first run's failures, add the first run's ``completed`` count on top of
+    the second run's (impossible progress like "5/2"), and report failures
+    for files that were never part of the second run at all.
+    """
+    from xnatctl.services.upload.gradual import GradualUploadRun
+    from xnatctl.services.upload.gradual_client import GradualClientPool
+
+    first_dir = tmp_path / "first"
+    first_dir.mkdir()
+    good1 = first_dir / "good1.dcm"
+    bad1 = first_dir / "bad.dcm"
+    good1.write_bytes(b"\x00" * 128 + b"DICM")
+    bad1.write_bytes(b"\x00" * 128 + b"DICM")
+
+    second_dir = tmp_path / "second"
+    second_dir.mkdir()
+    good2 = second_dir / "good2.dcm"
+    good3 = second_dir / "good3.dcm"
+    good2.write_bytes(b"\x00" * 128 + b"DICM")
+    good3.write_bytes(b"\x00" * 128 + b"DICM")
+
+    def fake_upload_one(**kwargs: object) -> tuple[str, bool, str]:
+        path = kwargs["file_path"]
+        assert isinstance(path, Path)
+        if path.name == "bad.dcm":
+            return (path.name, False, "boom")
+        return (path.name, True, "")
+
+    monkeypatch.setattr(uploads, "_upload_single_file_gradual", fake_upload_one)
+
+    client = MagicMock()
+    client.base_url = "https://xnat.example.org"
+    client.session_token = "TOKEN"
+    client.username = "admin"
+    client.password = "hunter2"
+    client.verify_ssl = True
+
+    run = GradualUploadRun(
+        client=client,
+        pool=GradualClientPool(),
+        project="PROJ",
+        subject="SUB001",
+        session="SESS01",
+        direct_archive=True,
+        display_root=first_dir,
+        progress_callback=None,
+        start_time=0.0,
+    )
+
+    summary1 = run.run([good1, bad1], workers=2)
+    assert summary1.total == 2
+    assert summary1.failed == 1
+    assert summary1.succeeded == 1
+
+    run.display_root = second_dir
+    summary2 = run.run([good2, good3], workers=2)
+
+    assert summary2.total == 2, "second run must count only its own files"
+    assert summary2.succeeded == 2, "first run's completed count leaked into the second"
+    assert summary2.failed == 0, "first run's failure (bad.dcm) leaked into the second"
+    assert summary2.errors == [], "first run's error leaked into the second run's summary"
+    # start_time was constructed as 0.0 (epoch); if run() failed to re-stamp
+    # it for this second call, duration would be ~time.time() (billions of
+    # seconds), not a fraction of a second.
+    assert summary2.duration < 5, "the first run's start_time leaked into the second"

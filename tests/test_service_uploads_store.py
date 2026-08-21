@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from xnatctl.services.uploads import UploadService
+from xnatctl.services.upload import UploadService
 
 SUCCESS = 0x0000
 FAILURE = 0xC000
@@ -340,12 +340,12 @@ def test_cleanup_can_be_disabled(service: UploadService, dicom_root: Path) -> No
 
 def test_patch_target_is_the_module_not_an_attribute() -> None:
     """`AE` is imported inside the function bodies, so
-    `xnatctl.services.uploads.AE` never exists -- patching it would silently
-    do nothing. This guards the fixture's approach.
+    `xnatctl.services.upload.dicom_store.AE` never exists -- patching it would
+    silently do nothing. This guards the fixture's approach.
     """
-    import xnatctl.services.uploads as uploads_mod
+    import xnatctl.services.upload.dicom_store as dicom_store_mod
 
-    assert not hasattr(uploads_mod, "AE")
+    assert not hasattr(dicom_store_mod, "AE")
     with pytest.raises(AttributeError):
-        with patch.object(uploads_mod, "AE"):
+        with patch.object(dicom_store_mod, "AE"):
             pass

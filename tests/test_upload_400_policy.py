@@ -6,7 +6,7 @@ identically, so a mislabeled upload retried every file five times over 62
 seconds of backoff, then did it again in each of two salvage passes.
 
 The signatures are read off the messages compiled into the deployed XNAT
-1.9.2.1, not invented here -- see the constants in ``services.uploads``.
+1.9.2.1, not invented here -- see the constants in ``core.retry``.
 """
 
 from __future__ import annotations
@@ -222,7 +222,7 @@ class TestWarmupCircuitBreaker:
         from unittest.mock import MagicMock
 
         from xnatctl.core.client import XNATClient
-        from xnatctl.services.uploads import UploadService
+        from xnatctl.services.upload import UploadService
 
         client = MagicMock(spec=XNATClient)
         client.base_url = "https://x"
@@ -235,7 +235,7 @@ class TestWarmupCircuitBreaker:
     def test_a_uniformly_rejected_warmup_aborts_before_the_parallel_phase(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import xnatctl.services.uploads as uploads
+        import xnatctl.services.upload.gradual as uploads
 
         files = []
         for i in range(20):
@@ -269,7 +269,7 @@ class TestWarmupCircuitBreaker:
         One bad file among good ones is a per-file problem, and stopping the
         whole upload for it would be worse than the bug being fixed.
         """
-        import xnatctl.services.uploads as uploads
+        import xnatctl.services.upload.gradual as uploads
 
         files = []
         for i in range(20):

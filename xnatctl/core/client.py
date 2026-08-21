@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from xnatctl.services.scans import ScanService
     from xnatctl.services.sessions import SessionService
     from xnatctl.services.subjects import SubjectService
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
 from xnatctl.core.exceptions import (
     AuthenticationError,
@@ -332,7 +332,7 @@ class XNATClient:
     @property
     def uploads(self) -> UploadService:
         """Bound :class:`UploadService` for this client (cached)."""
-        from xnatctl.services.uploads import UploadService
+        from xnatctl.services.upload import UploadService
 
         return self._service("uploads", UploadService)
 

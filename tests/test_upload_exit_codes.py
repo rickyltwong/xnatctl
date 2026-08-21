@@ -20,7 +20,7 @@ from xnatctl.cli.session_upload import (
 )
 from xnatctl.core.output import OutputFormat
 from xnatctl.models.progress import UploadSummary
-from xnatctl.services.uploads import DICOMStoreSummary
+from xnatctl.services.upload import DICOMStoreSummary
 
 
 class _FakeClient:
@@ -75,7 +75,7 @@ def _patch_service(monkeypatch: pytest.MonkeyPatch, method: str, summary: Any) -
         return summary
 
     setattr(FakeService, method, _return)
-    monkeypatch.setattr("xnatctl.services.uploads.UploadService", FakeService)
+    monkeypatch.setattr("xnatctl.services.upload.UploadService", FakeService)
 
 
 @pytest.mark.parametrize("fmt", [OutputFormat.JSON, OutputFormat.TABLE])

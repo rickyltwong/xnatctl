@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import xnatctl.services.uploads as uploads
-from xnatctl.services.uploads import UploadService
+import xnatctl.services.upload.gradual as uploads
+from xnatctl.services.upload import UploadService
 
 
 def test_upload_dicom_gradual_files_uses_explicit_list(

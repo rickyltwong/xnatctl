@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from xnatctl.core.exceptions import UploadError
-from xnatctl.services.uploads import _tls_kwargs, build_dicom_tls_context
+from xnatctl.services.upload.dicom_store import _tls_kwargs, build_dicom_tls_context
 
 
 def _write_self_signed(tmp_path: Path) -> tuple[Path, Path]:
@@ -149,7 +149,7 @@ class TestServiceWiring:
     @staticmethod
     def _service():
         from xnatctl.core.client import XNATClient
-        from xnatctl.services.uploads import UploadService
+        from xnatctl.services.upload import UploadService
 
         client = MagicMock(spec=XNATClient)
         client.base_url = "https://x"
@@ -158,7 +158,7 @@ class TestServiceWiring:
     def test_tls_reaches_the_association(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import xnatctl.services.uploads as uploads
+        import xnatctl.services.upload.dicom_store as uploads
 
         captured: dict[str, object] = {}
 
@@ -181,7 +181,7 @@ class TestServiceWiring:
     def test_plaintext_passes_no_context(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import xnatctl.services.uploads as uploads
+        import xnatctl.services.upload.dicom_store as uploads
 
         captured: dict[str, object] = {"tls_context": "unset"}
 
@@ -205,12 +205,12 @@ class TestServiceWiring:
         """Someone reading the logs should be able to tell it was cleartext."""
         import logging
 
-        import xnatctl.services.uploads as uploads
+        import xnatctl.services.upload.dicom_store as uploads
 
         monkeypatch.setattr(uploads, "_c_echo", lambda *a, **k: False)
         (tmp_path / "a.dcm").write_bytes(b"DICM")
 
-        with caplog.at_level(logging.INFO, logger="xnatctl.services.uploads"):
+        with caplog.at_level(logging.INFO, logger="xnatctl.services.upload.dicom_store"):
             with pytest.raises(RuntimeError, match="C-ECHO failed"):
                 self._service().upload_dicom_store(
                     dicom_root=tmp_path, host="scp.example.org", called_aet="AET"

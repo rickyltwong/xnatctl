@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from xnatctl.services.uploads import SessionRefresher
+from xnatctl.services.upload.shared import SessionRefresher
 
 
 class TestSessionRefresher:
@@ -37,7 +37,7 @@ class TestSessionRefresher:
         mock_response.status_code = 200
         mock_response.text = "  fresh-token  "
 
-        with patch("xnatctl.services.uploads.httpx.Client") as mock_client_cls:
+        with patch("xnatctl.services.upload.shared.httpx.Client") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock(return_value=False)
@@ -59,7 +59,7 @@ class TestSessionRefresher:
             password="pass",
         )
 
-        with patch("xnatctl.services.uploads.httpx.Client") as mock_client_cls:
+        with patch("xnatctl.services.upload.shared.httpx.Client") as mock_client_cls:
             result = refresher.refresh("stale-token")
             mock_client_cls.assert_not_called()
 
@@ -89,7 +89,7 @@ class TestSessionRefresher:
         mock_response.status_code = 401
         mock_response.text = "Unauthorized"
 
-        with patch("xnatctl.services.uploads.httpx.Client") as mock_client_cls:
+        with patch("xnatctl.services.upload.shared.httpx.Client") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock(return_value=False)
@@ -126,7 +126,7 @@ class TestSessionRefresher:
             barrier.wait()
             return refresher.refresh("stale-token")
 
-        with patch("xnatctl.services.uploads.httpx.Client") as mock_client_cls:
+        with patch("xnatctl.services.upload.shared.httpx.Client") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock(return_value=False)
@@ -147,7 +147,7 @@ class TestGradualUpload401Retry:
     """Test that _upload_single_file_gradual retries on 401."""
 
     def test_retries_on_401_with_refreshed_token(self, tmp_path: Path) -> None:
-        from xnatctl.services.uploads import _upload_single_file_gradual
+        from xnatctl.services.upload.gradual_client import _upload_single_file_gradual
 
         dcm = tmp_path / "test.dcm"
         dcm.write_bytes(b"\x00" * 128)
@@ -193,13 +193,18 @@ class TestGradualUpload401Retry:
         auth_response.status_code = 200
         auth_response.text = "fresh-token"
 
+        class _FakePool:
+            """Stands in for GradualClientPool: always hands back mock_client."""
+
+            def get_client(self, *, base_url: str, verify_ssl: object) -> MagicMock:
+                return mock_client
+
         with (
             patch(
-                "xnatctl.services.uploads._get_gradual_http_client",
-                return_value=mock_client,
+                "xnatctl.services.upload.gradual_client.upload_with_retry",
+                side_effect=fake_retry,
             ),
-            patch("xnatctl.services.uploads.upload_with_retry", side_effect=fake_retry),
-            patch("xnatctl.services.uploads.httpx.Client") as mock_auth_client_cls,
+            patch("xnatctl.services.upload.shared.httpx.Client") as mock_auth_client_cls,
         ):
             mock_auth_client = MagicMock()
             mock_auth_client.__enter__ = MagicMock(return_value=mock_auth_client)
@@ -208,6 +213,7 @@ class TestGradualUpload401Retry:
             mock_auth_client_cls.return_value = mock_auth_client
 
             name, ok, err = _upload_single_file_gradual(
+                pool=_FakePool(),  # type: ignore[arg-type]
                 base_url="https://xnat.example.org",
                 session_refresher=refresher,
                 verify_ssl=True,

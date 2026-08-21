@@ -91,7 +91,7 @@ def _seams(monkeypatch: pytest.MonkeyPatch) -> None:
     """Route the service's delegated services to the stubs and neutralize sleep."""
     _UploadStub.last_files = None
     _ResourceSpy.calls = []
-    monkeypatch.setattr("xnatctl.services.uploads.UploadService", _UploadStub)
+    monkeypatch.setattr("xnatctl.services.upload.UploadService", _UploadStub)
     monkeypatch.setattr("xnatctl.services.resources.ResourceService", _ResourceSpy)
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
@@ -173,7 +173,7 @@ def test_a_failed_dicom_upload_aggregates_the_error(tmp_path: Path, monkeypatch)
                 errors=["boom-a", "boom-b", "boom-c", "boom-d"],
             )
 
-    monkeypatch.setattr("xnatctl.services.uploads.UploadService", _FailingUpload)
+    monkeypatch.setattr("xnatctl.services.upload.UploadService", _FailingUpload)
     service = _service()
     plan = service.plan(_make_exam(tmp_path / "exam"), "MISC")
 

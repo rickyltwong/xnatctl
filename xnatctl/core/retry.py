@@ -6,7 +6,7 @@ Three consumers share this module:
   status-code sets, idempotency rule, transport-error taxonomy, and the
   backoff/Retry-After helpers. The ladder itself stays in the client because
   it is inseparable from auth refresh and response handling.
-* ``services/uploads.py`` -- the raw-httpx import paths call
+* ``services/upload/`` -- the raw-httpx import paths call
   :func:`upload_with_retry`, the response-based ladder that adds the
   transient-vs-permanent HTTP 400 discrimination XNAT's import service needs.
 * ``services/transfer/executor.py`` -- wraps its import POST in
