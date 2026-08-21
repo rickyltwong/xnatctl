@@ -36,9 +36,26 @@ All notable changes to this project will be documented in this file.
   `BatchOperationError` on a failed batch and is a no-op on success, mirroring
   `httpx.Response.raise_for_status()`. The CLI is unaffected -- its failure exit
   codes and messages are unchanged.
+- `DownloadService.download_session_level_resources` now returns
+  `list[tuple[str, Path]]` (the `(label, path)` pairs it actually downloaded)
+  instead of an `int` count. Library callers that used the return value only
+  as a count should switch to `len(...)`.
 
 **Features**
 
+- `session download` and `scan download` gain `--verify`, which checks every
+  downloaded file's MD5 against the server's catalog checksum after the
+  download completes -- extracted or still zipped, either way, and covering
+  session-level resources too when combined with `--session-resources`. Files
+  are matched by scan and resource, not just filename, so same-named files in
+  different scans (`1.dcm` in scan 2 and scan 5) are checked independently
+  instead of colliding. A mismatch, a file the server listed but that never
+  landed locally, or two different files that ambiguously map to the same
+  path fails the command with the offending paths printed. A file the server
+  has no checksum for is reported as unverifiable rather than silently
+  skipped -- and if the server had no checksum for anything at all that was
+  downloaded, the command fails outright rather than reporting a pass with
+  nothing actually checked.
 - DICOM utilities (`xnatctl dicom`, `session upload-dicom` C-STORE) and
   OS-keychain password storage (`config set-password`) now ship in every
   install, including the standalone binary. The `dicom` and `keyring` extras

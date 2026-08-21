@@ -9,10 +9,11 @@ import tempfile
 import threading
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import as_completed
 from pathlib import Path
 from typing import Any, NamedTuple
+from urllib.parse import quote
 
 import httpx
 
@@ -29,10 +30,13 @@ from xnatctl.models.progress import (
     DownloadProgress,
     DownloadSummary,
     OperationPhase,
+    VerificationReport,
 )
 
+from . import verify
 from .base import BaseService
 from .hierarchy import HierarchyService
+from .resources import ResourceService
 from .sessions import SessionService
 
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
@@ -253,20 +257,25 @@ def extract_session_zips(
     *,
     cleanup: bool = True,
     on_message: Callable[[str], None] | None = None,
+    zip_paths: Sequence[Path] | None = None,
 ) -> None:
-    """Extract all ZIP files in a session directory.
+    """Extract ZIP files in a session directory.
 
     Args:
         session_dir: Path to session directory containing ZIPs.
         cleanup: Remove ZIPs after successful extraction.
         on_message: Called with each user-facing progress line (rendering is
             the caller's concern; the service prints nothing).
+        zip_paths: Exactly which ZIPs to extract; None globs every ``*.zip``
+            in *session_dir* (the default). A caller that wants to defer some
+            ZIPs -- e.g. session-resource ZIPs that ``--verify`` still needs
+            to read intact -- passes the rest explicitly instead.
 
     Raises:
         DownloadError: If any archive is corrupt; extraction of a truncated
             download must fail the command rather than report a partial success.
     """
-    zip_files = list(session_dir.glob("*.zip"))
+    zip_files = list(zip_paths) if zip_paths is not None else list(session_dir.glob("*.zip"))
     if not zip_files:
         return
 
@@ -346,6 +355,80 @@ class DownloadOutcome(NamedTuple):
     succeeded: int
     failed: list[tuple[str, str]]
     files: int
+
+
+class VerificationManifest(NamedTuple):
+    """Server-reported checksums for a downloaded scope, keyed by path.
+
+    See :meth:`DownloadService.build_verification_manifest`.
+    """
+
+    digests: dict[str, str | None]
+    collisions: list[str]
+
+
+class _ManifestCollector:
+    """Accumulates ``key -> digest`` entries for :meth:`DownloadService.build_verification_manifest`.
+
+    A second row landing on an already-seen key is only a harmless repeat of
+    the exact same file (identical identity and digest) or a real ambiguity
+    between two different files. Silently keeping whichever was seen last
+    would hide the latter, so a genuine collision is pulled out of the
+    manifest entirely and reported instead of resolved arbitrarily.
+    """
+
+    def __init__(self) -> None:
+        self.manifest: dict[str, str | None] = {}
+        self.collisions: set[str] = set()
+        self._fingerprints: dict[str, tuple[str, str | None]] = {}
+
+    def ingest(self, rows: list[dict[str, object]], *, label: str, scan_id: str | None) -> None:
+        """Record every file row's key -> digest, deriving the key from its URI.
+
+        Args:
+            rows: Raw file rows from :meth:`ResourceService.list_file_rows`.
+            label: The resource label these rows belong to (unencoded).
+            scan_id: The scan these rows belong to, or None for a
+                session-level resource. Used only for the fallback key (a
+                row with no URI to parse) -- built with the exact same
+                ``scans/{scan_id}/resources/{label}/...`` /
+                ``resources/{label}/...`` shape :func:`verify.key_from_uri`
+                itself returns, so the two forms can never disagree for the
+                same scan/label/name.
+        """
+        for row in rows:
+            uri = str(row.get("URI") or row.get("uri") or "")
+            key = verify.key_from_uri(uri.strip("/").split("/")) if uri else None
+            name = str(row.get("Name") or row.get("name") or "")
+            if key is None:
+                if not name:
+                    continue
+                key = (
+                    f"scans/{scan_id}/resources/{label}/{name}"
+                    if scan_id is not None
+                    else f"resources/{label}/{name}"
+                )
+            self._record(key, row.get("digest"), uri or key)
+
+    def _record(self, key: str, digest: object, identity: str) -> None:
+        # A key that has already collided stays collided permanently: without
+        # this, a later row whose fingerprint happens to match one of the
+        # (already-evicted) prior entries would look like a first insertion
+        # and quietly repopulate the manifest.
+        if key in self.collisions:
+            return
+        digest_value = digest if isinstance(digest, str) and digest else None
+        # Lowercased before comparing so two rows reporting the identical
+        # file with differently-cased hex digests are recognized as the same
+        # file, not flagged as a collision.
+        fingerprint = (identity, digest_value.lower() if digest_value else None)
+        if key in self._fingerprints and self._fingerprints[key] != fingerprint:
+            self.collisions.add(key)
+            self.manifest.pop(key, None)
+            self._fingerprints.pop(key, None)
+            return
+        self._fingerprints[key] = fingerprint
+        self.manifest[key] = digest_value
 
 
 class DownloadService(BaseService):
@@ -554,7 +637,8 @@ class DownloadService(BaseService):
         subject: str,
         resolved_session_id: str,
         session_dir: Path,
-    ) -> int:
+        downloaded: list[tuple[str, Path]] | None = None,
+    ) -> list[tuple[str, Path]]:
         """Download each session-level (outside-scans) resource as its own ZIP.
 
         Args:
@@ -563,9 +647,21 @@ class DownloadService(BaseService):
             resolved_session_id: Resolved XNAT experiment ID.
             session_dir: Output directory; each resource lands at
                 ``resources_{label}.zip``.
+            downloaded: Appended to in place as each resource's ZIP finishes
+                writing, rather than only assembled into a list returned at
+                the very end. Pass a list a caller already holds a reference
+                to, and if a later resource's download raises, everything
+                appended before that failure is still visible there --
+                instead of vanishing with the exception the way a
+                return-only value would, losing provenance for resources
+                that genuinely landed. With no need to rediscover them
+                afterward by globbing the directory (which could just as
+                easily find a stale ZIP left over from an earlier run).
 
         Returns:
-            The number of session-level resources downloaded.
+            The same list *downloaded* points to (or a fresh one if it was
+            not given) -- the ``(label, path)`` pair for each resource ZIP
+            successfully written so far, in download order.
 
         Raises:
             XNATCtlError: Any typed client-layer failure while listing or
@@ -579,15 +675,176 @@ class DownloadService(BaseService):
         sess_resources = SessionService(self.client).experiment_resource_rows(
             resolved_session_id, project=session_project, subject=subject
         )
+        result = downloaded if downloaded is not None else []
         for res in sess_resources:
             label = res.get("label", "resource")
+            zip_path = session_dir / f"resources_{label}.zip"
             stream_to_file(
                 self.client,
                 f"{res_url}/{label}/files",
-                session_dir / f"resources_{label}.zip",
+                zip_path,
                 params={"format": "zip"},
             )
-        return len(sess_resources)
+            result.append((label, zip_path))
+        return result
+
+    def build_verification_manifest(
+        self,
+        *,
+        session_id: str,
+        project: str | None,
+        subject: str | None = None,
+        scan_ids: list[str] | None = None,
+        include_resources: tuple[str, ...] = (),
+        exclude_resources: tuple[str, ...] = (),
+        resource_filter: str | None = None,
+        include_session_resources: bool = False,
+    ) -> VerificationManifest:
+        """Fetch server-side checksums for a downloaded scan scope, keyed by path.
+
+        Mirrors the scope :meth:`download_session_fast`/:meth:`download_scans`
+        used to fetch the files in the first place: the same experiment
+        resolution, and -- with *scan_ids* omitted -- the same flat, unscoped
+        scan enumeration :meth:`download_session_fast` uses.
+
+        Args:
+            session_id: Session ID or label.
+            project: Project ID (enables label resolution).
+            subject: Subject ID/label, when known.
+            scan_ids: Scans to cover; None covers every scan in the session.
+            include_resources: Resource labels to include (empty = all).
+            exclude_resources: Resource labels to exclude.
+            resource_filter: A single resource label to scope every scan to,
+                skipping the per-scan resource listing call. Mutually
+                exclusive in practice with include/exclude, which only make
+                sense when the resource set is discovered per scan.
+            include_session_resources: Also cover session-level (outside-scans)
+                resources, i.e. the ``--session-resources`` download scope.
+
+        Returns:
+            The digest map (see :func:`xnatctl.services.verify.key_from_uri`;
+            a None digest means the server listed the file with no checksum)
+            plus any key two different server-reported files both mapped to.
+        """
+        resolved = self._resolve_zip_experiment_ref(session_id, project=project, subject=subject)
+        resolved_session_id = resolved.experiment
+        experiment_ref = ExperimentRef(
+            experiment=resolved_session_id, project_id=project, subject=subject
+        )
+
+        resource_svc = ResourceService(self.client)
+        collector = _ManifestCollector()
+
+        if scan_ids is None:
+            rows = SessionService(self.client).scan_rows(resolved_session_id)
+            scan_ids = [r["ID"] for r in rows if r.get("ID")]
+
+        include_set = frozenset(include_resources)
+        exclude_set = frozenset(exclude_resources)
+
+        for scan_id in scan_ids:
+            scan_ref = ScanRef(experiment=experiment_ref, scan_id=scan_id)
+            if resource_filter:
+                labels = [resource_filter]
+            else:
+                labels = [
+                    str(r["label"]) for r in resource_svc.list_rows(scan_ref) if r.get("label")
+                ]
+                if include_set:
+                    labels = [label for label in labels if label in include_set]
+                elif exclude_set:
+                    labels = [label for label in labels if label not in exclude_set]
+
+            for label in labels:
+                # `quote` matches ResourceService's other file-listing callers
+                # (see cli/resource.py): a label may contain characters
+                # (spaces, `#`) invalid unencoded in a URL path segment.
+                rows = resource_svc.list_file_rows(scan_ref, quote(label))
+                collector.ingest(rows, label=label, scan_id=scan_id)
+
+        if include_session_resources:
+            session_resource_rows = SessionService(self.client).experiment_resource_rows(
+                resolved_session_id, project=project, subject=subject
+            )
+            for res in session_resource_rows:
+                label = str(res.get("label") or "")
+                if not label:
+                    continue
+                rows = resource_svc.list_file_rows(experiment_ref, quote(label))
+                collector.ingest(rows, label=label, scan_id=None)
+
+        return VerificationManifest(
+            digests=collector.manifest, collisions=sorted(collector.collisions)
+        )
+
+    def verify_scan_downloads(
+        self,
+        *,
+        session_id: str,
+        project: str | None,
+        subject: str | None = None,
+        scan_ids: list[str] | None = None,
+        include_resources: tuple[str, ...] = (),
+        exclude_resources: tuple[str, ...] = (),
+        resource_filter: str | None = None,
+        include_session_resources: bool = False,
+        local_root: Path | None = None,
+        local_root_wrapped: bool = False,
+        zip_paths: Sequence[verify.ZipSource] = (),
+    ) -> VerificationReport:
+        """Verify a completed download against server-reported MD5 checksums.
+
+        Fetches the server-side file manifest for the same scope the download
+        used (see :meth:`build_verification_manifest`), then compares it
+        against the files on disk: an extracted tree (*local_root*) and/or one
+        or more unextracted archives (*zip_paths*, not mutually exclusive with
+        *local_root* -- session-level resources can remain as separate,
+        un-extracted ZIPs alongside an extracted scan tree), streamed rather
+        than loaded whole into memory either way.
+
+        Args:
+            session_id: Session ID or label.
+            project: Project ID (enables label resolution).
+            subject: Subject ID/label, when known.
+            scan_ids: Scans to verify; None covers every scan in the session.
+            include_resources: Resource labels to include (empty = all).
+            exclude_resources: Resource labels to exclude.
+            resource_filter: A single resource label the download was scoped to.
+            include_session_resources: Also cover session-level resources.
+            local_root: Root of an extracted download tree.
+            local_root_wrapped: Whether *local_root*'s tree carries a
+                session/experiment-label wrapper -- see
+                :func:`xnatctl.services.verify.scan_source_key`. The caller
+                already knows this from how it produced *local_root*.
+            zip_paths: Unextracted archive(s) to verify against too. Each
+                entry is a bare path or a ``(path, label)`` pair overriding
+                *resource_filter* for that one archive.
+
+        Returns:
+            The comparison report, its ``collisions`` including both
+            server-side ambiguities from the manifest and local-side ones
+            found while indexing *local_root*/*zip_paths*.
+        """
+        manifest = self.build_verification_manifest(
+            session_id=session_id,
+            project=project,
+            subject=subject,
+            scan_ids=scan_ids,
+            include_resources=include_resources,
+            exclude_resources=exclude_resources,
+            resource_filter=resource_filter,
+            include_session_resources=include_session_resources,
+        )
+        report = verify.verify_manifest(
+            manifest.digests,
+            local_root=local_root,
+            local_root_wrapped=local_root_wrapped,
+            zip_paths=zip_paths,
+            resource_label=resource_filter,
+        )
+        if manifest.collisions:
+            report.collisions = sorted(set(report.collisions) | set(manifest.collisions))
+        return report
 
     def download_resource(
         self,

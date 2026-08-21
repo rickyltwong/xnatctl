@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,11 +16,13 @@ from xnatctl.core.exceptions import (
     ServerError,
     SessionExpiredError,
 )
+from xnatctl.models.hierarchy import ExperimentRef
 from xnatctl.models.progress import DownloadProgress, DownloadSummary, OperationPhase
 from xnatctl.services.downloads import (
     DownloadOutcome,
     DownloadService,
     ScanResult,
+    VerificationManifest,
     _extract_scan_zip,
 )
 
@@ -870,14 +873,17 @@ class TestDownloadSessionArchiveAndResources:
             ) as rows_mock,
             patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream),
         ):
-            count = DownloadService(MagicMock()).download_session_level_resources(
+            downloaded = DownloadService(MagicMock()).download_session_level_resources(
                 session_project="P",
                 subject="S",
                 resolved_session_id="E",
                 session_dir=tmp_path,
             )
 
-        assert count == 2
+        assert downloaded == [
+            ("QC", tmp_path / "resources_QC.zip"),
+            ("MISC", tmp_path / "resources_MISC.zip"),
+        ]
         rows_mock.assert_called_once_with("E", project="P", subject="S")
         assert urls == [
             ("/data/projects/P/subjects/S/experiments/E/resources/QC/files", {"format": "zip"}),
@@ -885,6 +891,39 @@ class TestDownloadSessionArchiveAndResources:
         ]
         assert (tmp_path / "resources_QC.zip").exists()
         assert (tmp_path / "resources_MISC.zip").exists()
+
+    def test_provenance_survives_a_mid_loop_failure_via_the_downloaded_list(
+        self, tmp_path: Path
+    ) -> None:
+        """QC downloads fine; MISC then raises. The (label, path) pairs
+        appended before the raise must still be visible in the caller's
+        list -- not lost with the exception the way a return-only value
+        would lose them.
+        """
+
+        def fake_stream(client, path, dest, *, params=None, **kw):
+            if "MISC" in path:
+                raise DownloadError("boom", path)
+            dest.write_bytes(b"zip")
+
+        caller_list: list[tuple[str, Path]] = []
+        with (
+            patch(
+                "xnatctl.services.downloads.SessionService.experiment_resource_rows",
+                return_value=[{"label": "QC"}, {"label": "MISC"}],
+            ),
+            patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream),
+        ):
+            with pytest.raises(DownloadError):
+                DownloadService(MagicMock()).download_session_level_resources(
+                    session_project="P",
+                    subject="S",
+                    resolved_session_id="E",
+                    session_dir=tmp_path,
+                    downloaded=caller_list,
+                )
+
+        assert caller_list == [("QC", tmp_path / "resources_QC.zip")]
 
 
 # =============================================================================
@@ -1007,6 +1046,501 @@ class TestDownloadScanDelegation:
             )
         assert result is failed
         scans.assert_called_once()
+
+
+# =============================================================================
+# Verification: manifest building and the service-layer verify entry point
+# =============================================================================
+
+
+class TestBuildVerificationManifest:
+    """DownloadService.build_verification_manifest fetches server checksums."""
+
+    def _service(self) -> DownloadService:
+        return DownloadService(MagicMock())
+
+    def test_keys_by_scan_and_resource_not_basename(self, tmp_path: Path) -> None:
+        """Two scans each reporting a 1.dcm: the manifest must not collide them."""
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.SessionService.scan_rows",
+                return_value=[{"ID": "1"}, {"ID": "2"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "DICOM"}],
+            ),
+            patch("xnatctl.services.downloads.ResourceService.list_file_rows") as file_rows_mock,
+        ):
+
+            def fake_file_rows(scan_ref, label):
+                scan_id = scan_ref.scan_id
+                return [
+                    {
+                        "Name": "1.dcm",
+                        "URI": f"/data/experiments/E/scans/{scan_id}/resources/DICOM/files/1.dcm",
+                        "digest": f"digest-{scan_id}",
+                    }
+                ]
+
+            file_rows_mock.side_effect = fake_file_rows
+
+            manifest = service.build_verification_manifest(session_id="E", project="P", subject="S")
+
+        assert manifest.digests == {
+            "scans/1/resources/DICOM/1.dcm": "digest-1",
+            "scans/2/resources/DICOM/1.dcm": "digest-2",
+        }
+        assert manifest.collisions == []
+
+    def test_missing_digest_maps_to_none(self) -> None:
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "DICOM"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {
+                        "Name": "1.dcm",
+                        "URI": "/data/experiments/E/scans/1/resources/DICOM/files/1.dcm",
+                    }
+                ],
+            ),
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E", project="P", subject="S", scan_ids=["1"]
+            )
+
+        assert manifest.digests == {"scans/1/resources/DICOM/1.dcm": None}
+
+    def test_name_fallback_key_agrees_with_uri_derived_key_for_a_scan_resource(self) -> None:
+        """Two rows for the same conceptual file -- one with a parseable
+        URI, one without -- must produce the identical key, not diverge
+        because the fallback used a different shape than key_from_uri.
+        """
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "DICOM"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[{"Name": "1.dcm"}],  # no URI at all
+            ),
+        ):
+            fallback_manifest = service.build_verification_manifest(
+                session_id="E", project="P", subject="S", scan_ids=["1"]
+            )
+
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "DICOM"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {
+                        "Name": "1.dcm",
+                        "URI": "/data/experiments/E/scans/1/resources/DICOM/files/1.dcm",
+                    }
+                ],
+            ),
+        ):
+            uri_manifest = service.build_verification_manifest(
+                session_id="E", project="P", subject="S", scan_ids=["1"]
+            )
+
+        assert fallback_manifest.digests.keys() == uri_manifest.digests.keys()
+        assert fallback_manifest.digests.keys() == {"scans/1/resources/DICOM/1.dcm"}
+
+    def test_name_fallback_key_agrees_with_uri_derived_key_for_a_session_resource(self) -> None:
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.SessionService.experiment_resource_rows",
+                return_value=[{"label": "QC"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[{"Name": "notes.txt"}],  # no URI at all
+            ),
+        ):
+            fallback_manifest = service.build_verification_manifest(
+                session_id="E",
+                project="P",
+                subject="S",
+                scan_ids=[],
+                include_session_resources=True,
+            )
+
+        assert fallback_manifest.digests.keys() == {"resources/QC/notes.txt"}
+
+    def test_include_resources_filters_the_scan_resource_listing(self) -> None:
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "DICOM"}, {"label": "SNAPSHOTS"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {
+                        "Name": "1.dcm",
+                        "URI": "/data/experiments/E/scans/1/resources/DICOM/files/1.dcm",
+                        "digest": "abc",
+                    }
+                ],
+            ) as file_rows_mock,
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E",
+                project="P",
+                subject="S",
+                scan_ids=["1"],
+                include_resources=("DICOM",),
+            )
+
+        assert manifest.digests == {"scans/1/resources/DICOM/1.dcm": "abc"}
+        file_rows_mock.assert_called_once()
+
+    def test_resource_filter_skips_the_resource_listing_call(self) -> None:
+        """A single-resource scope goes straight to the file listing."""
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch("xnatctl.services.downloads.ResourceService.list_rows") as list_rows_mock,
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {
+                        "Name": "1.dcm",
+                        "URI": "/data/experiments/E/scans/1/resources/DICOM/files/1.dcm",
+                        "digest": "abc",
+                    }
+                ],
+            ),
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E",
+                project="P",
+                subject="S",
+                scan_ids=["1"],
+                resource_filter="DICOM",
+            )
+
+        assert manifest.digests == {"scans/1/resources/DICOM/1.dcm": "abc"}
+        list_rows_mock.assert_not_called()
+
+    def test_label_is_url_encoded_for_the_request_but_literal_in_the_key(self) -> None:
+        """A label with a space/# breaks an unencoded URL path segment."""
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "QA #1"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {
+                        "Name": "1.dcm",
+                        # XNAT's JSON URI field is literal text, not
+                        # URL-encoded -- matches what a local/ZIP path would
+                        # contain for the same label.
+                        "URI": "/data/experiments/E/scans/1/resources/QA #1/files/1.dcm",
+                        "digest": "abc",
+                    }
+                ],
+            ) as file_rows_mock,
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E", project="P", subject="S", scan_ids=["1"]
+            )
+
+        # The literal label -- matching what the local/ZIP indexer would see
+        # on disk -- not the percent-encoded form sent over the wire.
+        assert manifest.digests == {"scans/1/resources/QA #1/1.dcm": "abc"}
+        call_args = file_rows_mock.call_args
+        assert call_args[0][1] == "QA%20%231"
+
+    def test_session_resources_are_included_when_requested(self) -> None:
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.SessionService.experiment_resource_rows",
+                return_value=[{"label": "QC"}],
+            ) as session_rows_mock,
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {
+                        "Name": "notes.txt",
+                        "URI": "/data/experiments/E/resources/QC/files/notes.txt",
+                        "digest": "abc",
+                    }
+                ],
+            ),
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E",
+                project="P",
+                subject="S",
+                scan_ids=[],
+                include_session_resources=True,
+            )
+
+        assert manifest.digests == {"resources/QC/notes.txt": "abc"}
+        session_rows_mock.assert_called_once_with("E", project="P", subject="S")
+
+    def test_session_resources_are_skipped_by_default(self) -> None:
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.SessionService.experiment_resource_rows"
+            ) as session_rows_mock,
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E", project="P", subject="S", scan_ids=[]
+            )
+
+        assert manifest.digests == {}
+        session_rows_mock.assert_not_called()
+
+    def test_two_rows_with_different_digests_on_the_same_key_are_a_collision(self) -> None:
+        """A duplicate-listing edge case where two rows share a key must not
+        silently keep whichever the API happened to return last.
+        """
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "DICOM"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {"Name": "1.dcm", "digest": "aaa"},
+                    {"Name": "1.dcm", "digest": "bbb"},
+                ],
+            ),
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E", project="P", subject="S", scan_ids=["1"]
+            )
+
+        assert manifest.digests == {}
+        assert manifest.collisions == ["scans/1/resources/DICOM/1.dcm"]
+
+    def test_identical_repeated_row_is_not_a_collision(self) -> None:
+        """The exact same file listed twice (same identity, same digest) is
+        a harmless duplicate, not an ambiguity.
+        """
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "DICOM"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {"Name": "1.dcm", "digest": "aaa"},
+                    {"Name": "1.dcm", "digest": "aaa"},
+                ],
+            ),
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E", project="P", subject="S", scan_ids=["1"]
+            )
+
+        assert manifest.digests == {"scans/1/resources/DICOM/1.dcm": "aaa"}
+        assert manifest.collisions == []
+
+    def test_case_differing_digests_are_not_a_collision(self) -> None:
+        """The same file reported twice with a differently-cased hex digest
+        is still the same file.
+        """
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "DICOM"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {"Name": "1.dcm", "digest": "AAA111"},
+                    {"Name": "1.dcm", "digest": "aaa111"},
+                ],
+            ),
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E", project="P", subject="S", scan_ids=["1"]
+            )
+
+        assert manifest.digests.keys() == {"scans/1/resources/DICOM/1.dcm"}
+        digest = manifest.digests["scans/1/resources/DICOM/1.dcm"]
+        assert digest is not None and digest.lower() == "aaa111"
+        assert manifest.collisions == []
+
+    def test_a_collided_key_stays_collided_even_if_a_later_row_matches_the_first(
+        self,
+    ) -> None:
+        """Once evicted for colliding, a key must not be quietly repopulated
+        by a third row whose fingerprint happens to match the first.
+        """
+        service = self._service()
+        with (
+            patch.object(
+                service,
+                "_resolve_zip_experiment_ref",
+                return_value=ExperimentRef(experiment="E"),
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_rows",
+                return_value=[{"label": "DICOM"}],
+            ),
+            patch(
+                "xnatctl.services.downloads.ResourceService.list_file_rows",
+                return_value=[
+                    {"Name": "1.dcm", "digest": "aaa"},
+                    {"Name": "1.dcm", "digest": "bbb"},
+                    {"Name": "1.dcm", "digest": "aaa"},
+                ],
+            ),
+        ):
+            manifest = service.build_verification_manifest(
+                session_id="E", project="P", subject="S", scan_ids=["1"]
+            )
+
+        assert manifest.digests == {}
+        assert manifest.collisions == ["scans/1/resources/DICOM/1.dcm"]
+
+
+class TestVerifyScanDownloads:
+    """DownloadService.verify_scan_downloads composes manifest + local compare."""
+
+    def test_delegates_to_manifest_and_verify_manifest(self, tmp_path: Path) -> None:
+        service = DownloadService(MagicMock())
+        target = tmp_path / "scans" / "1" / "resources" / "DICOM" / "files" / "1.dcm"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"data")
+
+        with patch.object(
+            service,
+            "build_verification_manifest",
+            return_value=VerificationManifest(
+                digests={"scans/1/resources/DICOM/1.dcm": hashlib.md5(b"data").hexdigest()},
+                collisions=[],
+            ),
+        ) as manifest_mock:
+            report = service.verify_scan_downloads(
+                session_id="E",
+                project="P",
+                subject="S",
+                scan_ids=["1"],
+                local_root=tmp_path,
+            )
+
+        manifest_mock.assert_called_once_with(
+            session_id="E",
+            project="P",
+            subject="S",
+            scan_ids=["1"],
+            include_resources=(),
+            exclude_resources=(),
+            resource_filter=None,
+            include_session_resources=False,
+        )
+        assert report.success is True
+        assert report.matched == 1
+
+    def test_server_side_collisions_carry_through_to_the_report(self, tmp_path: Path) -> None:
+        service = DownloadService(MagicMock())
+        with patch.object(
+            service,
+            "build_verification_manifest",
+            return_value=VerificationManifest(
+                digests={}, collisions=["scans/1/resources/DICOM/1.dcm"]
+            ),
+        ):
+            report = service.verify_scan_downloads(
+                session_id="E", project="P", subject="S", local_root=tmp_path
+            )
+
+        assert report.collisions == ["scans/1/resources/DICOM/1.dcm"]
+        assert report.success is False
 
 
 class TestDownloadSummaryRaiseForStatus:

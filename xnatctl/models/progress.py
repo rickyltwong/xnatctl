@@ -107,6 +107,45 @@ class DownloadProgress(Progress):
 
 
 @dataclass
+class VerificationReport:
+    """Result of comparing downloaded files against server-reported checksums.
+
+    Every server-known file lands in exactly one of ``mismatched``,
+    ``missing_local``, ``collisions``, or (counted, not listed) ``matched`` --
+    ``unverifiable`` additionally flags files the server listed with no digest
+    on record, so they are never silently treated as verified. ``collisions``
+    covers a key that two different, unrelated files (server-side or
+    local-side) both mapped to -- never resolved by silently keeping
+    whichever was seen last. ``missing_remote`` covers local files the server
+    manifest never mentioned; it does not affect ``success`` -- see the
+    property for why.
+    """
+
+    matched: int = 0
+    mismatched: list[str] = field(default_factory=list)
+    missing_local: list[str] = field(default_factory=list)
+    missing_remote: list[str] = field(default_factory=list)
+    unverifiable: list[str] = field(default_factory=list)
+    collisions: list[str] = field(default_factory=list)
+
+    @property
+    def success(self) -> bool:
+        """True iff every server-known file matched, with nothing left unresolved.
+
+        A file the server never mentioned (``missing_remote``) does not fail
+        verification on its own -- it is not a corrupted or lost download, and
+        flagging it would fail on ordinary artifacts like a locally-added note
+        file. A run where every checked file landed in ``unverifiable`` (the
+        server had no checksums at all) is also not a pass: with nothing
+        actually matched, "no mismatches" would otherwise be true vacuously.
+        """
+        if self.mismatched or self.missing_local or self.collisions:
+            return False
+        checked = self.matched + len(self.unverifiable)
+        return checked == 0 or self.matched > 0
+
+
+@dataclass
 class OperationResult:
     """Generic operation result."""
 
@@ -169,7 +208,7 @@ class DownloadSummary(OperationResult):
     total_size_mb: float = 0.0
     output_path: str = ""
     session_id: str = ""
-    verified: bool = False
+    verification: VerificationReport | None = None
 
     @property
     def throughput_mbps(self) -> float:

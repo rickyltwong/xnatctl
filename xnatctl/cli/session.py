@@ -21,10 +21,12 @@ from xnatctl.core.exceptions import DownloadError, ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
+    print_json,
     print_output,
     print_success,
 )
 from xnatctl.models.hierarchy import ExperimentRef
+from xnatctl.models.progress import VerificationReport
 from xnatctl.services.downloads import (
     DownloadOutcome,
     DownloadService,
@@ -315,6 +317,14 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     expose_value=False,
     callback=_make_alias_cb("--no-cleanup", "keep_zips", True),
 )
+@click.option(
+    "--verify",
+    is_flag=True,
+    help=(
+        "Verify downloaded files against server MD5 checksums after download; "
+        "fails if the server has no checksums for anything downloaded"
+    ),
+)
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
 @handle_errors
@@ -331,6 +341,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     session_resources: bool,
     extract: bool,
     keep_zips: bool,
+    verify: bool,
     dry_run: bool,
 ) -> None:
     """Download session data.
@@ -351,6 +362,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         xnatctl session download -E XNAT_E00001 -w 8 --exclude-resource SNAPSHOTS
         xnatctl session download -E XNAT_E00001 --out ./data --session-resources
         xnatctl session download -E XNAT_E00001 --out ./data --dry-run
+        xnatctl session download -E XNAT_E00001 --verify
     """
     from xnatctl.core.validation import validate_path_writable
 
@@ -430,6 +442,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     use_parallel = workers > 1 or resource or exclude_resource
 
     outcome: DownloadOutcome | None = None
+    succeeded_scan_ids: list[str] = []
     if use_parallel:
 
         def on_scan_start(count: int) -> None:
@@ -442,6 +455,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
 
         def on_scan_result(result: ScanResult) -> None:
             if result.ok:
+                succeeded_scan_ids.append(result.scan_id)
                 if not ctx.quiet:
                     status = f" ({result.message})" if result.message else ""
                     click.echo(f"  Scan {result.scan_id} done{status}", err=True)
@@ -487,29 +501,56 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
             progress.update(task, completed=100, description="Scans downloaded")
 
     # Download session-level resources (outside scans)
+    session_resource_zips: list[tuple[str, Path]] = []
     if session_resources:
         if not ctx.quiet:
             click.echo("Downloading session-level resources...", err=True)
         try:
-            count = DownloadService(client).download_session_level_resources(
+            # `downloaded=session_resource_zips`: appended to in place as
+            # each resource's ZIP finishes, so if a later resource's
+            # download raises here, everything that landed before it is
+            # still in this list for verification below -- not lost with
+            # the exception this except block is about to catch.
+            DownloadService(client).download_session_level_resources(
                 session_project=session_project,
                 subject=subject,
                 resolved_session_id=resolved_session_id,
                 session_dir=session_dir,
+                downloaded=session_resource_zips,
             )
             if not ctx.quiet:
-                click.echo(f"  Session resources downloaded ({count})", err=True)
+                click.echo(
+                    f"  Session resources downloaded ({len(session_resource_zips)})", err=True
+                )
         except Exception as e:
             if not ctx.quiet:
                 click.echo(f"  Session resources: {e}", err=True)
 
-    # Extract ZIPs if requested
+    # Extract ZIPs if requested. With --verify also on, the session-resource
+    # ZIPs this run just downloaded are held back here: extraction (and, with
+    # cleanup, deletion) is deferred until after verification has read them
+    # intact, further down. Extracting them now would both flatten away the
+    # resource label they carry (a known extract_session_zips limitation, not
+    # something worked around here) and, with cleanup on, delete the exact
+    # file --verify needs to check.
+    resource_zip_paths = [zip_path for _label, zip_path in session_resource_zips]
     if unzip:
-        extract_session_zips(
-            session_dir,
-            cleanup=cleanup,
-            on_message=None if ctx.quiet else _echo_stderr,
-        )
+        if verify and resource_zip_paths:
+            non_resource_zips = [
+                p for p in session_dir.glob("*.zip") if p not in resource_zip_paths
+            ]
+            extract_session_zips(
+                session_dir,
+                cleanup=cleanup,
+                on_message=None if ctx.quiet else _echo_stderr,
+                zip_paths=non_resource_zips,
+            )
+        else:
+            extract_session_zips(
+                session_dir,
+                cleanup=cleanup,
+                on_message=None if ctx.quiet else _echo_stderr,
+            )
 
     if outcome is not None and outcome.failed:
         # Losing scans and exiting 0 is how a partial transfer gets mistaken
@@ -522,6 +563,105 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
             f"{session_dir}",
             session_id,
             {"failed_scans": dict(outcome.failed)},
+        )
+
+    verification: VerificationReport | None = None
+    if verify:
+        if not ctx.quiet:
+            click.echo("Verifying downloaded files...", err=True)
+        # The parallel engine always extracts, regardless of --extract; the
+        # sequential engine only does when --extract was passed, else the
+        # (still verifiable) ZIP is left in place.
+        verify_local_root = session_dir if (use_parallel or unzip) else None
+        verify_zip_paths: list[Path | tuple[Path, str]] = (
+            [] if verify_local_root is not None else [session_dir / "scans.zip"]
+        )
+        # Exactly the session-resource ZIPs THIS run downloaded, never
+        # rediscovered by globbing the directory -- a stale
+        # resources_QC.zip left over from an earlier run must not be able to
+        # stand in for a resource whose download failed just now. Verified
+        # from the ZIP directly regardless of --extract (see above): each is
+        # scoped to exactly one label, keyed with no marker search at all.
+        verify_zip_paths.extend((zip_path, label) for label, zip_path in session_resource_zips)
+        # De-duped: under the include-filter tier, on_scan_result fires once
+        # per (scan, resource) pair, so a scan with N included resources
+        # would otherwise appear N times and cost N redundant manifest calls.
+        verify_scan_ids = list(dict.fromkeys(succeeded_scan_ids)) if use_parallel else None
+        verification = DownloadService(client).verify_scan_downloads(
+            session_id=session_id,
+            project=session_project,
+            subject=subject,
+            scan_ids=verify_scan_ids,
+            include_resources=resource,
+            exclude_resources=exclude_resource,
+            include_session_resources=session_resources,
+            local_root=verify_local_root,
+            zip_paths=verify_zip_paths,
+        )
+        for path in verification.collisions:
+            click.echo(f"  COLLISION: {path}", err=True)
+        for path in verification.mismatched:
+            click.echo(f"  MISMATCH: {path}", err=True)
+        for path in verification.missing_local:
+            click.echo(f"  MISSING: {path}", err=True)
+        if verification.success and not ctx.quiet:
+            print_success(f"Verified {verification.matched} files")
+            if verification.unverifiable:
+                click.echo(
+                    f"  {len(verification.unverifiable)} file(s) have no server "
+                    "checksum and were not verified",
+                    err=True,
+                )
+        if ctx.output_format == OutputFormat.JSON:
+            # A minimal, standalone block for now -- a later change folds
+            # this into a full transfer summary alongside the rest of the
+            # command's (currently unstructured) output.
+            print_json(
+                {
+                    "verification": {
+                        "matched": verification.matched,
+                        "mismatched": verification.mismatched,
+                        "missing_local": verification.missing_local,
+                        "missing_remote": verification.missing_remote,
+                        "unverifiable": verification.unverifiable,
+                        "collisions": verification.collisions,
+                    }
+                }
+            )
+
+        # Verification has now read the session-resource ZIPs intact; apply
+        # the extract/cleanup that was deferred for them above.
+        if unzip and resource_zip_paths:
+            extract_session_zips(
+                session_dir,
+                cleanup=cleanup,
+                on_message=None if ctx.quiet else _echo_stderr,
+                zip_paths=resource_zip_paths,
+            )
+
+    if verification is not None and not verification.success:
+        if verification.mismatched or verification.missing_local or verification.collisions:
+            raise DownloadError(
+                f"Verification failed: {len(verification.mismatched)} mismatched, "
+                f"{len(verification.missing_local)} missing, "
+                f"{len(verification.collisions)} colliding file(s). Session directory: "
+                f"{session_dir}",
+                session_id,
+                {
+                    "mismatched": verification.mismatched,
+                    "missing_local": verification.missing_local,
+                    "collisions": verification.collisions,
+                },
+            )
+        # No mismatches, no missing files, no collisions -- every file
+        # checked landed in `unverifiable`: the server had no checksums on
+        # record for anything, so nothing was actually verified.
+        raise DownloadError(
+            "Verification failed: the server provided no checksums for any "
+            f"downloaded file ({len(verification.unverifiable)} unverifiable); "
+            "nothing was verified.",
+            session_id,
+            {"unverifiable": verification.unverifiable},
         )
 
     if outcome is not None:

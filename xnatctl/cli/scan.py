@@ -508,6 +508,14 @@ def scan_delete(
     expose_value=False,
     callback=_make_alias_cb("--no-cleanup", "keep_zips", True),
 )
+@click.option(
+    "--verify",
+    is_flag=True,
+    help=(
+        "Verify downloaded files against server MD5 checksums after download; "
+        "fails if the server has no checksums for anything downloaded"
+    ),
+)
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
 @handle_errors
@@ -523,6 +531,7 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     resource: tuple[str, ...],
     extract: bool,
     keep_zips: bool,
+    verify: bool,
     dry_run: bool,
 ) -> None:
     """Download scans from an image session.
@@ -543,9 +552,12 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
         xnatctl scan download -E XNAT_E00001 -s 1 --out ./data
         xnatctl scan download -P PROJECT -E SESSION_LABEL -s 1,2,3 --out ./data
         xnatctl scan download -P PROJECT -E SESSION -s '*' --out ./data
+        xnatctl scan download -E XNAT_E00001 -s 1 --verify
     """
+    import dataclasses
+
     from xnatctl.core.validation import validate_scan_ids_input, validate_session_id
-    from xnatctl.models.progress import DownloadProgress, OperationPhase
+    from xnatctl.models.progress import DownloadProgress, OperationPhase, VerificationReport
     from xnatctl.services.downloads import DownloadService
 
     # Map extract/keep_zips to internal unzip/cleanup
@@ -623,6 +635,56 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
         # Terminate the \r progress line above, which also lives on stderr.
         click.echo(err=True)
 
+    download_succeeded = summary.success
+    verification: VerificationReport | None = None
+    verification_error: str | None = None
+    if verify and summary.success:
+        if not ctx.quiet:
+            click.echo("Verifying downloaded files...", err=True)
+        verify_local_root = session_output / "scans" if unzip else None
+        verify_zip_paths = () if verify_local_root is not None else (session_output / "scans.zip",)
+        verification = service.verify_scan_downloads(
+            session_id=session_id,
+            project=project,
+            subject=subject,
+            scan_ids=None if use_all_keyword else scan_ids,
+            resource_filter=resource_filter,
+            local_root=verify_local_root,
+            # `_safe_extract_zip` preserves a raw ZIP member's own
+            # session/experiment-label wrapper unstripped under this
+            # extraction root -- always wrapped, never session download's
+            # unwrapped shape.
+            local_root_wrapped=True,
+            zip_paths=verify_zip_paths,
+        )
+        if not verification.success:
+            if verification.mismatched or verification.missing_local or verification.collisions:
+                verification_error = (
+                    f"{len(verification.mismatched)} mismatched, "
+                    f"{len(verification.missing_local)} missing, "
+                    f"{len(verification.collisions)} colliding file(s)"
+                )
+            else:
+                # Nothing mismatched or missing, but nothing matched either --
+                # every checked file landed in unverifiable, so the server had
+                # no checksums on record for anything the command downloaded.
+                verification_error = (
+                    "the server provided no checksums for any downloaded file "
+                    f"({len(verification.unverifiable)} unverifiable); nothing was verified"
+                )
+        summary = dataclasses.replace(
+            summary,
+            verification=verification,
+            success=summary.success and verification.success,
+            errors=[*summary.errors, verification_error] if verification_error else summary.errors,
+        )
+        for path in verification.collisions:
+            click.echo(f"  COLLISION: {path}", err=True)
+        for path in verification.mismatched:
+            click.echo(f"  MISMATCH: {path}", err=True)
+        for path in verification.missing_local:
+            click.echo(f"  MISSING: {path}", err=True)
+
     if ctx.output_format == OutputFormat.JSON:
         print_json(
             {
@@ -631,6 +693,16 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
                 "success": summary.success,
                 "total_size_mb": round(summary.total_size_mb, 2),
                 "errors": summary.errors,
+                "verification": None
+                if verification is None
+                else {
+                    "matched": verification.matched,
+                    "mismatched": verification.mismatched,
+                    "missing_local": verification.missing_local,
+                    "missing_remote": verification.missing_remote,
+                    "unverifiable": verification.unverifiable,
+                    "collisions": verification.collisions,
+                },
             }
         )
     else:
@@ -646,6 +718,18 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
             print_success(
                 f"Downloaded scans ({summary.total_size_mb:.1f} MB) to {summary.output_path}{kept_zip_suffix}"
             )
+            if verification is not None and not ctx.quiet:
+                click.echo(f"  Verified {verification.matched} files", err=True)
+                if verification.unverifiable:
+                    click.echo(
+                        f"  {len(verification.unverifiable)} file(s) have no server "
+                        "checksum and were not verified",
+                        err=True,
+                    )
+        elif download_succeeded:
+            # The download itself succeeded; only verification failed -- say
+            # so, rather than the misleading "Download failed".
+            print_error(f"Verification failed: {verification_error}")
         else:
             print_error(
                 f"Download failed: {summary.errors[0] if summary.errors else 'Unknown error'}"

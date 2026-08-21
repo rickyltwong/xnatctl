@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         Progress,
         UploadProgress,
         UploadSummary,
+        VerificationReport,
     )
     from xnatctl.models.project import Project
     from xnatctl.models.resource import Resource, ResourceFile
@@ -111,6 +112,7 @@ _LAZY_EXPORTS = {
     "Progress": "xnatctl.models.progress",
     "UploadProgress": "xnatctl.models.progress",
     "UploadSummary": "xnatctl.models.progress",
+    "VerificationReport": "xnatctl.models.progress",
     "Project": "xnatctl.models.project",
     "Resource": "xnatctl.models.resource",
     "ResourceFile": "xnatctl.models.resource",
@@ -212,6 +214,7 @@ __all__ = [
     "UploadService",
     "UploadSummary",
     "ValidationError",
+    "VerificationReport",
     "XNATClient",
     "XNATConnectionError",
     "XNATCtlError",
