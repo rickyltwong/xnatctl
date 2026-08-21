@@ -182,7 +182,7 @@ User listing and removal are not yet available as dedicated commands. Use the
    # Remove a user from a project (requires confirmation)
    $ xnatctl api delete /data/projects/MYPROJECT/users/member/jsmith --yes
 
-See :ref:`admin-api-escape-hatch` below for more examples.
+See `Using the API for Additional Admin Tasks`_ below for more examples.
 
 
 Audit Log

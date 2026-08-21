@@ -145,7 +145,7 @@ project transfer
    * - ``-P`` / ``--project``
      - Source project ID (required)
    * - ``--config PATH``
-     - Transfer configuration YAML file (see :ref:`transfer-config`)
+     - Transfer configuration YAML file (see `Transfer Configuration`_)
    * - ``--dry-run``
      - Preview what would be transferred without writing data
    * - ``--yes`` / ``-y``

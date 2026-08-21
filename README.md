@@ -25,7 +25,7 @@ pip install xnatctl
 A Docker image is also published (`ghcr.io/rickyltwong/xnatctl:main`) for CI
 pipelines and containerized environments. Windows binaries, manual downloads,
 Docker usage, shell completion, and troubleshooting are covered in the
-[Installation guide](docs/installation.rst).
+[Installation guide](https://xnatctl.readthedocs.io/en/latest/installation.html).
 
 ### 2. Connect to your server
 
@@ -63,7 +63,7 @@ xnatctl resource list XNAT_E00001
 xnatctl resource download XNAT_E00001 LINKED_DATA -f linked_data.zip
 ```
 
-That is the core loop. The [Quick Start guide](docs/quickstart.rst) continues
+That is the core loop. The [Quick Start guide](https://xnatctl.readthedocs.io/en/latest/quickstart.html) continues
 from here with uploads, batch operations, and scripting patterns.
 
 ## Commands
@@ -87,7 +87,7 @@ xnatctl dicom        # DICOM utilities (validate/inspect/anonymize/modify)
 
 Resource-oriented commands support `--output json|table` and `--quiet` (IDs
 only), so the same command works interactively and in scripts. Full usage and
-examples are in the [CLI Reference](docs/cli-reference.rst).
+examples are in the [CLI Reference](https://xnatctl.readthedocs.io/en/latest/cli-reference.html).
 
 ## Configuration
 
@@ -147,9 +147,11 @@ and non-interactive scripts.
 
 ## Documentation
 
-Complete documentation is in the [docs/](docs/) directory: installation, key
-concepts, configuration, CLI reference, downloading, uploading, workflows, and
-XNAT compatibility.
+Complete documentation is published at
+[xnatctl.readthedocs.io](https://xnatctl.readthedocs.io/en/latest/):
+installation, key concepts, configuration, CLI reference, downloading,
+uploading, workflows, and XNAT compatibility. (Sources live in
+[docs/](docs/).)
 
 ## Development
 
