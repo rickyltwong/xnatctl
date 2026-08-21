@@ -1,313 +1,173 @@
 # xnatctl
 
-A modern command-line interface for XNAT neuroimaging server administration.
+A modern command-line interface for [XNAT](https://xnat.org/) neuroimaging
+server administration.
 
-## What is xnatctl?
+xnatctl lets you browse projects and subjects, download and upload imaging
+sessions, run processing pipelines, and perform administrative tasks -- all
+from your terminal, in the resource-centric style of `kubectl`:
+`xnatctl <resource> <action> [args]`.
 
-xnatctl is a command-line tool for managing neuroimaging data on XNAT servers.[^xnat]
-It lets you browse projects and subjects, download and upload imaging sessions,
-run processing pipelines, and perform administrative tasks -- all from your
-terminal. Whether you are a researcher downloading data for analysis or a system
-administrator managing hundreds of subjects, xnatctl provides a consistent,
-scriptable interface to your XNAT server.
+## Get Started
 
-## Features
+### 1. Install
 
-- **Resource-centric commands** -- interact with XNAT the way you think about
-  it: `xnatctl project list`, `xnatctl session download`, `xnatctl scan show`.
-  Every command follows the pattern `xnatctl <resource> <action> [args]`.
-
-- **Profile-based configuration** -- manage multiple XNAT servers with named
-  profiles and switch between them instantly. Keep separate profiles for
-  production, development, and collaboration servers in a single config file.
-
-- **Consistent output formats** -- resource-oriented commands support
-  `--output json|table` and `--quiet` (IDs only), so you can pipe results into
-  scripts or read them in a human-friendly table without changing your
-  workflow.
-
-- **Parallel operations** -- batch uploads and downloads run across multiple
-  workers with real-time progress tracking. Large transfers stay fast without
-  extra scripting.
-
-- **Session authentication** -- log in once with `xnatctl auth login` and your
-  session token is cached locally. Expired tokens are refreshed automatically,
-  so you stay authenticated without repeated prompts.
-
-- **Pure HTTP** -- xnatctl talks directly to the XNAT REST API using httpx.
-  Existing Python libraries like [pyxnat](https://pyxnat.github.io/pyxnat/) and
-  [xnatpy](https://xnat.readthedocs.io/) inspired this project, but they are
-  excellent *Python libraries* intended to be imported into your own code. xnatctl
-  exists for the complementary use case: a **CLI-first** workflow where you want to
-  explore resources, automate API interactions from shell scripts, and run common
-  administrative tasks without writing a bespoke Python program.
-
-  The command structure and UX borrow from tools like `kubectl` and `airflowctl`:
-  resource-centric subcommands, consistent flags, and output you can read as a human
-  or pipe into other tools. xnatctl ships as a standalone CLI that can be installed
-  as a single binary (no Python environment required).
-
-## Installation
-
-### Standalone Binary (no Python required)
-
-If you do not have Python installed or prefer a single executable, download a
-pre-built binary. On **Linux and macOS**, the install script auto-detects your
-OS and architecture:
+Pick one:
 
 ```bash
-# One-line install (Linux/macOS only, auto-detects platform)
+# Standalone binary, no Python required (Linux/macOS, auto-detects platform)
 curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
 
-# Install a specific version
-XNATCTL_VERSION=v0.1.0 curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
-
-# Custom install directory (default: ~/.local/bin)
-XNATCTL_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
-```
-
-Or download manually from [GitHub Releases](https://github.com/rickyltwong/xnatctl/releases):
-
-| Platform       | Asset                              |
-|----------------|------------------------------------|
-| Linux (x86_64) | `xnatctl-linux-amd64.tar.gz`      |
-| macOS (x86_64) | `xnatctl-darwin-amd64.tar.gz`     |
-| Windows (x86_64) | `xnatctl-windows-amd64.zip`     |
-
-**Linux / macOS:**
-
-```bash
-tar -xzf xnatctl-<platform>-amd64.tar.gz
-chmod +x xnatctl
-mv xnatctl ~/.local/bin/
-```
-
-**Windows (PowerShell):**
-
-```powershell
-Expand-Archive xnatctl-windows-amd64.zip -DestinationPath .
-New-Item -ItemType Directory -Force -Path "$env:LOCALAPPDATA\bin"
-Move-Item xnatctl.exe "$env:LOCALAPPDATA\bin\"
-```
-
-> **Note:** On Windows, make sure `%LOCALAPPDATA%\bin` is on your PATH.
-> You can add it via Settings > System > About > Advanced system settings >
-> Environment Variables, or see the [Installation guide](docs/installation.rst)
-> for a PowerShell command.
-
-### Python Package
-
-If you already have Python 3.11+ and want to install xnatctl as a package,
-use pip or uv:
-
-```bash
-# From PyPI (recommended)
+# Python package (needs Python 3.11+)
 pip install xnatctl
-
-# With uv
-uv pip install xnatctl
-
-# For DICOM utilities (optional -- adds pydicom and pynetdicom)
-pip install "xnatctl[dicom]"
-
-# From source
-pip install git+https://github.com/rickyltwong/xnatctl.git
 ```
 
-### Docker
+A Docker image is also published (`ghcr.io/rickyltwong/xnatctl:main`) for CI
+pipelines and containerized environments. Windows binaries, manual downloads,
+Docker usage, shell completion, and troubleshooting are covered in the
+[Installation guide](docs/installation.rst).
 
-For containerized environments or CI pipelines where you want to avoid local
-installation entirely:
+### 2. Connect to your server
 
 ```bash
-docker run --rm ghcr.io/rickyltwong/xnatctl:main --help
+xnatctl config init --url https://xnat.example.org   # create a config profile
+xnatctl auth login                                   # log in; the session token is cached
+xnatctl project list                                 # verify: list projects you can access
 ```
 
-For full installation instructions including shell completion and
-troubleshooting, see the [Installation guide](docs/installation.rst).
+### 3. Download a DICOM session
 
-## Quick Start
-
-Once installed, you can be up and running in four steps.
-
-**1. Create a configuration file.** This stores your XNAT server URL and
-default settings so you do not have to pass them on every command:
+Find a session, then pull its imaging data to your machine:
 
 ```bash
-xnatctl config init --url https://xnat.example.org
+# List the sessions in a project
+xnatctl session list -P MYPROJECT
+
+# Download one session by accession number (or by label, with -P)
+xnatctl session download -E XNAT_E00001 --out ./data --extract
 ```
 
-**2. Authenticate.** Log in with your XNAT credentials. The session token is
-cached locally, so subsequent commands authenticate automatically:
+With `--extract` you get one directory per scan with the DICOM files ready
+for analysis; without it, the downloaded ZIP archives are kept as-is.
+
+### 4. Download a session-level resource
+
+Sessions can carry non-DICOM resources (behavioral data, physio logs,
+derived outputs). List what a session has, then fetch one by label:
 
 ```bash
-xnatctl auth login
+# See which resources the session carries
+xnatctl resource list XNAT_E00001
+
+# Download one resource as a ZIP
+xnatctl resource download XNAT_E00001 LINKED_DATA -f linked_data.zip
 ```
 
-**3. Browse your data.** List the projects you have access to and inspect their
-contents:
-
-```bash
-xnatctl project list
-```
-
-**4. Download a session.** Pull imaging data to your local machine for analysis.
-Use an experiment accession number or, if you have a default project set, a
-session label:
-
-```bash
-xnatctl session download -E XNAT_E00001 --out ./data
-```
-
-For a detailed walkthrough, see the [Quick Start guide](docs/quickstart.rst).
+That is the core loop. The [Quick Start guide](docs/quickstart.rst) continues
+from here with uploads, batch operations, and scripting patterns.
 
 ## Commands
 
-| Command              | Description                                      |
-|----------------------|--------------------------------------------------|
-| `xnatctl config`    | Manage configuration profiles                    |
-| `xnatctl auth`      | Authentication (login/logout/status)             |
-| `xnatctl project`   | Project operations (list/show/create)            |
-| `xnatctl subject`   | Subject operations (list/show/rename/delete)     |
-| `xnatctl session`   | Session operations (list/show/download/upload)   |
-| `xnatctl scan`      | Scan operations (list/show/delete/download)      |
-| `xnatctl resource`  | Resource operations (list/upload/download)       |
-| `xnatctl prearchive` | Prearchive management (list/archive/delete/move) |
-| `xnatctl pipeline`  | Pipeline execution (list/run/status/cancel)      |
-| `xnatctl admin`     | Administrative operations (users/catalogs/audit) |
-| `xnatctl api`       | Raw API access (escape hatch for any endpoint)   |
-| `xnatctl local`     | Offline operations (extract downloaded ZIPs)     |
-| `xnatctl dicom`     | DICOM utilities (requires `xnatctl[dicom]`)      |
+```text
+xnatctl config      Manage configuration profiles
+xnatctl auth        Authentication (login/logout/status)
+xnatctl project     Project operations (list/show/create/transfer)
+xnatctl subject     Subject operations (list/show/rename/delete)
+xnatctl session     Session operations (list/show/download/upload)
+xnatctl scan        Scan operations (list/show/delete/download)
+xnatctl resource    Resource operations (list/upload/download)
+xnatctl prearchive  Prearchive management (list/archive/delete/move)
+xnatctl pipeline    Pipeline execution (list/run/status/cancel)
+xnatctl xsync       Cross-server sync (sync/status/history)
+xnatctl admin       Administrative operations (users/catalogs/audit)
+xnatctl api         Raw API access (escape hatch for any endpoint)
+xnatctl local       Offline operations (extract downloaded ZIPs)
+xnatctl dicom       DICOM utilities (requires xnatctl[dicom])
+```
 
-For complete usage and examples, see the [CLI Reference](docs/cli-reference.rst).
+Resource-oriented commands support `--output json|table` and `--quiet` (IDs
+only), so the same command works interactively and in scripts. Full usage and
+examples are in the [CLI Reference](docs/cli-reference.rst).
 
 ## Configuration
 
-Config file location: `~/.config/xnatctl/config.yaml`
+Profiles live in `~/.config/xnatctl/config.yaml` and store connection details
+per server:
 
 ```yaml
 default_profile: production
-output_format: table
 
 profiles:
   production:
     url: https://xnat.example.org
     username: myuser          # optional -- can also use env vars
     password_source: keyring  # password lives in the OS keychain
-    verify_ssl: true
-    timeout: 30
     default_project: MYPROJECT
 
   development:
     url: https://xnat-dev.example.org
-    ca_bundle: /etc/ssl/dev-ca.pem   # trust a private CA, rather than
+    ca_bundle: /etc/ssl/dev-ca.pem   # trust a private CA instead of
                                      # switching verification off
 ```
 
-Store the password in your OS keychain with `xnatctl config set-password
-production` (needs the `xnatctl[keyring]` extra); that is what writes
-`password_source: keyring`. An inline `password:` still works, but xnatctl
-warns when the file holding it is readable by other users.
-
-### Working with Profiles
-
-Profiles let you store connection details for each XNAT server you work with.
-You can create, add, and switch profiles from the command line:
-
 ```bash
-# Create an initial config (prompts for URL and optional defaults)
-xnatctl config init --url https://xnat.example.org
-
-# Add additional profiles
-xnatctl config add-profile dev --url https://xnat-dev.example.org --no-verify-ssl
-
-# Switch the active profile
-xnatctl config use-context dev
-
-# Show the active profile and config
-xnatctl config show
+xnatctl config add-profile dev --url https://xnat-dev.example.org  # add a server
+xnatctl config use-context dev                                     # switch profiles
+xnatctl config set-password production                             # store password in the OS keychain
 ```
 
-### Authentication Flow
+`config set-password` (and `password_source: keyring`) needs the keyring
+extra: `pip install "xnatctl[keyring]"`. It is not included in the plain
+package or the standalone binary; an inline `password:` in the config file
+works everywhere.
 
-Log in once and your session token is cached. xnatctl reuses the cached token
-and refreshes it automatically when it expires:
-
-```bash
-# Login and cache a session token
-xnatctl auth login
-
-# Check current user and session context
-xnatctl whoami
-```
-
-Credential priority (highest to lowest):
-
-1. `--username` on the command line, and `--password-stdin` for the password
-2. Environment variables (`XNAT_USER`, `XNAT_PASS`)
-3. Profile config (`username`, plus `password` or the OS keychain)
-4. Interactive prompt
+Credential priority, highest first: `XNAT_TOKEN` (an existing session token,
+skips login entirely), then `--username` with `--password-stdin`, then
+`XNAT_USER`/`XNAT_PASS` environment variables, then the profile config, then
+an interactive prompt. Environment variables are the natural fit for CI jobs
+and non-interactive scripts.
 
 > **Passwords are never accepted as a command-line value.** `--password secret`
-> is a usage error, because argv is visible in `ps`, `/proc/*/cmdline`, and
-> your shell history. Use `--password-stdin`, `XNAT_PASS`, a stored profile
-> credential, or the prompt.
+> is a usage error, because argv is visible in `ps` and your shell history.
+> Use `--password-stdin`, `XNAT_PASS`, a stored profile credential, or the
+> prompt.
 
-Session tokens are cached at `~/.config/xnatctl/.session` (mode 0600) and used
-automatically until they expire.
+## Features
 
-### Environment Variables
-
-You can override any profile setting with environment variables. This is
-especially useful for CI pipelines and non-interactive scripts:
-
-| Variable        | Description                                          |
-|-----------------|------------------------------------------------------|
-| `XNAT_URL`     | Server URL                                           |
-| `XNAT_USER`    | Username                                             |
-| `XNAT_PASS`    | Password                                             |
-| `XNAT_TOKEN`   | Session token (highest auth priority)                |
-| `XNAT_PROFILE` | Config profile name                                  |
-| `XNAT_VERIFY_SSL` | Override TLS verification (`true`/`false`)        |
-| `XNAT_TIMEOUT` | HTTP timeout in seconds                              |
-| `XNATCTL_DEBUG` | `1` enables debug logging, an httpx wire trace, and tracebacks |
-
-Notes:
-
-- `XNAT_TOKEN` takes precedence over cached sessions and username/password
-  credentials. Use it when you already have a valid token from another tool.
-- `XNAT_URL` and `XNAT_PROFILE` override values from `config.yaml` for the
-  current shell session.
-- Use `XNAT_USER` and `XNAT_PASS` for non-interactive authentication in CI
-  jobs and automated scripts.
+- **Resource-centric commands** -- `xnatctl project list`,
+  `xnatctl session download`, `xnatctl scan show`.
+- **Profile-based configuration** -- one config file for all your servers;
+  switch with `--profile` or `config use-context`.
+- **Consistent output** -- `--output json|table` and `--quiet`, built for
+  both humans and pipes.
+- **Parallel operations** -- batch uploads and downloads fan out across
+  multiple workers (`--workers`) with real-time progress.
+- **Cached authentication** -- log in once and the session token is cached;
+  commands re-authenticate automatically when stored credentials allow it.
+- **Pure HTTP** -- talks directly to the XNAT REST API via httpx. Where
+  [pyxnat](https://pyxnat.github.io/pyxnat/) and
+  [xnatpy](https://xnat.readthedocs.io/) are Python libraries to import into
+  your own code, xnatctl is a CLI-first tool for shell workflows -- and ships
+  as a single binary with no Python environment required.
 
 ## Documentation
 
-Complete documentation is available in the [docs/](docs/) directory. Topics
-include installation, key concepts, configuration, CLI reference, downloading,
-uploading, workflows, and XNAT compatibility.
+Complete documentation is in the [docs/](docs/) directory: installation, key
+concepts, configuration, CLI reference, downloading, uploading, workflows, and
+XNAT compatibility.
 
 ## Development
 
 ```bash
-# Clone and install
 git clone https://github.com/rickyltwong/xnatctl.git
 cd xnatctl
 uv sync --dev
 
-# Run tests
-uv run pytest tests/ -v
-
-# Lint and format
-uv run ruff check xnatctl scripts
-uv run ruff format xnatctl scripts
-
-# Type check
-uv run mypy xnatctl
+uv run pytest tests/ -v                  # tests
+uv run ruff check xnatctl tests scripts  # lint
+uv run mypy xnatctl                      # type check
 ```
 
 ## License
 
 MIT
-
-[^xnat]: XNAT is an open source project produced by NRG at the Washington University School of Medicine. See `https://xnat.org/`.
