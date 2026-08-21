@@ -16,7 +16,7 @@ from xnatctl.core.config import (
     keyring_key,
     load_keyring,
 )
-from xnatctl.core.exceptions import ConfigurationError, XNATCtlError
+from xnatctl.core.exceptions import XNATCtlError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -334,8 +334,6 @@ def config_set_password(name: str) -> None:
     only ``password_source: keyring``, and any inline plaintext password is
     dropped from config.yaml.
 
-    Requires the optional keyring extra: pip install 'xnatctl[keyring]'
-
     \b
     Example:
         xnatctl config set-password prod
@@ -346,12 +344,7 @@ def config_set_password(name: str) -> None:
         print_error(f"Profile '{name}' not found.")
         raise SystemExit(1)
 
-    try:
-        keyring = load_keyring()
-    except ConfigurationError as e:
-        print_error(str(e))
-        raise SystemExit(1) from e
-
+    keyring = load_keyring()
     profile = cfg.get_profile(name)
     password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
 

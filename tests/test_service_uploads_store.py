@@ -4,11 +4,9 @@
 C-ECHO gating, batching across parallel associations, SOP UID backfill, the
 sent/failed tallies, and workspace cleanup were all unverified.
 
-pydicom/pynetdicom are injected as fakes rather than gated behind
-``pytest.importorskip``. The optional extra is not installed in the default
-dev environment, so a skip would mean these never run -- and the logic under
-test is xnatctl's orchestration, not the DICOM libraries' behaviour. Real
-library integration stays a separate concern.
+pydicom/pynetdicom are injected as fakes: the logic under test is xnatctl's
+orchestration, not the DICOM libraries' behaviour. Real library integration
+stays a separate concern.
 """
 
 from __future__ import annotations
@@ -338,31 +336,6 @@ def test_cleanup_can_be_disabled(service: UploadService, dicom_root: Path) -> No
     summary = service.upload_dicom_store(dicom_root, "host", "XNAT", workers=1, cleanup=False)
 
     assert summary.workspace.exists()
-
-
-# =============================================================================
-# Missing optional dependency
-# =============================================================================
-
-
-def test_missing_dicom_extra_raises_with_the_install_hint(
-    service: UploadService, dicom_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setitem(sys.modules, "pynetdicom", None)
-
-    with pytest.raises(ImportError, match=r"xnatctl\[dicom\]"):
-        service.upload_dicom_store(dicom_root, "host", "XNAT")
-
-
-def test_no_association_is_attempted_without_the_extra(
-    service: UploadService, dicom_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setitem(sys.modules, "pydicom", None)
-
-    with pytest.raises(ImportError):
-        service.upload_dicom_store(dicom_root, "host", "XNAT")
-
-    assert FakeAE.instances == []
 
 
 def test_patch_target_is_the_module_not_an_attribute() -> None:

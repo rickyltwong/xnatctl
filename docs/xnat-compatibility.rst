@@ -32,7 +32,7 @@ automatically -- if something breaks on one, please report it. See
 
 Where a feature requires a specific minimum XNAT version or server-side
 configuration, the relevant section below calls it out explicitly. If you are
-unsure which XNAT version your server runs, the :ref:`validation-tips` section
+unsure which XNAT version your server runs, the `Validation tips`_ section
 shows you how to check.
 
 Feature notes

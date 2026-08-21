@@ -147,7 +147,7 @@ different XNAT environments without re-entering connection details.
 - ``config current-context`` -- Print the name of the active profile
 - ``config remove-profile`` -- Remove a named profile
 - ``config set-password`` -- Store a profile's password in the OS keychain
-  (prompts; requires the ``xnatctl[keyring]`` extra)
+  (prompts for it)
 
 Set up xnatctl for the first time with your server URL -- after writing the
 profile it offers to log in right away (``--login``/``--no-login`` decide up
@@ -374,7 +374,7 @@ attaching resources.
      - Seconds to wait for the session to appear in the archive (default:
        ``900``). Set to ``0`` to skip waiting.
 
-Upload via DICOM C-STORE (requires the ``[dicom]`` extra):
+Upload via DICOM C-STORE:
 
 .. code-block:: console
 
@@ -614,18 +614,17 @@ dicom
 -----
 
 The ``dicom`` commands provide local DICOM file utilities that do not require an XNAT
-connection. They require the optional ``[dicom]`` extra (``pip install xnatctl[dicom]``).
+connection.
 
 - ``dicom validate`` -- Validate files for required tags and structural integrity
 - ``dicom inspect`` -- Inspect DICOM headers for a single file
 - ``dicom list-tags`` -- List all tags present in a file
 - ``dicom anonymize`` -- Remove or replace identifying tags
 
-Install and use DICOM utilities:
+Examples:
 
 .. code-block:: console
 
-   $ pip install "xnatctl[dicom]"
    $ xnatctl dicom validate /path/to/dicoms -r
    $ xnatctl dicom inspect /path/to/file.dcm
    $ xnatctl dicom inspect /path/to/file.dcm --tag PatientID --tag Modality
@@ -636,8 +635,8 @@ Install and use DICOM utilities:
    These commands are independent of the XNAT server. Use them to pre-validate or
    anonymize files before uploading with ``session upload`` or ``session upload-dicom``.
 
-For detailed documentation on each DICOM command, installation of the optional
-extra, and workflow examples, see :doc:`dicom`.
+For detailed documentation on each DICOM command and workflow examples, see
+:doc:`dicom`.
 
 local
 -----

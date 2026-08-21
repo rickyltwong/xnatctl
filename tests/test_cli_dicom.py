@@ -18,8 +18,6 @@ from click.testing import CliRunner
 
 from xnatctl.cli.main import cli
 
-pytest.importorskip("pydicom")
-
 
 @pytest.fixture
 def runner() -> CliRunner:
@@ -306,26 +304,3 @@ class TestAnonymize:
 
         assert result.exit_code == 0, result.output
         assert len(list(dst.rglob("*.dcm"))) == 2
-
-
-class TestWithoutPydicom:
-    """Every command must say how to fix a missing extra, not traceback."""
-
-    @pytest.mark.parametrize(
-        "argv",
-        [
-            ["dicom", "validate", "."],
-            ["dicom", "inspect", "."],
-            ["dicom", "list-tags", "."],
-        ],
-    )
-    def test_a_missing_extra_gives_an_actionable_error(
-        self, runner: CliRunner, argv: list[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr("xnatctl.cli.dicom_cmd.check_pydicom", lambda: False)
-
-        result = runner.invoke(cli, argv)
-
-        assert result.exit_code != 0
-        assert "xnatctl[dicom]" in result.output
-        assert "Traceback" not in result.output

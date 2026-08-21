@@ -78,7 +78,7 @@ You can list sessions in a project and filter by subject or modality:
    $ xnatctl session list -P MYPROJECT --modality MR
 
 Sessions have both an **accession ID** (e.g., ``XNAT_E00001``) and a **label** (e.g.,
-``SUB001_MR_20240115``). See :ref:`ids-vs-labels` below for how these differ.
+``SUB001_MR_20240115``). See `IDs vs Labels`_ below for how these differ.
 
 
 Scans

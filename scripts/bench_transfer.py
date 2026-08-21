@@ -362,9 +362,8 @@ def run_upload(
 def _write_synthetic_dicom(root: Path, count: int, file_bytes: int) -> None:
     """Write files the collector accepts: 128-byte preamble, then ``DICM``.
 
-    Real pixel data is not needed -- the parallel REST path tars or zips the
-    files and POSTs them without parsing -- and generating it with pydicom
-    would make the benchmark depend on an optional extra.
+    Real pixel data is not needed: the parallel REST path tars or zips the
+    files and POSTs them without parsing them.
     """
     body = os.urandom(max(0, file_bytes - 132))
     header = b"\0" * 128 + b"DICM"

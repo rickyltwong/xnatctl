@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for building a standalone xnatctl binary."""
 
+import importlib.util
 import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
@@ -15,7 +16,13 @@ hiddenimports = (
 
 binaries: list = []
 datas: list = []
-for pkg in ("pydicom", "pynetdicom"):
+# keyring's platform backends (secretstorage/jeepney on Linux) are loaded via
+# entry points at runtime, so PyInstaller cannot discover them from imports.
+optional_backends = ("secretstorage", "jeepney")
+packages = ("pydicom", "pynetdicom", "keyring") + tuple(
+    pkg for pkg in optional_backends if importlib.util.find_spec(pkg) is not None
+)
+for pkg in packages:
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries
@@ -31,7 +38,6 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        "keyring",
         "tkinter",
         "pytest",
         "setuptools",

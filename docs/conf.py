@@ -22,7 +22,8 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "plans"]
+# README.md is a GitHub-only signpost to the published site, not a doc page.
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "plans", "README.md"]
 
 # -- Options for autodoc -----------------------------------------------------
 

@@ -217,9 +217,8 @@ def print_error(message: str) -> None:
 
     The message is routed through :func:`redact_url_query` so that URLs
     embedded in the error never leak secret-shaped query values, and escaped so
-    that square brackets in it are shown rather than parsed as Rich markup --
-    an install hint like ``pip install 'xnatctl[keyring]'`` otherwise renders
-    with the extra silently deleted.
+    that square brackets in it are shown rather than parsed as Rich markup
+    instead of being silently deleted.
     """
     err_console.print(f"[red]Error:[/red] {escape(redact_url_query(message))}")
 

@@ -131,8 +131,7 @@ required; the rest have sensible defaults.
      - *(none)*
      - Set to ``keyring`` to read the password from the OS keychain instead of
        the inline ``password`` field. Written for you by
-       ``xnatctl config set-password``; requires the ``xnatctl[keyring]``
-       extra.
+       ``xnatctl config set-password``.
    * - ``verify_ssl``
      - ``true``
      - Whether to verify TLS certificates when connecting. Set this to ``false``
@@ -272,15 +271,14 @@ Storing Passwords in the OS Keychain
 
 Instead of a plaintext ``password`` in ``config.yaml``, xnatctl can keep the
 password in your operating system's keychain (macOS Keychain, GNOME
-Keyring/KWallet, Windows Credential Manager) via the optional `keyring
-<https://pypi.org/project/keyring/>`_ package.
+Keyring/KWallet, Windows Credential Manager) via the `keyring
+<https://pypi.org/project/keyring/>`_ package, which ships with every install.
 
 If you already have a profile with an inline plaintext password, migrating
-takes two commands:
+takes one command:
 
 .. code-block:: console
 
-   $ pip install 'xnatctl[keyring]'
    $ xnatctl config set-password prod
    Password: ********
    Repeat for confirmation: ********
@@ -304,9 +302,8 @@ credential chain, so ``auth login``, transfers, and automatic
 re-authentication all read the keychain transparently. ``XNAT_PASS`` still
 wins over the keychain when set.
 
-If the keychain entry is missing or the ``keyring`` package is not installed,
-commands fail with an error naming the exact fix. A failed keychain write
-leaves ``config.yaml`` untouched.
+If the keychain entry is missing, commands fail with an error naming the
+exact fix. A failed keychain write leaves ``config.yaml`` untouched.
 
 .. note::
 

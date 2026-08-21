@@ -27,7 +27,6 @@ from xnatctl.core.config import (
     Profile,
     get_credentials,
     keyring_key,
-    load_keyring,
 )
 from xnatctl.core.exceptions import ConfigurationError
 from xnatctl.core.fsutil import POSIX_PERMISSIONS
@@ -54,13 +53,6 @@ def fake_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeKeyring]:
     fake = FakeKeyring()
     monkeypatch.setitem(sys.modules, "keyring", fake)
     yield fake
-
-
-@pytest.fixture
-def no_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Make `import keyring` fail, as it does without the optional extra."""
-    monkeypatch.setitem(sys.modules, "keyring", None)
-    yield
 
 
 def _profile(**kwargs: Any) -> Profile:
@@ -142,22 +134,6 @@ def test_missing_keychain_entry_raises_with_the_fix_command(fake_keyring: FakeKe
         profile.resolve_password()
 
     assert "xnatctl config set-password prod" in str(exc_info.value)
-
-
-@pytest.mark.usefixtures("no_keyring")
-def test_missing_keyring_package_raises_with_the_install_hint() -> None:
-    profile = _profile(password_source=PASSWORD_SOURCE_KEYRING)
-
-    with pytest.raises(ConfigurationError) as exc_info:
-        profile.resolve_password()
-
-    assert "xnatctl[keyring]" in str(exc_info.value)
-
-
-@pytest.mark.usefixtures("no_keyring")
-def test_load_keyring_raises_configuration_error_not_import_error() -> None:
-    with pytest.raises(ConfigurationError):
-        load_keyring()
 
 
 def test_unnamed_keyring_profile_raises_rather_than_guessing() -> None:

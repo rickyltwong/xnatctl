@@ -48,7 +48,7 @@ def _make_session(root: Path, subject: str, session: str) -> dict[str, str]:
     the file bytes do not survive the round trip -- see
     :meth:`TestRoundTrip.test_the_image_data_survives_the_round_trip`.
     """
-    pydicom = pytest.importorskip("pydicom", reason="the dicom extra is required")
+    import pydicom
     from pydicom.dataset import Dataset, FileMetaDataset
     from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
 
