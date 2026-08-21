@@ -68,21 +68,21 @@ from here with uploads, batch operations, and scripting patterns.
 
 ## Commands
 
-```text
-xnatctl config      Manage configuration profiles
-xnatctl auth        Authentication (login/logout/status)
-xnatctl project     Project operations (list/show/create/transfer)
-xnatctl subject     Subject operations (list/show/rename/delete)
-xnatctl session     Session operations (list/show/download/upload)
-xnatctl scan        Scan operations (list/show/delete/download)
-xnatctl resource    Resource operations (list/upload/download)
-xnatctl prearchive  Prearchive management (list/archive/delete/move)
-xnatctl pipeline    Pipeline execution (list/run/status/cancel)
-xnatctl xsync       Cross-server sync (sync/status/history)
-xnatctl admin       Administrative operations (users/catalogs/audit)
-xnatctl api         Raw API access (escape hatch for any endpoint)
-xnatctl local       Offline operations (extract downloaded ZIPs)
-xnatctl dicom       DICOM utilities (requires xnatctl[dicom])
+```bash
+xnatctl config       # Manage configuration profiles
+xnatctl auth         # Authentication (login/logout/status)
+xnatctl project      # Project operations (list/show/create/transfer)
+xnatctl subject      # Subject operations (list/show/rename/delete)
+xnatctl session      # Session operations (list/show/download/upload)
+xnatctl scan         # Scan operations (list/show/delete/download)
+xnatctl resource     # Resource operations (list/upload/download)
+xnatctl prearchive   # Prearchive management (list/archive/delete/move)
+xnatctl pipeline     # Pipeline execution (list/run/status/cancel)
+xnatctl xsync        # Cross-server sync (sync/status/history)
+xnatctl admin        # Administrative operations (users/catalogs/audit)
+xnatctl api          # Raw API access (escape hatch for any endpoint)
+xnatctl local        # Offline operations (extract downloaded ZIPs)
+xnatctl dicom        # DICOM utilities (requires xnatctl[dicom])
 ```
 
 Resource-oriented commands support `--output json|table` and `--quiet` (IDs
