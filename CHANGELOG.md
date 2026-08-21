@@ -20,6 +20,22 @@ All notable changes to this project will be documented in this file.
   survive as deprecated subclass aliases that emit a `DeprecationWarning` when
   instantiated and will be removed in a later minor release; update `except`
   clauses to the new names.
+- Single-target download/upload service methods now raise typed exceptions
+  instead of returning a failure summary. `DownloadService.download_resource`
+  and `UploadService.upload_resource` return their summary only
+  on success (`download_scan` follows suit when a resource label is given;
+  with `resource=None` it still returns the multi-scan batch summary); on
+  failure they raise -- a typed `XNATCtlError` from the client
+  layer (`SessionExpiredError`, `PermissionDeniedError`, `ResourceNotFoundError`,
+  ...) passes through untouched, and any other error is wrapped as
+  `DownloadError`/`UploadError` with the original exception as `__cause__`.
+  Library callers that inspected `summary.success`/`summary.errors` after these
+  calls should switch to `try`/`except`. Batch methods (`download_scans`, the
+  `upload_dicom_*` family) still return summaries;
+  `DownloadSummary` and `UploadSummary` gain `raise_for_status()`, which raises
+  `BatchOperationError` on a failed batch and is a no-op on success, mirroring
+  `httpx.Response.raise_for_status()`. The CLI is unaffected -- its failure exit
+  codes and messages are unchanged.
 
 **Features**
 

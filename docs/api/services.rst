@@ -50,6 +50,59 @@ Each resource type has an accessor: ``client.projects``, ``client.subjects``,
 construct :class:`~xnatctl.core.client.XNATClient` directly with ``base_url``
 and credentials.
 
+Error Contract
+--------------
+
+Download and upload service methods split into two kinds, and they report
+failure differently:
+
+**Single-target operations raise.** A method that downloads or uploads one thing
+(:meth:`~xnatctl.services.downloads.DownloadService.download_resource`,
+:meth:`~xnatctl.services.uploads.UploadService.upload_resource`, and
+:meth:`~xnatctl.services.downloads.DownloadService.download_scan` when a
+resource label is given -- with ``resource=None`` it delegates to the batch
+``download_scans`` and returns that summary) returns its summary only on
+success. On failure it raises: a typed
+:class:`~xnatctl.core.exceptions.XNATCtlError` from the client layer
+(:class:`~xnatctl.core.exceptions.SessionExpiredError`,
+:class:`~xnatctl.core.exceptions.PermissionDeniedError`,
+:class:`~xnatctl.core.exceptions.ResourceNotFoundError`, ...) passes through
+untouched, and any other exception (``OSError``, a corrupt archive, an
+unexpected error) is wrapped as
+:class:`~xnatctl.core.exceptions.DownloadError` or
+:class:`~xnatctl.core.exceptions.UploadError` with the original exception as
+``__cause__``. (``upload_resource`` raises a plain ``FileNotFoundError`` for a
+missing source path -- a local input error, not an upload failure.) A caller
+therefore distinguishes an expired session from a full disk by exception type
+rather than by parsing a string.
+
+.. code-block:: python
+
+   from xnatctl.core.exceptions import DownloadError, SessionExpiredError
+
+   try:
+       summary = client.downloads.download_resource("XNAT_E00001", "DICOM", out)
+   except SessionExpiredError:
+       ...  # re-authenticate and retry
+   except DownloadError as exc:
+       ...  # exc.__cause__ carries the underlying failure
+
+**Batch operations return a summary.** A method that fans out over many items
+(``download_scans``, the ``upload_dicom_*`` family)
+keeps returning a :class:`~xnatctl.models.progress.DownloadSummary` or
+:class:`~xnatctl.models.progress.UploadSummary` so a partial result stays
+inspectable. (``download_session_fast`` is also a batch operation but reports
+through its own ``DownloadOutcome``, which has no ``raise_for_status``.) Both summaries expose ``raise_for_status()``, mirroring
+``httpx.Response.raise_for_status()``: a no-op on success, and a
+:class:`~xnatctl.core.exceptions.BatchOperationError` (carrying the succeeded
+and failed counts and the per-item error list) when the batch did not fully
+succeed.
+
+.. code-block:: python
+
+   summary = client.downloads.download_scans("XNAT_E00001", ["1", "2"], out)
+   summary.raise_for_status()  # BatchOperationError if any scan failed
+
 Base Service
 ------------
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import tempfile
@@ -17,7 +18,12 @@ import httpx
 
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.client import XNATClient
-from xnatctl.core.exceptions import AuthenticationError, DownloadError, ResourceNotFoundError
+from xnatctl.core.exceptions import (
+    AuthenticationError,
+    DownloadError,
+    ResourceNotFoundError,
+    XNATCtlError,
+)
 from xnatctl.models.hierarchy import ExperimentRef, ResourceRef, ScanRef
 from xnatctl.models.progress import (
     DownloadProgress,
@@ -525,6 +531,11 @@ class DownloadService(BaseService):
 
         Returns:
             The path to the written ``scans.zip``.
+
+        Raises:
+            XNATCtlError: Any typed client-layer failure (authentication,
+                permission, not-found) from streaming the archive.
+            DownloadError: On a short read (Content-Length mismatch).
         """
         scans_url = (
             f"/data/projects/{session_project}/subjects/{subject}"
@@ -555,6 +566,11 @@ class DownloadService(BaseService):
 
         Returns:
             The number of session-level resources downloaded.
+
+        Raises:
+            XNATCtlError: Any typed client-layer failure while listing or
+                streaming a resource.
+            DownloadError: On a short read (Content-Length mismatch).
         """
         res_url = (
             f"/data/projects/{session_project}/subjects/{subject}"
@@ -597,44 +613,75 @@ class DownloadService(BaseService):
             progress_callback: Progress callback
 
         Returns:
-            DownloadSummary with results
+            DownloadSummary describing the completed download (always a success;
+            failures raise).
+
+        Raises:
+            XNATCtlError: Any typed failure from the client layer (authentication,
+                permission, not-found, a short-read DownloadError) passes through
+                untouched.
+            DownloadError: Any other failure (OSError, corrupt ZIP, unexpected
+                exception) wrapped with the resource label and ``__cause__`` set.
         """
         start_time = time.time()
         output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+
+        def notify_error(exc: Exception) -> None:
+            # The notification must never mask the failure it reports, so a
+            # raising callback is suppressed.
+            if progress_callback is None:
+                return
+            with contextlib.suppress(Exception):
+                progress_callback(
+                    DownloadProgress(
+                        phase=OperationPhase.ERROR,
+                        message=str(exc),
+                        success=False,
+                        errors=[str(exc)],
+                    )
+                )
 
         try:
-            resolved_experiment_ref = self._resolve_zip_experiment_ref(
-                session_id,
-                project=project,
-            )
-        except AuthenticationError:
-            raise
-        except Exception as e:
-            if "not found" in str(e).lower() or isinstance(e, ValueError):
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                resolved_experiment_ref = self._resolve_zip_experiment_ref(
+                    session_id,
+                    project=project,
+                )
+            except AuthenticationError:
+                # Covers SessionExpiredError and PermissionDeniedError too. Other
+                # failures (network, server) are deliberately discarded:
+                # resolution is best-effort normalization, and a transient
+                # hiccup there must not doom an otherwise-valid accession ID.
+                # The fallback retries via the direct /data/experiments/{id}
+                # path -- if that also fails, ITS error is the one that
+                # propagates under this method's contract.
                 raise
-            resolved_experiment_ref = ExperimentRef(experiment=session_id)
+            except Exception as e:
+                if "not found" in str(e).lower() or isinstance(e, ValueError):
+                    raise
+                resolved_experiment_ref = ExperimentRef(experiment=session_id)
 
-        # Build path - always use /data/experiments/{id}/... for reliable ZIP downloads
-        if scan_id:
-            path = HierarchyService.build_resource_path(
-                ResourceRef(
-                    parent=ScanRef(experiment=resolved_experiment_ref, scan_id=scan_id),
-                    resource_label=resource_label,
-                ),
-                "files",
-            )
-        else:
-            path = HierarchyService.build_resource_path(
-                ResourceRef(parent=resolved_experiment_ref, resource_label=resource_label),
-                "files",
-            )
+            # Build path - always use /data/experiments/{id}/... for reliable ZIP downloads
+            if scan_id:
+                path = HierarchyService.build_resource_path(
+                    ResourceRef(
+                        parent=ScanRef(experiment=resolved_experiment_ref, scan_id=scan_id),
+                        resource_label=resource_label,
+                    ),
+                    "files",
+                )
+            else:
+                path = HierarchyService.build_resource_path(
+                    ResourceRef(parent=resolved_experiment_ref, resource_label=resource_label),
+                    "files",
+                )
 
-        params = {"format": "zip"}
+            params = {"format": "zip"}
 
-        zip_path = output_dir / (zip_filename or f"{resource_label}.zip")
+            zip_path = output_dir / (zip_filename or f"{resource_label}.zip")
 
-        try:
             progress_cb: Callable[[int, int | None], None] | None = None
             if progress_callback is not None:
                 emit = progress_callback
@@ -673,17 +720,17 @@ class DownloadService(BaseService):
                 session_id=session_id,
             )
 
+        except XNATCtlError as e:
+            # Typed failures already carry the right class and exit code -- an
+            # expired session, a permission denial, a 404, or the DownloadError
+            # stream_to_file raises on a short read. Passing them through is the
+            # whole point: a caller can distinguish them instead of reading a
+            # stringified summary.
+            notify_error(e)
+            raise
         except Exception as e:
-            duration = time.time() - start_time
-            return DownloadSummary(
-                success=False,
-                total=1,
-                succeeded=0,
-                failed=1,
-                duration=duration,
-                errors=[str(e)],
-                session_id=session_id,
-            )
+            notify_error(e)
+            raise DownloadError(str(e), resource=resource_label) from e
 
     def download_scan(
         self,
@@ -705,7 +752,15 @@ class DownloadService(BaseService):
             progress_callback: Progress callback
 
         Returns:
-            DownloadSummary with results
+            DownloadSummary describing the download. With ``resource=None`` this
+            is the multi-scan batch summary from :meth:`download_scans` (call its
+            ``raise_for_status`` to fail on a partial result); with a resource it
+            is the always-success summary from :meth:`download_resource`.
+
+        Raises:
+            XNATCtlError: A typed client-layer failure from the single-resource
+                path (:meth:`download_resource`) passes through untouched.
+            DownloadError: Any other single-resource failure, wrapped.
         """
         if resource is None:
             return self.download_scans(
@@ -756,7 +811,10 @@ class DownloadService(BaseService):
             progress_callback: Progress callback
 
         Returns:
-            DownloadSummary with results
+            DownloadSummary with results. This is a batch operation: a failed
+            fetch is reported as ``success=False`` with the reason in ``errors``
+            rather than raised. Call ``raise_for_status()`` on the summary to
+            turn a failed batch into a ``BatchOperationError``.
         """
         start_time = time.time()
         output_dir = Path(output_dir)

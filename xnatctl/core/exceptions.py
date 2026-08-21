@@ -485,7 +485,7 @@ class BatchOperationError(OperationError):
     ):
         super().__init__(
             operation,
-            f"Batch {operation} partially failed: {succeeded} succeeded, {failed} failed",
+            f"Batch {operation} did not fully succeed: {succeeded} succeeded, {failed} failed",
             {"succeeded": succeeded, "failed": failed},
         )
         self.succeeded = succeeded

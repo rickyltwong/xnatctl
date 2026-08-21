@@ -8,8 +8,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from xnatctl.core.exceptions import ResourceNotFoundError
-from xnatctl.models.progress import DownloadSummary
+from xnatctl.core.exceptions import (
+    BatchOperationError,
+    DownloadError,
+    ResourceNotFoundError,
+    SessionExpiredError,
+)
+from xnatctl.models.progress import DownloadProgress, DownloadSummary, OperationPhase
 from xnatctl.services.downloads import (
     DownloadOutcome,
     DownloadService,
@@ -68,23 +73,22 @@ class TestDownloadResourceSessionResolution:
         stream_ctx.__exit__ = MagicMock(return_value=False)
         download_service.client.stream.return_value = stream_ctx
 
-        # When: download_resource is called
-        result = download_service.download_resource(
-            session_id=session_label,
-            resource_label="DICOM",
-            output_dir=tmp_path,
-            scan_id="1",
-            project=project,
-        )
+        # When: download_resource is called, the failing stream raises (a
+        # single-target download raises instead of returning a failure summary).
+        with pytest.raises(DownloadError):
+            download_service.download_resource(
+                session_id=session_label,
+                resource_label="DICOM",
+                output_dir=tmp_path,
+                scan_id="1",
+                project=project,
+            )
 
         # Then: The _get was called to resolve the session
         download_service._get.assert_called_once_with(
             f"/data/projects/{project}/experiments/{session_label}",
             params={"format": "json"},
         )
-
-        # And: The result indicates failure (due to our mock)
-        assert not result.success
 
     def test_uses_session_id_directly_when_starts_with_xnat_e(self, download_service, tmp_path):
         """Test that XNAT_E* IDs are used directly without resolution."""
@@ -100,14 +104,15 @@ class TestDownloadResourceSessionResolution:
         stream_ctx.__exit__ = MagicMock(return_value=False)
         download_service.client.stream.return_value = stream_ctx
 
-        # When: download_resource is called
-        download_service.download_resource(
-            session_id=session_id,
-            resource_label="DICOM",
-            output_dir=tmp_path,
-            scan_id="1",
-            project=project,
-        )
+        # When: download_resource is called (the failing stream raises)
+        with pytest.raises(DownloadError):
+            download_service.download_resource(
+                session_id=session_id,
+                resource_label="DICOM",
+                output_dir=tmp_path,
+                scan_id="1",
+                project=project,
+            )
 
         # Then: _get was NOT called for resolution
         download_service._get.assert_not_called()
@@ -127,19 +132,19 @@ class TestDownloadResourceSessionResolution:
         stream_ctx.__exit__ = MagicMock(return_value=False)
         download_service.client.stream.return_value = stream_ctx
 
-        result = download_service.download_resource(
-            session_id=session_label,
-            resource_label="DICOM",
-            output_dir=tmp_path,
-            scan_id="1",
-            project=project,
-        )
+        with pytest.raises(DownloadError):
+            download_service.download_resource(
+                session_id=session_label,
+                resource_label="DICOM",
+                output_dir=tmp_path,
+                scan_id="1",
+                project=project,
+            )
 
         download_service._get.assert_called_once_with(
             f"/data/projects/{project}/experiments/{session_label}",
             params={"format": "json"},
         )
-        assert not result.success
 
 
 class TestDownloadScan:
@@ -281,14 +286,17 @@ class TestDownloadResourcePathConstruction:
                 mock_zipfile.return_value.__enter__ = MagicMock(return_value=mock_zf)
                 mock_zipfile.return_value.__exit__ = MagicMock(return_value=False)
 
-                # When: download_resource is called for scan
-                download_service.download_resource(
-                    session_id="SESSION_LABEL",
-                    resource_label="DICOM",
-                    output_dir=tmp_path,
-                    scan_id="1",
-                    project="PROJECT",
-                )
+                # When: download_resource is called for scan. The mocked open
+                # leaves no .part file, so the atomic rename fails and the
+                # single-target path raises -- we only assert the request path.
+                with pytest.raises(DownloadError):
+                    download_service.download_resource(
+                        session_id="SESSION_LABEL",
+                        resource_label="DICOM",
+                        output_dir=tmp_path,
+                        scan_id="1",
+                        project="PROJECT",
+                    )
 
         # Then: Stream was called with experiments-based path
         stream_call_args = download_service.client.stream.call_args
@@ -317,14 +325,17 @@ class TestDownloadResourcePathConstruction:
                 mock_zipfile.return_value.__enter__ = MagicMock(return_value=mock_zf)
                 mock_zipfile.return_value.__exit__ = MagicMock(return_value=False)
 
-                # When: download_resource is called without scan_id
-                download_service.download_resource(
-                    session_id="SESSION_LABEL",
-                    resource_label="SNAPSHOTS",
-                    output_dir=tmp_path,
-                    scan_id=None,
-                    project="PROJECT",
-                )
+                # When: download_resource is called without scan_id. As above,
+                # the mocked open makes the atomic rename fail, so the
+                # single-target path raises; we only assert the request path.
+                with pytest.raises(DownloadError):
+                    download_service.download_resource(
+                        session_id="SESSION_LABEL",
+                        resource_label="SNAPSHOTS",
+                        output_dir=tmp_path,
+                        scan_id=None,
+                        project="PROJECT",
+                    )
 
         # Then: Stream was called with session-level path
         stream_call_args = download_service.client.stream.call_args
@@ -790,3 +801,160 @@ class TestDownloadSessionArchiveAndResources:
         ]
         assert (tmp_path / "resources_QC.zip").exists()
         assert (tmp_path / "resources_MISC.zip").exists()
+
+
+# =============================================================================
+# Raise-by-default contract: single-target downloads raise typed failures,
+# batch summaries expose raise_for_status().
+# =============================================================================
+
+
+class TestSingleTargetDownloadContract:
+    """download_resource raises rather than returning a failure summary."""
+
+    def _service(self) -> DownloadService:
+        return DownloadService(MagicMock())
+
+    def test_session_expired_propagates_unwrapped(self, tmp_path: Path) -> None:
+        """A typed client-layer failure passes through, so a caller can catch it."""
+        service = self._service()
+        with patch(
+            "xnatctl.services.downloads.stream_to_file",
+            side_effect=SessionExpiredError("https://xnat.example.org"),
+        ):
+            # The whole point of the contract: an expired session is catchable
+            # as itself, not buried in a stringified summary.
+            try:
+                service.download_resource(
+                    session_id="XNAT_E00001",
+                    resource_label="DICOM",
+                    output_dir=tmp_path,
+                )
+            except SessionExpiredError:
+                pass
+            else:  # pragma: no cover - the assertion below reports the miss
+                raise AssertionError("SessionExpiredError did not propagate")
+
+    def test_disk_full_oserror_surfaces_as_download_error_with_cause(self, tmp_path: Path) -> None:
+        """An unexpected OSError is wrapped as DownloadError, __cause__ preserved."""
+        service = self._service()
+        disk_full = OSError("No space left on device")
+        with patch(
+            "xnatctl.services.downloads.stream_to_file",
+            side_effect=disk_full,
+        ):
+            with pytest.raises(DownloadError) as excinfo:
+                service.download_resource(
+                    session_id="XNAT_E00001",
+                    resource_label="DICOM",
+                    output_dir=tmp_path,
+                )
+        assert excinfo.value.__cause__ is disk_full
+        assert "No space left on device" in str(excinfo.value)
+        assert excinfo.value.resource == "DICOM"
+
+    def test_typed_failure_is_the_same_exception_object(self, tmp_path: Path) -> None:
+        """Pass-through means the identical object, not a lookalike."""
+        service = self._service()
+        exc = SessionExpiredError("https://xnat.example.org")
+        with patch("xnatctl.services.downloads.stream_to_file", side_effect=exc):
+            with pytest.raises(SessionExpiredError) as excinfo:
+                service.download_resource(
+                    session_id="XNAT_E00001",
+                    resource_label="DICOM",
+                    output_dir=tmp_path,
+                )
+        assert excinfo.value is exc
+
+    def test_error_progress_fires_and_a_raising_callback_cannot_mask(self, tmp_path: Path) -> None:
+        """The ERROR notification fires on failure and is suppressed if the
+        callback itself raises, so it can never mask the typed failure.
+        """
+        service = self._service()
+        phases: list[OperationPhase] = []
+
+        def callback(progress: DownloadProgress) -> None:
+            phases.append(progress.phase)
+            if progress.phase is OperationPhase.ERROR:
+                raise RuntimeError("callback exploded")
+
+        exc = SessionExpiredError("https://xnat.example.org")
+        with patch("xnatctl.services.downloads.stream_to_file", side_effect=exc):
+            with pytest.raises(SessionExpiredError) as excinfo:
+                service.download_resource(
+                    session_id="XNAT_E00001",
+                    resource_label="DICOM",
+                    output_dir=tmp_path,
+                    progress_callback=callback,
+                )
+        assert excinfo.value is exc
+        assert OperationPhase.ERROR in phases
+
+
+class TestDownloadScanDelegation:
+    """download_scan raises via the resource path, summarizes via the batch path."""
+
+    def _service(self) -> DownloadService:
+        return DownloadService(MagicMock())
+
+    def test_resource_path_raises(self, tmp_path: Path) -> None:
+        service = self._service()
+        exc = SessionExpiredError("https://xnat.example.org")
+        with patch("xnatctl.services.downloads.stream_to_file", side_effect=exc):
+            with pytest.raises(SessionExpiredError):
+                service.download_scan(
+                    session_id="XNAT_E00001",
+                    scan_id="2",
+                    output_dir=tmp_path,
+                    resource="DICOM",
+                )
+
+    def test_batch_path_returns_the_batch_summary_unraised(self, tmp_path: Path) -> None:
+        """With resource=None a failed batch still comes back as a summary."""
+        service = self._service()
+        failed = DownloadSummary(
+            success=False, total=1, succeeded=0, failed=1, duration=0.1, errors=["boom"]
+        )
+        with patch.object(service, "download_scans", return_value=failed) as scans:
+            result = service.download_scan(
+                session_id="XNAT_E00001",
+                scan_id="2",
+                output_dir=tmp_path,
+            )
+        assert result is failed
+        scans.assert_called_once()
+
+
+class TestDownloadSummaryRaiseForStatus:
+    """DownloadSummary.raise_for_status mirrors httpx.Response.raise_for_status."""
+
+    def test_raises_batch_operation_error_on_failure(self) -> None:
+        summary = DownloadSummary(
+            success=False,
+            total=3,
+            succeeded=1,
+            failed=2,
+            duration=1.0,
+            errors=["scan 2 exploded", "scan 3 exploded"],
+        )
+
+        with pytest.raises(BatchOperationError) as excinfo:
+            summary.raise_for_status()
+
+        err = excinfo.value
+        assert err.succeeded == 1
+        assert err.failed == 2
+        assert err.errors == ["scan 2 exploded", "scan 3 exploded"]
+        assert err.details["succeeded"] == 1
+        assert err.details["failed"] == 2
+        assert "download" in str(err)
+
+    def test_noop_on_success(self) -> None:
+        summary = DownloadSummary(
+            success=True,
+            total=2,
+            succeeded=2,
+            failed=0,
+            duration=1.0,
+        )
+        assert summary.raise_for_status() is None

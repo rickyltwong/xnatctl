@@ -41,6 +41,7 @@ from xnatctl.core.exceptions import (
     RetryExhaustedError,
     SessionExpiredError,
     UploadError,
+    XNATCtlError,
 )
 from xnatctl.core.exceptions import RequestTimeoutError as XNATTimeoutError
 from xnatctl.core.retry import RETRYABLE_STATUS_CODES, UPLOAD_MAX_RETRIES, upload_with_retry
@@ -2268,6 +2269,24 @@ class UploadService(BaseService):
             session_id=session,
         )
 
+    @staticmethod
+    def _notify_upload_error(
+        progress_callback: Callable[[UploadProgress], None] | None,
+        exc: Exception,
+    ) -> None:
+        """Emit an ERROR progress event without ever masking the failure."""
+        if progress_callback is None:
+            return
+        with contextlib.suppress(Exception):
+            progress_callback(
+                UploadProgress(
+                    phase=OperationPhase.ERROR,
+                    message=str(exc),
+                    success=False,
+                    errors=[str(exc)],
+                )
+            )
+
     def upload_resource(  # noqa: C901  # pre-existing; see pyproject
         self,
         session_id: str,
@@ -2292,48 +2311,59 @@ class UploadService(BaseService):
             progress_callback: Progress callback.
 
         Returns:
-            UploadSummary with results.
+            UploadSummary describing the completed upload (always a success;
+            failures raise).
+
+        Raises:
+            FileNotFoundError: If ``source_path`` does not exist.
+            XNATCtlError: Any typed failure from the client layer (authentication,
+                permission, not-found) passes through untouched.
+            UploadError: Any other failure (HTTP error, OSError, unexpected
+                exception) wrapped with the source path and ``__cause__`` set.
         """
         start_time = time.time()
         source_path = Path(source_path)
+        upload_source = source_path
 
         if not source_path.exists():
             raise FileNotFoundError(f"Source not found: {source_path}")
 
-        if progress_callback:
-            progress_callback(
-                UploadProgress(
-                    phase=OperationPhase.PREPARING,
-                    message="Preparing upload",
-                )
-            )
-
-        if scan_id:
-            if project:
-                base_path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}/files"
-            else:
-                base_path = f"/data/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}/files"
-        else:
-            if project:
-                base_path = f"/data/projects/{project}/experiments/{session_id}/resources/{resource_label}/files"
-            else:
-                base_path = f"/data/experiments/{session_id}/resources/{resource_label}/files"
-
-        # A directory source is zipped to a temp file that MUST be removed on
-        # every exit path. It used to leak on all of them: a 50 GB resource
-        # directory left a 50 GB zip behind on each invocation, and
-        # `session upload-exam` calls this once per resource directory.
         temp_zip: Path | None = None
-        if source_path.is_dir():
-            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-                zip_path = Path(tmp.name)
-
-            shutil.make_archive(str(zip_path.with_suffix("")), "zip", source_path)
-            temp_zip = zip_path
-            source_path = zip_path
-            extract = True
-
         try:
+            if progress_callback:
+                progress_callback(
+                    UploadProgress(
+                        phase=OperationPhase.PREPARING,
+                        message="Preparing upload",
+                    )
+                )
+
+            if scan_id:
+                if project:
+                    base_path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}/files"
+                else:
+                    base_path = f"/data/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}/files"
+            else:
+                if project:
+                    base_path = f"/data/projects/{project}/experiments/{session_id}/resources/{resource_label}/files"
+                else:
+                    base_path = f"/data/experiments/{session_id}/resources/{resource_label}/files"
+
+            # A directory source is zipped to a temp file that MUST be removed on
+            # every exit path. It used to leak on all of them: a 50 GB resource
+            # directory left a 50 GB zip behind on each invocation, and
+            # `session upload-exam` calls this once per resource directory.
+            if source_path.is_dir():
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                    zip_path = Path(tmp.name)
+
+                # Assigned before make_archive so a failed archive build is
+                # still cleaned up by the finally below.
+                temp_zip = zip_path
+                shutil.make_archive(str(zip_path.with_suffix("")), "zip", source_path)
+                source_path = zip_path
+                extract = True
+
             file_size = source_path.stat().st_size
 
             if progress_callback:
@@ -2403,31 +2433,18 @@ class UploadService(BaseService):
                 session_id=session_id,
             )
 
+        except XNATCtlError as e:
+            # Typed failures already carry the right class and exit code; the
+            # notification fires (suppressed if the callback itself raises, so
+            # it can never mask the failure), then the exception propagates
+            # unchanged.
+            self._notify_upload_error(progress_callback, e)
+            raise
         except Exception as e:
-            duration = time.time() - start_time
-
-            if progress_callback:
-                progress_callback(
-                    UploadProgress(
-                        phase=OperationPhase.ERROR,
-                        message=str(e),
-                        success=False,
-                        errors=[str(e)],
-                    )
-                )
-
-            return UploadSummary(
-                success=False,
-                total=1,
-                succeeded=0,
-                failed=1,
-                duration=duration,
-                errors=[str(e)],
-                session_id=session_id,
-            )
+            self._notify_upload_error(progress_callback, e)
+            raise UploadError(str(e), file_path=str(upload_source)) from e
         finally:
-            # Covers both the success return and the broad `except` above, which
-            # returns a failure summary rather than propagating.
+            # Covers the success return and both raising branches above.
             if temp_zip is not None:
                 temp_zip.unlink(missing_ok=True)
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from xnatctl.core.exceptions import BatchOperationError
+
 
 class OperationPhase(Enum):
     """Operation phases for progress tracking."""
@@ -142,6 +144,22 @@ class UploadSummary(OperationResult):
             return 0.0
         return self.total_size_mb / self.duration
 
+    def raise_for_status(self) -> None:
+        """Raise if the batch upload did not fully succeed.
+
+        The multi-item upload paths report per-item outcomes in a summary rather
+        than raising, so a caller that wants a failed batch to stop the program
+        calls this, mirroring ``httpx.Response.raise_for_status()``: a no-op on
+        success, a typed raise otherwise.
+
+        Raises:
+            BatchOperationError: If ``success`` is False, carrying the succeeded
+                and failed counts and the per-item error list.
+        """
+        if self.success:
+            return
+        raise BatchOperationError("upload", self.succeeded, self.failed, self.errors)
+
 
 @dataclass
 class DownloadSummary(OperationResult):
@@ -159,3 +177,19 @@ class DownloadSummary(OperationResult):
         if self.duration == 0:
             return 0.0
         return self.total_size_mb / self.duration
+
+    def raise_for_status(self) -> None:
+        """Raise if the batch download did not fully succeed.
+
+        The multi-item download paths report per-item outcomes in a summary
+        rather than raising, so a caller that wants a failed batch to stop the
+        program calls this, mirroring ``httpx.Response.raise_for_status()``: a
+        no-op on success, a typed raise otherwise.
+
+        Raises:
+            BatchOperationError: If ``success`` is False, carrying the succeeded
+                and failed counts and the per-item error list.
+        """
+        if self.success:
+            return
+        raise BatchOperationError("download", self.succeeded, self.failed, self.errors)
