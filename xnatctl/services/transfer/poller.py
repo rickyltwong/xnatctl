@@ -1,8 +1,13 @@
 """Background archive poller for the pipelined transfer pipeline.
 
 Monitors XNAT prearchive and archive status for experiments that have
-been uploaded but are still awaiting archive completion. Read-only: only
-performs HTTP GET requests via the executor.
+been uploaded but are still awaiting archive completion. The ``ArchivePoller``
+itself is read-only: it only performs HTTP GET requests via the executor.
+
+The module-level ``drain_*``/``service_prearchive_actions`` functions below
+are the mutating counterpart: they run on the main thread and resolve
+READY/CONFLICT prearchive entries the poller has flagged, then hand
+completed experiments to a caller-supplied ``finalize`` callback.
 """
 
 from __future__ import annotations
@@ -12,12 +17,18 @@ import tempfile
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from xnatctl.core.state import EntityStatus, TransferStateStore
+from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.discovery import DiscoveredEntity
 from xnatctl.services.transfer.executor import TransferExecutor
+
+if TYPE_CHECKING:
+    from xnatctl.services.transfer.orchestrator import TransferResult
 
 logger = logging.getLogger(__name__)
 
@@ -247,3 +258,265 @@ class ArchivePoller:
                     self._pending.remove(item)
                 except ValueError:
                     pass
+
+
+def service_prearchive_actions(
+    executor: TransferExecutor,
+    deferred: deque[DeferredExperiment],
+) -> None:
+    """Resolve prearchive READY/CONFLICT for any signaled experiments.
+
+    Called on main thread. Performs mutating POST via archive_prearchive().
+
+    Args:
+        executor: TransferExecutor used for prearchive HTTP calls.
+        deferred: Queue of deferred experiments to check.
+    """
+    for ctx in deferred:
+        if not ctx.needs_archive_action.is_set():
+            continue
+
+        try:
+            entry = executor.find_prearchive_entry(ctx.dest_project, ctx.exp.local_label)
+        except Exception:
+            ctx.archive_retries += 1
+            logger.warning(
+                "Prearchive resolution failed for %s (attempt %d), will retry",
+                ctx.exp.local_label,
+                ctx.archive_retries,
+                exc_info=True,
+            )
+            continue
+
+        ctx.archive_retries = 0
+        if entry is None:
+            ctx.prearchive_cleared = True
+            ctx.needs_archive_action.clear()
+        else:
+            timestamp = entry.get("timestamp", "")
+            status = entry.get("status", "")
+            if timestamp and status in ("READY", "CONFLICT"):
+                overwrite = "append" if status == "CONFLICT" else None
+                folder = entry.get("folderName") or entry.get("name", ctx.exp.local_label)
+                try:
+                    executor.archive_prearchive(
+                        dest_project=ctx.dest_project,
+                        timestamp=timestamp,
+                        session_name=folder,
+                        subject_label=ctx.subject.local_label,
+                        experiment_label=ctx.exp.local_label,
+                        overwrite=overwrite,
+                    )
+                except Exception as exc:
+                    ctx.archive_error = (
+                        f"Prearchive archive failed for {ctx.exp.local_label}: {exc}"
+                    )
+                    ctx.archive_ready.set()
+                    logger.error(
+                        "Prearchive archive failed for %s",
+                        ctx.exp.local_label,
+                        exc_info=True,
+                    )
+                else:
+                    ctx.prearchive_cleared = True
+                finally:
+                    ctx.needs_archive_action.clear()
+            else:
+                ctx.needs_archive_action.clear()
+
+
+def _record_experiment_failure(
+    state_store: TransferStateStore,
+    ctx: DeferredExperiment,
+    result: TransferResult,
+    message: str,
+) -> None:
+    """Record a failed experiment on both the result and the state store.
+
+    Args:
+        state_store: Transfer state store.
+        ctx: Deferred experiment that failed.
+        result: Mutable result to update.
+        message: Failure message.
+    """
+    result.experiments_failed += 1
+    result.success = False
+    result.errors.append(f"Experiment {ctx.exp.local_label}: {message}")
+    state_store.record_entity(
+        sync_id=ctx.sync_id,
+        entity_type="experiment",
+        local_id=ctx.exp.local_id,
+        local_label=ctx.exp.local_label,
+        xsi_type=ctx.exp.xsi_type,
+        parent_local_id=ctx.subject.local_id,
+        status=EntityStatus.FAILED,
+        message=message,
+    )
+
+
+def drain_ready(
+    state_store: TransferStateStore,
+    finalize: Callable[[DeferredExperiment, TransferResult, Callable[[str], None] | None], None],
+    deferred: deque[DeferredExperiment],
+    result: TransferResult,
+    progress_callback: Callable[[str], None] | None = None,
+) -> bool:
+    """Finalize any experiment whose archive is ready.
+
+    Scans the entire deferred queue (not just head) to avoid
+    head-of-line blocking when a later experiment archives first.
+
+    Args:
+        state_store: Transfer state store, for recording failures.
+        finalize: Callback that completes the deferred phases for one
+            experiment (XML overlay, non-DICOM resources, verification).
+        deferred: Queue of deferred experiments.
+        result: Mutable result to update.
+        progress_callback: Optional progress callback.
+
+    Returns:
+        True if at least one experiment was drained.
+    """
+    drained = False
+    remaining: deque[DeferredExperiment] = deque()
+    ready_items: list[DeferredExperiment] = []
+    for ctx in deferred:
+        if ctx.archive_ready.is_set():
+            ready_items.append(ctx)
+        else:
+            remaining.append(ctx)
+    deferred.clear()
+    deferred.extend(remaining)
+
+    for ctx in ready_items:
+        if ctx.archive_error is not None:
+            _record_experiment_failure(state_store, ctx, result, ctx.archive_error)
+            ctx.work_dir_handle.cleanup()
+            drained = True
+            continue
+        try:
+            finalize(ctx, result, progress_callback)
+        except Exception as e:
+            _record_experiment_failure(state_store, ctx, result, str(e))
+        drained = True
+    return drained
+
+
+def _resolve_deferred_prearchive_blocking(
+    executor: TransferExecutor,
+    ctx: DeferredExperiment,
+) -> None:
+    """Resolve one item's pending READY/CONFLICT prearchive action, synchronously.
+
+    Mutates ``ctx.prearchive_cleared``/``ctx.archive_error`` in place; any
+    failure to even look up the prearchive entry is logged and left for the
+    ``wait_for_archive`` fallback in the caller.
+
+    Args:
+        executor: TransferExecutor used for prearchive/archive HTTP calls.
+        ctx: Deferred experiment with ``needs_archive_action`` set.
+    """
+    try:
+        entry = executor.find_prearchive_entry(ctx.dest_project, ctx.exp.local_label)
+        if entry is None:
+            ctx.prearchive_cleared = True
+        elif entry.get("status") in ("READY", "CONFLICT"):
+            overwrite = "append" if entry["status"] == "CONFLICT" else None
+            folder = entry.get("folderName") or entry.get("name", ctx.exp.local_label)
+            try:
+                executor.archive_prearchive(
+                    dest_project=ctx.dest_project,
+                    timestamp=entry.get("timestamp", ""),
+                    session_name=folder,
+                    subject_label=ctx.subject.local_label,
+                    experiment_label=ctx.exp.local_label,
+                    overwrite=overwrite,
+                )
+                ctx.prearchive_cleared = True
+            except Exception as exc:
+                ctx.archive_error = f"Prearchive archive failed for {ctx.exp.local_label}: {exc}"
+                logger.error(
+                    "Prearchive archive failed for %s in blocking drain",
+                    ctx.exp.local_label,
+                    exc_info=True,
+                )
+    except Exception:
+        logger.warning(
+            "Prearchive resolution failed for %s in blocking drain, "
+            "falling back to wait_for_archive",
+            ctx.exp.local_label,
+            exc_info=True,
+        )
+    ctx.needs_archive_action.clear()
+
+
+def drain_all_blocking(
+    executor: TransferExecutor,
+    state_store: TransferStateStore,
+    finalize: Callable[[DeferredExperiment, TransferResult, Callable[[str], None] | None], None],
+    deferred: deque[DeferredExperiment],
+    result: TransferResult,
+    config: TransferConfig,
+    progress_callback: Callable[[str], None] | None = None,
+) -> None:
+    """Drain all deferred experiments using blocking wait.
+
+    Fallback when the poller thread has died. First drains any
+    already-ready items, then blocks on each remaining experiment's
+    archive_ready event with a short timeout before falling back to
+    the synchronous wait_for_archive().
+
+    Args:
+        executor: TransferExecutor used for prearchive/archive HTTP calls.
+        state_store: Transfer state store, for recording failures.
+        finalize: Callback that completes the deferred phases for one
+            experiment (XML overlay, non-DICOM resources, verification).
+        deferred: Queue of deferred experiments.
+        result: Mutable result to update.
+        config: Transfer configuration (archive wait timeout/interval).
+        progress_callback: Optional progress callback.
+    """
+    # First drain anything already ready
+    drain_ready(state_store, finalize, deferred, result, progress_callback)
+
+    while deferred:
+        ctx = deferred.popleft()
+        # Service prearchive action if needed
+        if ctx.needs_archive_action.is_set():
+            _resolve_deferred_prearchive_blocking(executor, ctx)
+
+        if ctx.archive_error is not None:
+            _record_experiment_failure(state_store, ctx, result, ctx.archive_error)
+            ctx.work_dir_handle.cleanup()
+            continue
+
+        # Block until ready or use wait_for_archive as fallback
+        if not ctx.archive_ready.is_set():
+            if progress_callback:
+                progress_callback(f"    Blocking wait for {ctx.exp.local_label}...")
+            try:
+                executor.wait_for_archive(
+                    ctx.dest_project,
+                    ctx.subject.local_label,
+                    ctx.exp.local_label,
+                    ctx.dicom_scan_count,
+                    timeout=config.archive_wait_timeout,
+                    interval=config.archive_poll_interval,
+                )
+            except Exception as exc:
+                ctx.archive_error = f"Archive wait failed for {ctx.exp.local_label}: {exc}"
+                logger.error(
+                    "Archive wait failed for %s in blocking drain",
+                    ctx.exp.local_label,
+                    exc_info=True,
+                )
+
+        if ctx.archive_error is not None:
+            _record_experiment_failure(state_store, ctx, result, ctx.archive_error)
+            ctx.work_dir_handle.cleanup()
+            continue
+
+        try:
+            finalize(ctx, result, progress_callback)
+        except Exception as e:
+            _record_experiment_failure(state_store, ctx, result, str(e))

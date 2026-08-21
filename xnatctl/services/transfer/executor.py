@@ -10,20 +10,19 @@ import logging
 import re
 import shutil
 import time
-import xml.etree.ElementTree as ET
 import zipfile
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-import defusedxml.ElementTree as DefusedET
 import httpx
 
 from xnatctl.core.exceptions import ClientRequestError, ServerError, XNATConnectionError
 from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, is_permanent_400, retry_call
 from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
+from xnatctl.services.transfer.xml_overlay import rewrite_experiment_xml
 
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
@@ -712,129 +711,6 @@ class TransferExecutor:
         )
         return resp.text
 
-    def _rewrite_experiment_xml(  # noqa: C901  # pre-existing; see pyproject
-        self,
-        xml_text: str,
-        dest_experiment_id: str | None = None,
-        dest_project: str | None = None,
-    ) -> str:
-        """Strip internal references from experiment XML for overlay.
-
-        Removes file/catalog elements, subject_ID, prearchivePath,
-        image_session_ID, sharing, fields, session-level resources,
-        schemaLocation, and label. Rewrites experiment ID and project
-        if provided.
-
-        The label attribute is always stripped because XNAT rejects PUT
-        requests that include a label differing from the destination
-        experiment's current label (400: "Label must be modified through
-        separate URI."). Since xnatctl currently only supports same-label
-        transfers, stripping it avoids the mismatch entirely.
-
-        .. todo:: Support regex-based label transformation. When implemented,
-           accept a ``dest_label`` parameter and rewrite instead of strip.
-
-        Args:
-            xml_text: Raw source experiment XML.
-            dest_experiment_id: Destination experiment accession ID.
-            dest_project: Destination project ID.
-
-        Returns:
-            Cleaned XML string suitable for PUT overlay.
-        """
-        # Strip HTML comments (hidden_fields, internal DB refs)
-        xml_text = re.sub(r"<!--.*?-->", "", xml_text, flags=re.DOTALL)
-
-        root = DefusedET.fromstring(xml_text)
-
-        # Collect all namespace URIs used in the document (tags + attributes)
-        ns_uris: set[str] = set()
-        for elem in root.iter():
-            tag = elem.tag
-            if tag.startswith("{"):
-                ns_uris.add(tag[1 : tag.index("}")])
-            for attr_name in elem.attrib:
-                if attr_name.startswith("{"):
-                    ns_uris.add(attr_name[1 : attr_name.index("}")])
-
-        # Build namespace map: prefix -> URI
-        ns_map: dict[str, str] = {}
-        for uri in ns_uris:
-            if "xnat" in uri:
-                ns_map["xnat"] = uri
-            elif "XMLSchema-instance" in uri:
-                ns_map["xsi"] = uri
-
-        xnat_ns = ns_map.get("xnat", "")
-        xsi_ns = ns_map.get("xsi", "")
-
-        # Elements to remove (direct children or nested within scans)
-        remove_local_names = {
-            "file",
-            "subject_ID",
-            "prearchivePath",
-            "image_session_ID",
-            "sharing",
-            "fields",
-        }
-
-        # Remove session-level resources (but not scan-level resources)
-        # Session-level resources are direct children of root
-        if xnat_ns:
-            for tag_name in ("resources",):
-                for child in root.findall(f"{{{xnat_ns}}}{tag_name}"):
-                    root.remove(child)
-
-        # Recursively remove targeted elements
-        self._remove_elements_recursive(root, remove_local_names, xnat_ns)
-
-        # Remove xsi:schemaLocation attribute
-        if xsi_ns:
-            schema_attr = f"{{{xsi_ns}}}schemaLocation"
-            if schema_attr in root.attrib:
-                del root.attrib[schema_attr]
-
-        # Rewrite root ID and project attributes
-        if dest_experiment_id is not None and "ID" in root.attrib:
-            root.attrib["ID"] = dest_experiment_id
-        if dest_project is not None and "project" in root.attrib:
-            root.attrib["project"] = dest_project
-
-        # Strip label to avoid 400 "Label must be modified through separate URI"
-        # TODO: rewrite label instead of stripping when label transformation is supported
-        if "label" in root.attrib:
-            del root.attrib["label"]
-
-        # Register namespaces to avoid ns0/ns1 prefixes in output
-        for prefix, uri in ns_map.items():
-            ET.register_namespace(prefix, uri)
-
-        return ET.tostring(root, encoding="unicode", xml_declaration=True)
-
-    @staticmethod
-    def _remove_elements_recursive(
-        parent: ET.Element,
-        local_names: set[str],
-        xnat_ns: str,
-    ) -> None:
-        """Remove elements matching local names from parent and descendants.
-
-        Args:
-            parent: Parent XML element.
-            local_names: Set of local tag names to remove.
-            xnat_ns: XNAT namespace URI.
-        """
-        to_remove: list[ET.Element] = []
-        for child in parent:
-            tag = child.tag
-            local = tag.rsplit("}", 1)[-1] if "}" in tag else tag
-            if local in local_names:
-                to_remove.append(child)
-            else:
-                TransferExecutor._remove_elements_recursive(child, local_names, xnat_ns)
-        for child in to_remove:
-            parent.remove(child)
-
     def apply_xml_overlay(
         self,
         source_experiment_id: str,
@@ -854,7 +730,7 @@ class TransferExecutor:
 
         dest_experiment_id = self.check_experiment_exists(dest_project, dest_experiment_label)
 
-        cleaned_xml = self._rewrite_experiment_xml(xml_text, dest_experiment_id, dest_project)
+        cleaned_xml = rewrite_experiment_xml(xml_text, dest_experiment_id, dest_project)
 
         dest_path = (
             f"/data/projects/{dest_project}/subjects/{dest_subject}"
@@ -920,7 +796,7 @@ class TransferExecutor:
             )
             return 0
 
-    def wait_for_archive(  # noqa: C901  # pre-existing; see pyproject
+    def wait_for_archive(
         self,
         dest_project: str,
         subject_label: str,
@@ -950,106 +826,9 @@ class TransferExecutor:
 
         while True:
             if not prearchive_cleared:
-                try:
-                    entry = self.find_prearchive_entry(dest_project, experiment_label)
-                except Exception:
-                    logger.debug(
-                        "Poll cycle error for %s, retrying next cycle",
-                        experiment_label,
-                        exc_info=True,
-                    )
-                else:
-                    if entry is None:
-                        prearchive_cleared = True
-                    else:
-                        status = entry.get("status", "")
-                        if status == "RECEIVING":
-                            logger.debug(
-                                "Prearchive entry for %s still RECEIVING, waiting...",
-                                experiment_label,
-                            )
-                        elif status == "READY":
-                            timestamp = entry.get("timestamp", "")
-                            if not timestamp:
-                                logger.warning(
-                                    "Prearchive entry for %s is READY but has no timestamp,"
-                                    " skipping",
-                                    experiment_label,
-                                )
-                            else:
-                                logger.info(
-                                    "Archiving prearchive entry for %s (status=READY)",
-                                    experiment_label,
-                                )
-                                try:
-                                    self.archive_prearchive(
-                                        dest_project=dest_project,
-                                        timestamp=timestamp,
-                                        session_name=entry.get("folderName")
-                                        or entry.get("name", experiment_label),
-                                        subject_label=subject_label,
-                                        experiment_label=experiment_label,
-                                    )
-                                except httpx.HTTPStatusError as exc:
-                                    body = exc.response.text[:500] if exc.response else ""
-                                    logger.error(
-                                        "Archiving prearchive entry failed for %s: %s — response: %s",
-                                        experiment_label,
-                                        exc,
-                                        body or "(no response body)",
-                                    )
-                                    raise
-                                except Exception:
-                                    logger.error(
-                                        "Archiving prearchive entry failed for %s",
-                                        experiment_label,
-                                        exc_info=True,
-                                    )
-                                    raise
-                        elif status == "CONFLICT":
-                            timestamp = entry.get("timestamp", "")
-                            folder = entry.get("folderName") or entry.get("name", experiment_label)
-                            if timestamp:
-                                logger.info(
-                                    "Resolving CONFLICT for %s by archiving with overwrite",
-                                    experiment_label,
-                                )
-                                try:
-                                    self.archive_prearchive(
-                                        dest_project=dest_project,
-                                        timestamp=timestamp,
-                                        session_name=folder,
-                                        subject_label=subject_label,
-                                        experiment_label=experiment_label,
-                                        overwrite="append",
-                                    )
-                                except httpx.HTTPStatusError as exc:
-                                    body = exc.response.text[:500] if exc.response else ""
-                                    logger.error(
-                                        "CONFLICT resolution failed for %s: %s — response: %s",
-                                        experiment_label,
-                                        exc,
-                                        body or "(no response body)",
-                                    )
-                                    raise
-                                except Exception:
-                                    logger.error(
-                                        "CONFLICT resolution failed for %s",
-                                        experiment_label,
-                                        exc_info=True,
-                                    )
-                                    raise
-                        elif status == "_BUILDING":
-                            logger.debug(
-                                "Prearchive entry for %s is building, waiting...",
-                                experiment_label,
-                            )
-                        else:
-                            logger.debug(
-                                "Prearchive entry for %s has status=%s, waiting...",
-                                experiment_label,
-                                status,
-                            )
+                prearchive_cleared = self._poll_and_resolve_prearchive(
+                    dest_project, subject_label, experiment_label
+                )
 
             if prearchive_cleared:
                 actual = self._safe_count_dest_scans(
@@ -1078,6 +857,123 @@ class TransferExecutor:
                 return actual
 
             time.sleep(interval)
+
+    def _poll_and_resolve_prearchive(
+        self,
+        dest_project: str,
+        subject_label: str,
+        experiment_label: str,
+    ) -> bool:
+        """Fetch the prearchive entry once and resolve READY/CONFLICT status.
+
+        Args:
+            dest_project: Destination project ID.
+            subject_label: Subject label.
+            experiment_label: Experiment label.
+
+        Returns:
+            True if the experiment has left the prearchive (no entry found).
+
+        Raises:
+            httpx.HTTPStatusError: If archiving a READY/CONFLICT entry fails.
+        """
+        try:
+            entry = self.find_prearchive_entry(dest_project, experiment_label)
+        except Exception:
+            logger.debug(
+                "Poll cycle error for %s, retrying next cycle",
+                experiment_label,
+                exc_info=True,
+            )
+            return False
+
+        if entry is None:
+            return True
+
+        status = entry.get("status", "")
+        if status == "RECEIVING":
+            logger.debug("Prearchive entry for %s still RECEIVING, waiting...", experiment_label)
+        elif status in ("READY", "CONFLICT"):
+            self._archive_entry(status, entry, dest_project, subject_label, experiment_label)
+        elif status == "_BUILDING":
+            logger.debug("Prearchive entry for %s is building, waiting...", experiment_label)
+        else:
+            logger.debug(
+                "Prearchive entry for %s has status=%s, waiting...",
+                experiment_label,
+                status,
+            )
+        return False
+
+    def _archive_entry(
+        self,
+        status: str,
+        entry: dict[str, Any],
+        dest_project: str,
+        subject_label: str,
+        experiment_label: str,
+    ) -> None:
+        """Archive a READY prearchive entry, or resolve a CONFLICT one.
+
+        A CONFLICT is resolved the same way as READY, just with
+        ``overwrite="append"``. A missing timestamp skips the entry (with a
+        warning for READY, silently for CONFLICT).
+
+        Args:
+            status: ``"READY"`` or ``"CONFLICT"``.
+            entry: Prearchive entry dict.
+            dest_project: Destination project ID.
+            subject_label: Subject label.
+            experiment_label: Experiment label.
+
+        Raises:
+            httpx.HTTPStatusError: If the archive POST fails.
+        """
+        timestamp = entry.get("timestamp", "")
+        if not timestamp:
+            if status == "READY":
+                logger.warning(
+                    "Prearchive entry for %s is READY but has no timestamp, skipping",
+                    experiment_label,
+                )
+            return
+
+        if status == "CONFLICT":
+            logger.info("Resolving CONFLICT for %s by archiving with overwrite", experiment_label)
+            error_prefix = "CONFLICT resolution failed"
+            overwrite = "append"
+        else:
+            logger.info("Archiving prearchive entry for %s (status=READY)", experiment_label)
+            error_prefix = "Archiving prearchive entry failed"
+            overwrite = None
+
+        try:
+            self.archive_prearchive(
+                dest_project=dest_project,
+                timestamp=timestamp,
+                session_name=entry.get("folderName") or entry.get("name", experiment_label),
+                subject_label=subject_label,
+                experiment_label=experiment_label,
+                overwrite=overwrite,
+            )
+        except httpx.HTTPStatusError as exc:
+            body = exc.response.text[:500] if exc.response else ""
+            logger.error(
+                "%s for %s: %s — response: %s",
+                error_prefix,
+                experiment_label,
+                exc,
+                body or "(no response body)",
+            )
+            raise
+        except Exception:
+            logger.error(
+                "%s for %s",
+                error_prefix,
+                experiment_label,
+                exc_info=True,
+            )
+            raise
 
     @staticmethod
     def validate_zip(zip_path: Path) -> bool:

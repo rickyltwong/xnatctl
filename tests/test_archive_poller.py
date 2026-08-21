@@ -1,17 +1,28 @@
-"""Tests for the background archive poller."""
+"""Tests for the background archive poller and the drain/resolve functions."""
 
 from __future__ import annotations
 
 import tempfile
 import time
+from collections import deque
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
+from xnatctl.core.state import TransferStateStore
+from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.discovery import ChangeType, DiscoveredEntity
 from xnatctl.services.transfer.executor import TransferExecutor
-from xnatctl.services.transfer.poller import ArchivePoller, DeferredExperiment
+from xnatctl.services.transfer.orchestrator import TransferResult
+from xnatctl.services.transfer.poller import (
+    ArchivePoller,
+    DeferredExperiment,
+    drain_all_blocking,
+    drain_ready,
+    service_prearchive_actions,
+)
 
 FAST_POLL = 0.05
 # Deadline-based waits, so a generous timeout is free: the happy path still
@@ -241,3 +252,109 @@ class TestArchivePoller:
             assert item.zero_scan_cycles == 0
         finally:
             poller.stop()
+
+
+@pytest.fixture
+def state_store(tmp_path: Path) -> Iterator[TransferStateStore]:
+    store = TransferStateStore(tmp_path / "transfer.db")
+    try:
+        yield store
+    finally:
+        store.close()
+
+
+@pytest.fixture
+def drain_config() -> TransferConfig:
+    return TransferConfig(source_project="SRC", dest_project="DST")
+
+
+class TestServicePrearchiveActions:
+    """Tests for the mutating drain-side prearchive resolution function."""
+
+    def test_marks_archive_failure(self, mock_executor: MagicMock) -> None:
+        ctx = _make_deferred()
+        ctx.needs_archive_action.set()
+        deferred: deque[DeferredExperiment] = deque([ctx])
+
+        mock_executor.find_prearchive_entry = MagicMock(
+            return_value={"name": "EXP001", "status": "READY", "timestamp": "ts"}
+        )
+        mock_executor.archive_prearchive = MagicMock(side_effect=RuntimeError("archive failed"))
+
+        try:
+            service_prearchive_actions(mock_executor, deferred)
+            assert ctx.archive_error == "Prearchive archive failed for EXP001: archive failed"
+            assert ctx.archive_ready.is_set()
+            assert ctx.prearchive_cleared is False
+        finally:
+            ctx.work_dir_handle.cleanup()
+
+    def test_keeps_retrying_lookup_failures(self, mock_executor: MagicMock) -> None:
+        ctx = _make_deferred()
+        ctx.needs_archive_action.set()
+        deferred: deque[DeferredExperiment] = deque([ctx])
+
+        mock_executor.find_prearchive_entry = MagicMock(side_effect=RuntimeError("lookup failed"))
+        mock_executor.archive_prearchive = MagicMock()
+
+        try:
+            for _ in range(3):
+                service_prearchive_actions(mock_executor, deferred)
+
+            assert ctx.archive_error is None
+            assert ctx.archive_ready.is_set() is False
+            assert ctx.archive_retries == 3
+            mock_executor.archive_prearchive.assert_not_called()
+        finally:
+            ctx.work_dir_handle.cleanup()
+
+
+class TestDrainReady:
+    def test_records_archive_error(self, state_store: TransferStateStore) -> None:
+        ctx = _make_deferred()
+        ctx.archive_error = "Prearchive archive failed for EXP001: archive failed"
+        ctx.archive_ready.set()
+        deferred: deque[DeferredExperiment] = deque([ctx])
+        result = TransferResult()
+        finalize = MagicMock()
+
+        drained = drain_ready(state_store, finalize, deferred, result)
+
+        assert drained is True
+        assert result.success is False
+        assert result.experiments_failed == 1
+        assert result.errors == [
+            "Experiment EXP001: Prearchive archive failed for EXP001: archive failed"
+        ]
+        finalize.assert_not_called()
+
+
+class TestDrainAllBlocking:
+    def test_records_wait_failures_and_continues(
+        self,
+        mock_executor: MagicMock,
+        state_store: TransferStateStore,
+        drain_config: TransferConfig,
+    ) -> None:
+        ctx1 = _make_deferred()
+        ctx2 = _make_deferred(label="EXP002")
+        deferred: deque[DeferredExperiment] = deque([ctx1, ctx2])
+        result = TransferResult()
+        finalize = MagicMock()
+
+        mock_executor.wait_for_archive = MagicMock(side_effect=[RuntimeError("archive failed"), 1])
+
+        try:
+            drain_all_blocking(mock_executor, state_store, finalize, deferred, result, drain_config)
+
+            assert result.success is False
+            assert result.experiments_failed == 1
+            assert (
+                result.errors[0]
+                == "Experiment EXP001: Archive wait failed for EXP001: archive failed"
+            )
+            assert finalize.call_count == 1
+            assert finalize.call_args[0][0].exp.local_label == "EXP002"
+        finally:
+            ctx1.work_dir_handle.cleanup()
+            ctx2.work_dir_handle.cleanup()
