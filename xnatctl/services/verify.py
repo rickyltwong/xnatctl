@@ -20,6 +20,7 @@ import re
 import zipfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from xnatctl.models.progress import VerificationReport
 
@@ -458,3 +459,77 @@ def verify_manifest(
     )
 
     return report
+
+
+class VerificationManifest(NamedTuple):
+    """Server-reported checksums for a downloaded scope, keyed by path.
+
+    See :meth:`~xnatctl.services.downloads.DownloadService.build_verification_manifest`.
+    """
+
+    digests: dict[str, str | None]
+    collisions: list[str]
+
+
+class ManifestCollector:
+    """Accumulates ``key -> digest`` entries for a server-side verification manifest.
+
+    A second row landing on an already-seen key is only a harmless repeat of
+    the exact same file (identical identity and digest) or a real ambiguity
+    between two different files. Silently keeping whichever was seen last
+    would hide the latter, so a genuine collision is pulled out of the
+    manifest entirely and reported instead of resolved arbitrarily.
+    """
+
+    def __init__(self) -> None:
+        self.manifest: dict[str, str | None] = {}
+        self.collisions: set[str] = set()
+        self._fingerprints: dict[str, tuple[str, str | None]] = {}
+
+    def ingest(self, rows: list[dict[str, object]], *, label: str, scan_id: str | None) -> None:
+        """Record every file row's key -> digest, deriving the key from its URI.
+
+        Args:
+            rows: Raw file rows from :meth:`ResourceService.list_file_rows`.
+            label: The resource label these rows belong to (unencoded).
+            scan_id: The scan these rows belong to, or None for a
+                session-level resource. Used only for the fallback key (a
+                row with no URI to parse) -- built with the exact same
+                ``scans/{scan_id}/resources/{label}/...`` /
+                ``resources/{label}/...`` shape :func:`key_from_uri`
+                itself returns, so the two forms can never disagree for the
+                same scan/label/name.
+        """
+        for row in rows:
+            uri = str(row.get("URI") or row.get("uri") or "")
+            key = key_from_uri(uri.strip("/").split("/")) if uri else None
+            name = str(row.get("Name") or row.get("name") or "")
+            if key is None:
+                if not name:
+                    continue
+                key = (
+                    f"scans/{scan_id}/resources/{label}/{name}"
+                    if scan_id is not None
+                    else f"resources/{label}/{name}"
+                )
+            self._record(key, row.get("digest"), uri or key)
+
+    def _record(self, key: str, digest: object, identity: str) -> None:
+        # A key that has already collided stays collided permanently: without
+        # this, a later row whose fingerprint happens to match one of the
+        # (already-evicted) prior entries would look like a first insertion
+        # and quietly repopulate the manifest.
+        if key in self.collisions:
+            return
+        digest_value = digest if isinstance(digest, str) and digest else None
+        # Lowercased before comparing so two rows reporting the identical
+        # file with differently-cased hex digests are recognized as the same
+        # file, not flagged as a collision.
+        fingerprint = (identity, digest_value.lower() if digest_value else None)
+        if key in self._fingerprints and self._fingerprints[key] != fingerprint:
+            self.collisions.add(key)
+            self.manifest.pop(key, None)
+            self._fingerprints.pop(key, None)
+            return
+        self._fingerprints[key] = fingerprint
+        self.manifest[key] = digest_value

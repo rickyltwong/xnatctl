@@ -27,14 +27,10 @@ from xnatctl.core.output import (
 )
 from xnatctl.models.hierarchy import ExperimentRef
 from xnatctl.models.progress import VerificationReport
-from xnatctl.services.downloads import (
-    DownloadOutcome,
-    DownloadService,
-    ScanResult,
-    extract_session_zips,
-)
+from xnatctl.services.downloads import DownloadOutcome, DownloadService, ScanResult
 from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.sessions import SessionService
+from xnatctl.services.zip_extract import extract_session_zips
 
 
 def _echo_stderr(message: str) -> None:
