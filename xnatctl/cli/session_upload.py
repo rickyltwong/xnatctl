@@ -710,14 +710,7 @@ def _upload_dicom_store(
         print_error("DICOM C-STORE requires a directory of DICOM files, not an archive")
         raise SystemExit(1)
 
-    try:
-        from xnatctl.services.uploads import UploadService
-    except ImportError as e:
-        print_error(
-            "DICOM C-STORE requires pydicom and pynetdicom. "
-            "Install with: pip install xnatctl[dicom]"
-        )
-        raise SystemExit(1) from e
+    from xnatctl.services.uploads import UploadService
 
     if tls_key and not tls_cert:
         raise click.UsageError("--tls-key requires --tls-cert")
@@ -861,8 +854,6 @@ def session_upload_dicom(
     dry_run: bool,
 ) -> None:
     """Upload DICOM files via C-STORE network protocol.
-
-    Requires pydicom and pynetdicom (install with: pip install xnatctl[dicom]).
 
     \b
     Example:

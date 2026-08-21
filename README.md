@@ -82,7 +82,7 @@ xnatctl xsync        # Cross-server sync (sync/status/history)
 xnatctl admin        # Administrative operations (users/catalogs/audit)
 xnatctl api          # Raw API access (escape hatch for any endpoint)
 xnatctl local        # Offline operations (extract downloaded ZIPs)
-xnatctl dicom        # DICOM utilities (requires xnatctl[dicom])
+xnatctl dicom        # DICOM utilities (validate/inspect/anonymize/modify)
 ```
 
 Resource-oriented commands support `--output json|table` and `--quiet` (IDs
@@ -115,11 +115,6 @@ xnatctl config add-profile dev --url https://xnat-dev.example.org  # add a serve
 xnatctl config use-context dev                                     # switch profiles
 xnatctl config set-password production                             # store password in the OS keychain
 ```
-
-`config set-password` (and `password_source: keyring`) needs the keyring
-extra: `pip install "xnatctl[keyring]"`. It is not included in the plain
-package or the standalone binary; an inline `password:` in the config file
-works everywhere.
 
 Credential priority, highest first: `XNAT_TOKEN` (an existing session token,
 skips login entirely), then `--username` with `--password-stdin`, then

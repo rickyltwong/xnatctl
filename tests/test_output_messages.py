@@ -1,9 +1,8 @@
 """Rendering tests for the status-message helpers.
 
 Square brackets in a message used to be parsed as Rich markup and silently
-dropped, so an install hint like ``pip install 'xnatctl[keyring]'`` reached the
-user as ``pip install 'xnatctl'`` -- the actionable half deleted. Found while
-wiring the keyring install-hint error.
+dropped, so a hint like ``pip install 'pkg[extra]'`` reached the user as
+``pip install 'pkg'`` -- the actionable half deleted.
 """
 
 from __future__ import annotations
@@ -23,15 +22,15 @@ def plain(text: str) -> str:
 
 
 def test_error_keeps_square_brackets(capsys: pytest.CaptureFixture[str]) -> None:
-    print_error("Install it with: pip install 'xnatctl[keyring]'")
+    print_error("Install it with: pip install 'pkg[extra]'")
 
-    assert "xnatctl[keyring]" in plain(capsys.readouterr().err)
+    assert "pkg[extra]" in plain(capsys.readouterr().err)
 
 
 def test_warning_keeps_square_brackets(capsys: pytest.CaptureFixture[str]) -> None:
-    print_warning("Try 'xnatctl[dicom]' for DICOM support")
+    print_warning("Try 'pkg[extra]' for extra support")
 
-    assert "xnatctl[dicom]" in plain(capsys.readouterr().err)
+    assert "pkg[extra]" in plain(capsys.readouterr().err)
 
 
 def test_success_keeps_square_brackets(capsys: pytest.CaptureFixture[str]) -> None:

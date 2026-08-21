@@ -6,53 +6,9 @@ and anonymizing DICOM files before uploading them to XNAT. These commands
 operate entirely offline -- they read and write files on your local filesystem
 and do not require an XNAT server connection or authentication.
 
-The DICOM utilities are provided as an **optional extra** because they depend on
-`pydicom <https://pydicom.github.io/>`_, which is not needed for the core CLI.
-This keeps the base install lightweight for users who only interact with
-XNAT's REST API.
-
-
-Installation
-------------
-
-Install the ``dicom`` extra alongside the base package:
-
-.. code-block:: console
-
-   $ pip install "xnatctl[dicom]"
-
-Or with uv:
-
-.. code-block:: console
-
-   $ uv pip install "xnatctl[dicom]"
-
-This installs the base ``xnatctl`` package plus two additional dependencies:
-
-- **pydicom** (>=2.4.0) -- DICOM file parsing and manipulation
-- **pynetdicom** (>=2.0.0) -- DICOM network protocol (used by
-  ``session upload-dicom``)
-
-.. note::
-
-   ``pip install "xnatctl[dicom]"`` installs the full ``xnatctl`` CLI plus the
-   DICOM extras. You cannot install the extras without the base package -- the
-   ``[dicom]`` syntax is a Python packaging convention for optional dependency
-   groups.
-
-If you installed xnatctl as a standalone binary, the DICOM utilities are
-**not available**. The binary bundles a fixed set of dependencies determined
-at build time and does not support extras. Use the Python package install
-method to access these commands.
-
-You can verify the extra is installed by running:
-
-.. code-block:: console
-
-   $ xnatctl dicom --help
-
-If pydicom is not installed, xnatctl prints a warning with install
-instructions.
+The utilities are built on `pydicom <https://pydicom.github.io/>`_ and
+`pynetdicom <https://pydicom.github.io/pynetdicom/>`_, which ship with every
+xnatctl install -- the Python package and the standalone binary alike.
 
 
 Commands
@@ -426,7 +382,7 @@ For uploading DICOM data to a server, use:
 
 - ``xnatctl session upload`` -- Upload via XNAT's REST Import API (HTTP)
 - ``xnatctl session upload-dicom`` -- Upload via DICOM C-STORE network
-  protocol (requires the ``[dicom]`` extra for pynetdicom)
+  protocol
 
 See :doc:`uploading` for full details on upload methods, tuning, and
 post-upload verification.

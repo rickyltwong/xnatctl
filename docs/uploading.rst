@@ -70,7 +70,7 @@ key differences to help you decide.
    * - **Requirements**
      - XNAT 1.7+ with Import Service enabled
      - XNAT 1.7+ with Import Service enabled
-     - XNAT DICOM Receiver/SCP enabled; ``xnatctl[dicom]`` extra installed
+     - XNAT DICOM Receiver/SCP enabled
    * - **Best for**
      - Most users and most datasets
      - Very large datasets where partial progress matters, or debugging imports
@@ -275,19 +275,10 @@ rules, not on any flag you pass to xnatctl.
 Requirements
 ~~~~~~~~~~~~
 
-DICOM C-STORE has two prerequisites that the REST methods do not:
-
-1. **XNAT must have a DICOM Receiver/SCP enabled and reachable** at a specific
-   host, port, and Application Entity Title (AET). Your XNAT administrator can
-   provide these values.
-
-2. **You must install the optional DICOM dependencies** (pydicom and
-   pynetdicom):
-
-.. code-block:: console
-
-   $ pip install "xnatctl[dicom]"
-
+DICOM C-STORE has one prerequisite that the REST methods do not: **XNAT must
+have a DICOM Receiver/SCP enabled and reachable** at a specific host, port,
+and Application Entity Title (AET). Your XNAT administrator can provide these
+values.
 
 Example
 ~~~~~~~
@@ -640,9 +631,6 @@ network configuration. Verify the following with your XNAT administrator:
 - **Firewall or network issues.** Ensure that the DICOM Receiver port is open
   and reachable from your machine. Try ``telnet xnat.example.org 8104`` (or the
   appropriate port) to test basic connectivity.
-- **Missing DICOM dependencies.** C-STORE requires the ``xnatctl[dicom]`` extra.
-  If you see an import error mentioning pydicom or pynetdicom, install it with
-  ``pip install "xnatctl[dicom]"``.
 
 .. tip::
 

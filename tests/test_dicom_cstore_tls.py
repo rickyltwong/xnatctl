@@ -158,7 +158,6 @@ class TestServiceWiring:
     def test_tls_reaches_the_association(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        pytest.importorskip("pynetdicom")
         import xnatctl.services.uploads as uploads
 
         captured: dict[str, object] = {}
@@ -182,7 +181,6 @@ class TestServiceWiring:
     def test_plaintext_passes_no_context(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        pytest.importorskip("pynetdicom")
         import xnatctl.services.uploads as uploads
 
         captured: dict[str, object] = {"tls_context": "unset"}
@@ -205,7 +203,6 @@ class TestServiceWiring:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Someone reading the logs should be able to tell it was cleartext."""
-        pytest.importorskip("pynetdicom")
         import logging
 
         import xnatctl.services.uploads as uploads

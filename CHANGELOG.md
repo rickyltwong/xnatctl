@@ -23,6 +23,11 @@ All notable changes to this project will be documented in this file.
 
 **Features**
 
+- DICOM utilities (`xnatctl dicom`, `session upload-dicom` C-STORE) and
+  OS-keychain password storage (`config set-password`) now ship in every
+  install, including the standalone binary. The `dicom` and `keyring` extras
+  are gone; `pip install "xnatctl[dicom]"` now warns about an unknown extra
+  and installs the full package.
 - One-call library connect. `xnatctl.XNATClient.from_profile("prod")` builds a
   client from a saved config profile, running the same credential resolution the
   CLI does (environment variables over profile config, cached or `XNAT_TOKEN`

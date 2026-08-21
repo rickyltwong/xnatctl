@@ -32,19 +32,15 @@ dependencies = [
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
     "defusedxml>=0.7.1",
+    "pydicom>=2.4.0",
+    "pynetdicom>=2.0.0",
+    "keyring>=24",
 ]
 
 [project.scripts]
 xnatctl = "xnatctl.cli.main:main"
 
 [project.optional-dependencies]
-dicom = [
-    "pydicom>=2.4.0",
-    "pynetdicom>=2.0.0",
-]
-keyring = [
-    "keyring>=24",
-]
 dev = [
     "pytest>=9.0.0",
     "pytest-cov>=4.0.0",
@@ -56,9 +52,6 @@ dev = [
     "pre-commit>=3.7.0",
     "types-PyYAML>=6.0.0",
     "types-defusedxml>=0.7",
-    # Dev-only so the keychain code path is type-checked rather than
-    # suppressed; it stays an optional extra for users.
-    "keyring>=24",
     # Generates throwaway certs for the DICOM TLS tests. Without it those
     # tests skip, which is how the DICOM tier went years without running.
     "cryptography>=42",
@@ -98,9 +91,6 @@ dev = [
     "ruff>=0.4.0",
     "types-PyYAML>=6.0.0",
     "types-defusedxml>=0.7",
-    # Dev-only so the keychain code path is type-checked rather than
-    # suppressed; it stays an optional extra for users.
-    "keyring>=24",
 ]
 
 [tool.ruff]

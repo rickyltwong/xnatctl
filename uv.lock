@@ -1617,7 +1617,10 @@ dependencies = [
     { name = "click" },
     { name = "defusedxml" },
     { name = "httpx" },
+    { name = "keyring" },
     { name = "pydantic" },
+    { name = "pydicom" },
+    { name = "pynetdicom" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -1626,7 +1629,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "cryptography" },
-    { name = "keyring" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -1638,10 +1640,6 @@ dev = [
     { name = "types-defusedxml" },
     { name = "types-pyyaml" },
 ]
-dicom = [
-    { name = "pydicom" },
-    { name = "pynetdicom" },
-]
 docs = [
     { name = "furo" },
     { name = "myst-parser" },
@@ -1649,14 +1647,10 @@ docs = [
     { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sphinx-copybutton" },
 ]
-keyring = [
-    { name = "keyring" },
-]
 
 [package.dev-dependencies]
 dev = [
     { name = "cryptography" },
-    { name = "keyring" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -1676,14 +1670,13 @@ requires-dist = [
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "furo", marker = "extra == 'docs'", specifier = ">=2024.1.0" },
     { name = "httpx", specifier = ">=0.25.0" },
-    { name = "keyring", marker = "extra == 'dev'", specifier = ">=24" },
-    { name = "keyring", marker = "extra == 'keyring'", specifier = ">=24" },
+    { name = "keyring", specifier = ">=24" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "pydicom", marker = "extra == 'dicom'", specifier = ">=2.4.0" },
-    { name = "pynetdicom", marker = "extra == 'dicom'", specifier = ">=2.0.0" },
+    { name = "pydicom", specifier = ">=2.4.0" },
+    { name = "pynetdicom", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
@@ -1698,12 +1691,11 @@ requires-dist = [
     { name = "types-defusedxml", marker = "extra == 'dev'", specifier = ">=0.7" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.0" },
 ]
-provides-extras = ["dicom", "keyring", "dev", "docs"]
+provides-extras = ["dev", "docs"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "cryptography", specifier = ">=42" },
-    { name = "keyring", specifier = ">=24" },
     { name = "mypy", specifier = ">=1.8.0" },
     { name = "pre-commit", specifier = ">=3.7.0" },
     { name = "pytest", specifier = ">=9.0.0" },

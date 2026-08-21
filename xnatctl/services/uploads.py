@@ -966,22 +966,6 @@ def _create_and_upload_batch(
 # =============================================================================
 
 
-def _check_dicom_deps() -> None:
-    """Check if DICOM dependencies are available.
-
-    Raises:
-        ImportError: If pydicom or pynetdicom are not installed.
-    """
-    try:
-        import pydicom  # noqa: F401
-        import pynetdicom  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "DICOM C-STORE requires pydicom and pynetdicom. "
-            "Install with: pip install xnatctl[dicom]"
-        ) from e
-
-
 def _get_verification_sop_class() -> Any:
     """Get VerificationSOPClass with compatibility for pynetdicom versions."""
     from pynetdicom import sop_class as _sop_class
@@ -1105,7 +1089,6 @@ def _c_echo(
     Returns:
         True if C-ECHO succeeded.
     """
-    _check_dicom_deps()
     from pynetdicom import AE
 
     ae = AE(ae_title=calling_aet)
@@ -1146,7 +1129,6 @@ def _send_dicom_batch(
     Returns:
         Tuple of (sent_count, failed_count).
     """
-    _check_dicom_deps()
     import pydicom
     from pydicom.errors import InvalidDicomError
     from pynetdicom import AE
@@ -1572,13 +1554,10 @@ class UploadService(BaseService):
             DICOMStoreSummary with results.
 
         Raises:
-            ImportError: If pydicom/pynetdicom are not installed.
             ValueError: If dicom_root is not a directory.
             RuntimeError: If C-ECHO fails or no DICOM files found.
             UploadError: If TLS material is requested but cannot be loaded.
         """
-        _check_dicom_deps()
-
         tls_context = build_dicom_tls_context(tls_ca_bundle, tls_cert, tls_key) if tls else None
         if tls_context is None:
             # Informational, not alarming: plenty of sites run C-STORE on a
