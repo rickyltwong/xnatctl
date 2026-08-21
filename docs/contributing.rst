@@ -308,14 +308,14 @@ You can also use the service layer programmatically outside the CLI:
 
 .. code-block:: python
 
-   from xnatctl.core.client import XNATClient
-   from xnatctl.services.projects import ProjectService
+   import xnatctl
 
-   client = XNATClient(base_url="https://xnat.example.org", ...)
-   client.authenticate()
+   with xnatctl.XNATClient.from_profile("prod") as client:
+       projects = client.projects.list()
 
-   service = ProjectService(client)
-   projects = service.list()
+   # Or, hand-wired (what from_profile does for you): construct an
+   # XNATClient with explicit credentials, call ``authenticate()``, and
+   # pass it to any service class.
 
 
 Code Style

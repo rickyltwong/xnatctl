@@ -12,6 +12,27 @@ All notable changes to this project will be documented in this file.
   (`verify=`) was unreachable with it. Library callers should use
   `download_session_fast`, `download_scans`, or `download_resource`.
   (Supersedes the earlier note about its `resume` argument.)
+- Three library exceptions are renamed off the stdlib names they shadowed:
+  `ConnectionError` -> `XNATConnectionError`, `TimeoutError` ->
+  `RequestTimeoutError`, `ValidationError` -> `InputValidationError`. The
+  library now raises only the new classes, so `except xnatctl.ConnectionError`
+  (and the other two old names) no longer matches a raised error. The old names
+  survive as deprecated subclass aliases that emit a `DeprecationWarning` when
+  instantiated and will be removed in a later minor release; update `except`
+  clauses to the new names.
+
+**Features**
+
+- One-call library connect. `xnatctl.XNATClient.from_profile("prod")` builds a
+  client from a saved config profile, running the same credential resolution the
+  CLI does (environment variables over profile config, cached or `XNAT_TOKEN`
+  session token, `auto_reauth` on). Entering the client as a context manager
+  logs in when a password is available and no token is cached yet. Each resource
+  type is reachable through a bound, cached accessor on the client
+  (`client.projects`, `client.sessions`, `client.downloads`, ...), and the
+  package root now re-exports the client, config, service classes,
+  resource/progress models, and the full exception hierarchy as the supported
+  public surface.
 
 **Fixes**
 

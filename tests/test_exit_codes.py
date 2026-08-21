@@ -14,21 +14,17 @@ from xnatctl.core.exceptions import (
     AuthenticationError,
     ClientRequestError,
     ConfigurationError,
+    InputValidationError,
     NetworkError,
     PermissionDeniedError,
     ProfileNotFoundError,
+    RequestTimeoutError,
     ResourceNotFoundError,
     RetryExhaustedError,
     ServerError,
     ServerUnreachableError,
     SessionExpiredError,
-    ValidationError,
-)
-from xnatctl.core.exceptions import (
-    ConnectionError as XNATConnectionError,
-)
-from xnatctl.core.exceptions import (
-    TimeoutError as XNATTimeoutError,
+    XNATConnectionError,
 )
 
 
@@ -40,7 +36,7 @@ from xnatctl.core.exceptions import (
         (PermissionDeniedError("proj", "delete"), ExitCode.PERMISSION_ERROR),
         (ResourceNotFoundError("session", "X"), ExitCode.NOT_FOUND),
         (NetworkError("https://x"), ExitCode.NETWORK_ERROR),
-        (XNATTimeoutError("https://x", 5), ExitCode.NETWORK_ERROR),
+        (RequestTimeoutError("https://x", 5), ExitCode.NETWORK_ERROR),
         (RetryExhaustedError("request", 3), ExitCode.NETWORK_ERROR),
         (ServerUnreachableError("https://x"), ExitCode.NETWORK_ERROR),
         (XNATConnectionError("boom"), ExitCode.NETWORK_ERROR),
@@ -48,7 +44,7 @@ from xnatctl.core.exceptions import (
         (ServerError(500, "GET", "/x"), ExitCode.GENERAL_ERROR),
         (ConfigurationError("bad"), ExitCode.GENERAL_ERROR),
         (ProfileNotFoundError("nope"), ExitCode.GENERAL_ERROR),
-        (ValidationError("bad"), ExitCode.GENERAL_ERROR),
+        (InputValidationError("bad"), ExitCode.GENERAL_ERROR),
         (click.Abort(), ExitCode.USER_CANCELLED),
         (ValueError("unexpected"), ExitCode.GENERAL_ERROR),
     ],

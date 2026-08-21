@@ -10,13 +10,29 @@ import re
 import ssl
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import quote
 
 import httpx
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from xnatctl.services.admin import AdminService
+    from xnatctl.services.downloads import DownloadService
+    from xnatctl.services.exam_upload import ExamUploadService
+    from xnatctl.services.hierarchy import HierarchyService
+    from xnatctl.services.pipelines import PipelineService
+    from xnatctl.services.prearchive import PrearchiveService
+    from xnatctl.services.projects import ProjectService
+    from xnatctl.services.resources import ResourceService
+    from xnatctl.services.scans import ScanService
+    from xnatctl.services.sessions import SessionService
+    from xnatctl.services.subjects import SubjectService
+    from xnatctl.services.uploads import UploadService
 
 from xnatctl.core.exceptions import (
     AuthenticationError,
@@ -30,7 +46,7 @@ from xnatctl.core.exceptions import (
     SessionExpiredError,
 )
 from xnatctl.core.exceptions import (
-    TimeoutError as XNATTimeoutError,
+    RequestTimeoutError as XNATTimeoutError,
 )
 from xnatctl.core.redact import redact_url_query
 from xnatctl.core.retry import (
@@ -59,6 +75,8 @@ _BODY_SNIPPET_CHARS = 200
 _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
 
 logger = logging.getLogger(__name__)
+
+_ServiceT = TypeVar("_ServiceT")
 
 
 def _body_snippet(resp: httpx.Response) -> str:
@@ -117,6 +135,9 @@ class XNATClient:
     transport: httpx.BaseTransport | None = None
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
     _ssl_context: ssl.SSLContext | None = field(init=False, default=None, repr=False)
+    # Lazily-built service objects, cached per client instance so repeated
+    # ``client.projects`` access returns the same bound service.
+    _services: dict[str, Any] = field(init=False, default_factory=dict, repr=False)
     # Serializes session refresh across parallel streams: without it, N workers
     # hitting one expiry each open their own fresh session, which is exactly
     # the concurrent-session exhaustion that locks out shared service accounts.
@@ -125,6 +146,37 @@ class XNATClient:
     def __post_init__(self) -> None:
         """Validate and normalize URL."""
         self.base_url = validate_server_url(self.base_url)
+
+    @classmethod
+    def from_profile(
+        cls,
+        name: str | None = None,
+        *,
+        config_path: Path | None = None,
+    ) -> XNATClient:
+        """Build a client from a config profile, resolving credentials.
+
+        The one-call entry point for library use: it runs the same credential
+        resolution the CLI does (env vars over profile config, cached/env
+        session token, ``auto_reauth`` on). See
+        :func:`xnatctl.core.connect.build_client_from_profile`.
+
+        Args:
+            name: Profile name. ``None`` uses the config default.
+            config_path: Optional config file path.
+
+        Returns:
+            A ready-to-use XNATClient.
+
+        Raises:
+            ProfileNotFoundError: If the named profile does not exist.
+        """
+        # Function-local to avoid the core.connect -> core.client import cycle:
+        # connect imports this module, so this module cannot import connect at
+        # module scope.
+        from xnatctl.core.connect import build_client_from_profile
+
+        return build_client_from_profile(name, config_path=config_path)
 
     # =========================================================================
     # Client Management
@@ -178,10 +230,118 @@ class XNATClient:
             self._client = None
 
     def __enter__(self) -> XNATClient:
+        # Authenticate on entry only when a password login is both possible and
+        # needed: credentials present and no token yet. An env or cached token
+        # already authenticates the client, so entering must not spend a login
+        # round-trip -- and a token-only client (no password) has nothing to log
+        # in with.
+        if self.session_token is None and self.username and self.password:
+            self.authenticate()
         return self
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+    # =========================================================================
+    # Service Accessors
+    # =========================================================================
+
+    def _service(self, name: str, factory: Callable[[XNATClient], _ServiceT]) -> _ServiceT:
+        """Return the cached service for ``name``, building it once on first use.
+
+        The service imports are function-local at each property to avoid the
+        core -> services import cycle (services import core.client); this just
+        holds the per-instance cache so repeated access returns one object.
+        """
+        service = self._services.get(name)
+        if service is None:
+            service = factory(self)
+            self._services[name] = service
+        return cast("_ServiceT", service)
+
+    @property
+    def projects(self) -> ProjectService:
+        """Bound :class:`ProjectService` for this client (cached)."""
+        from xnatctl.services.projects import ProjectService
+
+        return self._service("projects", ProjectService)
+
+    @property
+    def subjects(self) -> SubjectService:
+        """Bound :class:`SubjectService` for this client (cached)."""
+        from xnatctl.services.subjects import SubjectService
+
+        return self._service("subjects", SubjectService)
+
+    @property
+    def sessions(self) -> SessionService:
+        """Bound :class:`SessionService` for this client (cached)."""
+        from xnatctl.services.sessions import SessionService
+
+        return self._service("sessions", SessionService)
+
+    @property
+    def scans(self) -> ScanService:
+        """Bound :class:`ScanService` for this client (cached)."""
+        from xnatctl.services.scans import ScanService
+
+        return self._service("scans", ScanService)
+
+    @property
+    def resources(self) -> ResourceService:
+        """Bound :class:`ResourceService` for this client (cached)."""
+        from xnatctl.services.resources import ResourceService
+
+        return self._service("resources", ResourceService)
+
+    @property
+    def prearchive(self) -> PrearchiveService:
+        """Bound :class:`PrearchiveService` for this client (cached)."""
+        from xnatctl.services.prearchive import PrearchiveService
+
+        return self._service("prearchive", PrearchiveService)
+
+    @property
+    def pipelines(self) -> PipelineService:
+        """Bound :class:`PipelineService` for this client (cached)."""
+        from xnatctl.services.pipelines import PipelineService
+
+        return self._service("pipelines", PipelineService)
+
+    @property
+    def admin(self) -> AdminService:
+        """Bound :class:`AdminService` for this client (cached)."""
+        from xnatctl.services.admin import AdminService
+
+        return self._service("admin", AdminService)
+
+    @property
+    def hierarchy(self) -> HierarchyService:
+        """Bound :class:`HierarchyService` for this client (cached)."""
+        from xnatctl.services.hierarchy import HierarchyService
+
+        return self._service("hierarchy", HierarchyService)
+
+    @property
+    def downloads(self) -> DownloadService:
+        """Bound :class:`DownloadService` for this client (cached)."""
+        from xnatctl.services.downloads import DownloadService
+
+        return self._service("downloads", DownloadService)
+
+    @property
+    def uploads(self) -> UploadService:
+        """Bound :class:`UploadService` for this client (cached)."""
+        from xnatctl.services.uploads import UploadService
+
+        return self._service("uploads", UploadService)
+
+    @property
+    def exam_uploads(self) -> ExamUploadService:
+        """Bound :class:`ExamUploadService` for this client (cached)."""
+        from xnatctl.services.exam_upload import ExamUploadService
+
+        return self._service("exam_uploads", ExamUploadService)
 
     # =========================================================================
     # Authentication
@@ -381,7 +541,7 @@ class XNATClient:
         Raises:
             SessionExpiredError, PermissionDeniedError, ResourceNotFoundError,
             ClientRequestError, ServerError: mapped from the error status.
-            TimeoutError, NetworkError, ServerUnreachableError: from transport
+            RequestTimeoutError, NetworkError, ServerUnreachableError: from transport
                 failures, mirroring ``_request``.
             RetryExhaustedError: when retries drain.
         """
@@ -575,7 +735,7 @@ class XNATClient:
             ResourceNotFoundError: On 404.
             ClientRequestError: On any other 4xx.
             ServerError: On a 5xx that is not retryable or after retries drain.
-            TimeoutError: On a connect-phase timeout (fails fast, not retried),
+            RequestTimeoutError: On a connect-phase timeout (fails fast, not retried),
                 or on a read-phase timeout for a non-idempotent method.
             RetryExhaustedError: When retryable statuses or connect/read-timeout
                 failures exhaust ``max_retries``.
@@ -710,7 +870,7 @@ class XNATClient:
 
             except httpx.ConnectTimeout as e:
                 # Fail fast: the connect phase timed out (host blackholed /
-                # firewall-DROPped). A typed TimeoutError instead of the generic
+                # firewall-DROPped). A typed RequestTimeoutError instead of the generic
                 # NetworkError bucket, and NOT retried -- an unreachable host will
                 # not recover within the backoff window, and the whole point of
                 # the split timeout is failing in seconds, not hours. (A future

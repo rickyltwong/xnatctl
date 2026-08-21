@@ -42,7 +42,7 @@ from xnatctl.core.exceptions import (
     SessionExpiredError,
     UploadError,
 )
-from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
+from xnatctl.core.exceptions import RequestTimeoutError as XNATTimeoutError
 from xnatctl.core.retry import RETRYABLE_STATUS_CODES, UPLOAD_MAX_RETRIES, upload_with_retry
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
 from xnatctl.models.progress import (

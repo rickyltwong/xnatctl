@@ -36,7 +36,7 @@ from xnatctl.core.exceptions import (
     XNATCtlError,
 )
 from xnatctl.core.exceptions import (
-    TimeoutError as XNATTimeoutError,
+    RequestTimeoutError as XNATTimeoutError,
 )
 from xnatctl.core.retry import (
     _MAX_RETRY_AFTER_SECONDS,

@@ -25,25 +25,30 @@ All services follow the service layer pattern:
 
 **Common Usage Pattern:**
 
+Build a client from a config profile and reach a service through the bound,
+cached accessor on the client. ``from_profile`` runs the same credential
+resolution the CLI does (environment variables over profile config, cached or
+``XNAT_TOKEN`` session token, ``auto_reauth`` on), and the context manager logs
+in when a password is available and no token is cached yet.
+
 .. code-block:: python
 
-   from xnatctl.core.client import XNATClient
-   from xnatctl.services.projects import ProjectService
+   from pathlib import Path
 
-   # Create and authenticate client
-   client = XNATClient(
-       base_url="https://xnat.example.org",
-       username="admin",
-       password="secret"
-   )
-   client.authenticate()
+   import xnatctl
 
-   # Instantiate service
-   service = ProjectService(client)
+   with xnatctl.XNATClient.from_profile("prod") as client:
+       projects = client.projects.list()
+       project = client.projects.get("MYPROJECT")
+       client.downloads.download_resource("XNAT_E00001", "DICOM", Path("./out"))
 
-   # Call service methods
-   projects = service.list()
-   project = service.get("MYPROJECT")
+Each resource type has an accessor: ``client.projects``, ``client.subjects``,
+``client.sessions``, ``client.scans``, ``client.resources``,
+``client.prearchive``, ``client.pipelines``, ``client.admin``,
+``client.hierarchy``, ``client.downloads``, ``client.uploads``, and
+``client.exam_uploads``. To point at a server without a saved profile,
+construct :class:`~xnatctl.core.client.XNATClient` directly with ``base_url``
+and credentials.
 
 Base Service
 ------------
@@ -74,27 +79,28 @@ Manage XNAT projects: list, inspect, create, and configure.
 
 .. code-block:: python
 
-   from xnatctl.services.projects import ProjectService
+   import xnatctl
 
-   service = ProjectService(client)
+   with xnatctl.XNATClient.from_profile("prod") as client:
+       service = client.projects
 
-   # List all accessible projects
-   projects = service.list()
+       # List all accessible projects
+       projects = service.list()
 
-   # Get specific project details
-   project = service.get("MYPROJECT")
-   print(f"Name: {project.name}")
-   print(f"PI: {project.pi}")
-   print(f"Subjects: {project.subject_count}")
+       # Get specific project details
+       project = service.get("MYPROJECT")
+       print(f"Name: {project.name}")
+       print(f"PI: {project.pi}")
+       print(f"Subjects: {project.subject_count}")
 
-   # Create new project
-   new_project = service.create(
-       project_id="NEWPROJECT",
-       name="New Project",
-       pi_firstname="Jane",
-       pi_lastname="Smith",
-       accessibility="private"
-   )
+       # Create new project
+       new_project = service.create(
+           project_id="NEWPROJECT",
+           name="New Project",
+           pi_firstname="Jane",
+           pi_lastname="Smith",
+           accessibility="private"
+       )
 
 .. autoclass:: xnatctl.services.projects.ProjectService
    :members:

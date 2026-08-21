@@ -64,14 +64,10 @@ A project is the top-level organizational unit in XNAT. It contains subjects
 
 .. code-block:: python
 
-   from xnatctl.core.client import XNATClient
-   from xnatctl.services.projects import ProjectService
+   import xnatctl
 
-   client = XNATClient(base_url="https://xnat.example.org")
-   client.authenticate()
-
-   service = ProjectService(client)
-   projects = service.list()
+   with xnatctl.XNATClient.from_profile("prod") as client:
+       projects = client.projects.list()
 
    for project in projects:
        print(f"{project.id}: {project.name}")

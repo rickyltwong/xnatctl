@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from conftest import make_response
 
-from xnatctl.core.exceptions import ResourceNotFoundError, ValidationError
+from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
 from xnatctl.models.subject import Subject
 from xnatctl.services.subjects import SubjectService
 
@@ -253,8 +253,8 @@ class TestSubjectRenamePattern:
     """Tests for SubjectService.rename_pattern."""
 
     def test_invalid_regex(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Invalid regex raises ValidationError."""
-        with pytest.raises(ValidationError):
+        """Invalid regex raises InputValidationError."""
+        with pytest.raises(InputValidationError):
             service.rename_pattern("PROJ01", "[invalid", "{1}")
 
     def test_pattern_no_change_skipped(

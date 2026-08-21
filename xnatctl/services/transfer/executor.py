@@ -20,8 +20,7 @@ from urllib.parse import quote
 import defusedxml.ElementTree as DefusedET
 import httpx
 
-from xnatctl.core.exceptions import ClientRequestError, ServerError
-from xnatctl.core.exceptions import ConnectionError as XNATConnectionError
+from xnatctl.core.exceptions import ClientRequestError, ServerError, XNATConnectionError
 from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, is_permanent_400, retry_call
 from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params

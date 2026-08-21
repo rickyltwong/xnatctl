@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from xnatctl.core.exceptions import ResourceNotFoundError, ValidationError
+from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
 from xnatctl.models.subject import Subject
 
 from .base import BaseService
@@ -285,7 +285,7 @@ class SubjectService(BaseService):
         try:
             pattern = re.compile(match_pattern)
         except re.error as e:
-            raise ValidationError(f"Invalid regex pattern: {e}") from e
+            raise InputValidationError(f"Invalid regex pattern: {e}") from e
 
         subjects = self.list(project=project)
         results: dict[str, Any] = {
@@ -476,7 +476,7 @@ class SubjectService(BaseService):
         # reintroduce that pattern. Verified on the dev XNAT on 2026-04-23.
         target_id = target.id
         if not target_id:
-            raise ValidationError(
+            raise InputValidationError(
                 f"Could not resolve internal subject ID for target '{target_label}'. "
                 "Refusing to merge without a resolved target subject ID."
             )

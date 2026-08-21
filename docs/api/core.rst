@@ -22,28 +22,34 @@ connection pooling.
 
 **Basic Usage:**
 
+The one-call entry point is
+:meth:`XNATClient.from_profile <xnatctl.core.client.XNATClient.from_profile>`,
+which resolves credentials from a saved config profile exactly as the CLI does.
+Entering the context manager logs in when a password is available and no session
+token is cached yet:
+
+.. code-block:: python
+
+   import xnatctl
+
+   with xnatctl.XNATClient.from_profile("prod") as client:
+       projects = client.projects.list()
+
+To target a server without a saved profile, construct the client directly:
+
 .. code-block:: python
 
    from xnatctl.core.client import XNATClient
 
-   # Create and authenticate client
    client = XNATClient(
        base_url="https://xnat.example.org",
        username="admin",
        password="secret",
        timeout=60,
-       verify_ssl=True
+       verify_ssl=True,
    )
-
    client.authenticate()
-
-   # Make API calls
    response = client.get("/data/projects")
-
-   # Use as context manager
-   with XNATClient(base_url="https://xnat.example.org") as client:
-       client.authenticate()
-       data = client.get("/data/projects")
 
 **Class Reference:**
 
@@ -109,6 +115,18 @@ The ``Config`` class resolves credentials in this priority order:
    :members:
    :undoc-members:
 
+Connect
+-------
+
+One-call client construction from a config profile. This is the credential
+resolution the CLI runs before every command, extracted so a library caller
+(and :meth:`XNATClient.from_profile <xnatctl.core.client.XNATClient.from_profile>`)
+gets the same client.
+
+.. automodule:: xnatctl.core.connect
+   :members:
+   :undoc-members:
+
 Authentication
 --------------
 
@@ -130,21 +148,34 @@ Exceptions
 
 Comprehensive exception hierarchy for error handling.
 
-**Exception Hierarchy:**
+**Exception Hierarchy** (excerpt -- the most commonly caught branches; the
+autodoc below lists every class, including the HTTP-response, operation,
+DICOM, transfer, and cancellation branches):
 
 .. code-block:: text
 
    XNATCtlError (base)
    ├── ConfigurationError
    │   └── ProfileNotFoundError
+   ├── InputValidationError
    ├── AuthenticationError
-   ├── ValidationError
-   ├── NetworkError
-   │   ├── ConnectionError
+   │   ├── SessionExpiredError
+   │   └── PermissionDeniedError
+   ├── XNATConnectionError
+   │   ├── NetworkError
    │   ├── ServerUnreachableError
-   │   ├── RetryExhaustedError
-   │   └── TimeoutError
-   └── ResourceNotFoundError
+   │   ├── RequestTimeoutError
+   │   └── RetryExhaustedError
+   └── ResourceError
+       ├── ResourceNotFoundError
+       └── ResourceExistsError
+
+The stdlib-shadowing names ``ConnectionError``, ``TimeoutError``, and
+``ValidationError`` remain as deprecated subclass aliases of
+``XNATConnectionError``, ``RequestTimeoutError``, and ``InputValidationError``.
+They are never raised internally and emit a ``DeprecationWarning`` on
+instantiation, so ``except xnatctl.ConnectionError`` no longer matches the
+connection errors the library raises. They are removed in a later minor release.
 
 **Usage Example:**
 

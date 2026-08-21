@@ -12,7 +12,7 @@ from click.testing import CliRunner
 from xnatctl.cli.main import cli
 from xnatctl.core.cancellation import CancellationToken
 from xnatctl.core.exceptions import PermissionDeniedError, SessionExpiredError, UploadError
-from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
+from xnatctl.core.exceptions import RequestTimeoutError as XNATTimeoutError
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.progress import UploadSummary
 from xnatctl.services.import_service import archive_destination_params

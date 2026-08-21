@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from xnatctl.core.client import XNATClient
-from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
+from xnatctl.core.exceptions import RequestTimeoutError as XNATTimeoutError
 from xnatctl.core.timeouts import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_HTTP_TIMEOUT_SECONDS,

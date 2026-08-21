@@ -16,6 +16,7 @@ import click
 from xnatctl.core.auth import AuthManager
 from xnatctl.core.client import XNATClient
 from xnatctl.core.config import Config, Profile, get_credentials
+from xnatctl.core.connect import resolve_client_params
 from xnatctl.core.exceptions import (
     AuthenticationError,
     ConfigurationError,
@@ -23,10 +24,8 @@ from xnatctl.core.exceptions import (
     PermissionDeniedError,
     ProfileNotFoundError,
     ResourceNotFoundError,
+    XNATConnectionError,
     XNATCtlError,
-)
-from xnatctl.core.exceptions import (
-    ConnectionError as XNATConnectionError,
 )
 from xnatctl.core.logging import debug_env_enabled, get_audit_logger, setup_logging
 from xnatctl.core.output import OutputFormat, print_error, print_hint, print_warning
@@ -86,16 +85,21 @@ class Context:
         # . Both map to the same exit code.
         profile = self.config.get_profile(self.profile_name)
 
-        # Get credentials (env vars > profile config). If we are using a cached
-        # session token, keep the cached username as a hint for current-user
-        # lookups on servers where /data/user returns a user listing.
-        username, password = get_credentials(profile)
-        session = self.auth_manager.load_session(profile.url)
-        token = self.auth_manager.get_token_from_env() or (session.token if session else None)
-        username_hint = username or (session.username if session else None)
+        # Credential resolution (env > profile, cached/env token, username hint,
+        # auto_reauth) lives in the shared resolver so a library user
+        # (XNATClient.from_profile) gets the exact same client this command
+        # would. Resolved BEFORE the TLS warning prints, so a resolver failure
+        # raises without emitting output -- the pre-refactor order.
+        params = resolve_client_params(
+            self.profile_name,
+            config=self.config,
+            auth_manager=self.auth_manager,
+        )
 
         # Make a disabled-TLS profile impossible to miss for interactive users
-        # (the client-layer logger.warning only shows under --verbose).
+        # (the client-layer logger.warning only shows under --verbose). This is
+        # CLI rendering, so it stays here rather than in build_client_from_profile
+        # -- the builder is shared with library callers and must not print.
         if not profile.verify_ssl and not profile.ca_bundle:
             print_warning(
                 redact_url_query(
@@ -104,22 +108,9 @@ class Context:
                 )
             )
 
-        self.client = XNATClient(
-            base_url=profile.url,
-            username=username_hint,
-            password=password,
-            session_token=token,
-            timeout=profile.timeout,
-            verify_ssl=profile.verify_ssl,
-            ca_bundle=profile.ca_bundle,
-            # Transparently re-authenticate on a mid-command 401 so a session
-            # that expires during a slow mutating operation (e.g. a large
-            # prearchive archive that outlasts the ~15-min JSESSIONID) does not
-            # surface a successful operation as a failure (see issue #20). This
-            # only engages when a password is available; token-only clients fall
-            # back to raising SessionExpiredError as before.
-            auto_reauth=True,
-        )
+        # Construction stays here, through the module-level XNATClient, so it
+        # is the one client every command shares (and tests can patch).
+        self.client = XNATClient(**params)
 
         return self.client
 
@@ -981,7 +972,7 @@ def exit_code_for(exc: BaseException) -> int:
     if isinstance(exc, ResourceNotFoundError):
         return ExitCode.NOT_FOUND
     if isinstance(exc, XNATConnectionError):
-        # NetworkError, TimeoutError, RetryExhaustedError, ServerUnreachableError
+        # NetworkError, RequestTimeoutError, RetryExhaustedError, ServerUnreachableError
         return ExitCode.NETWORK_ERROR
     # ClientRequestError/ServerError ("server said no") and everything else.
     return ExitCode.GENERAL_ERROR
