@@ -12,6 +12,17 @@ from xnatctl.models.session import Session
 from .base import BaseService
 from .hierarchy import HierarchyService
 
+#: Substring that identifies each modality inside an experiment's xsiType,
+#: e.g. "xnat:mrSessionData" for MR. A table rather than four ``elif`` branches
+#: because ruff's SIM114 autofix collapsed the equivalent branches into one
+#: 200-character boolean.
+_MODALITY_XSI_MARKERS = {
+    "MR": "mrsession",
+    "PET": "petsession",
+    "CT": "ctsession",
+    "EEG": "eegsession",
+}
+
 
 class SessionService(BaseService):
     """Service for XNAT session/experiment operations."""
@@ -300,6 +311,57 @@ class SessionService(BaseService):
         resp = self.client.get_json(f"/data/projects/{project}/experiments", params=params)
         rows: builtins.list[dict[str, Any]] = resp.get("ResultSet", {}).get("Result", [])
         return rows
+
+    def list_sessions(
+        self,
+        project: str,
+        *,
+        subject: str | None = None,
+        modality: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
+        """Return classified, modality-filtered rows for the ``session list`` screen.
+
+        Each row's ``xsiType`` is mapped to a display modality; when *modality*
+        is given, rows whose xsiType does not carry that modality's marker are
+        dropped.
+
+        Args:
+            project: Project ID.
+            subject: Optional subject-label filter.
+            modality: Optional modality filter (MR/PET/CT/EEG).
+
+        Returns:
+            Render-ready dicts with id/label/subject/date/modality keys.
+        """
+        rows = self.list_project_experiment_rows(project, subject=subject)
+        marker = _MODALITY_XSI_MARKERS.get(modality) if modality else None
+
+        sessions: builtins.list[dict[str, Any]] = []
+        for r in rows:
+            xsi_lower = r.get("xsiType", "").lower()
+            if modality and marker and marker not in xsi_lower:
+                continue
+
+            detected_modality = "?"
+            if "mrsession" in xsi_lower:
+                detected_modality = "MR"
+            elif "petsession" in xsi_lower:
+                detected_modality = "PET"
+            elif "ctsession" in xsi_lower:
+                detected_modality = "CT"
+            elif "eegsession" in xsi_lower:
+                detected_modality = "EEG"
+
+            sessions.append(
+                {
+                    "id": r.get("ID", ""),
+                    "label": r.get("label", ""),
+                    "subject": r.get("subject_label", ""),
+                    "date": r.get("date", ""),
+                    "modality": detected_modality,
+                }
+            )
+        return sessions
 
     def scan_rows(
         self, session_id: str, project: str | None = None

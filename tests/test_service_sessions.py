@@ -335,3 +335,91 @@ class TestSessionRawAccessors:
         mock_client.get_json.assert_called_once_with(
             "/data/projects/PROJ01/subjects/SUBJ01/experiments/EXP01/resources"
         )
+
+
+class TestListSessions:
+    """Tests for SessionService.list_sessions (classification + modality filter)."""
+
+    ROWS = {
+        "ResultSet": {
+            "Result": [
+                {
+                    "ID": "XNAT_E1",
+                    "label": "MR001",
+                    "subject_label": "SUB1",
+                    "date": "2026-01-01",
+                    "xsiType": "xnat:mrSessionData",
+                },
+                {
+                    "ID": "XNAT_E2",
+                    "label": "PET001",
+                    "subject_label": "SUB2",
+                    "date": "2026-01-02",
+                    "xsiType": "xnat:petSessionData",
+                },
+                {
+                    "ID": "XNAT_E3",
+                    "label": "OTHER",
+                    "subject_label": "SUB3",
+                    "date": "",
+                    "xsiType": "xnat:otherData",
+                },
+            ]
+        }
+    }
+
+    def test_classifies_each_row_and_maps_fields(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = self.ROWS
+
+        rows = service.list_sessions("PROJ01")
+
+        assert rows == [
+            {
+                "id": "XNAT_E1",
+                "label": "MR001",
+                "subject": "SUB1",
+                "date": "2026-01-01",
+                "modality": "MR",
+            },
+            {
+                "id": "XNAT_E2",
+                "label": "PET001",
+                "subject": "SUB2",
+                "date": "2026-01-02",
+                "modality": "PET",
+            },
+            {
+                "id": "XNAT_E3",
+                "label": "OTHER",
+                "subject": "SUB3",
+                "date": "",
+                "modality": "?",
+            },
+        ]
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/experiments",
+            params={"columns": "ID,label,subject_label,date,xsiType"},
+        )
+
+    def test_modality_filter_drops_non_matching_rows(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = self.ROWS
+
+        rows = service.list_sessions("PROJ01", modality="MR")
+
+        assert [r["id"] for r in rows] == ["XNAT_E1"]
+
+    def test_subject_filter_is_forwarded_as_subject_label(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        service.list_sessions("PROJ01", subject="SUB1")
+
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/experiments",
+            params={"columns": "ID,label,subject_label,date,xsiType", "subject_label": "SUB1"},
+        )

@@ -727,3 +727,66 @@ class TestDownloadSessionFast:
         assert outcome.succeeded == 1
         assert [scan for scan, _msg in outcome.failed] == ["2"]
         assert any(not r.ok and r.scan_id == "2" for r in results)
+
+
+class TestDownloadSessionArchiveAndResources:
+    """The sequential single-ZIP path and the session-level resources loop."""
+
+    def test_archive_streams_scans_zip_and_forwards_progress(self, tmp_path: Path) -> None:
+        calls: list[tuple[str, str, dict | None]] = []
+
+        def fake_stream(client, path, dest, *, params=None, progress_cb=None, **kw):
+            calls.append((path, str(dest), params))
+            if progress_cb is not None:
+                progress_cb(10, 10)
+            dest.write_bytes(b"zip")
+
+        seen: list[tuple[int, int | None]] = []
+        with patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream):
+            out = DownloadService(MagicMock()).download_session_archive(
+                session_project="P",
+                subject="S",
+                resolved_session_id="E",
+                session_dir=tmp_path,
+                progress_cb=lambda w, t: seen.append((w, t)),
+            )
+
+        assert out == tmp_path / "scans.zip"
+        assert calls == [
+            (
+                "/data/projects/P/subjects/S/experiments/E/scans/ALL/files",
+                str(tmp_path / "scans.zip"),
+                {"format": "zip"},
+            )
+        ]
+        assert seen == [(10, 10)]
+
+    def test_resources_stream_one_zip_per_resource_and_return_count(self, tmp_path: Path) -> None:
+        urls: list[tuple[str, dict | None]] = []
+
+        def fake_stream(client, path, dest, *, params=None, **kw):
+            urls.append((path, params))
+            dest.write_bytes(b"zip")
+
+        with (
+            patch(
+                "xnatctl.services.downloads.SessionService.experiment_resource_rows",
+                return_value=[{"label": "QC"}, {"label": "MISC"}],
+            ) as rows_mock,
+            patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream),
+        ):
+            count = DownloadService(MagicMock()).download_session_level_resources(
+                session_project="P",
+                subject="S",
+                resolved_session_id="E",
+                session_dir=tmp_path,
+            )
+
+        assert count == 2
+        rows_mock.assert_called_once_with("E", project="P", subject="S")
+        assert urls == [
+            ("/data/projects/P/subjects/S/experiments/E/resources/QC/files", {"format": "zip"}),
+            ("/data/projects/P/subjects/S/experiments/E/resources/MISC/files", {"format": "zip"}),
+        ]
+        assert (tmp_path / "resources_QC.zip").exists()
+        assert (tmp_path / "resources_MISC.zip").exists()

@@ -13,7 +13,7 @@ from typing import Any, cast
 import pytest
 
 from xnatctl.cli.common import Context
-from xnatctl.cli.session import (
+from xnatctl.cli.session_upload import (
     _upload_dicom_store,
     _upload_directory_parallel,
     _upload_gradual_dicom,

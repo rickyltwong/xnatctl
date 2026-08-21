@@ -505,6 +505,74 @@ class DownloadService(BaseService):
 
         return DownloadOutcome(succeeded=len(succeeded), failed=failed, files=total_files)
 
+    def download_session_archive(
+        self,
+        *,
+        session_project: str,
+        subject: str,
+        resolved_session_id: str,
+        session_dir: Path,
+        progress_cb: Callable[[int, int | None], None] | None = None,
+    ) -> Path:
+        """Stream the whole session as a single ``scans.zip`` (the sequential path).
+
+        Args:
+            session_project: Project ID.
+            subject: Subject ID.
+            resolved_session_id: Resolved XNAT experiment ID.
+            session_dir: Output directory; the ZIP lands at ``scans.zip`` inside it.
+            progress_cb: Forwarded to the streamer as ``(written, content_length)``.
+
+        Returns:
+            The path to the written ``scans.zip``.
+        """
+        scans_url = (
+            f"/data/projects/{session_project}/subjects/{subject}"
+            f"/experiments/{resolved_session_id}/scans/ALL/files"
+        )
+        scans_zip = session_dir / "scans.zip"
+        stream_to_file(
+            self.client, scans_url, scans_zip, params={"format": "zip"}, progress_cb=progress_cb
+        )
+        return scans_zip
+
+    def download_session_level_resources(
+        self,
+        *,
+        session_project: str,
+        subject: str,
+        resolved_session_id: str,
+        session_dir: Path,
+    ) -> int:
+        """Download each session-level (outside-scans) resource as its own ZIP.
+
+        Args:
+            session_project: Project ID.
+            subject: Subject ID.
+            resolved_session_id: Resolved XNAT experiment ID.
+            session_dir: Output directory; each resource lands at
+                ``resources_{label}.zip``.
+
+        Returns:
+            The number of session-level resources downloaded.
+        """
+        res_url = (
+            f"/data/projects/{session_project}/subjects/{subject}"
+            f"/experiments/{resolved_session_id}/resources"
+        )
+        sess_resources = SessionService(self.client).experiment_resource_rows(
+            resolved_session_id, project=session_project, subject=subject
+        )
+        for res in sess_resources:
+            label = res.get("label", "resource")
+            stream_to_file(
+                self.client,
+                f"{res_url}/{label}/files",
+                session_dir / f"resources_{label}.zip",
+                params={"format": "zip"},
+            )
+        return len(sess_resources)
+
     def download_resource(
         self,
         session_id: str,
