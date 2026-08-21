@@ -57,6 +57,13 @@ All notable changes to this project will be documented in this file.
 
 **Fixes**
 
+- 404 classification no longer depends on error-message text. Services used to
+  decide "resource not found" by checking whether the literal substring `"404"`
+  appeared in an exception's message, which also fired on any unrelated error
+  whose text happened to contain it (a session labelled `SUB404`, for
+  instance). The client now enriches every 404 it raises with
+  `status_code`/`method`/`path` in `details` -- matching what it already did
+  for 401/403 -- and services dispatch on the exception's type instead.
 - Downloads now go through the client's retry, auth, and typed-error path. Every
   streamed download (session, scan, resource, and cross-server transfer) used to
   bypass the client and talk to `httpx` directly, so it got no retry ladder, no

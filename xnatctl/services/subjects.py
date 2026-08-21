@@ -77,19 +77,18 @@ class SubjectService(BaseService):
 
         try:
             data = self._get(path, params=params)
-            item = HierarchyService.extract_first_item(data) if isinstance(data, dict) else None
-            if item is not None:
-                fields, _meta = item
-                return Subject.model_validate(fields)
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("subject", subject_id) from e
 
-            results = HierarchyService.extract_rows(data)
-            if results:
-                return Subject.model_validate(results[0])
-            raise ResourceNotFoundError("subject", subject_id)
-        except Exception as e:
-            if "404" in str(e):
-                raise ResourceNotFoundError("subject", subject_id) from e
-            raise
+        item = HierarchyService.extract_first_item(data) if isinstance(data, dict) else None
+        if item is not None:
+            fields, _meta = item
+            return Subject.model_validate(fields)
+
+        results = HierarchyService.extract_rows(data)
+        if results:
+            return Subject.model_validate(results[0])
+        raise ResourceNotFoundError("subject", subject_id)
 
     def create(
         self,

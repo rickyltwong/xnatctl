@@ -106,17 +106,16 @@ class ScanService(BaseService):
 
         try:
             data = self._get(path, params=params)
-            results = self._extract_results(data)
-            if results:
-                results[0]["session_id"] = session_id
-                if project:
-                    results[0]["project"] = project
-                return Scan(**results[0])
-            raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}")
-        except Exception as e:
-            if "404" in str(e):
-                raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}") from e
-            raise
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}") from e
+
+        results = self._extract_results(data)
+        if results:
+            results[0]["session_id"] = session_id
+            if project:
+                results[0]["project"] = project
+            return Scan(**results[0])
+        raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}")
 
     def delete(
         self,

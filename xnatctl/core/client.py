@@ -453,7 +453,9 @@ class XNATClient:
             denied_err.details.update({"status_code": code, "method": method, "path": path})
             raise denied_err
         if code == 404:
-            raise ResourceNotFoundError("resource", path)
+            missing_err = ResourceNotFoundError("resource", path)
+            missing_err.details.update({"status_code": code, "method": method, "path": path})
+            raise missing_err
         if code in RETRYABLE_STATUS_CODES:
             return
         if code >= 400:

@@ -8,6 +8,7 @@ pin the single-source version mechanism.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import subprocess
 import sys
@@ -82,6 +83,46 @@ def test_download_sites_use_the_public_client_surface() -> None:
                     offenders.append(f"{source.relative_to(_PACKAGE_ROOT.parent)}: {token}")
 
     assert not offenders, f"private XNATClient access outside core/: {offenders}"
+
+
+def test_no_string_matching_on_exception_messages() -> None:
+    """No module classifies an error by sniffing ``str(exc)``.
+
+    ``XNATClient`` raises typed exceptions with structured ``details`` (e.g.
+    ``status_code``); dispatching on substrings of the message instead is
+    fragile -- it also fires on an unrelated error whose text happens to
+    contain the same digits or words (a session labelled ``SUB404``, for
+    instance). Callers must catch the typed exception classes.
+
+    Checked structurally rather than textually: parse each module and walk
+    for an ``in`` membership test whose right-hand side calls ``str(...)``
+    anywhere in its expression tree -- not just ``<x> in str(e)`` but
+    ``<x> in str(e).lower()``, ``<x> in str(e).strip()``, and any other
+    chained call built on a stringified object. A text/regex check on source
+    lines is bypassable by whitespace, a long variable name, or a comment
+    mentioning the pattern (and a docstring illustrating it, like this one,
+    would trip a naive text scan); an AST walk isn't.
+    """
+    offenders: list[str] = []
+    for source in _PACKAGE_ROOT.rglob("*.py"):
+        tree = ast.parse(source.read_text(), filename=str(source))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            for op, comparator in zip(node.ops, node.comparators, strict=True):
+                if not isinstance(op, ast.In):
+                    continue
+                calls_str = any(
+                    isinstance(descendant, ast.Call)
+                    and isinstance(descendant.func, ast.Name)
+                    and descendant.func.id == "str"
+                    for descendant in ast.walk(comparator)
+                )
+                if calls_str:
+                    rel = source.relative_to(_PACKAGE_ROOT.parent)
+                    offenders.append(f"{rel}:{node.lineno}")
+
+    assert not offenders, f"string-matching on exception messages found: {offenders}"
 
 
 # =============================================================================

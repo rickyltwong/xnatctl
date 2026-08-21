@@ -94,22 +94,21 @@ class SessionService(BaseService):
 
         try:
             data = self._get(path, params=params)
-            item = HierarchyService.extract_first_item(data) if isinstance(data, dict) else None
-            if item is not None:
-                fields, meta = item
-                normalized = dict(fields)
-                if meta.get("xsi:type") and not normalized.get("xsiType"):
-                    normalized["xsiType"] = meta["xsi:type"]
-                return Session.model_validate(normalized)
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("session", session_id) from e
 
-            results = HierarchyService.extract_rows(data)
-            if results:
-                return Session.model_validate(results[0])
-            raise ResourceNotFoundError("session", session_id)
-        except Exception as e:
-            if "404" in str(e):
-                raise ResourceNotFoundError("session", session_id) from e
-            raise
+        item = HierarchyService.extract_first_item(data) if isinstance(data, dict) else None
+        if item is not None:
+            fields, meta = item
+            normalized = dict(fields)
+            if meta.get("xsi:type") and not normalized.get("xsiType"):
+                normalized["xsiType"] = meta["xsi:type"]
+            return Session.model_validate(normalized)
+
+        results = HierarchyService.extract_rows(data)
+        if results:
+            return Session.model_validate(results[0])
+        raise ResourceNotFoundError("session", session_id)
 
     def create(
         self,

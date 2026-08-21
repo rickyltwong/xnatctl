@@ -150,6 +150,23 @@ class TestSessionGet:
         with pytest.raises(ResourceNotFoundError):
             service.get("MISSING")
 
+    def test_get_not_found_dispatches_on_type_not_message_text(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """A typed 404 is classified by its class, not by sniffing the message.
+
+        The client can raise ``ResourceNotFoundError`` with any message; a
+        session labelled e.g. "SUB404" must not defeat classification the way
+        a substring check on "404" would.
+        """
+        mock_client.get.side_effect = ResourceNotFoundError("resource", "no such thing here")
+
+        with pytest.raises(ResourceNotFoundError) as excinfo:
+            service.get("MISSING")
+
+        assert excinfo.value.details.get("resource_type") == "session"
+        assert excinfo.value.details.get("resource_id") == "MISSING"
+
 
 class TestSessionCreate:
     """Tests for SessionService.create."""

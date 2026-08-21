@@ -62,16 +62,15 @@ class PipelineService(BaseService):
 
         try:
             data = self._get(path, params=params)
-            if isinstance(data, dict):
-                return data
-            results = self._extract_results(data)
-            if results:
-                return results[0]
-            raise ResourceNotFoundError("pipeline", pipeline_name)
-        except Exception as e:
-            if "404" in str(e):
-                raise ResourceNotFoundError("pipeline", pipeline_name) from e
-            raise
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("pipeline", pipeline_name) from e
+
+        if isinstance(data, dict):
+            return data
+        results = self._extract_results(data)
+        if results:
+            return results[0]
+        raise ResourceNotFoundError("pipeline", pipeline_name)
 
     def run(
         self,

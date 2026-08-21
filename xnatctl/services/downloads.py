@@ -617,9 +617,14 @@ class DownloadService(BaseService):
             failures raise).
 
         Raises:
-            XNATCtlError: Any typed failure from the client layer (authentication,
-                permission, not-found, a short-read DownloadError) passes through
-                untouched.
+            XNATCtlError: A typed failure from the client layer passes through
+                untouched -- authentication, permission, not-found, or a
+                short-read DownloadError. The one carve-out: when ``session_id``
+                is a label needing resolution to an experiment ID, a non-404,
+                non-auth typed failure during that resolution step (a network
+                hiccup, a 5xx) is swallowed into a best-effort fallback that
+                treats ``session_id`` as the experiment ID directly, rather
+                than raised here.
             DownloadError: Any other failure (OSError, corrupt ZIP, unexpected
                 exception) wrapped with the resource label and ``__cause__`` set.
         """
@@ -650,17 +655,24 @@ class DownloadService(BaseService):
                     project=project,
                 )
             except AuthenticationError:
-                # Covers SessionExpiredError and PermissionDeniedError too. Other
-                # failures (network, server) are deliberately discarded:
-                # resolution is best-effort normalization, and a transient
-                # hiccup there must not doom an otherwise-valid accession ID.
-                # The fallback retries via the direct /data/experiments/{id}
-                # path -- if that also fails, ITS error is the one that
-                # propagates under this method's contract.
+                # Covers SessionExpiredError and PermissionDeniedError too --
+                # an auth failure here will just fail again on the fallback
+                # path, so surfacing it directly is more honest than masking
+                # it with a doomed retry.
                 raise
-            except Exception as e:
-                if "not found" in str(e).lower() or isinstance(e, ValueError):
-                    raise
+            except (ResourceNotFoundError, ValueError):
+                # A definitive 404 or a malformed response means the
+                # identifier itself is bad, not that resolution merely
+                # hiccuped -- it must not be swallowed by the fallback below.
+                raise
+            except XNATCtlError:
+                # Any other typed failure (network, server, retry-exhausted)
+                # is deliberately discarded: resolution is best-effort
+                # normalization, and a transient hiccup here must not doom an
+                # otherwise-valid accession ID. The fallback retries via the
+                # direct /data/experiments/{id} path -- if that also fails,
+                # ITS error is the one that propagates under this method's
+                # contract.
                 resolved_experiment_ref = ExperimentRef(experiment=session_id)
 
             # Build path - always use /data/experiments/{id}/... for reliable ZIP downloads
@@ -828,9 +840,13 @@ class DownloadService(BaseService):
             )
         except AuthenticationError:
             raise
-        except Exception as e:
-            if "not found" in str(e).lower() or isinstance(e, ValueError):
-                raise
+        except (ResourceNotFoundError, ValueError):
+            # A definitive 404 or a malformed response means the identifier
+            # itself is bad; do not paper over it with the fallback below.
+            raise
+        except XNATCtlError:
+            # Best-effort normalization -- see the sibling try/except in
+            # download_resource for the full rationale.
             resolved_experiment_ref = ExperimentRef(experiment=session_id)
 
         scan_spec = ",".join(scan_ids) if len(scan_ids) > 1 else scan_ids[0]

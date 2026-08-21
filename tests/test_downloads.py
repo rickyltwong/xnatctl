@@ -12,6 +12,7 @@ from xnatctl.core.exceptions import (
     BatchOperationError,
     DownloadError,
     ResourceNotFoundError,
+    ServerError,
     SessionExpiredError,
 )
 from xnatctl.models.progress import DownloadProgress, DownloadSummary, OperationPhase
@@ -145,6 +146,89 @@ class TestDownloadResourceSessionResolution:
             f"/data/projects/{project}/experiments/{session_label}",
             params={"format": "json"},
         )
+
+    def test_session_expired_during_resolution_propagates(self, download_service, tmp_path):
+        """An auth failure during label resolution is not masked by the
+        best-effort fallback -- it would just fail again on the fallback path.
+        """
+        download_service._get = MagicMock(
+            side_effect=SessionExpiredError("https://xnat.example.org")
+        )
+
+        with pytest.raises(SessionExpiredError):
+            download_service.download_resource(
+                session_id="MY_SESSION_LABEL",
+                resource_label="DICOM",
+                output_dir=tmp_path,
+                scan_id="1",
+                project="TEST_PROJECT",
+            )
+
+    def test_server_error_during_resolution_falls_back_to_raw_id(self, download_service, tmp_path):
+        """A non-404, non-auth typed failure during resolution is best-effort:
+        the download proceeds treating the given ID as the experiment ID
+        directly, rather than aborting on a transient resolution hiccup.
+        """
+        download_service._get = MagicMock(
+            side_effect=ServerError(503, "GET", "/data/projects/TEST_PROJECT", "unavailable")
+        )
+
+        stream_ctx = MagicMock()
+        stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
+        stream_ctx.__exit__ = MagicMock(return_value=False)
+        download_service.client.stream.return_value = stream_ctx
+
+        # The fallback path proceeds instead of re-raising the resolution
+        # error -- it reaches (and fails at) the stream step, not resolution.
+        with pytest.raises(DownloadError):
+            download_service.download_resource(
+                session_id="MY_SESSION_LABEL",
+                resource_label="DICOM",
+                output_dir=tmp_path,
+                scan_id="1",
+                project="TEST_PROJECT",
+            )
+
+        download_service.client.stream.assert_called_once()
+        # And it used the raw, unresolved session id in exactly the flat
+        # /data/experiments/{id}/... form the fallback ExperimentRef builds
+        # (no project/subject segment, since resolution never ran) -- not a
+        # wrong or malformed id.
+        stream_path = download_service.client.stream.call_args[0][1]
+        assert stream_path == "/data/experiments/MY_SESSION_LABEL/scans/1/resources/DICOM/files"
+
+    def test_download_scans_server_error_during_resolution_falls_back_to_raw_id(
+        self, download_service, tmp_path
+    ):
+        """download_scans has the same best-effort fallback as download_resource.
+
+        Unlike download_resource it never raises on a stream failure -- it
+        reports the batch as failed in the returned summary -- but it must
+        still reach the stream step using the raw, unresolved session id
+        rather than aborting the whole batch at resolution.
+        """
+        download_service._get = MagicMock(
+            side_effect=ServerError(503, "GET", "/data/projects/TEST_PROJECT", "unavailable")
+        )
+
+        stream_ctx = MagicMock()
+        stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
+        stream_ctx.__exit__ = MagicMock(return_value=False)
+        download_service.client.stream.return_value = stream_ctx
+
+        summary = download_service.download_scans(
+            session_id="MY_SESSION_LABEL",
+            scan_ids=["1"],
+            output_dir=tmp_path,
+            project="TEST_PROJECT",
+        )
+
+        assert summary.success is False
+        download_service.client.stream.assert_called_once()
+        # Same flat-fallback form as download_resource, without a resource
+        # segment since download_scans defaults to all resources.
+        stream_path = download_service.client.stream.call_args[0][1]
+        assert stream_path == "/data/experiments/MY_SESSION_LABEL/scans/1/files"
 
 
 class TestDownloadScan:
