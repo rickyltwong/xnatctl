@@ -124,8 +124,8 @@ class VerificationReport:
     covers a key that two different, unrelated files (server-side or
     local-side) both mapped to -- never resolved by silently keeping
     whichever was seen last. ``missing_remote`` covers local files the server
-    manifest never mentioned; it does not affect ``success`` -- see the
-    property for why.
+    manifest never mentioned; it fails ``success`` only when the manifest
+    covered nothing at all -- see the property for why.
     """
 
     matched: int = 0
@@ -145,11 +145,17 @@ class VerificationReport:
         file. A run where every checked file landed in ``unverifiable`` (the
         server had no checksums at all) is also not a pass: with nothing
         actually matched, "no mismatches" would otherwise be true vacuously.
+        The same reasoning covers an EMPTY manifest: with local files on disk
+        but the server listing nothing for the scope, nothing was verified,
+        and "Verified 0 files" must not read as a pass. Only a manifest and
+        local scope that are both empty is trivially fine.
         """
         if self.mismatched or self.missing_local or self.collisions:
             return False
         checked = self.matched + len(self.unverifiable)
-        return checked == 0 or self.matched > 0
+        if checked == 0:
+            return not self.missing_remote
+        return self.matched > 0
 
 
 @dataclass

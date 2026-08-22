@@ -58,13 +58,18 @@ All notable changes to this project will be documented in this file.
   or still zipped, session-level resources included, files matched by scan
   and resource rather than filename alone. A mismatch, a listed file that
   never landed, an ambiguous mapping, or a run where nothing was verifiable
-  at all fails the command.
+  at all (no checksums on record, or an empty server manifest despite files
+  on disk) fails the command; local files the manifest doesn't cover are
+  reported rather than silently skipped.
 - `session download`, `resource upload`, and `resource download` gain
   structured `-o json` output for the first time, using the shared
   `TransferSummary` shape.
 - DICOM utilities and OS-keychain password storage now ship in every
   install, including the standalone binary; the `dicom` and `keyring`
   extras are gone.
+- `XNATClient.stream()` is a public API: streamed reads (large file
+  downloads) through the client's own retry, auth, and typed-error
+  contract, replacing any need to reach for raw httpx access.
 - **One-call library connect.** `xnatctl.XNATClient.from_profile("prod")`
   builds a client from a saved profile using the CLI's own credential
   resolution, each resource type is reachable through a cached accessor

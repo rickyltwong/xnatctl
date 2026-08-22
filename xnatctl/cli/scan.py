@@ -748,13 +748,21 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
                     f"{len(verification.missing_local)} missing, "
                     f"{len(verification.collisions)} colliding file(s)"
                 )
-            else:
+            elif verification.unverifiable:
                 # Nothing mismatched or missing, but nothing matched either --
                 # every checked file landed in unverifiable, so the server had
                 # no checksums on record for anything the command downloaded.
                 verification_error = (
                     "the server provided no checksums for any downloaded file "
                     f"({len(verification.unverifiable)} unverifiable); nothing was verified"
+                )
+            else:
+                # The manifest listed nothing at all for a scope that has
+                # files on disk -- nothing was verified.
+                verification_error = (
+                    "the server manifest listed none of the "
+                    f"{len(verification.missing_remote)} in-scope local file(s); "
+                    "nothing was verified"
                 )
         summary = dataclasses.replace(
             summary,
@@ -813,6 +821,12 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
                     click.echo(
                         f"  {len(verification.unverifiable)} file(s) have no server "
                         "checksum and were not verified",
+                        err=True,
+                    )
+                if verification.missing_remote:
+                    click.echo(
+                        f"  {len(verification.missing_remote)} local file(s) absent "
+                        "from the server manifest were not verified",
                         err=True,
                     )
         elif download_succeeded:

@@ -841,6 +841,12 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                     "checksum and were not verified",
                     err=True,
                 )
+            if verification.missing_remote:
+                click.echo(
+                    f"  {len(verification.missing_remote)} local file(s) absent "
+                    "from the server manifest were not verified",
+                    err=True,
+                )
         # Verification has now read the session-resource ZIPs intact; apply
         # the extract/cleanup that was deferred for them above.
         try:
@@ -889,15 +895,24 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                     "collisions": verification.collisions,
                 },
             )
-        # No mismatches, no missing files, no collisions -- every file
-        # checked landed in `unverifiable`: the server had no checksums on
-        # record for anything, so nothing was actually verified.
+        # No mismatches, no missing files, no collisions -- nothing was
+        # actually verified: either every checked file landed in
+        # `unverifiable` (the server had no checksums on record), or the
+        # manifest listed nothing at all for a scope with files on disk.
+        if verification.unverifiable:
+            raise DownloadError(
+                "Verification failed: the server provided no checksums for any "
+                f"downloaded file ({len(verification.unverifiable)} unverifiable); "
+                "nothing was verified.",
+                session_id,
+                {"unverifiable": verification.unverifiable},
+            )
         raise DownloadError(
-            "Verification failed: the server provided no checksums for any "
-            f"downloaded file ({len(verification.unverifiable)} unverifiable); "
+            "Verification failed: the server manifest listed none of the "
+            f"{len(verification.missing_remote)} in-scope local file(s); "
             "nothing was verified.",
             session_id,
-            {"unverifiable": verification.unverifiable},
+            {"missing_remote": verification.missing_remote},
         )
 
     if ctx.output_format == OutputFormat.JSON:

@@ -804,3 +804,12 @@ class TestVerificationReport:
 
     def test_zero_files_in_scope_is_not_a_failure(self) -> None:
         assert VerificationReport().success is True
+
+    def test_empty_manifest_with_local_files_fails(self) -> None:
+        """An empty server manifest must not turn into 'Verified 0 files', exit 0."""
+        report = VerificationReport(missing_remote=["scans/1/resources/DICOM/1.dcm"])
+        assert report.success is False
+
+    def test_missing_remote_does_not_fail_once_something_was_checked(self) -> None:
+        assert VerificationReport(matched=1, missing_remote=["a"]).success is True
+        assert VerificationReport(unverifiable=["b"], missing_remote=["a"]).success is False

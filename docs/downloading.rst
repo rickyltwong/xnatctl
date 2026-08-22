@@ -473,9 +473,11 @@ summary's ``verification`` field instead of printing it separately:
      }
    }
 
-A verification failure (a mismatch, a missing file, or a collision) sets
-``status`` to ``"failed"`` and the command exits non-zero, same as without
-``-o json``.
+A verification failure sets ``status`` to ``"failed"`` and the command exits
+non-zero, same as without ``-o json``. Failures are a mismatch, a missing
+file, a collision, or a run where nothing was actually verified: the server
+had no checksums on record for anything downloaded, or its manifest listed
+nothing at all for a scope with files on disk.
 
 
 Understanding the Output Directory Structure

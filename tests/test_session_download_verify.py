@@ -86,6 +86,7 @@ def _serve(
     session_resources: bool = False,
     session_resource_download_fails: bool = False,
     two_session_resources: bool = False,
+    manifest_scans: tuple[str, ...] | None = None,
 ) -> Iterator[str]:
     """Fake XNAT serving a two-scan session plus its resource/file listings.
 
@@ -98,7 +99,10 @@ def _serve(
     applying only to ``MISC``, so QC's download always succeeds: this
     reproduces a mid-loop failure in
     ``DownloadService.download_session_level_resources`` without losing QC's
-    already-downloaded provenance.
+    already-downloaded provenance. *manifest_scans*, when set, limits which
+    scans' JSON file listings (the manifest source) return rows -- the
+    download ZIPs are unaffected, so ``()`` yields an empty manifest over a
+    fully-downloaded session and ``("1",)`` a manifest covering only scan 1.
     """
     resource_labels: list[str] = (
         [SESSION_RESOURCE_LABEL, MISC_RESOURCE_LABEL]
@@ -146,6 +150,8 @@ def _serve(
         ).encode()
 
     def file_listing_for(scan_id: str) -> bytes:
+        if manifest_scans is not None and scan_id not in manifest_scans:
+            return json.dumps({"ResultSet": {"Result": []}}).encode()
         digest = "0" * 32 if scan_id == bad_digest_scan else FILE_DIGEST
         return json.dumps(
             {
@@ -297,6 +303,30 @@ class TestVerifyMismatch:
             result = _download(url, tmp_path)
 
         assert "scans/2/resources/DICOM/0001.dcm" not in result.stderr
+
+
+class TestVerifyManifestGaps:
+    def test_empty_manifest_fails(self, tmp_path: Path) -> None:
+        """A server manifest listing nothing for a downloaded session must
+        fail, not print 'Verified 0 files' and exit 0.
+        """
+        for url in _serve(bad_digest_scan=None, manifest_scans=()):
+            result = _download(url, tmp_path)
+
+        assert result.exit_code == 1
+        assert "listed none" in result.stderr
+        assert "nothing was verified" in result.stderr
+
+    def test_partial_manifest_passes_but_reports_uncovered_files(self, tmp_path: Path) -> None:
+        """Files the manifest never mentioned do not fail verification once
+        something real was matched, but they must be reported, not silent.
+        """
+        for url in _serve(bad_digest_scan=None, manifest_scans=("1",)):
+            result = _download(url, tmp_path)
+
+        assert result.exit_code == 0, result.stderr
+        assert "Verified 1 files" in result.stderr
+        assert "absent from the server manifest" in result.stderr
 
 
 def _download_sequential(url: str, out: Path, *extra: str) -> Any:
