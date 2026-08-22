@@ -5,6 +5,14 @@ The services package provides high-level Python interfaces for XNAT REST API
 operations. Each service class encapsulates operations for a specific resource
 type (projects, subjects, sessions, etc.).
 
+Covered by semver: the service classes listed in ``xnatctl.__all__``
+(``xnatctl.ProjectService``, ``xnatctl.SessionService``, ...). A service class
+that exists but is not in that list, or one reached by importing its module
+directly (``xnatctl.services.projects``) rather than the top-level name, is
+Provisional and may move between minor releases. See :doc:`../stability` for
+the exact boundary and :doc:`../adr/0014-promote-library-surface-to-stable`
+for why it was drawn there.
+
 Service Layer Architecture
 ---------------------------
 

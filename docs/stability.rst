@@ -48,11 +48,31 @@ What is covered
      - Unstable
      - Mostly deprecated aliases kept alive for existing scripts, plus a few
        internal switches. Do not adopt them in new work.
-   * - The Python package API (``import xnatctl``)
+   * - Top-level ``xnatctl`` exports (the names listed in ``xnatctl.__all__``)
+     - Stable
+     - Exactly the names in ``xnatctl.__all__`` -- the client, config, the
+       service classes it lists, resource/progress models, the exception
+       hierarchy, and ``xnatctl.__version__`` (see :doc:`api/core`,
+       :doc:`api/services`, :doc:`api/models`). This is a membership test on
+       ``__all__``, not a naming convention: ``__version__`` is
+       underscore-prefixed and Stable because it is listed there, while a
+       name with no leading underscore is still Provisional if it is not.
+       Breaking changes go in a MINOR release while the project stays on
+       ``0.x``, and are listed under ``**Breaking**`` in the
+       :doc:`changelog`. See :doc:`adr/0014-promote-library-surface-to-stable`.
+   * - Anything reachable on the ``xnatctl`` module or a submodule that is
+       *not* listed in ``xnatctl.__all__``
      - Provisional
-     - The CLI is the product. Importable modules are documented in the
-       :doc:`api/core` reference, but names and signatures move as internals
-       change. Pin an exact version if you import them.
+     - Covers three cases: a class that exists but isn't top-level-exported
+       (``UserService``, ``XsyncService`` -- reachable only via
+       ``xnatctl.services.users``/``xnatctl.services.xsync``, with no
+       ``client.users``/``client.xsync`` accessor either);
+       ``xnatctl.core.*``/``xnatctl.services.*`` internals reached by
+       importing the submodule directly instead of the top-level name; and
+       any ``_``-prefixed name. All three are documented and intentional, but
+       move between minor releases -- pin an exact version if you import them.
+       ``BaseService._get``/``_post`` remain the sanctioned extension point
+       for a subclass, but "sanctioned" is not "semver-covered."
 
 
 How deprecation works
@@ -139,8 +159,8 @@ breaking changes to the surfaces marked Stable above go in MINOR releases, are
 listed in the :doc:`changelog`, and -- for flags -- get the deprecation period
 described above. Patch releases never break them.
 
-The 0.x label reflects that commands are still being *added* and that the
-Python API is still moving, not that scripted use is unsafe.
+The 0.x label reflects that commands and top-level library exports are still
+being *added*, not that scripted or library use is unsafe.
 
 
 If something breaks anyway

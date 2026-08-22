@@ -138,12 +138,20 @@ All notable changes to this project will be documented in this file.
   client from a saved config profile, running the same credential resolution the
   CLI does (environment variables over profile config, cached or `XNAT_TOKEN`
   session token, `auto_reauth` on). Entering the client as a context manager
-  logs in when a password is available and no token is cached yet. Each resource
-  type is reachable through a bound, cached accessor on the client
-  (`client.projects`, `client.sessions`, `client.downloads`, ...), and the
-  package root now re-exports the client, config, service classes,
+  logs in when a password is available and no token is cached yet. Each core
+  resource type is reachable through a bound, cached accessor on the client
+  (`client.projects`, `client.subjects`, `client.sessions`, `client.scans`,
+  `client.resources`, `client.downloads`, `client.uploads`,
+  `client.prearchive`, `client.pipelines`, `client.admin`, `client.hierarchy`,
+  `client.exam_uploads`), and the package root now re-exports the client,
+  config, service classes,
   resource/progress models, and the full exception hierarchy as the supported
-  public surface.
+  public surface. The top-level `xnatctl` namespace is now **Stable** and
+  semver-covered (`docs/adr/0014-promote-library-surface-to-stable.md`
+  supersedes 0012's Provisional tier); `xnatctl.core.*`/`xnatctl.services.*`
+  internals reached by importing the submodule directly stay Provisional.
+  README gains a "Use as a Python library" quickstart and exception-handling
+  example.
 
 **Fixes**
 

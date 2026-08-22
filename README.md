@@ -8,6 +8,39 @@ sessions, run processing pipelines, and perform administrative tasks -- all
 from your terminal, in the resource-centric style of `kubectl`:
 `xnatctl <resource> <action> [args]`.
 
+## Use as a Python library
+
+xnatctl is CLI-first, but the same client and service layer is fully
+importable, and the top-level `xnatctl` namespace is a semver-covered surface
+(see the [Stability policy](https://xnatctl.readthedocs.io/en/latest/stability.html)):
+
+```python
+import xnatctl
+
+with xnatctl.XNATClient.from_profile("prod") as client:
+    client.downloads.download_resource(
+        "XNAT_E00001", "DICOM", "./data", extract=True
+    )
+```
+
+`from_profile` resolves credentials from a saved config profile the same way
+the CLI does, and the client logs in on entry when a password is available and
+no session token is cached yet. The core resource types each have a bound
+accessor on the client -- `client.projects`, `client.subjects`,
+`client.sessions`, `client.scans`, `client.resources`, `client.downloads`,
+`client.uploads`, `client.prearchive`, `client.pipelines`, `client.admin`,
+`client.hierarchy`, `client.exam_uploads` -- and errors come back as typed
+exceptions:
+
+```python
+try:
+    client.projects.get("MYPROJECT")
+except xnatctl.SessionExpiredError:
+    ...  # re-authenticate and retry
+```
+
+Full reference: [API docs](https://xnatctl.readthedocs.io/en/latest/api/core.html).
+
 ## Get Started
 
 ### 1. Install
@@ -139,11 +172,12 @@ and non-interactive scripts.
   multiple workers (`--workers`) with real-time progress.
 - **Cached authentication** -- log in once and the session token is cached;
   commands re-authenticate automatically when stored credentials allow it.
-- **Pure HTTP** -- talks directly to the XNAT REST API via httpx. Where
-  [pyxnat](https://pyxnat.github.io/pyxnat/) and
-  [xnatpy](https://xnat.readthedocs.io/) are Python libraries to import into
-  your own code, xnatctl is a CLI-first tool for shell workflows -- and ships
-  as a single binary with no Python environment required.
+- **Pure HTTP** -- talks directly to the XNAT REST API via httpx, no
+  dependency on [pyxnat](https://pyxnat.github.io/pyxnat/) or
+  [xnatpy](https://xnat.readthedocs.io/). xnatctl is CLI-first -- and ships as
+  a single binary with no Python environment required -- but the same client
+  and services are also a supported Python library; see
+  [Use as a Python library](#use-as-a-python-library) above.
 
 ## Documentation
 
