@@ -315,3 +315,353 @@ class TestProjectCreate:
         mock_client.post.assert_called_once()
         call_kwargs = mock_client.post.call_args
         assert "accessibility" in str(call_kwargs)
+
+
+class TestProjectUsers:
+    """Tests for project users command."""
+
+    def test_users_json(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get_json.return_value = [
+            {"login": "jsmith", "GROUP_ID": "PROJ1_owner", "email": "j@example.org"},
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "users", "PROJ1", "--output", "json"])
+
+        assert result.exit_code == 0
+        assert "jsmith" in result.output
+        assert '"role": "owner"' in result.output
+        mock_client.get_json.assert_called_once_with("/data/projects/PROJ1/users")
+
+    def test_users_quiet_usernames(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get_json.return_value = [
+            {"login": "jsmith"},
+            {"login": "adoe"},
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "users", "PROJ1", "--quiet"])
+
+        assert result.exit_code == 0
+        lines = result.output.strip().splitlines()
+        assert lines[-2:] == ["jsmith", "adoe"]
+
+
+class TestProjectGrant:
+    """Tests for project grant command."""
+
+    def test_grant_puts_singular_group_id(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.put.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "project",
+                            "grant",
+                            "PROJ",
+                            "jsmith",
+                            "--role",
+                            "member",
+                            "--yes",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        mock_client.put.assert_called_once_with("/data/projects/PROJ/users/PROJ_member/jsmith")
+
+    def test_grant_invalid_role_lists_valid_roles(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(
+                        cli,
+                        ["project", "grant", "PROJ", "jsmith", "--role", "superadmin", "--yes"],
+                    )
+
+        assert result.exit_code != 0
+        assert (
+            "Invalid value for '--role': 'superadmin' is not one of "
+            "'owner', 'member', 'collaborator'." in result.output
+        )
+        mock_client.put.assert_not_called()
+
+    def test_grant_dry_run_no_http_call(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "project",
+                            "grant",
+                            "PROJ",
+                            "jsmith",
+                            "--role",
+                            "owner",
+                            "--dry-run",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        mock_client.put.assert_not_called()
+
+
+class TestProjectRevoke:
+    """Tests for project revoke command."""
+
+    def test_revoke_deletes_group_id_verbatim(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get_json.return_value = [{"login": "jsmith", "GROUP_ID": "PROJ_member"}]
+        mock_client.delete.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "revoke", "PROJ", "jsmith", "--yes"])
+
+        assert result.exit_code == 0
+        mock_client.delete.assert_called_once_with("/data/projects/PROJ/users/PROJ_member/jsmith")
+
+    def test_revoke_removes_from_every_group_a_multi_group_user_holds(
+        self, runner: CliRunner
+    ) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get_json.return_value = [
+            {"login": "jsmith", "GROUP_ID": "PROJ_member"},
+            {"login": "jsmith", "GROUP_ID": "PROJ_owner"},
+        ]
+        mock_client.delete.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "revoke", "PROJ", "jsmith", "--yes"])
+
+        assert result.exit_code == 0
+        assert mock_client.delete.call_count == 2
+
+    def test_revoke_dry_run_no_http_call(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(
+                        cli, ["project", "revoke", "PROJ", "jsmith", "--dry-run"]
+                    )
+
+        assert result.exit_code == 0
+        mock_client.get_json.assert_not_called()
+        mock_client.delete.assert_not_called()
+
+
+class TestProjectAccess:
+    """Tests for project access command."""
+
+    def test_access_get(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get.return_value = MagicMock(status_code=200, text="private")
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "access", "PROJ"])
+
+        assert result.exit_code == 0
+        assert "private" in result.output
+        mock_client.get.assert_called_once_with("/data/projects/PROJ/accessibility")
+
+    def test_access_get_does_not_require_yes(self, runner: CliRunner) -> None:
+        """A plain read must not demand confirmation."""
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get.return_value = MagicMock(status_code=200, text="private")
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "access", "PROJ"], input="")
+
+        assert result.exit_code == 0
+
+    def test_access_get_writes_no_audit_record(self, runner: CliRunner, isolate_audit_log) -> None:
+        """A read through a `confirm_destructive_when` command must not be audited."""
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get.return_value = MagicMock(status_code=200, text="private")
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "access", "PROJ"])
+
+        assert result.exit_code == 0
+        assert not isolate_audit_log.exists() or isolate_audit_log.read_text().strip() == ""
+
+    def test_access_set_puts_level(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.put.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(
+                        cli, ["project", "access", "PROJ", "--set", "private", "--yes"]
+                    )
+
+        assert result.exit_code == 0
+        mock_client.put.assert_called_once_with("/data/projects/PROJ/accessibility/private")
+
+    def test_access_set_writes_exactly_one_audit_record(
+        self, runner: CliRunner, isolate_audit_log
+    ) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.put.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(
+                        cli, ["project", "access", "PROJ", "--set", "private", "--yes"]
+                    )
+
+        assert result.exit_code == 0
+        lines = [line for line in isolate_audit_log.read_text().splitlines() if line.strip()]
+        assert len(lines) == 1
+
+    def test_access_set_dry_run_no_write(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(
+                        cli, ["project", "access", "PROJ", "--set", "private", "--dry-run"]
+                    )
+
+        assert result.exit_code == 0
+        mock_client.put.assert_not_called()
+        mock_client.get.assert_not_called()
+
+
+class TestProjectRequests:
+    """Tests for project requests command."""
+
+    def test_requests_list_hits_project_scoped_route(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get_json.return_value = [
+            {"par_id": "42", "login": "jsmith", "email": "j@example.org"},
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "requests", "PROJ"])
+
+        assert result.exit_code == 0
+        assert "jsmith" in result.output
+        mock_client.get_json.assert_called_once_with("/data/projects/PROJ/pars")
+        mock_client.put.assert_not_called()
+
+    def test_requests_list_writes_no_audit_record(
+        self, runner: CliRunner, isolate_audit_log
+    ) -> None:
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get_json.return_value = []
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "requests", "PROJ"])
+
+        assert result.exit_code == 0
+        assert not isolate_audit_log.exists() or isolate_audit_log.read_text().strip() == ""
+
+    def test_requests_has_no_approve_or_deny_options(self, runner: CliRunner) -> None:
+        """PAR resolution always acts on the CURRENT SESSION USER in stock XNAT
+        (ProjectAccessRequest.process()), not the request's actual invitee --
+        an admin "approving" someone else's PAR would add themselves to the
+        project instead. There is no safe admin-side resolution to offer, so
+        the command exposes no --approve/--deny at all.
+        """
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["project", "requests", "PROJ", "--approve", "42"])
+
+        assert result.exit_code != 0
+        assert "no such option" in result.output.lower()
+        mock_client.put.assert_not_called()
+
+    def test_requests_help_documents_no_resolution(self, runner: CliRunner) -> None:
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                result = runner.invoke(cli, ["project", "requests", "--help"])
+
+        assert result.exit_code == 0
+        assert "invitee" in result.output.lower() or "invitation" in result.output.lower()

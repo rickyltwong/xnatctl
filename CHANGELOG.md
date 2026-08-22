@@ -89,6 +89,26 @@ All notable changes to this project will be documented in this file.
 
 **Features**
 
+- **User lifecycle administration.** `admin user` gains `list` (`--active`
+  for only signed-in accounts), `show`, `enable`/`disable`, `roles`
+  (`--grant`/`--revoke` a site-wide role, or list with neither), `groups`
+  (list a user's group memberships), `remove` (drop a user from a project's
+  groups), and `kill-sessions` -- the fix-command for a shared/service
+  account that has exhausted its concurrent-session limit and started
+  failing every new login with 401s.
+- **Project access and membership.** `project` gains `users` (list members
+  and roles), `grant`/`revoke` (owner/member/collaborator role management --
+  a user found in more than one role is revoked from all of them), `access`
+  (get, or `--set public|protected|private`), and `requests PROJECT`
+  (read-only listing of a project's access requests, pending and resolved).
+  Approval/denial is intentionally not offered: XNAT resolves a project
+  access request against whichever account is signed in when the call is
+  made, not the account the request was addressed to, so there is no safe
+  way for an admin to accept or decline one on another user's behalf.
+- **Site config, plugins, and server info.** `admin site-config get [KEY]`
+  and `set KEY VALUE` read/write XNAT site configuration; `admin plugins`
+  lists installed plugins (`plugins show ID` for one); `admin version`
+  prints server build/version information (`-q` for the bare version string).
 - `session download` and `scan download` gain `--verify`, which checks every
   downloaded file's MD5 against the server's catalog checksum after the
   download completes -- extracted or still zipped, either way, and covering

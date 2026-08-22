@@ -243,12 +243,57 @@ class TestGetServerInfo:
     """Tests for AdminService.get_server_info."""
 
     def test_get_server_info(self, service: AdminService, mock_client: MagicMock) -> None:
-        """get_server_info returns version dict."""
-        mock_client.get.return_value = make_response({"version": "1.8.5"})
+        """get_server_info returns the full buildInfo document, version included."""
+        mock_client.get.return_value = make_response({"version": "1.8.5", "buildNumber": "42"})
 
         result = service.get_server_info()
 
         assert result["version"] == "1.8.5"
+        call_path = mock_client.get.call_args[0][0]
+        assert call_path == "/xapi/siteConfig/buildInfo"
+
+
+class TestListPlugins:
+    """Tests for AdminService.list_plugins."""
+
+    def test_list_plugins_array_response(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = [
+            {"id": "container-service", "name": "Container Service", "version": "3.1.0"},
+        ]
+
+        result = service.list_plugins()
+
+        assert result == [
+            {"id": "container-service", "name": "Container Service", "version": "3.1.0"}
+        ]
+        mock_client.get_json.assert_called_once_with("/xapi/plugins")
+
+    def test_list_plugins_normalizes_dict_response(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = {
+            "container-service": {"name": "Container Service", "version": "3.1.0"}
+        }
+
+        result = service.list_plugins()
+
+        assert result == [
+            {"id": "container-service", "name": "Container Service", "version": "3.1.0"}
+        ]
+
+
+class TestGetPlugin:
+    """Tests for AdminService.get_plugin."""
+
+    def test_get_plugin(self, service: AdminService, mock_client: MagicMock) -> None:
+        mock_client.get_json.return_value = {"id": "container-service", "version": "3.1.0"}
+
+        result = service.get_plugin("container-service")
+
+        assert result["version"] == "3.1.0"
+        mock_client.get_json.assert_called_once_with("/xapi/plugins/container-service")
 
 
 class TestGetSiteConfig:
@@ -271,20 +316,64 @@ class TestGetSiteConfig:
         service.get_site_config(key="siteId")
 
         call_path = mock_client.get.call_args[0][0]
-        assert "/xapi/siteConfig/siteId" in call_path
+        assert call_path == "/xapi/siteConfig/siteId"
+
+    def test_get_specific_config_returns_bare_scalar(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """A single property can be a bare scalar, not a dict -- xnat-web's
+        getSpecifiedSiteConfigProperty returns a plain Object.
+        """
+        mock_client.get.return_value = make_response("XNAT")
+
+        result = service.get_site_config(key="siteId")
+
+        assert result == "XNAT"
 
 
 class TestSetSiteConfig:
-    """Tests for AdminService.set_site_config."""
+    """Tests for AdminService.set_site_config.
 
-    def test_set_site_config(self, service: AdminService, mock_client: MagicMock) -> None:
-        """set_site_config issues PUT with json value."""
-        mock_client.put.return_value = make_response("", content_type="text/plain")
+    Confirmed against xnat-web's ``SiteConfigApi.setSiteConfigProperty``:
+    it is mapped ``method = POST`` -- there is no PUT route for a single
+    site-config property. Its ``@RequestBody`` is a plain ``String`` read by
+    ``StringHttpMessageConverter`` (registered before Jackson in
+    ``WebConfig.java``, and it accepts any media type, so it always wins for
+    a ``String`` body regardless of Content-Type) -- the body must be the
+    raw value, not a JSON-encoded one, or XNAT stores it literally quoted.
+    """
+
+    def test_set_site_config_posts_raw_string_body(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """set_site_config issues POST (not PUT) with the raw string as the body,
+        not JSON -- json=value would arrive as the literally-quoted
+        '"NEW_XNAT"' since XNAT's string converter never JSON-decodes it.
+        """
+        mock_client.post.return_value = make_response("", content_type="text/plain")
 
         assert service.set_site_config("siteId", "NEW_XNAT") is True
-        call_path = mock_client.put.call_args[0][0]
-        assert "/xapi/siteConfig/siteId" in call_path
-        assert mock_client.put.call_args[1]["json"] == "NEW_XNAT"
+        call_path = mock_client.post.call_args[0][0]
+        assert call_path == "/xapi/siteConfig/siteId"
+        call_kwargs = mock_client.post.call_args[1]
+        assert call_kwargs["content"] == "NEW_XNAT"
+        assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
+        assert "json" not in call_kwargs
+        mock_client.put.assert_not_called()
+
+    def test_set_site_config_boolean_like_string_arrives_unquoted(
+        self, service: AdminService, mock_client: MagicMock
+    ) -> None:
+        """The exact bug this fixes: a boolean-like value ('true') sent via
+        json= would have arrived as the literal 6-character '"true"',
+        breaking Boolean.parseBoolean-style exact-match handling server-side.
+        """
+        mock_client.post.return_value = make_response("", content_type="text/plain")
+
+        service.set_site_config("someFlag", "true")
+
+        call_kwargs = mock_client.post.call_args[1]
+        assert call_kwargs["content"] == "true"
 
 
 class TestAdminRawAccessors:

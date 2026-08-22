@@ -303,25 +303,69 @@ class AdminService(BaseService):
         return self._extract_results(data)
 
     def get_server_info(self) -> dict[str, Any]:
-        """Get XNAT server information.
+        """Get XNAT server build/version information.
 
         Returns:
-            Server info dict with version, build info, etc.
+            Full build-info document (version, build number, build date, ...).
+            ``version`` stays a top-level key, so existing callers reading
+            ``info["version"]`` keep working after the widening from the old
+            version-only endpoint.
         """
-        path = "/xapi/siteConfig/buildInfo/version"
+        path = "/xapi/siteConfig/buildInfo"
         return cast(dict[str, Any], self._get(path))
+
+    def list_plugins(self) -> list[dict[str, Any]]:
+        """List installed XNAT plugins.
+
+        Returns:
+            List of plugin dicts. ``GET /xapi/plugins`` returns a JSON array
+            on some XNAT versions and a JSON object keyed by plugin ID on
+            others -- both are normalized to rows here, with the key folded
+            in as ``id`` when a dict value carries none.
+        """
+        data = self.client.get_json("/xapi/plugins")
+
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            rows: list[dict[str, Any]] = []
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    row = dict(value)
+                    row.setdefault("id", key)
+                    rows.append(row)
+                else:
+                    rows.append({"id": key, "value": value})
+            return rows
+        return []
+
+    def get_plugin(self, plugin_id: str) -> dict[str, Any]:
+        """Get one installed plugin's details.
+
+        Args:
+            plugin_id: Plugin ID.
+
+        Returns:
+            Plugin details dict, or an empty dict if not found/not a JSON object.
+        """
+        data = self.client.get_json(f"/xapi/plugins/{quote_path_segment(plugin_id)}")
+        return data if isinstance(data, dict) else {}
 
     def get_site_config(
         self,
         key: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Get site configuration.
 
         Args:
             key: Specific config key (or all if None)
 
         Returns:
-            Configuration dict
+            The full configuration dict when ``key`` is None. With ``key``,
+            whatever that one property holds -- xnat-web's
+            ``getSpecifiedSiteConfigProperty`` returns a plain ``Object``, so
+            a single property can just as easily be a bool, a number, or a
+            nested structure as a string; there is no dict to cast to.
         """
         # `is not None`, not truthy: `key=""` is a caller mistake, not "get
         # everything" -- it must not silently widen to the whole site
@@ -331,7 +375,7 @@ class AdminService(BaseService):
         else:
             path = "/xapi/siteConfig"
 
-        return cast(dict[str, Any], self._get(path))
+        return self._get(path)
 
     # -------------------------------------------------------------------------
     # Raw accessors used by the CLI
@@ -392,7 +436,22 @@ class AdminService(BaseService):
 
         Returns:
             True if successful
+
+        Confirmed against xnat-web's ``SiteConfigApi.setSiteConfigProperty``:
+        it is mapped ``method = POST``, not PUT -- there is no PUT route for
+        a single site-config property. Its ``@RequestBody`` is a plain
+        ``String``, and ``WebConfig.java`` registers ``StringHttpMessageConverter``
+        BEFORE the Jackson converter -- Spring resolves body converters in
+        registration order and the string converter accepts any media type,
+        so it wins regardless of Content-Type and never JSON-decodes the
+        body. Sending ``json=value`` would therefore store the value
+        literally quoted (``"MyXNAT"``, quote characters and all) instead of
+        the plain string XNAT expects, and a boolean-like value would arrive
+        as the literal four-character string ``"true"`` rather than ``true``,
+        breaking any exact-match handling on the server side. The body is
+        POSTed as a raw string with an explicit ``text/plain`` Content-Type
+        instead.
         """
         path = f"/xapi/siteConfig/{quote_path_segment(key)}"
-        self._put(path, json=value)
+        self._post(path, content=str(value), headers={"Content-Type": "text/plain"})
         return True

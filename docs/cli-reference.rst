@@ -225,6 +225,11 @@ commands you run after authenticating.
 - ``project list`` -- List all projects you have access to
 - ``project show`` -- Display detailed information about a specific project
 - ``project create`` -- Create a new project on the server
+- ``project users`` -- List a project's users and roles
+- ``project grant`` -- Grant a user a role (owner/member/collaborator) on a project
+- ``project revoke`` -- Revoke a user's access to a project
+- ``project access`` -- Get, or ``--set``, a project's accessibility level
+- ``project requests`` -- List a project's access requests, pending and resolved
 - ``project transfer`` -- Transfer project data to another XNAT instance
 - ``project transfer-check`` -- Pre-flight connectivity and permissions check
 - ``project transfer-status`` -- Show status of the last transfer run
@@ -247,6 +252,33 @@ Transfer a project to another XNAT server:
    $ xnatctl project transfer-check -P SRC --dest-profile staging --dest-project DST
    $ xnatctl project transfer -P SRC --dest-profile staging --dest-project DST --dry-run
    $ xnatctl project transfer -P SRC --dest-profile staging --dest-project DST --yes
+
+Manage project membership and accessibility:
+
+.. code-block:: console
+
+   $ xnatctl project users MYPROJ
+   $ xnatctl project grant MYPROJ jsmith --role member --yes
+   $ xnatctl project revoke MYPROJ jsmith --yes
+   $ xnatctl project access MYPROJ
+   $ xnatctl project access MYPROJ --set protected --yes
+
+List a project's access requests -- both pending and already-resolved, with
+the ``approved`` column showing state:
+
+.. code-block:: console
+
+   $ xnatctl project requests MYPROJ
+   $ xnatctl project requests MYPROJ -o json
+
+.. note::
+
+   There is no ``--approve``/``--deny`` here. A project access request is an
+   invitation, and XNAT resolves it against whichever account is signed in
+   when the resolution call is made -- not the account the request was
+   actually addressed to. An admin cannot safely accept or decline a
+   request on another user's behalf; the invited user has to log in and
+   respond to it themselves.
 
 .. tip::
 
@@ -559,7 +591,17 @@ require elevated privileges on the XNAT server.
 
 - ``admin refresh-catalogs`` -- Refresh catalog XMLs for experiments in a project
 - ``admin user add`` -- Add a user to one or more XNAT groups
+- ``admin user list`` -- List XNAT user accounts (``--active`` for signed-in only)
+- ``admin user show`` -- Show details for one user
+- ``admin user enable`` / ``admin user disable`` -- Enable or disable a user account
+- ``admin user roles`` -- List, ``--grant``, or ``--revoke`` a user's site-wide roles
+- ``admin user remove`` -- Remove a user from a project's groups
+- ``admin user kill-sessions`` -- Terminate a user's active sessions
+- ``admin user groups`` -- List the XNAT groups a user belongs to
 - ``admin audit`` -- View the audit log (depends on server configuration)
+- ``admin site-config get`` / ``admin site-config set`` -- Read or write site configuration
+- ``admin plugins`` -- List installed plugins (``plugins show ID`` for one)
+- ``admin version`` -- Show XNAT server build/version information
 
 Refresh catalogs with checksum generation and stale entry cleanup:
 
@@ -574,6 +616,29 @@ Add a user to project groups and view audit entries:
 
    $ xnatctl admin user add jsmith --projects PROJ1,PROJ2 --role member
    $ xnatctl admin audit --project MYPROJ --limit 20
+
+Manage a user's account and site-wide roles:
+
+.. code-block:: console
+
+   $ xnatctl admin user list --active
+   $ xnatctl admin user disable jsmith --yes
+   $ xnatctl admin user roles jsmith --grant Administrator --yes
+
+.. tip::
+
+   ``admin user kill-sessions`` is the fix for a shared/service account that
+   has exhausted its concurrent-session limit and started failing every new
+   login with 401s -- it clears the stale sessions and frees the slots back up.
+
+Read and write site configuration, and check installed plugins and server version:
+
+.. code-block:: console
+
+   $ xnatctl admin site-config get siteId
+   $ xnatctl admin site-config set siteId MyXNAT --yes
+   $ xnatctl admin plugins
+   $ xnatctl admin version -q
 
 .. note::
 

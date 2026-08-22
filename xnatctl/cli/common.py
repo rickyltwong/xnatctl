@@ -362,6 +362,14 @@ def require_auth(f: F) -> F:
 # canonical secret-shaped key set plus the CLI's own credential flags.
 _AUDIT_SECRET_PARAMS = SECRET_QUERY_KEYS | {"dest_pass", "dest_password", "passphrase"}
 
+# Parameters whose value is replaced with "***" rather than omitted outright --
+# the audit record should show that something was set without ever revealing
+# what. "value" covers `admin site-config set KEY VALUE`: VALUE can be an
+# arbitrary site-config setting (an SMTP password, an OAuth client secret,
+# ...), and the KEY name that would hint at that is unpredictable across
+# deployments, so it is always masked rather than guessed at from the key.
+_AUDIT_MASKED_PARAMS = frozenset({"value"})
+
 # Parameters that describe *how* a command ran rather than *what* it touched.
 _AUDIT_UNINTERESTING_PARAMS = frozenset(
     {"yes", "dry_run", "output_format", "quiet", "verbose", "profile"}
@@ -373,14 +381,18 @@ def _audit_details(params: dict[str, Any]) -> dict[str, Any]:
 
     A denylist rather than an allowlist: the interesting fields differ per
     command, and an allowlist would silently record nothing for any command
-    added later. Secret-shaped names are dropped outright, and every surviving
-    string is redacted on the way out.
+    added later. Secret-shaped names are dropped outright, masked names are
+    replaced with "***" (so the record shows something was set without
+    revealing what), and every surviving string is redacted on the way out.
     """
     details: dict[str, Any] = {}
     for key, value in params.items():
         if value is None or value is False:
             continue
         if key in _AUDIT_SECRET_PARAMS or key in _AUDIT_UNINTERESTING_PARAMS:
+            continue
+        if key in _AUDIT_MASKED_PARAMS:
+            details[key] = "***"
             continue
         details[key] = value
     return details
@@ -472,6 +484,64 @@ def confirm_destructive(message: str) -> Callable[[F], F]:
                 raise
             finally:
                 # In a finally so a command that exits mid-way is still recorded.
+                _record_audit(dry_run=dry_run, confirmed=yes, params=dict(kwargs), error=error)
+
+        return wrapper  # type: ignore
+
+    return decorator
+
+
+def confirm_destructive_when(
+    predicate: Callable[[dict[str, Any]], bool], message: str
+) -> Callable[[F], F]:
+    """Like :func:`confirm_destructive`, gated on whether this invocation mutates.
+
+    Some commands are a plain read in their default form and only become
+    destructive when a specific option is present (``project access PROJECT``
+    is a GET; ``project access PROJECT --set public`` is a PUT). ``--yes`` and
+    ``--dry-run`` are still added unconditionally, so the flags exist and
+    behave predictably in ``--help``, but the confirmation prompt, the
+    dry-run notice, and the audit write are all skipped when
+    ``predicate(kwargs)`` is False -- a read is not a destructive operation
+    and must not demand ``--yes`` or grow an audit entry.
+
+    Args:
+        predicate: Called with the command's keyword arguments (after
+            ``yes``/``dry_run`` are pulled out); True means this invocation
+            mutates and should be gated like :func:`confirm_destructive`.
+        message: Confirmation prompt shown when the predicate is True.
+    """
+
+    def decorator(f: F) -> F:
+        """Wrap a command to conditionally enforce confirmation/dry-run behavior."""
+
+        @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+        @click.option("--dry-run", is_flag=True, help="Preview without making changes")
+        @wraps(f)
+        def wrapper(*args: Any, yes: bool, dry_run: bool, **kwargs: Any) -> Any:
+            """Gate on the predicate, then behave exactly like confirm_destructive."""
+            if not predicate(kwargs):
+                kwargs["dry_run"] = False
+                return f(*args, **kwargs)
+
+            if dry_run:
+                click.echo("[DRY-RUN] Preview mode - no changes will be made", err=True)
+                kwargs["dry_run"] = True
+            elif not yes:
+                click.confirm(message, abort=True, err=True)
+                kwargs["dry_run"] = False
+            else:
+                kwargs["dry_run"] = False
+
+            error: str | None = None
+            try:
+                return f(*args, **kwargs)
+            except BaseException as exc:
+                click_ctx = click.get_current_context(silent=True)
+                stashed = click_ctx.meta.get(AUDIT_ERROR_KEY) if click_ctx else None
+                error = stashed or type(exc).__name__
+                raise
+            finally:
                 _record_audit(dry_run=dry_run, confirmed=yes, params=dict(kwargs), error=error)
 
         return wrapper  # type: ignore
@@ -674,6 +744,26 @@ def validate_local_path_option_cb(ctx: click.Context, param: click.Parameter, va
             validate_local_path_component(value, option)
         except InputValidationError as e:
             raise click.ClickException(str(e)) from e
+    return value
+
+
+def reject_blank_option_value(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> str | None:
+    """Click callback: reject an explicitly empty/whitespace-only option value.
+
+    ``None`` (the option was not given) passes through unchanged -- only a
+    user-supplied blank string is rejected. This matters most on an option
+    that gates a ``confirm_destructive_when`` predicate written as
+    ``is not None`` (present means mutating) alongside a command body that
+    checks plain truthiness (``not value`` means absent): an empty string
+    satisfies the first and fails the second, so the confirmation
+    prompt/audit fires for what actually runs as a harmless read. Wiring
+    this callback removes the blank state before either check ever sees it.
+    """
+    del ctx, param
+    if value is not None and value.strip() == "":
+        raise click.BadParameter("cannot be empty or whitespace-only")
     return value
 
 

@@ -340,3 +340,698 @@ class TestAdminAudit:
                     result = runner.invoke(cli, ["admin", "audit"])
 
         assert result.exit_code != 0
+
+
+class TestAdminUserList:
+    """Tests for admin user list."""
+
+    def test_list_default_hits_profiles_endpoint(self, runner: CliRunner) -> None:
+        """The bare /xapi/users route returns List[str] (usernames only) on real
+        XNAT -- the default listing must hit /xapi/users/profiles instead, or
+        every column here (email/enabled/verified) renders blank/crashes.
+        """
+        client = _mock_client()
+        client.get_json.return_value = [
+            {"username": "jsmith", "email": "j@example.org", "enabled": True, "verified": True},
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "user", "list", "--output", "json"])
+
+        assert result.exit_code == 0
+        assert "jsmith" in result.output
+        client.get_json.assert_called_once_with("/xapi/users/profiles")
+
+    def test_list_active_hits_active_endpoint_and_parses(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = [
+            {"username": "jsmith", "email": "j@example.org", "enabled": True, "verified": True},
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["admin", "user", "list", "--active", "--output", "json"]
+                    )
+
+        assert result.exit_code == 0
+        assert "jsmith" in result.output
+        client.get_json.assert_called_once_with("/xapi/users/active")
+
+    def test_list_quiet_usernames_only(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = [{"username": "jsmith"}, {"username": "adoe"}]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "user", "list", "--quiet"])
+
+        assert result.exit_code == 0
+        lines = result.output.strip().splitlines()
+        assert lines[-2:] == ["jsmith", "adoe"]
+
+
+class TestAdminUserShow:
+    def test_show(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = {"username": "jsmith", "email": "j@example.org"}
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "user", "show", "jsmith"])
+
+        assert result.exit_code == 0
+        assert "jsmith" in result.output
+
+
+class TestAdminUserEnableDisable:
+    def test_disable_puts_false(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.put.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "user", "disable", "jsmith", "--yes"])
+
+        assert result.exit_code == 0
+        client.put.assert_called_once_with("/xapi/users/jsmith/enabled/false")
+
+    def test_enable_puts_true(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.put.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "user", "enable", "jsmith", "--yes"])
+
+        assert result.exit_code == 0
+        client.put.assert_called_once_with("/xapi/users/jsmith/enabled/true")
+
+    def test_disable_dry_run_makes_no_http_call(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "user", "disable", "jsmith", "--dry-run"])
+
+        assert result.exit_code == 0
+        client.put.assert_not_called()
+        client.delete.assert_not_called()
+
+
+class TestAdminUserRoles:
+    def test_list_roles_plain(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = ["Administrator"]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "user", "roles", "jsmith"])
+
+        assert result.exit_code == 0
+        assert "Administrator" in result.output
+        client.put.assert_not_called()
+
+    def test_blank_grant_rejected_not_treated_as_absent(self, runner: CliRunner) -> None:
+        """`--grant ""` must fail cleanly rather than silently falling through to
+        the plain-list branch.
+        """
+        client = _mock_client()
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["admin", "user", "roles", "jsmith", "--grant", "", "--yes"]
+                    )
+
+        assert result.exit_code != 0
+        client.get_json.assert_not_called()
+        client.put.assert_not_called()
+
+    def test_blank_revoke_rejected_not_treated_as_absent(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["admin", "user", "roles", "jsmith", "--revoke", "", "--yes"]
+                    )
+
+        assert result.exit_code != 0
+        client.get_json.assert_not_called()
+        client.delete.assert_not_called()
+
+    def test_grant_puts_role_path(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.put.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "user",
+                            "roles",
+                            "jsmith",
+                            "--grant",
+                            "Administrator",
+                            "--yes",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        client.put.assert_called_once_with("/xapi/users/jsmith/roles/Administrator")
+
+    def test_revoke_deletes_role_path(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.delete.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "user",
+                            "roles",
+                            "jsmith",
+                            "--revoke",
+                            "Administrator",
+                            "--yes",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        client.delete.assert_called_once_with("/xapi/users/jsmith/roles/Administrator")
+
+    def test_grant_dry_run_no_http_call(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "user",
+                            "roles",
+                            "jsmith",
+                            "--grant",
+                            "Administrator",
+                            "--dry-run",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        client.put.assert_not_called()
+
+    def test_revoke_dry_run_no_http_call(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "user",
+                            "roles",
+                            "jsmith",
+                            "--revoke",
+                            "Administrator",
+                            "--dry-run",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        client.delete.assert_not_called()
+
+    def test_grant_and_revoke_mutually_exclusive(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "user",
+                            "roles",
+                            "jsmith",
+                            "--grant",
+                            "A",
+                            "--revoke",
+                            "B",
+                            "--yes",
+                        ],
+                    )
+
+        assert result.exit_code != 0
+        assert "--grant and --revoke are mutually exclusive" in result.output
+        client.put.assert_not_called()
+        client.delete.assert_not_called()
+
+    def test_grant_and_revoke_mutually_exclusive_writes_no_audit_record(
+        self, runner: CliRunner, isolate_audit_log
+    ) -> None:
+        """The mutual-exclusion error fires from the confirm_destructive_when
+        predicate, before the confirm/audit gate -- an invalid combination
+        must not grow an audit entry even with --yes.
+        """
+        client = _mock_client()
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "user",
+                            "roles",
+                            "jsmith",
+                            "--grant",
+                            "A",
+                            "--revoke",
+                            "B",
+                            "--yes",
+                        ],
+                    )
+
+        assert not isolate_audit_log.exists() or isolate_audit_log.read_text().strip() == ""
+
+    def test_list_does_not_require_yes(self, runner: CliRunner) -> None:
+        """A plain read must not demand confirmation just because the command carries it."""
+        client = _mock_client()
+        client.get_json.return_value = []
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "user", "roles", "jsmith"])
+
+        assert result.exit_code == 0
+
+    def test_list_writes_no_audit_record(self, runner: CliRunner, isolate_audit_log) -> None:
+        client = _mock_client()
+        client.get_json.return_value = []
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    runner.invoke(cli, ["admin", "user", "roles", "jsmith"])
+
+        assert not isolate_audit_log.exists() or isolate_audit_log.read_text().strip() == ""
+
+    def test_grant_writes_exactly_one_audit_record(
+        self, runner: CliRunner, isolate_audit_log
+    ) -> None:
+        client = _mock_client()
+        client.put.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "user",
+                            "roles",
+                            "jsmith",
+                            "--grant",
+                            "Administrator",
+                            "--yes",
+                        ],
+                    )
+
+        lines = [line for line in isolate_audit_log.read_text().splitlines() if line.strip()]
+        assert len(lines) == 1
+
+
+class TestAdminUserGroups:
+    def test_groups_lists_group_ids(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = ["PROJ01_owner", "PROJ02_member"]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "user", "groups", "jsmith"])
+
+        assert result.exit_code == 0
+        assert "PROJ01_owner" in result.output
+        client.get_json.assert_called_once_with("/xapi/users/jsmith/groups")
+
+
+class TestAdminUserKillSessions:
+    def test_kill_sessions_deletes_active_path(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.delete.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["admin", "user", "kill-sessions", "jsmith", "--yes"]
+                    )
+
+        assert result.exit_code == 0
+        client.delete.assert_called_once_with("/xapi/users/active/jsmith")
+
+    def test_kill_sessions_dry_run_no_http_call(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["admin", "user", "kill-sessions", "jsmith", "--dry-run"]
+                    )
+
+        assert result.exit_code == 0
+        client.delete.assert_not_called()
+
+
+class TestAdminUserRemove:
+    """Tests for admin user remove.
+
+    Delegates to ProjectService.revoke -- the same group-resolution DELETE
+    ``project revoke`` uses -- rather than AdminService.remove_user_from_groups,
+    whose DELETE path (/data/projects/{P}/users/{username}) is not a real
+    modifiable route in stock XNAT (that single-segment path is the read-only
+    listing route; mutation needs the GROUP_ID segment).
+    """
+
+    def test_remove_from_project(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = [{"login": "jsmith", "GROUP_ID": "TESTPROJ_member"}]
+        client.delete.return_value = MagicMock(status_code=200)
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "user",
+                            "remove",
+                            "jsmith",
+                            "--project",
+                            "TESTPROJ",
+                            "--yes",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        client.get_json.assert_called_once_with("/data/projects/TESTPROJ/users")
+        client.delete.assert_called_once_with(
+            "/data/projects/TESTPROJ/users/TESTPROJ_member/jsmith"
+        )
+
+    def test_remove_dry_run_no_http_call(self, runner: CliRunner) -> None:
+        client = _mock_client()
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "user",
+                            "remove",
+                            "jsmith",
+                            "--project",
+                            "TESTPROJ",
+                            "--dry-run",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        client.get_json.assert_not_called()
+        client.delete.assert_not_called()
+
+
+class TestAdminSiteConfig:
+    def test_get_key_hits_property_path(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get.return_value = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json=lambda: {"value": "MyXNAT"},
+        )
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "site-config", "get", "siteId"])
+
+        assert result.exit_code == 0
+        client.get.assert_called_once_with("/xapi/siteConfig/siteId")
+
+    def test_set_with_yes_posts_raw_string_body(self, runner: CliRunner) -> None:
+        """Confirmed against xnat-web's SiteConfigApi: setSiteConfigProperty is
+        mapped POST, not PUT, and its @RequestBody is a plain String read by
+        StringHttpMessageConverter (registered before Jackson in
+        WebConfig.java) -- json="MyXNAT" would arrive literally quoted
+        ('"MyXNAT"') since that converter never JSON-decodes the body. The
+        body must be the raw value with a text/plain Content-Type instead.
+        """
+        client = _mock_client()
+        client.post.return_value = MagicMock(
+            status_code=200,
+            headers={"content-type": "text/plain"},
+            text="",
+        )
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["admin", "site-config", "set", "siteId", "MyXNAT", "--yes"]
+                    )
+
+        assert result.exit_code == 0
+        client.post.assert_called_once_with(
+            "/xapi/siteConfig/siteId",
+            content="MyXNAT",
+            headers={"Content-Type": "text/plain"},
+        )
+        client.put.assert_not_called()
+
+    def test_set_dry_run_no_write(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get.return_value = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json=lambda: "OldXNAT",
+        )
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["admin", "site-config", "set", "siteId", "MyXNAT", "--dry-run"]
+                    )
+
+        assert result.exit_code == 0
+        client.put.assert_not_called()
+        client.post.assert_not_called()
+
+    def test_set_dry_run_masks_secret_shaped_key(self, runner: CliRunner) -> None:
+        """Neither the current nor the new value may appear in the preview when
+        the key name looks secret-shaped (password/secret/token/key).
+        """
+        client = _mock_client()
+        client.get.return_value = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json=lambda: "hunter1",
+        )
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "site-config",
+                            "set",
+                            "emailSmtpPassword",
+                            "hunter2",
+                            "--dry-run",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        assert "hunter1" not in result.output
+        assert "hunter2" not in result.output
+        assert "***" in result.output
+
+    def test_set_writes_masked_value_to_audit_log(
+        self, runner: CliRunner, isolate_audit_log
+    ) -> None:
+        """The audit record must never carry the plaintext value, regardless of
+        whether the key name looks secret-shaped -- the key naming convention
+        is unpredictable across deployments, so the value is always masked.
+        """
+        client = _mock_client()
+        client.post.return_value = MagicMock(
+            status_code=200,
+            headers={"content-type": "text/plain"},
+            text="",
+        )
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    runner.invoke(
+                        cli, ["admin", "site-config", "set", "siteId", "hunter2", "--yes"]
+                    )
+
+        audit_text = isolate_audit_log.read_text()
+        assert "hunter2" not in audit_text
+        assert '"value": "***"' in audit_text
+
+    def test_set_success_line_masks_secret_shaped_key(self, runner: CliRunner) -> None:
+        """The value must not leak into the SUCCESS line either -- terminals and
+        CI logs persist it just as durably as the audit log does.
+        """
+        client = _mock_client()
+        client.post.return_value = MagicMock(
+            status_code=200,
+            headers={"content-type": "text/plain"},
+            text="",
+        )
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "site-config",
+                            "set",
+                            "emailSmtpPassword",
+                            "hunter2",
+                            "--yes",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        assert "hunter2" not in result.output
+        assert "***" in result.output
+        client.post.assert_called_once_with(
+            "/xapi/siteConfig/emailSmtpPassword",
+            content="hunter2",
+            headers={"Content-Type": "text/plain"},
+        )
+
+    def test_set_success_line_shows_non_secret_value(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.post.return_value = MagicMock(
+            status_code=200,
+            headers={"content-type": "text/plain"},
+            text="",
+        )
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["admin", "site-config", "set", "siteId", "MyXNAT", "--yes"]
+                    )
+
+        assert result.exit_code == 0
+        assert "MyXNAT" in result.output
+
+    @pytest.mark.parametrize("key", ["uiNewUserCaptchaPrivate", "someRecaptchaKey"])
+    def test_dry_run_masks_expanded_secret_pattern(self, runner: CliRunner, key: str) -> None:
+        """The secret-key pattern also covers 'private' and 'captcha', not just
+        password/secret/token/key.
+        """
+        client = _mock_client()
+        client.get.return_value = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json=lambda: "old-value",
+        )
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["admin", "site-config", "set", key, "new-value", "--dry-run"]
+                    )
+
+        assert result.exit_code == 0
+        assert "old-value" not in result.output
+        assert "new-value" not in result.output
+        assert "***" in result.output
+
+
+class TestAdminPlugins:
+    def test_plugins_json_output(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = [
+            {"id": "container-service", "name": "Container Service", "version": "3.1.0"},
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "plugins", "--output", "json"])
+
+        assert result.exit_code == 0
+        assert "container-service" in result.output
+
+    def test_plugins_show(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = {"id": "container-service", "version": "3.1.0"}
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "plugins", "show", "container-service"])
+
+        assert result.exit_code == 0
+        assert "container-service" in result.output
+
+
+class TestAdminVersion:
+    def test_version_quiet_bare_string(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get.return_value = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json=lambda: {"version": "1.9.2"},
+        )
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "version", "--quiet"])
+
+        assert result.exit_code == 0
+        assert result.output.strip().splitlines()[-1] == "1.9.2"

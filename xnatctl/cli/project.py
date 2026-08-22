@@ -9,6 +9,7 @@ import click
 from xnatctl.cli.common import (
     Context,
     confirm_destructive,
+    confirm_destructive_when,
     create_dest_client,
     dest_profile_options,
     global_options,
@@ -162,6 +163,230 @@ def project_create(
     else:
         print_error(f"Failed to create project: {resp.text}")
         raise SystemExit(1)
+
+
+def _display_role(project: str, group_id: str) -> str:
+    """Strip a project's ``{project}_`` prefix off a GROUP_ID for display.
+
+    ``owner``/``member``/``collaborator`` reads better in a table than the
+    raw XNAT group ID (``PROJ01_owner``). A group ID that doesn't carry the
+    expected prefix (a server-specific group, say) is shown verbatim rather
+    than mangled.
+    """
+    prefix = f"{project}_"
+    return group_id[len(prefix) :] if group_id.startswith(prefix) else group_id
+
+
+@project.command("users")
+@click.argument("project")
+@global_options
+@handle_errors
+@require_auth
+def project_users(ctx: Context, project: str) -> None:
+    """List a project's users and roles.
+
+    A user with more than one role on the project appears once per role.
+
+    \b
+    Example:
+        xnatctl project users MYPROJ
+        xnatctl project users MYPROJ -o json
+        xnatctl project users MYPROJ -q  # usernames only
+    """
+    from xnatctl.core.validation import validate_project_id
+
+    project = validate_project_id(project)
+    service = ProjectService(ctx.get_client())
+    rows = service.list_users(project)
+
+    output = []
+    for r in rows:
+        username = r.get("login") or r.get("username") or r.get("ID") or ""
+        group_id = r.get("GROUP_ID") or r.get("groupname") or r.get("group") or ""
+        output.append(
+            {
+                "username": username,
+                "role": _display_role(project, group_id) if group_id else "",
+                "email": r.get("email", ""),
+            }
+        )
+
+    print_output(
+        output,
+        format=ctx.output_format,
+        columns=["username", "role", "email"],
+        column_labels={"username": "Username", "role": "Role", "email": "Email"},
+        quiet=ctx.quiet,
+        id_field="username",
+    )
+
+
+@project.command("grant")
+@click.argument("project")
+@click.argument("username")
+@click.option(
+    "--role",
+    type=click.Choice(["owner", "member", "collaborator"]),
+    required=True,
+    help="Role to grant",
+)
+@confirm_destructive("Grant this user access to the project?")
+@global_options
+@handle_errors
+@require_auth
+def project_grant(ctx: Context, project: str, username: str, role: str, dry_run: bool) -> None:
+    """Grant a user a role on a project.
+
+    Batch mode (granting a role from a file of usernames) is not included
+    here -- it depends on batch-input plumbing that has not landed yet.
+
+    \b
+    Example:
+        xnatctl project grant MYPROJ jsmith --role member --yes
+        xnatctl project grant MYPROJ jsmith --role owner --dry-run
+    """
+    from xnatctl.core.validation import validate_project_id
+
+    project = validate_project_id(project)
+
+    if dry_run:
+        click.echo(f"[DRY-RUN] Would grant {username} the {role} role on {project}", err=True)
+        return
+
+    service = ProjectService(ctx.get_client())
+    service.grant(project, username, role)
+    print_success(f"Granted {username} the {role} role on {project}")
+
+
+@project.command("revoke")
+@click.argument("project")
+@click.argument("username")
+@confirm_destructive("Revoke this user's access to the project?")
+@global_options
+@handle_errors
+@require_auth
+def project_revoke(ctx: Context, project: str, username: str, dry_run: bool) -> None:
+    """Revoke a user's access to a project.
+
+    Removes the user from every group they hold on the project -- almost
+    always one, but a user found in more than one is removed from all of them.
+
+    \b
+    Example:
+        xnatctl project revoke MYPROJ jsmith --yes
+    """
+    from xnatctl.core.validation import validate_project_id
+
+    project = validate_project_id(project)
+
+    if dry_run:
+        click.echo(f"[DRY-RUN] Would revoke {username}'s access to {project}", err=True)
+        return
+
+    service = ProjectService(ctx.get_client())
+    removed = service.revoke(project, username)
+    roles = ", ".join(_display_role(project, g) for g in removed)
+    print_success(f"Revoked {username}'s access to {project} (removed from: {roles})")
+
+
+@project.command("access")
+@click.argument("project")
+@click.option(
+    "--set",
+    "set_level",
+    type=click.Choice(["public", "protected", "private"]),
+    help="Set the accessibility level",
+)
+@confirm_destructive_when(
+    lambda kw: kw.get("set_level") is not None,
+    "Change this project's accessibility level?",
+)
+@global_options
+@handle_errors
+@require_auth
+def project_access(ctx: Context, project: str, set_level: str | None, dry_run: bool) -> None:
+    """Get or set a project's accessibility level.
+
+    \b
+    Example:
+        xnatctl project access MYPROJ
+        xnatctl project access MYPROJ --set protected --yes
+        xnatctl project access MYPROJ --set private --dry-run
+    """
+    from xnatctl.core.validation import validate_project_id
+
+    project = validate_project_id(project)
+    service = ProjectService(ctx.get_client())
+
+    if set_level is None:
+        level = service.get_accessibility(project)
+        print_output(
+            {"project": project, "accessibility": level},
+            format=ctx.output_format,
+            quiet=ctx.quiet,
+            id_field="project",
+        )
+        return
+
+    if dry_run:
+        click.echo(f"[DRY-RUN] Would set {project} accessibility to {set_level}", err=True)
+        return
+
+    service.set_accessibility(project, set_level)
+    print_success(f"Set {project} accessibility to {set_level}")
+
+
+@project.command("requests")
+@click.argument("project")
+@global_options
+@handle_errors
+@require_auth
+def project_requests(ctx: Context, project: str) -> None:
+    """List a project's access requests, pending and resolved.
+
+    Read-only: XNAT does not offer admin-side approval or denial of a
+    project access request over REST. A PAR is an invitation, and resolving
+    one (accept or decline) always acts on the CURRENT SESSION USER --
+    confirmed against xnat-web's ``ProjectAccessRequest.process()``, which
+    calls ``setUserId(user.getID())`` and, on acceptance,
+    ``Groups.addUserToGroup(_level, user, user, ...)`` for whichever account
+    is authenticated when the call is made. An admin resolving someone
+    else's PAR this way would add THEMSELVES to the project, not the
+    intended user -- so the invited user has to log in and accept it
+    themselves; there is nothing safe for this command to do on their
+    behalf.
+
+    The listing includes every request ever made for the project, not just
+    pending ones -- there is no pending-only filter server-side. The
+    ``approved`` column shows each row's resolution state (unresolved,
+    accepted, or declined).
+
+    \b
+    Example:
+        xnatctl project requests MYPROJ
+        xnatctl project requests MYPROJ -o json
+    """
+    from xnatctl.core.validation import validate_project_id
+
+    project = validate_project_id(project)
+    service = ProjectService(ctx.get_client())
+
+    requests = service.access_requests(project)
+    print_output(
+        requests,
+        format=ctx.output_format,
+        columns=["par_id", "login", "email", "level", "create_date", "approved"],
+        column_labels={
+            "par_id": "ID",
+            "login": "Approver",
+            "email": "Requester Email",
+            "level": "Level",
+            "create_date": "Requested",
+            "approved": "Approved",
+        },
+        quiet=ctx.quiet,
+        id_field="par_id",
+    )
 
 
 # =============================================================================

@@ -369,3 +369,215 @@ class TestProjectSetAccessibility:
         assert result is True
         call_args = mock_client.put.call_args
         assert "/data/projects/PROJ01/accessibility/public" in call_args[0][0]
+
+
+class TestProjectGetAccessibility:
+    """Tests for ProjectService.get_accessibility."""
+
+    def test_get_accessibility_reads_plain_text(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get.return_value = make_response(text="private", content_type="text/plain")
+
+        result = service.get_accessibility("PROJ01")
+
+        assert result == "private"
+        mock_client.get.assert_called_once_with("/data/projects/PROJ01/accessibility")
+
+
+class TestProjectListUsers:
+    """Tests for ProjectService.list_users."""
+
+    def test_list_users_returns_rows(self, service: ProjectService, mock_client: MagicMock) -> None:
+        mock_client.get_json.return_value = [{"login": "jsmith", "email": "j@example.org"}]
+
+        result = service.list_users("PROJ01")
+
+        assert result == [{"login": "jsmith", "email": "j@example.org"}]
+        mock_client.get_json.assert_called_once_with("/data/projects/PROJ01/users")
+
+
+class TestProjectGrant:
+    """Tests for ProjectService.grant.
+
+    The wire path uses the SINGULAR ``{project}_{role}`` group ID (e.g.
+    ``PROJ01_owner``), confirmed against xnat-web's
+    DefaultGroupsAndPermissionsCache.java (``LIKE '%_owner'`` /
+    ``projectId + "_collaborator"`` / ``projectId + "_member"``) -- not the
+    plural ``owners``/``members``/``collaborators`` form.
+    """
+
+    def test_grant_puts_singular_group_id(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+
+        service.grant("PROJ01", "jsmith", "owner")
+
+        mock_client.put.assert_called_once_with("/data/projects/PROJ01/users/PROJ01_owner/jsmith")
+
+    def test_grant_rejects_invalid_role(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        from xnatctl.core.exceptions import InputValidationError
+
+        with pytest.raises(InputValidationError, match="owner, member, collaborator"):
+            service.grant("PROJ01", "jsmith", "superadmin")
+
+        mock_client.put.assert_not_called()
+
+
+class TestProjectRevoke:
+    """Tests for ProjectService.revoke.
+
+    GROUP_ID is the canonical column in the users listing (confirmed against
+    xnat-web's ``ProjectUserListResource``/``ProjectMemberResource``:
+    ``SELECT g.id AS "GROUP_ID", displayname, login, ... FROM
+    xdat_userGroup g ...``), read back verbatim rather than guessed at by
+    substring match.
+    """
+
+    def test_revoke_deletes_group_id_verbatim(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = [
+            {"login": "jsmith", "GROUP_ID": "PROJ01_collaborator"},
+        ]
+        mock_client.delete.return_value = make_response("", content_type="text/plain")
+
+        removed = service.revoke("PROJ01", "jsmith")
+
+        assert removed == ["PROJ01_collaborator"]
+        mock_client.delete.assert_called_once_with(
+            "/data/projects/PROJ01/users/PROJ01_collaborator/jsmith"
+        )
+
+    def test_revoke_does_not_substring_match_a_lookalike_group(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """A group id that merely CONTAINS a role word must not be mistaken for it.
+
+        Regression for a substring-matching bug: a group like
+        ``PROJ01_all_members_and_owners`` contains "owners" as a substring
+        without being the owners group. Exact GROUP_ID round-tripping (not
+        pattern matching) is what avoids the trap.
+        """
+        mock_client.get_json.return_value = [
+            {"login": "jsmith", "GROUP_ID": "PROJ01_all_members_and_owners"},
+        ]
+        mock_client.delete.return_value = make_response("", content_type="text/plain")
+
+        removed = service.revoke("PROJ01", "jsmith")
+
+        assert removed == ["PROJ01_all_members_and_owners"]
+        mock_client.delete.assert_called_once_with(
+            "/data/projects/PROJ01/users/PROJ01_all_members_and_owners/jsmith"
+        )
+
+    def test_revoke_removes_from_every_group_a_multi_group_user_holds(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """One row per (user, group) membership -- a user in two groups is removed from both."""
+        mock_client.get_json.return_value = [
+            {"login": "jsmith", "GROUP_ID": "PROJ01_member"},
+            {"login": "jsmith", "GROUP_ID": "PROJ01_owner"},
+        ]
+        mock_client.delete.return_value = make_response("", content_type="text/plain")
+
+        removed = service.revoke("PROJ01", "jsmith")
+
+        assert removed == ["PROJ01_member", "PROJ01_owner"]
+        assert mock_client.delete.call_count == 2
+        mock_client.delete.assert_any_call("/data/projects/PROJ01/users/PROJ01_member/jsmith")
+        mock_client.delete.assert_any_call("/data/projects/PROJ01/users/PROJ01_owner/jsmith")
+
+    def test_revoke_unknown_user_raises_not_found(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = [{"login": "someoneelse"}]
+
+        with pytest.raises(ResourceNotFoundError):
+            service.revoke("PROJ01", "jsmith")
+
+        mock_client.delete.assert_not_called()
+
+    def test_revoke_unresolvable_group_raises_input_validation_error(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """User found, but no row carries a resolvable GROUP_ID -- typed error, not a guess."""
+        from xnatctl.core.exceptions import InputValidationError
+
+        mock_client.get_json.return_value = [{"login": "jsmith"}]
+
+        with pytest.raises(InputValidationError):
+            service.revoke("PROJ01", "jsmith")
+
+        mock_client.delete.assert_not_called()
+
+    def test_revoke_mixed_resolvable_and_unresolvable_deletes_nothing(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """One resolvable + one unresolvable membership must fail outright, not
+        silently revoke the resolvable one and report full success while the
+        other survives untouched.
+        """
+        from xnatctl.core.exceptions import InputValidationError
+
+        mock_client.get_json.return_value = [
+            {"login": "jsmith", "GROUP_ID": "PROJ01_member"},
+            {"login": "jsmith"},  # no GROUP_ID
+        ]
+
+        with pytest.raises(InputValidationError):
+            service.revoke("PROJ01", "jsmith")
+
+        mock_client.delete.assert_not_called()
+
+    def test_revoke_deduplicates_repeated_group_id_rows(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """A duplicate (user, group) row -- a server-side join quirk -- issues one
+        DELETE, not one per row.
+        """
+        mock_client.get_json.return_value = [
+            {"login": "jsmith", "GROUP_ID": "PROJ01_member"},
+            {"login": "jsmith", "GROUP_ID": "PROJ01_member"},
+        ]
+        mock_client.delete.return_value = make_response("", content_type="text/plain")
+
+        removed = service.revoke("PROJ01", "jsmith")
+
+        assert removed == ["PROJ01_member"]
+        mock_client.delete.assert_called_once_with(
+            "/data/projects/PROJ01/users/PROJ01_member/jsmith"
+        )
+
+
+class TestProjectAccessRequests:
+    """Tests for ProjectService.access_requests.
+
+    No resolve/approve/deny method exists here by design: PAR resolution in
+    stock XNAT (``PARResource.handlePut()`` -> ``ProjectAccessRequest.process()``)
+    always acts on the CURRENT SESSION USER (``setUserId(user.getID())``,
+    then ``Groups.addUserToGroup(_level, user, user, ...)`` on acceptance),
+    ignoring which user the request was actually addressed to. An admin
+    "approving" someone else's PAR would add the ADMIN to the project, not
+    the intended user -- there is no safe admin-side resolution to expose.
+    """
+
+    def test_access_requests_hits_project_scoped_route(
+        self, service: ProjectService, mock_client: MagicMock
+    ) -> None:
+        """``/data/pars`` (global) lists PARs by the CURRENT user's email, not by project --
+        the admin-facing per-project listing is ``/data/projects/{P}/pars``
+        (confirmed against xnat-web's ``ProjectPARListResource``).
+        """
+        mock_client.get_json.return_value = [{"par_id": "42", "login": "jsmith"}]
+
+        result = service.access_requests("PROJ01")
+
+        assert result == [{"par_id": "42", "login": "jsmith"}]
+        mock_client.get_json.assert_called_once_with("/data/projects/PROJ01/pars")
+
+    def test_access_requests_has_no_resolve_method(self) -> None:
+        assert not hasattr(ProjectService, "resolve_access_request")
