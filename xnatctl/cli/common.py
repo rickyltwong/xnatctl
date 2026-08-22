@@ -586,18 +586,22 @@ class DeprecatedFlag(NamedTuple):
     removed_in: str
     """The release that deletes the flag."""
 
+    deprecated_in: str
+    """The release whose warning first named ``removed_in``. Anchors the
+    two-MINOR-release survival window the policy promises."""
+
 
 DEPRECATED_FLAGS: dict[str, DeprecatedFlag] = {
-    "--no-parallel": DeprecatedFlag("--workers 1", "0.5.0"),
-    "--parallel": DeprecatedFlag("", "0.5.0"),
-    "--unzip": DeprecatedFlag("--extract", "0.5.0"),
-    "--no-unzip": DeprecatedFlag("--no-extract", "0.5.0"),
-    "--cleanup": DeprecatedFlag("", "0.5.0"),
-    "--no-cleanup": DeprecatedFlag("--extract --keep-zips", "0.5.0"),
-    "--include-resources": DeprecatedFlag("--session-resources", "0.5.0"),
-    "--session": DeprecatedFlag("--experiment", "0.5.0"),
-    "--gradual": DeprecatedFlag("--mode gradual", "0.5.0"),
-    "--archive-format": DeprecatedFlag("--mode", "0.5.0"),
+    "--no-parallel": DeprecatedFlag("--workers 1", "0.5.0", "0.3.0"),
+    "--parallel": DeprecatedFlag("", "0.5.0", "0.3.0"),
+    "--unzip": DeprecatedFlag("--extract", "0.5.0", "0.3.0"),
+    "--no-unzip": DeprecatedFlag("--no-extract", "0.5.0", "0.3.0"),
+    "--cleanup": DeprecatedFlag("", "0.5.0", "0.3.0"),
+    "--no-cleanup": DeprecatedFlag("--extract --keep-zips", "0.5.0", "0.3.0"),
+    "--include-resources": DeprecatedFlag("--session-resources", "0.5.0", "0.3.0"),
+    "--session": DeprecatedFlag("--experiment", "0.5.0", "0.3.0"),
+    "--gradual": DeprecatedFlag("--mode gradual", "0.5.0", "0.3.0"),
+    "--archive-format": DeprecatedFlag("--mode", "0.5.0", "0.3.0"),
 }
 """Every deprecated flag, what replaces it, and when it goes away.
 
@@ -608,7 +612,9 @@ the whole command tree and fails on any deprecated option missing from it,
 which is what stops a flag being quietly retired without notice.
 
 The removal release is at least two MINOR releases out from the one that
-deprecated the flag -- see ``docs/stability.rst``.
+deprecated the flag (``deprecated_in``, recorded per entry so the window
+stays anchored there whatever releases ship in between) -- see
+``docs/stability.rst``.
 """
 
 

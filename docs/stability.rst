@@ -92,8 +92,9 @@ single log line how long you have.
 
 The rules:
 
-1. A deprecated flag survives at least **two MINOR releases** after the release
-   that deprecated it.
+1. The removal release is at least **two MINOR releases** after the release
+   that deprecated the flag (deprecated in 0.3.0 means removed no earlier
+   than 0.5.0), whatever releases ship in between.
 2. The removal release is decided at deprecation time and named in the warning.
    It does not move earlier.
 3. Removal happens in the named release, and only there.
