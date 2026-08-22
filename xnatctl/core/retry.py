@@ -15,8 +15,7 @@ Three consumers share this module:
 Policy summary (per operation class):
 
 * Client requests: ``429``/``503`` retry on any method (pre-execution
-  refusals); ``500``/``502``/``504`` only for idempotent methods. See
-  docs/adr/0011.
+  refusals); ``500``/``502``/``504`` only for idempotent methods.
 * Import uploads: additionally retry ``400``, because XNAT's import service
   returns transient 400s while archive operations race -- except the 400s
   whose body matches a known-permanent message (see
@@ -67,7 +66,7 @@ _RETRY_AFTER_STATUS_CODES = {429, 503}
 # front of it -- and the client already refuses to retry both of those raw
 # forms on a POST. Without this the same wire event behaved differently
 # depending on whether nginx was in the path, which is not a policy anyone
-# chose. See docs/adr/0011.
+# chose.
 #
 # Derived, not written out, so the two sets cannot drift apart when a status is
 # added to RETRYABLE_STATUS_CODES: anything new is ambiguous until someone

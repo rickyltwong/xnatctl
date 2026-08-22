@@ -147,9 +147,9 @@ All notable changes to this project will be documented in this file.
   config, service classes,
   resource/progress models, and the full exception hierarchy as the supported
   public surface. The top-level `xnatctl` namespace is now **Stable** and
-  semver-covered (`docs/adr/0014-promote-library-surface-to-stable.md`
-  supersedes 0012's Provisional tier); `xnatctl.core.*`/`xnatctl.services.*`
-  internals reached by importing the submodule directly stay Provisional.
+  semver-covered, superseding its earlier Provisional status;
+  `xnatctl.core.*`/`xnatctl.services.*` internals reached by importing the
+  submodule directly stay Provisional.
   README gains a "Use as a Python library" quickstart and exception-handling
   example.
 
@@ -465,9 +465,8 @@ lying, and Ctrl+C works.
 - Shell completion emits Click's own scripts, so `xnatctl proj<TAB>` completes
   to `project` rather than `plain,project`.
 - New documentation: a Stability and Deprecation Policy page (what scripts may
-  bind to, and for how long), a Performance page (measured throughput and peak
-  RSS for the transfer paths), and `docs/adr/` recording ten decisions that
-  look like mistakes without their context.
+  bind to, and for how long), and a Performance page (measured throughput and
+  peak RSS for the transfer paths).
 
 **Fixes**
 

@@ -16,8 +16,6 @@ still held to the call check.
 
 Type-only imports under ``if TYPE_CHECKING:`` are annotations, not layering, and
 are allowed anywhere.
-
-See docs/adr/0013-cli-routes-through-services.md.
 """
 
 from __future__ import annotations

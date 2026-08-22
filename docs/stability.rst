@@ -59,7 +59,7 @@ What is covered
        name with no leading underscore is still Provisional if it is not.
        Breaking changes go in a MINOR release while the project stays on
        ``0.x``, and are listed under ``**Breaking**`` in the
-       :doc:`changelog`. See :doc:`adr/0014-promote-library-surface-to-stable`.
+       :doc:`changelog`.
    * - Anything reachable on the ``xnatctl`` module or a submodule that is
        *not* listed in ``xnatctl.__all__``
      - Provisional

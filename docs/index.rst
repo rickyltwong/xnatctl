@@ -127,7 +127,6 @@ Trigger a catalog refresh for a specific project (admin operation):
    debugging
    performance
    contributing
-   adr/README
    changelog
 
 .. toctree::

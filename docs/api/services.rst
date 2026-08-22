@@ -10,8 +10,7 @@ Covered by semver: the service classes listed in ``xnatctl.__all__``
 that exists but is not in that list, or one reached by importing its module
 directly (``xnatctl.services.projects``) rather than the top-level name, is
 Provisional and may move between minor releases. See :doc:`../stability` for
-the exact boundary and :doc:`../adr/0014-promote-library-surface-to-stable`
-for why it was drawn there.
+the exact boundary.
 
 Service Layer Architecture
 ---------------------------
