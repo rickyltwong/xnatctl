@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.hierarchy import ProjectRef
 from xnatctl.models.project import Project
 
@@ -41,7 +42,7 @@ class ProjectService(BaseService):
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit:
+        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
             results = results[:limit]
 
         return [Project(**r) for r in results]
@@ -58,7 +59,7 @@ class ProjectService(BaseService):
         Raises:
             ResourceNotFoundError: If project not found
         """
-        path = f"/data/projects/{project_id}"
+        path = f"/data/projects/{quote_path_segment(project_id)}"
         params = {"format": "json"}
 
         try:
@@ -100,7 +101,7 @@ class ProjectService(BaseService):
         Returns:
             Created Project object
         """
-        path = f"/data/projects/{project_id}"
+        path = f"/data/projects/{quote_path_segment(project_id)}"
         params: dict[str, Any] = {}
 
         if name:
@@ -133,7 +134,7 @@ class ProjectService(BaseService):
         Returns:
             True if successful
         """
-        path = f"/data/projects/{project_id}"
+        path = f"/data/projects/{quote_path_segment(project_id)}"
         params: dict[str, Any] = {}
 
         if remove_files:
@@ -155,13 +156,13 @@ class ProjectService(BaseService):
         Returns:
             List of subject data dicts
         """
-        path = f"/data/projects/{project_id}/subjects"
+        path = f"/data/projects/{quote_path_segment(project_id)}/subjects"
         params = {"format": "json"}
 
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit:
+        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
             results = results[:limit]
 
         return results
@@ -180,13 +181,13 @@ class ProjectService(BaseService):
         Returns:
             List of session data dicts
         """
-        path = f"/data/projects/{project_id}/experiments"
+        path = f"/data/projects/{quote_path_segment(project_id)}/experiments"
         params = {"format": "json"}
 
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit:
+        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
             results = results[:limit]
 
         return results
@@ -205,7 +206,10 @@ class ProjectService(BaseService):
         Returns:
             True if successful
         """
-        path = f"/data/projects/{project_id}/accessibility/{accessibility}"
+        path = (
+            f"/data/projects/{quote_path_segment(project_id)}"
+            f"/accessibility/{quote_path_segment(accessibility)}"
+        )
         self._put(path)
         return True
 
@@ -274,7 +278,7 @@ class ProjectService(BaseService):
         xml += "</xnat:Project>"
 
         return self.client.post(
-            f"/data/projects/{project_id}",
+            f"/data/projects/{quote_path_segment(project_id)}",
             params={"accessibility": accessibility},
             data=xml,
             headers={"Content-Type": "text/xml"},

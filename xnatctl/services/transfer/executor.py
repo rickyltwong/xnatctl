@@ -7,19 +7,19 @@ DICOM-zip imports with retry, non-DICOM resource uploads, and ZIP validation.
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import time
 import zipfile
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
 
 import httpx
 
 from xnatctl.core.exceptions import ClientRequestError, ServerError, XNATConnectionError
 from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, is_permanent_400, retry_call
+from xnatctl.core.validation import quote_path_segment, validate_local_path_component
+from xnatctl.core.validation import quote_prearchive_segment as _quote_path_segment
 from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
 from xnatctl.services.transfer.xml_overlay import rewrite_experiment_xml
@@ -85,11 +85,6 @@ def _strip_xnat_prefix(filename: str) -> str:
     return Path(filename).name
 
 
-def _quote_path_segment(value: str) -> str:
-    """Encode a single REST path segment for XNAT service URIs."""
-    return quote(value, safe="").replace(".", "%2E")
-
-
 class TransferExecutor:
     """Execute individual transfer operations between two XNAT instances.
 
@@ -112,7 +107,7 @@ class TransferExecutor:
             Set of subject accession IDs present on the destination.
         """
         resp = self.dest.get(
-            f"/data/projects/{dest_project}/subjects",
+            f"/data/projects/{quote_path_segment(dest_project)}/subjects",
             params={"format": "json", "columns": "ID"},
         )
         data = resp.json()
@@ -129,7 +124,7 @@ class TransferExecutor:
             Set of experiment accession IDs present on the destination.
         """
         resp = self.dest.get(
-            f"/data/projects/{dest_project}/experiments",
+            f"/data/projects/{quote_path_segment(dest_project)}/experiments",
             params={"format": "json", "columns": "ID"},
         )
         data = resp.json()
@@ -146,7 +141,10 @@ class TransferExecutor:
         Returns:
             Response text (usually URI of created subject).
         """
-        resp = self.dest.put(f"/data/archive/projects/{dest_project}/subjects/{label}")
+        resp = self.dest.put(
+            f"/data/archive/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(label)}"
+        )
         return resp.text.strip()
 
     def create_experiment(
@@ -168,7 +166,9 @@ class TransferExecutor:
             Response text (usually URI of created experiment).
         """
         resp = self.dest.put(
-            f"/data/archive/projects/{dest_project}/subjects/{dest_subject}/experiments/{label}",
+            f"/data/archive/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(dest_subject)}"
+            f"/experiments/{quote_path_segment(label)}",
             params={"xsiType": xsi_type},
         )
         return resp.text.strip()
@@ -196,8 +196,10 @@ class TransferExecutor:
             Response text from PUT.
         """
         resp = self.dest.put(
-            f"/data/projects/{dest_project}/subjects/{dest_subject}"
-            f"/experiments/{dest_experiment}/scans/{scan_id}",
+            f"/data/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(dest_subject)}"
+            f"/experiments/{quote_path_segment(dest_experiment)}"
+            f"/scans/{quote_path_segment(scan_id)}",
             params={"xsiType": xsi_type, "type": scan_type},
         )
         return resp.text.strip()
@@ -213,7 +215,7 @@ class TransferExecutor:
             Experiment ID if found, None otherwise.
         """
         resp = self.dest.get(
-            f"/data/projects/{dest_project}/experiments",
+            f"/data/projects/{quote_path_segment(dest_project)}/experiments",
             params={"format": "json", "label": label},
         )
         data = resp.json()
@@ -233,7 +235,7 @@ class TransferExecutor:
             List of scan dicts with ID, type, series_description, etc.
         """
         resp = self.source.get(
-            f"/data/experiments/{experiment_id}/scans",
+            f"/data/experiments/{quote_path_segment(experiment_id)}/scans",
             params={"format": "json"},
         )
         data = resp.json()
@@ -251,7 +253,8 @@ class TransferExecutor:
             List of resource dicts with label, file_count, etc.
         """
         resp = self.source.get(
-            f"/data/experiments/{experiment_id}/scans/{scan_id}/resources",
+            f"/data/experiments/{quote_path_segment(experiment_id)}"
+            f"/scans/{quote_path_segment(scan_id)}/resources",
             params={"format": "json"},
         )
         data = resp.json()
@@ -268,7 +271,7 @@ class TransferExecutor:
             List of resource dicts with label, file_count, etc.
         """
         resp = self.source.get(
-            f"/data/experiments/{experiment_id}/resources",
+            f"/data/experiments/{quote_path_segment(experiment_id)}/resources",
             params={"format": "json"},
         )
         data = resp.json()
@@ -297,14 +300,20 @@ class TransferExecutor:
             ValueError: If ZIP validation fails.
         """
         work_dir.mkdir(parents=True, exist_ok=True)
-        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", resource_label)
-        zip_path = work_dir / f"scan_{scan_id}_{safe_label}.zip"
+        # Both are server-reported (the source XNAT), not caller input, but
+        # still local-path components -- validated, not mangled: a
+        # character-whitelist substitution (the previous approach here) is
+        # not injective, so two differently-hostile values could still
+        # collide on the same local ZIP name.
+        safe_scan_id = validate_local_path_component(scan_id, "scan_id")
+        safe_label = validate_local_path_component(resource_label, "resource_label")
+        zip_path = work_dir / f"scan_{safe_scan_id}_{safe_label}.zip"
         encoded_label = _quote_path_segment(resource_label)
 
         stream_to_file(
             self.source,
-            f"/data/experiments/{source_experiment_id}"
-            f"/scans/{scan_id}/resources/{encoded_label}/files",
+            f"/data/experiments/{quote_path_segment(source_experiment_id)}"
+            f"/scans/{quote_path_segment(scan_id)}/resources/{encoded_label}/files",
             zip_path,
             params={"format": "zip"},
         )
@@ -455,7 +464,8 @@ class TransferExecutor:
             ValueError: If ZIP validation fails.
         """
         work_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = work_dir / f"{resource_label}.zip"
+        safe_label = validate_local_path_component(resource_label, "resource_label")
+        zip_path = work_dir / f"{safe_label}.zip"
 
         total_bytes = stream_to_file(
             self.source, source_path, zip_path, params={"format": "zip"}
@@ -469,7 +479,7 @@ class TransferExecutor:
                 "downloaded content is not a valid ZIP"
             )
 
-        flat_zip_path = work_dir / f"{resource_label}_flat.zip"
+        flat_zip_path = work_dir / f"{safe_label}_flat.zip"
         try:
             self._flatten_zip(zip_path, flat_zip_path)
         finally:
@@ -706,7 +716,7 @@ class TransferExecutor:
             Raw XML string.
         """
         resp = self.source.get(
-            f"/data/experiments/{experiment_id}",
+            f"/data/experiments/{quote_path_segment(experiment_id)}",
             params={"format": "xml"},
         )
         return resp.text
@@ -733,8 +743,9 @@ class TransferExecutor:
         cleaned_xml = rewrite_experiment_xml(xml_text, dest_experiment_id, dest_project)
 
         dest_path = (
-            f"/data/projects/{dest_project}/subjects/{dest_subject}"
-            f"/experiments/{dest_experiment_label}"
+            f"/data/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(dest_subject)}"
+            f"/experiments/{quote_path_segment(dest_experiment_label)}"
         )
         logger.debug(
             "XML overlay PUT %s (payload %d bytes):\n%s",

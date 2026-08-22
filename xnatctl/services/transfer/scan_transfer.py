@@ -18,6 +18,11 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from xnatctl.core.cancellation import cancellable_pool
+from xnatctl.core.validation import (
+    check_no_casefold_collision,
+    quote_path_segment,
+    validate_local_path_component,
+)
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.discovery import DiscoveredEntity
 from xnatctl.services.transfer.executor import TransferExecutor
@@ -175,6 +180,14 @@ class ScanTransfer:
         if not filtered_scans:
             return 0
 
+        # Casefold preflight over the whole batch, sequentially, before any
+        # worker thread starts (so no locking is needed): two scan IDs
+        # differing only by case would share the same `scan_{id}` staging
+        # directory once download workers write into it concurrently.
+        seen_scan_dirs: set[str] = set()
+        for s in filtered_scans:
+            check_no_casefold_collision(s.get("ID", ""), seen_scan_dirs, "scan_id")
+
         workers = min(self.config.scan_workers, len(filtered_scans))
 
         # -- Phase A: Download all scans in parallel --
@@ -322,8 +335,12 @@ class ScanTransfer:
             Tuple of (scan_id, downloaded_items_or_none, error_message).
         """
         scan_id = scan.get("ID", "")
-        scan_work_dir = work_dir / f"scan_{scan_id}"
         try:
+            # Server-reported, not caller input, but still a local-path
+            # component -- a hostile/malformed ID fails just this one scan
+            # (caught below), not the whole transfer.
+            safe_scan_id = validate_local_path_component(scan_id, "scan_id")
+            scan_work_dir = work_dir / f"scan_{safe_scan_id}"
             items = self._download_single_scan(
                 scan,
                 exp,
@@ -412,6 +429,13 @@ class ScanTransfer:
         )
 
         items: list[_DownloadedScan] = []
+        # Scoped to this one scan's call (not shared across threads/scans),
+        # so no locking is needed: two resources on the SAME scan whose
+        # labels differ only by case ("QA" then "qa") would stage their ZIPs
+        # under the same local name, and since every resource for a scan
+        # downloads before any of them uploads, the second would silently
+        # overwrite the first on disk before either reaches the destination.
+        seen_resource_labels: set[str] = set()
         for res in resources:
             if not self._should_include_scan_resource(xsi_type, res):
                 continue
@@ -421,6 +445,10 @@ class ScanTransfer:
             # Phase filtering: skip resources not matching current phase
             if is_dicom != dicom_only:
                 continue
+
+            check_no_casefold_collision(
+                str(res.get("label", "")), seen_resource_labels, "resource label"
+            )
 
             items.append(
                 self._download_scan_resource(
@@ -536,13 +564,16 @@ class ScanTransfer:
                 dest_experiment=exp.local_label,
             )
 
-        src_path = f"/data/experiments/{exp.local_id}/scans/{scan_id}/resources/{res_label}/files"
+        src_path = (
+            f"/data/experiments/{quote_path_segment(exp.local_id)}"
+            f"/scans/{quote_path_segment(scan_id)}/resources/{quote_path_segment(res_label)}/files"
+        )
         dst_path = (
-            f"/data/projects/{dest_project}"
-            f"/subjects/{subject.local_label}"
-            f"/experiments/{exp.local_label}"
-            f"/scans/{scan_id}"
-            f"/resources/{res_label}/files"
+            f"/data/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(subject.local_label)}"
+            f"/experiments/{quote_path_segment(exp.local_label)}"
+            f"/scans/{quote_path_segment(scan_id)}"
+            f"/resources/{quote_path_segment(res_label)}/files"
         )
         flat_zip_path, _total = self.executor.download_resource(
             source_path=src_path,

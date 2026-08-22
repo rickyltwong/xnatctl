@@ -91,8 +91,11 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
         targets = set(experiment_ids)
         experiments = [exp for exp in experiments if exp[1] in targets]
 
-    # Apply limit
-    if limit and limit > 0:
+    # Apply limit. `is not None`, not truthy: `--limit 0` must mean "process
+    # zero experiments", not "no limit" -- the CLI does its own PUT-per-
+    # experiment fan-out here (see the comment on AdminService above), so
+    # this check is separate from the service layer's own limit handling.
+    if limit is not None:
         experiments = experiments[:limit]
 
     if not experiments:

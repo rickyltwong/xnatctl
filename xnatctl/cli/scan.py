@@ -20,7 +20,7 @@ from xnatctl.cli.common import (
     resolve_workers_from_context,
 )
 from xnatctl.core.cancellation import cancellable_pool
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
     err_console,
@@ -572,8 +572,31 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     if not project:
         project = default_project_from_context(ctx)
 
-    if name and ("/" in name or "\\" in name):
-        raise click.ClickException("--name cannot contain path separators")
+    # `is not None`, not truthy: an explicit `--name ""` must fail
+    # validation (it does -- empty is rejected below) rather than silently
+    # falling through to the `name or session_id` fallback used further
+    # down, which would ignore the caller's (invalid) request instead of
+    # reporting it.
+    if name is not None:
+        from xnatctl.core.validation import validate_local_path_component
+
+        try:
+            validate_local_path_component(name, "--name")
+        except InputValidationError as e:
+            raise click.ClickException(str(e)) from e
+    else:
+        # Without --name, the output directory falls back to the raw
+        # session_id (see below) -- validated here too, since it goes
+        # through validate_session_id's URL-safety check rather than a
+        # local-filesystem check, so a label like "CON" (a legal session ID,
+        # but a reserved Windows device name) would otherwise reach the
+        # filesystem unvalidated. Mirrors session download's own fallback.
+        from xnatctl.core.validation import validate_local_path_component
+
+        try:
+            validate_local_path_component(session_id, "session_id (as the output directory name)")
+        except InputValidationError as e:
+            raise click.ClickException(str(e)) from e
 
     use_all_keyword = scan_ids_input is None
     if scan_ids_input is None:

@@ -146,6 +146,42 @@ class TestAdminRefreshCatalogs:
         assert result.exit_code == 0
         assert client.post.call_count == 2
 
+    def test_refresh_catalogs_limit_zero_processes_nothing(self, runner: CliRunner) -> None:
+        """``--limit 0`` must mean zero experiments, not "no limit"."""
+        client = _mock_client()
+        client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    {"ID": f"XNAT_E00{i}", "subject_ID": f"XNAT_S00{i}", "label": f"S{i}"}
+                    for i in range(5)
+                ]
+            }
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        client.post.return_value = mock_resp
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "refresh-catalogs",
+                            "TESTPROJ",
+                            "--limit",
+                            "0",
+                            "--option",
+                            "delete",
+                            "--no-parallel",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        assert client.post.call_count == 0
+        assert "No experiments matched" in result.output
+
     def test_refresh_catalogs_json_output(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.return_value = {

@@ -1026,8 +1026,14 @@ class TestBuildVerificationManifest:
         assert manifest.digests == {"scans/1/resources/DICOM/1.dcm": "abc"}
         list_rows_mock.assert_not_called()
 
-    def test_label_is_url_encoded_for_the_request_but_literal_in_the_key(self) -> None:
-        """A label with a space/# breaks an unencoded URL path segment."""
+    def test_label_is_passed_through_for_the_request_but_literal_in_the_key(self) -> None:
+        """A label with a space/# is percent-encoded by the path builder, not the caller.
+
+        ``list_file_rows`` receives the literal label; encoding happens inside
+        ``HierarchyService.build_resource_path`` (via ``ResourceRef``), not at
+        this call site -- see ``test_hierarchy_paths.py`` for the encoding
+        itself. Pre-quoting here would double-encode.
+        """
         service = self._service()
         with (
             patch.object(
@@ -1061,7 +1067,7 @@ class TestBuildVerificationManifest:
         # on disk -- not the percent-encoded form sent over the wire.
         assert manifest.digests == {"scans/1/resources/QA #1/1.dcm": "abc"}
         call_args = file_rows_mock.call_args
-        assert call_args[0][1] == "QA%20%231"
+        assert call_args[0][1] == "QA #1"
 
     def test_session_resources_are_included_when_requested(self) -> None:
         service = self._service()

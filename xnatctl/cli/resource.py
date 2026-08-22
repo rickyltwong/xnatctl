@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from urllib.parse import quote
 
 import click
 
@@ -203,7 +202,6 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
         resource_parent = ScanRef(experiment=experiment_ref, scan_id=scan)
     else:
         resource_parent = experiment_ref
-    encoded_label = quote(resource_label)
 
     # Get resource info from the collection endpoint. The direct
     # /resources/{label} endpoint often returns XML catalogs instead of JSON.
@@ -216,7 +214,7 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
 
     # Get files
     try:
-        files = service.list_file_rows(resource_parent, encoded_label)
+        files = service.list_file_rows(resource_parent, resource_label)
     except Exception:
         files = []
 
@@ -431,8 +429,6 @@ def resource_download(
         xnatctl resource download -P MYPROJ TEMPLATEFLOW -f ./tf.zip
         xnatctl resource download -P MYPROJ -S SUB01 QC -f ./qc.zip
     """
-    from urllib.parse import quote
-
     from xnatctl.core.output import create_progress
     from xnatctl.core.validation import (
         validate_project_id,
@@ -465,7 +461,7 @@ def resource_download(
         session_id=session_id, project_id=project_id, subject=subject, scan=scan
     )
     url = HierarchyService.build_resource_path(
-        ResourceRef(parent=parent, resource_label=quote(resource_label)), "files"
+        ResourceRef(parent=parent, resource_label=resource_label), "files"
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

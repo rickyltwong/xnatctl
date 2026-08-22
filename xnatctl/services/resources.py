@@ -40,13 +40,22 @@ class ResourceService(BaseService):
         project: str | None,
         parent: HierarchyParentRef | None,
     ) -> HierarchyParentRef:
-        """Return an explicit *parent*, else build one from the legacy triple."""
+        """Return an explicit *parent*, else build one from the legacy triple.
+
+        ``scan_id is not None``, not truthy: ``scan_id=""`` is a caller
+        mistake, not "no scan scope" -- every public method on this service
+        (including ``delete()``, which defaults ``remove_files=True``) goes
+        through this resolver, so silently widening to the SESSION-level
+        parent here would turn an intended scan-scoped delete into a
+        session-scoped one. ``ScanRef``'s own validation rejects the empty
+        string.
+        """
         if parent is not None:
             return parent
         if session_id is None:
             raise ValueError("session_id or parent is required")
         experiment = ExperimentRef(experiment=session_id, project_id=project)
-        if scan_id:
+        if scan_id is not None:
             return ScanRef(experiment=experiment, scan_id=scan_id)
         return experiment
 
@@ -262,7 +271,12 @@ class ResourceService(BaseService):
     def list_file_rows(
         self, parent: HierarchyParentRef, resource_label: str
     ) -> builtins.list[dict[str, object]]:
-        """Return raw file rows for a resource (``resource_label`` pre-encoded)."""
+        """Return raw file rows for a resource.
+
+        ``resource_label`` is passed through as-is -- the path builder
+        percent-encodes it, so callers must NOT pre-quote it themselves (that
+        would double-encode and 404).
+        """
         data = self.client.get_json(
             HierarchyService.build_resource_path(
                 ResourceRef(parent=parent, resource_label=resource_label), "files"

@@ -19,7 +19,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from xnatctl.core.exam import ExamRootClassification, classify_exam_root
 from xnatctl.core.exceptions import ResourceNotFoundError
-from xnatctl.core.validation import validate_resource_label
+from xnatctl.core.validation import validate_local_path_component, validate_resource_label
 from xnatctl.models.hierarchy import ExperimentRef
 
 from .base import BaseService
@@ -315,7 +315,12 @@ class ExamUploadService(BaseService):
                 project=project,
             )
             with tempfile.TemporaryDirectory() as tmp_dir:
-                zip_path = Path(tmp_dir) / f"{misc_label}.zip"
+                # misc_label is caller-supplied (CLI --misc-label flag), and
+                # validate_resource_label alone doesn't cover the Windows
+                # filename quirks (colons, reserved names, boundary
+                # dots/spaces) validate_local_path_component does.
+                safe_misc_label = validate_local_path_component(misc_label, "misc_label")
+                zip_path = Path(tmp_dir) / f"{safe_misc_label}.zip"
                 with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
                     for misc_file in classification.misc_files:
                         zf.write(misc_file, arcname=misc_file.name)

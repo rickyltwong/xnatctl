@@ -475,7 +475,37 @@ class TestSessionDownload:
             )
 
         assert result.exit_code != 0
-        assert "path separators" in result.output
+        assert "path separator" in result.output
+
+    def test_session_download_name_empty_string_is_rejected(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """An explicit ``--name ""`` must fail validation, not silently fall
+        back to the session_id -- `if name:` used to skip validation
+        entirely for an empty string and let ``name or session_id`` pick
+        the fallback without ever reporting the caller's bad input.
+        """
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "session",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-P",
+                    "TESTPROJ",
+                    "--out",
+                    str(tmp_path),
+                    "--name",
+                    "",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "empty" in result.output.lower()
 
     def test_session_download_dry_run_label_resolution(self, runner: CliRunner, tmp_path) -> None:
         """Dry run with label shows resolved ID."""

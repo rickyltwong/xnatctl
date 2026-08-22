@@ -111,6 +111,218 @@ All notable changes to this project will be documented in this file.
   already knew. It now retries only transient conditions, and gains the same
   transient-vs-permanent HTTP 400 discrimination the upload paths use, so an
   import-race 400 during a transfer is retried instead of failing the scan.
+- The service layer now defends its own REST paths instead of trusting the
+  CLI to have validated them first. Every caller-supplied identifier
+  (project/subject/session/scan/resource IDs and labels) is percent-encoded
+  at the point it enters a URL path, and the hierarchy refs
+  (`ProjectRef`/`SubjectRef`/`ExperimentRef`/`ScanRef`/`ResourceRef`) reject
+  a value containing `/`, `\`, `?`, `#`, `%` (`#`/`?`/`%` are still allowed in
+  a *resource* label specifically, since those are routine there and the
+  quoting layer encodes them unambiguously), a segment made up entirely of
+  dots (`.`/`..`), control characters (including the Unicode C1 range), or
+  leading/trailing whitespace, as soon as they are constructed. This matters
+  now that the library surface is public: a caller building a ref directly
+  (bypassing the CLI's own input validation) could previously redirect a
+  request to a different endpoint, e.g. an experiment ID of
+  `SUB1/experiments/XNAT_E1?activate=`, or a project ID of `..`.
+  IDs limited to alphanumerics/dots/dashes/underscores are unaffected: their
+  URLs are byte-for-byte unchanged. An ID or label containing a character
+  that is reserved in a URL (a space, parentheses, `+`, etc.) is now
+  *consistently* percent-encoded everywhere -- previously most call sites
+  built the URL by raw string interpolation and sent that character through
+  unencoded, which the server still accepted for many routes but not all
+  (and was never intentional API surface), so this is not always a
+  byte-for-byte-identical URL, only a request-equivalent one once decoded.
+  An empty or whitespace-only segment is rejected the same way -- it used to
+  build a *collection* route instead of failing (`ProjectService.delete("")`
+  silently became `DELETE /data/projects/`, not an error on a missing ID),
+  and the low-level path joiner no longer silently strips a leading/trailing
+  `/` from a part either (`"/TARGET"` used to canonicalize to `"TARGET"`, a
+  different resource for what was actually invalid input; a bare `"/"` used
+  to collapse to an empty segment, a double-slash route) -- both now raise.
+
+  Three related fixes ship alongside: `DownloadService.download_scans`'
+  multi-scan batch request now percent-encodes each scan ID individually
+  before joining them with the literal `,` XNAT's batch syntax requires,
+  instead of joining first and encoding the whole thing afterward (which
+  would have percent-encoded the delimiter itself, breaking the batch
+  request), and it now rejects an empty scan-ID list or an empty ID within it
+  up front. A caller-supplied local download filename (`zip_filename`) is
+  checked to ensure it cannot resolve outside the requested output
+  directory. And a server-reported scan ID or resource label used to name a
+  local file or folder -- both in `DownloadService` and in ZIP extraction
+  (`_extract_scan_zip`, where the same label also doubles as the local
+  extraction root for that resource) -- is now rejected outright unless it
+  is already its own safe path component; it is no longer reduced to a
+  generic fallback name, which could let two different hostile values alias
+  onto (and overwrite) the same local destination.
+
+  That local-path check (`validate_local_path_component`) now also accounts
+  for Windows and macOS filesystem behavior, not just POSIX -- this package
+  is CI-tested on Windows. A value containing `:` is rejected (a
+  drive-qualified/drive-relative value like `C:escape` has no `/` or `\` at
+  all, so the separator check alone missed it, and joining it onto a base
+  path on Windows discards the base entirely, escaping containment before
+  the result is even resolved; this also closes the NTFS
+  alternate-data-stream form `file:stream`). A value starting or ending with
+  a dot or space is rejected (Windows silently strips a trailing dot/space,
+  so `"scan."` and `"scan"` land on the same real file there even though
+  they're different strings here; a dot/space in the interior is unaffected).
+  A Windows-reserved device basename (`CON`, `PRN`, `AUX`, `NUL`,
+  `COM1`-`COM9`, `LPT1`-`LPT9`, case-insensitive, matched against the stem
+  regardless of extension) is rejected. And a value not already in Unicode
+  NFC form is rejected, since an NFD-decomposed value can be byte-distinct
+  here while denoting the same filename on a normalizing filesystem
+  (macOS/HFS+) -- real XNAT-reported values are ASCII in practice, so this
+  cannot reject anything genuine.
+
+  Separately: an explicitly-supplied empty string is no longer treated the
+  same as an omitted (`None`) filter anywhere the two used to be conflated.
+  `HierarchyService.build_subject_collection_path("")` and
+  `build_experiment_collection_path(project, "")` used to silently widen to
+  the unfiltered/site-wide collection instead of failing on the bad ID;
+  `DownloadService.download_scans(resource="")` and
+  `download_resource(scan_id="")` used to silently widen to "all resources"
+  and "session-level, unscoped" respectively; and
+  `download_session_fast`/`build_verification_manifest`'s
+  `include_resources=("",)` (a non-empty tuple containing an empty string)
+  used to pass the tuple's own truthiness check and then fall through a
+  later per-item check into an unfiltered request. All of these now raise
+  instead of degrading to the broader scope.
+
+  Two follow-up sweeps closed the same two defect classes wherever else they
+  showed up. First, the empty-string-widening sweep now also covers
+  `ResourceService`'s legacy `(session_id, scan_id, project)` triple --
+  `scan_id=""` used to silently widen to the SESSION-level resource on
+  every method that takes it, including `delete()` (which defaults
+  `remove_files=True`) -- plus the equivalent scan/project checks in
+  `SessionService`, `SubjectService`, `PipelineService`,
+  `PrearchiveService`, `AdminService`, and the standalone resource-upload
+  path, and `resource_filter=""` widening a verification run to every
+  resource on a scan. Second, every remaining place a server-reported or
+  caller-supplied identifier was joined onto a local path without going
+  through the Windows/macOS-aware validity check now does: cross-server
+  transfer staging (`TransferExecutor`, scan-worker temp directories),
+  `DownloadService.download_resource`'s extraction root (previously built
+  from the raw label, so `"C:escape"` reached Windows path handling before
+  any check ran), and the exam-upload misc-files ZIP name. The CLI's
+  `--name` flag on `session download`/`scan download` now runs the same
+  full check instead of a separator-only one.
+
+  `validate_local_path_component` itself also grew two checks: the
+  Windows-invalid filename characters `< > " | ? *` are rejected (in
+  addition to `:`, added previously) on every platform, not only when
+  actually running on Windows, so a value that is legal on XNAT does not
+  fail only on some download machines. And a new
+  `check_no_casefold_collision` helper -- not folded into
+  `validate_local_path_component` itself, since case is a property of how
+  two values compare, not of either one alone -- catches the case where two
+  individually-valid sibling values (two scan IDs in one session download,
+  two session-resource labels) would collide on a case-insensitive
+  filesystem (Windows, and macOS/HFS+ by default): `"scan"` and `"SCAN"`
+  are both fine on their own, but the second one to be created now raises
+  instead of overwriting the first. The same check now also applies WITHIN
+  a single downloaded scan ZIP: two members whose resource labels differ
+  only by case (`"DICOM"` then `"dicom"`) raise instead of being extracted
+  into the same merged directory -- the same literal label recurring across
+  many members of one resource, which is the normal case, is unaffected.
+
+  Two more empty-string-widening sites, of the same class as before but
+  lower severity (a wider *read*, not a different write target, since these
+  are query-param values httpx already encodes safely): `AdminService`'s
+  `audit_log`/`get_xapi_audit` filters and
+  `SessionService.list_project_experiment_rows`'s subject filter now also
+  reject an explicitly-empty string instead of silently returning more rows
+  than asked for.
+
+  A further round closed five more instances of the same two defect
+  classes. Cross-server scan transfer now runs a casefold preflight over
+  the whole batch of scan IDs before any download worker starts (two scan
+  IDs differing only by case, e.g. `"1a"`/`"1A"`, used to share the same
+  local staging directory once workers wrote into it concurrently), and a
+  second casefold check per scan over that scan's own resource labels
+  (`"QA"` then `"qa"` staged to the same ZIP name; because every resource
+  for a scan downloads before any of them uploads, the second silently
+  overwrote the first before either reached its destination). A pre-existing
+  symlink at a label-joined subdirectory (`output_dir/<resource_label>`,
+  or a scan's staging directory) could previously defeat containment
+  checking, since the check anchored to the already-resolved,
+  already-escaped path instead of the caller-trusted directory one level
+  up; extraction into a resource directory, a scans directory, and a
+  per-scan ZIP now all verify the resolved label directory is still inside
+  the resolved caller-supplied root before anything is written, catching
+  the symlink case that resolving the label path alone could not.
+  `SessionService.list`'s `subject` filter, given without `project`, used
+  to silently drop the subject filter and issue a site-wide query instead
+  of raising -- XNAT subject labels aren't unique without a project to
+  scope them -- and now raises. A further sweep of truthiness checks over
+  caller parameters across the service layer turned up and fixed five more
+  cases where an explicit empty string was silently treated as "not
+  provided" and widened scope instead of raising: `SessionService`'s
+  modality filter, `DownloadService`'s zip-experiment-ref project lookup,
+  `AdminService.get_site_config`'s key filter, `PipelineService.list_jobs`'s
+  status filter, and `PrearchiveService.archive`'s subject/experiment-label
+  handling (three related sites: the subject lookup used to skip on an
+  empty experiment label, an empty subject used to fall through to XNAT's
+  DICOM-derived subject instead of raising, and an empty experiment label
+  used to be silently omitted from the destination path once a subject was
+  resolved). The same sweep also found six sites treating `limit=0` as "no
+  limit" instead of "zero results", across `AdminService`, `ProjectService`,
+  `SubjectService`, and `SessionService`; all six now check `is not None`.
+  A caller-supplied `zip_filename` containing subdirectories (`"sub/dir.zip"`)
+  now validates each path component individually instead of only checking
+  overall containment, so a component that is itself unsafe (a Windows
+  drive letter, a reserved device name, an empty segment) is rejected even
+  when the joined path happens to stay inside the output directory; an
+  explicit empty string now raises instead of silently falling back to the
+  default filename. Finally, `validate_local_path_component` now rejects
+  C0 control characters and NUL, matching the check the URL-path label
+  validators already had.
+
+  A final round closed five narrow residuals of the same two classes. The
+  `admin refresh-catalogs` CLI command's own `--limit` handling (a separate
+  code path from `AdminService.refresh_catalogs`'s library-level limit,
+  already fixed) still treated `--limit 0` as "no limit" and processed
+  every experiment; it now checks `is not None`, so `--limit 0` correctly
+  refreshes zero. ZIP extraction (`_extract_scan_zip`) used to validate and
+  casefold-register a resource label BEFORE checking whether that resource
+  was excluded, so an explicitly-excluded resource with a locally-unsafe
+  label (or a case-variant of another label) could still fail the whole
+  extraction even though nothing from it was ever written; exclusion is now
+  checked first, and only labels that will actually be extracted are
+  validated or registered. The same function's `resource_label` override
+  used to fall through to the per-member detected label (or `"UNKNOWN"`)
+  on an explicit empty string; it now raises (`None` still means "no
+  override"). `SessionService.list_sessions`'s `modality` filter -- the
+  classified-rows path used by `session list`, distinct from the
+  `list_project_experiment_rows`/`list()` filter fixed earlier -- still
+  silently widened to every session on an explicit empty string; it now
+  raises the same way. The CLI's `--name` flag on `session download`/`scan
+  download` checked truthiness before validating, so an explicit `--name
+  ""` skipped validation entirely and silently fell back to the session ID
+  instead of being rejected; both now validate on `is not None`, so an
+  empty value fails the way a value with a path separator already did.
+  Finally, `validate_local_path_component`'s Windows-reserved-device-name
+  check gained the superscript-digit forms `COM¹`/`COM²`/`COM³` and
+  `LPT¹`/`LPT²`/`LPT³` (U+00B9/U+00B2/U+00B3), which Windows reserves the
+  same way as the plain-digit `COM1`-`COM3`/`LPT1`-`LPT3` but which the
+  existing digit-range check did not match.
+
+  `validate_local_path_component`'s docstring also now names, explicitly,
+  the asymmetry between it and `validate_xnat_resource_label`: a resource
+  label may legally contain `#`, `?`, or `%` on XNAT and be fetchable over
+  HTTP, but `?` (and the other Windows-reserved characters) still fail
+  local-path validation -- URL-legal does not imply locally-writable, and
+  that gap is accepted design, not a bug to reconcile later.
+
+  Three closing residuals: `scan download`, like `session download`
+  already did, now validates the raw session ID as a local directory name
+  when `--name` is omitted -- a session labelled `"CON"` is a legal XNAT
+  identifier but a reserved Windows device name, and previously reached the
+  filesystem unvalidated in that fallback path.
+  `SessionService.list_sessions`'s empty-modality guard now runs before
+  fetching experiment rows rather than after, so a bad `modality` value no
+  longer costs an HTTP request it will just discard.
 
 ## 0.3.0 - 2026-08-07
 

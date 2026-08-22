@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xnatctl.core.state import EntityStatus, TransferStateStore
+from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.conflicts import ConflictChecker
 from xnatctl.services.transfer.discovery import DiscoveredEntity, DiscoveryService
@@ -665,12 +666,15 @@ class ScanPipeline:
                 continue
 
             try:
-                src_path = f"/data/experiments/{exp.local_id}/resources/{res_label}/files"
+                src_path = (
+                    f"/data/experiments/{quote_path_segment(exp.local_id)}"
+                    f"/resources/{quote_path_segment(res_label)}/files"
+                )
                 dst_path = (
-                    f"/data/projects/{dest_project}"
-                    f"/subjects/{subject.local_label}"
-                    f"/experiments/{exp.local_label}"
-                    f"/resources/{res_label}/files"
+                    f"/data/projects/{quote_path_segment(dest_project)}"
+                    f"/subjects/{quote_path_segment(subject.local_label)}"
+                    f"/experiments/{quote_path_segment(exp.local_label)}"
+                    f"/resources/{quote_path_segment(res_label)}/files"
                 )
                 self.executor.transfer_resource(
                     source_path=src_path,
@@ -700,11 +704,11 @@ class ScanPipeline:
             subject: Parent subject entity.
             result: Mutable result to update.
         """
-        src_path = f"/data/experiments/{exp.local_id}"
+        src_path = f"/data/experiments/{quote_path_segment(exp.local_id)}"
         dst_path = (
-            f"/data/projects/{dest_project}"
-            f"/subjects/{subject.local_label}"
-            f"/experiments/{exp.local_label}"
+            f"/data/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(subject.local_label)}"
+            f"/experiments/{quote_path_segment(exp.local_label)}"
         )
 
         try:

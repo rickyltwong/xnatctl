@@ -22,6 +22,7 @@ from xnatctl.core.client import XNATClient
 from xnatctl.core.exceptions import UploadError, XNATCtlError
 from xnatctl.core.retry import upload_with_retry
 from xnatctl.core.timeouts import build_httpx_timeout
+from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.progress import OperationPhase, UploadProgress, UploadSummary
 
 logger = logging.getLogger(__name__)
@@ -97,16 +98,35 @@ def upload_resource(  # noqa: C901  # pre-existing; see pyproject
                 )
             )
 
-        if scan_id:
-            if project:
-                base_path = f"/data/projects/{project}/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}/files"
+        q_session_id = quote_path_segment(session_id)
+        q_resource_label = quote_path_segment(resource_label)
+        # `is not None`, not truthy: `scan_id=""` is a caller mistake, not
+        # "no scan scope" -- it must not silently widen the upload to a
+        # SESSION-level resource. quote_path_segment already rejects the
+        # empty string.
+        # `is not None`, not truthy below too: `project=""` is a caller
+        # mistake, not "no project scope" -- it must not silently widen (or
+        # rather, narrow past validation) to the flat upload path.
+        if scan_id is not None:
+            q_scan_id = quote_path_segment(scan_id)
+            if project is not None:
+                base_path = (
+                    f"/data/projects/{quote_path_segment(project)}/experiments/{q_session_id}"
+                    f"/scans/{q_scan_id}/resources/{q_resource_label}/files"
+                )
             else:
-                base_path = f"/data/experiments/{session_id}/scans/{scan_id}/resources/{resource_label}/files"
+                base_path = (
+                    f"/data/experiments/{q_session_id}/scans/{q_scan_id}"
+                    f"/resources/{q_resource_label}/files"
+                )
         else:
-            if project:
-                base_path = f"/data/projects/{project}/experiments/{session_id}/resources/{resource_label}/files"
+            if project is not None:
+                base_path = (
+                    f"/data/projects/{quote_path_segment(project)}/experiments/{q_session_id}"
+                    f"/resources/{q_resource_label}/files"
+                )
             else:
-                base_path = f"/data/experiments/{session_id}/resources/{resource_label}/files"
+                base_path = f"/data/experiments/{q_session_id}/resources/{q_resource_label}/files"
 
         # A directory source is zipped to a temp file that MUST be removed on
         # every exit path. It used to leak on all of them: a 50 GB resource
@@ -140,7 +160,7 @@ def upload_resource(  # noqa: C901  # pre-existing; see pyproject
         if overwrite:
             params["overwrite"] = "true"
 
-        path = f"{base_path}/{source_path.name}"
+        path = f"{base_path}/{quote_path_segment(source_path.name)}"
 
         base_url = client.base_url
         session_token = client.session_token

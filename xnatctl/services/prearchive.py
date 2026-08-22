@@ -5,21 +5,15 @@ from __future__ import annotations
 import builtins
 import re
 from typing import Any
-from urllib.parse import quote
 
 from xnatctl.core.exceptions import (
     OperationError,
     ResourceExistsError,
     ResourceNotFoundError,
 )
+from xnatctl.core.validation import quote_prearchive_segment as _quote_path_segment
 
 from .base import BaseService
-
-
-def _quote_path_segment(value: str) -> str:
-    """Encode a single REST path segment for XNAT service URIs."""
-    return quote(value, safe="").replace(".", "%2E")
-
 
 # XNAT's prearchive services answer HTTP 200 with an error-shaped body rather
 # than a 4xx, so the status code alone cannot be trusted.
@@ -87,7 +81,10 @@ class PrearchiveService(BaseService):
         Returns:
             List of prearchive session dicts
         """
-        if project:
+        # `is not None`, not truthy: `project=""` is a caller mistake, not
+        # "no filter" -- it must not silently widen to every project's
+        # prearchive. _quote_path_segment already rejects the empty string.
+        if project is not None:
             path = f"/data/prearchive/projects/{_quote_path_segment(project)}"
         else:
             path = "/data/prearchive"
@@ -167,18 +164,28 @@ class PrearchiveService(BaseService):
         data: dict[str, Any] = {"src": src}
 
         resolved_subject = subject
-        if experiment_label and resolved_subject is None:
+        # `is not None`, not truthy: `experiment_label=""` must still trigger
+        # the subject lookup (and later get rejected at the point of use)
+        # rather than being silently treated the same as "no experiment
+        # label override".
+        if experiment_label is not None and resolved_subject is None:
             session = self.get(project, timestamp, session_name)
             resolved_subject = session.get("subject")
             if not resolved_subject:
                 raise ValueError("Cannot archive to a specific experiment label without a subject")
 
-        if resolved_subject:
+        # `is not None`, not truthy: an explicitly-supplied `subject=""`
+        # used to skip this branch entirely (treated the same as "not
+        # provided"), silently falling back to XNAT's DICOM-derived subject
+        # instead of raising on the caller's empty value -- a different
+        # archive destination than either the caller or "no override" meant.
+        # _quote_path_segment below already rejects the empty string.
+        if resolved_subject is not None:
             dest = (
                 f"/archive/projects/{encoded_project}"
                 f"/subjects/{_quote_path_segment(resolved_subject)}"
             )
-            if experiment_label:
+            if experiment_label is not None:
                 dest = f"{dest}/experiments/{_quote_path_segment(experiment_label)}"
             data["dest"] = dest
         if overwrite:

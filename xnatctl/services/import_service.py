@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from xnatctl.core.validation import validate_xnat_label
+
 IMPORT_ENDPOINT = "/data/services/import"
 
 
@@ -36,6 +38,12 @@ def archive_destination_params(project: str, direct_archive: bool) -> dict[str, 
       explicit ``dest`` because it is self-describing and matches the
       ``PrearchiveService`` pattern used elsewhere in this repo.
 
+    ``dest`` is a query-parameter *value* (httpx percent-encodes the whole
+    querystring), so an unvalidated ``project`` cannot redirect the request
+    the way an unquoted URL *path* segment could -- but ``project`` is still
+    validated here for airtightness, and to fail with a clear error at
+    construction rather than a confusing 400 from the import service.
+
     Caveat: neither form can prevent a *project-configured* auto-archive.
     XNAT's ``prearchive_code`` on the project (0=manual, 4/5=auto) is the
     authoritative switch. When a project has auto-archive enabled, a
@@ -47,6 +55,7 @@ def archive_destination_params(project: str, direct_archive: bool) -> dict[str, 
     """
     if direct_archive:
         return {"Direct-Archive": "true"}
+    project = validate_xnat_label(project, "project")
     return {"dest": f"/prearchive/projects/{project}"}
 
 

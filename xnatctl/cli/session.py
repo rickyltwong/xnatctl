@@ -17,7 +17,7 @@ from xnatctl.cli.common import (
     require_project_from_context,
     resolve_workers_from_context,
 )
-from xnatctl.core.exceptions import DownloadError, ResourceNotFoundError
+from xnatctl.core.exceptions import DownloadError, InputValidationError, ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -360,7 +360,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         xnatctl session download -E XNAT_E00001 --out ./data --dry-run
         xnatctl session download -E XNAT_E00001 --verify
     """
-    from xnatctl.core.validation import validate_path_writable
+    from xnatctl.core.validation import validate_local_path_component, validate_path_writable
 
     # Map extract/keep_zips to internal unzip/cleanup
     unzip = extract or keep_zips
@@ -372,8 +372,25 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
 
     out_path = Path(out)
 
-    if name and ("/" in name or "\\" in name):
-        raise click.ClickException("--name cannot contain path separators")
+    # `is not None`, not truthy: an explicit `--name ""` must fail
+    # validation (it does -- empty is rejected below) rather than silently
+    # falling through to the session_id fallback further down (`name or
+    # session_id`), which would ignore the caller's (invalid) request
+    # instead of reporting it.
+    if name is not None:
+        try:
+            validate_local_path_component(name, "--name")
+        except InputValidationError as e:
+            raise click.ClickException(str(e)) from e
+    else:
+        # Without --name, the output directory falls back to the raw
+        # session_id (see below) -- validated here too, since it goes
+        # through ExperimentRef's URL-safety check (validate_xnat_label,
+        # which does not forbid ':') rather than a local-filesystem check.
+        try:
+            validate_local_path_component(session_id, "session_id (as the output directory name)")
+        except InputValidationError as e:
+            raise click.ClickException(str(e)) from e
 
     # Resolve project and workers from profile defaults
     if not project:

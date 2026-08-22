@@ -41,6 +41,24 @@ def _apply_template(*, template: str, project: str, groups: tuple[str | None, ..
     return target
 
 
+def _validate_rename_target(target: str) -> str | None:
+    """Reject a rename target that is not a legal XNAT label.
+
+    Every rename target here is derived text -- a regex substitution, a
+    template expansion, or a raw value from a user-supplied mapping/patterns
+    JSON file -- none of it XNAT has validated yet. Returns an error message
+    if invalid, or ``None`` if the target is safe to use.
+    """
+    from xnatctl.core.exceptions import InvalidIdentifierError
+    from xnatctl.core.validation import validate_xnat_label
+
+    try:
+        validate_xnat_label(target, "subject label")
+    except InvalidIdentifierError as e:
+        return str(e)
+    return None
+
+
 def _projects_in_patterns_file(path: str) -> set[str]:
     """Extract the unique project IDs referenced by a patterns JSON file."""
     import json
@@ -380,6 +398,11 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                 skipped.append((label, "already matches"))
                 continue
 
+            invalid_reason = _validate_rename_target(target)
+            if invalid_reason is not None:
+                skipped.append((label, f"invalid target label: {invalid_reason}"))
+                continue
+
             target_exists = target in current_labels
             if dry_run:
                 if target_exists:
@@ -430,6 +453,15 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
 
             if old_label == new_label:
                 skipped.append((old_label, "same label"))
+                continue
+
+            if not isinstance(new_label, str):
+                skipped.append((old_label, "invalid target label: must be a string"))
+                continue
+
+            invalid_reason = _validate_rename_target(new_label)
+            if invalid_reason is not None:
+                skipped.append((old_label, f"invalid target label: {invalid_reason}"))
                 continue
 
             target_exists = new_label in current_labels
@@ -485,6 +517,11 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
 
             if target == label:
                 skipped.append((label, "already matches"))
+                continue
+
+            invalid_reason = _validate_rename_target(target)
+            if invalid_reason is not None:
+                skipped.append((label, f"invalid target label: {invalid_reason}"))
                 continue
 
             target_exists = target in current_labels

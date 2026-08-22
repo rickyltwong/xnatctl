@@ -11,7 +11,6 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import as_completed
 from pathlib import Path
 from typing import Any, NamedTuple
-from urllib.parse import quote
 
 import httpx
 
@@ -20,8 +19,17 @@ from xnatctl.core.client import XNATClient
 from xnatctl.core.exceptions import (
     AuthenticationError,
     DownloadError,
+    InputValidationError,
+    PathValidationError,
     ResourceNotFoundError,
     XNATCtlError,
+)
+from xnatctl.core.validation import (
+    check_no_casefold_collision,
+    quote_path_segment,
+    validate_local_path_component,
+    validate_xnat_resource_label,
+    verify_directory_contained_in,
 )
 from xnatctl.models.hierarchy import ExperimentRef, ResourceRef, ScanRef
 from xnatctl.models.progress import (
@@ -137,6 +145,84 @@ def stream_to_file(
     return StreamedFile(bytes_written, content_length)
 
 
+def _safe_output_path(output_dir: Path, filename: str | None, default: str) -> Path:
+    """Resolve a caller-supplied output filename, rejecting path traversal.
+
+    ``zip_filename`` on :meth:`DownloadService.download_resource` and
+    :meth:`DownloadService.download_scans` is an optional override -- the CLI
+    never exposes it as a flag, but the library surface does, so nothing
+    upstream has validated it. ``None`` means "use the default name" and is
+    the real omitted case; an explicitly-supplied empty/whitespace-only
+    STRING is a caller mistake and must not be silently substituted with
+    ``default`` the same way.
+
+    A subdirectory-bearing value (``"sub/dir.zip"``) is legal -- XNAT and
+    the CLI both use ``/`` for this regardless of host OS -- but each ``/``-
+    separated component is validated on its own via
+    :func:`~xnatctl.core.validation.validate_local_path_component`, the same
+    check every other identifier-derived local path piece in this module
+    goes through. That also means a leading or trailing ``/`` (an absolute
+    path, or a stray empty component) is rejected: it splits out an empty
+    string component, which the component validator already refuses.
+    Joining the whole thing onto ``output_dir`` unchecked would otherwise let
+    a caller (or anything that echoes attacker-controlled text into it)
+    escape the output directory with a name like ``../../etc/cron.d/x``, or
+    -- component-by-component checking aside -- reach Windows path handling
+    unvalidated the way a single-component value already does elsewhere.
+
+    Raises:
+        PathValidationError: If ``filename`` is supplied but empty or
+            whitespace-only, if any ``/``-separated component fails
+            :func:`~xnatctl.core.validation.validate_local_path_component`,
+            or if the resolved result escapes ``output_dir``.
+    """
+    if filename is not None:
+        if filename.strip() == "":
+            raise PathValidationError(
+                filename, "output filename cannot be empty or whitespace-only"
+            )
+        for part in filename.split("/"):
+            validate_local_path_component(part, "output filename component")
+        effective_name = filename
+    else:
+        effective_name = default
+
+    candidate = output_dir / effective_name
+    resolved_dir = output_dir.resolve()
+    if not candidate.resolve().is_relative_to(resolved_dir):
+        raise PathValidationError(
+            str(filename), "output filename must not escape the output directory"
+        )
+    return candidate
+
+
+def _reject_empty_resource_filter_values(
+    include_resources: tuple[str, ...], exclude_resources: tuple[str, ...]
+) -> None:
+    """Reject an empty/whitespace-only element in a resource include/exclude filter.
+
+    An EMPTY tuple (the default) legitimately means "no filter" -- but an
+    empty STRING inside a non-empty tuple is a different thing, and every
+    caller downstream checks the tuple's truthiness (``if include_resources:``)
+    or a resource label's truthiness (``if resource_label:``) to decide
+    in/unfiltered scope. A stray ``""`` element would satisfy the tuple
+    truthiness check (turning ON the include-filter branch) while never
+    matching a real resource label -- either silently narrowing to zero
+    results (nothing is ever labelled ``""``) or, worse, falling through a
+    later per-item ``if resource_label:`` check into the UNFILTERED request
+    for that one item. Neither is what the caller asked for, so this fails
+    loudly instead.
+    """
+    for value in (*include_resources, *exclude_resources):
+        if value.strip() == "":
+            raise InputValidationError(
+                "include_resources/exclude_resources cannot contain an empty or "
+                "whitespace-only value",
+                field="resource filter",
+                value=value,
+            )
+
+
 class ScanResult(NamedTuple):
     """One scan download attempt."""
 
@@ -170,7 +256,13 @@ class DownloadService(BaseService):
         subject: str | None = None,
     ) -> ExperimentRef:
         """Resolve label-based experiment references to a canonical experiment ID."""
-        if project and not session_id.startswith("XNAT_E"):
+        # `is not None`, not truthy: `project=""` used to skip this branch
+        # entirely (treated the same as "no project"), silently using
+        # session_id AS an accession ID without resolving it -- wrong if
+        # it's actually a label. `is not None` routes "" into
+        # ExperimentRef(project_id=""), which raises via the ref's own
+        # validation instead.
+        if project is not None and not session_id.startswith("XNAT_E"):
             source_ref = ExperimentRef(
                 experiment=session_id,
                 project_id=project,
@@ -225,9 +317,27 @@ class DownloadService(BaseService):
 
         Produces the XNAT compressed-uploader layout:
             {session_dir}/scans/{scan_id}/resources/{label}/files/{files...}
+
+        Raises:
+            InputValidationError: If ``include_resources`` or
+                ``exclude_resources`` contains an empty/whitespace-only value.
+            PathValidationError: If two scans' IDs collide case-insensitively
+                (they would extract into the same local directory on a
+                case-insensitive filesystem -- Windows, or macOS/HFS+ by
+                default).
         """
+        _reject_empty_resource_filter_values(include_resources, exclude_resources)
+
         results = SessionService(self.client).scan_rows(resolved_session_id)
         scan_ids = [r["ID"] for r in results if r.get("ID")]
+
+        # Checked once, sequentially, before any download starts (and before
+        # the parallel pool below, which is why this doesn't need a lock) --
+        # a case collision between two scan IDs is a structural problem with
+        # the whole batch, not a single scan's failure.
+        seen_scan_dirs: set[str] = set()
+        for sid in scan_ids:
+            check_no_casefold_collision(sid, seen_scan_dirs, "scan_id")
 
         if on_start is not None:
             on_start(len(scan_ids))
@@ -253,11 +363,13 @@ class DownloadService(BaseService):
         ) -> ScanResult:
             """Download a scan ZIP and extract into standard layout."""
             base = (
-                f"/data/projects/{session_project}/subjects/{subject}"
-                f"/experiments/{resolved_session_id}/scans/{scan_id}"
+                f"/data/projects/{quote_path_segment(session_project)}"
+                f"/subjects/{quote_path_segment(subject)}"
+                f"/experiments/{quote_path_segment(resolved_session_id)}"
+                f"/scans/{quote_path_segment(scan_id)}"
             )
-            if resource_label:
-                scan_url = f"{base}/resources/{resource_label}/files"
+            if resource_label is not None:
+                scan_url = f"{base}/resources/{quote_path_segment(resource_label)}/files"
             else:
                 scan_url = f"{base}/files"
 
@@ -271,7 +383,21 @@ class DownloadService(BaseService):
 
                 try:
                     stream_to_file(self.client, scan_url, tmp_path, params={"format": "zip"})
-                    scan_base = session_dir / "scans" / scan_id
+                    # `scan_id` is server-reported (scan_rows), not caller
+                    # input, but a misconfigured/malicious server could still
+                    # hand back something traversal-shaped -- a hostile ID
+                    # fails this one scan (caught below) rather than being
+                    # silently aliased onto a generic local folder.
+                    scan_base = (
+                        session_dir / "scans" / validate_local_path_component(scan_id, "scan_id")
+                    )
+                    # A pre-existing symlink at exactly this path (a prior
+                    # run, a race, deliberate planting) would resolve
+                    # OUTSIDE session_dir -- _extract_scan_zip's own
+                    # containment check then anchors to that escaped
+                    # location and passes trivially. Verified one level up,
+                    # against the true caller-supplied root.
+                    verify_directory_contained_in(scan_base, session_dir, "scan directory")
                     extracted, renamed = _extract_scan_zip(
                         tmp_path,
                         scan_base,
@@ -349,8 +475,9 @@ class DownloadService(BaseService):
             DownloadError: On a short read (Content-Length mismatch).
         """
         scans_url = (
-            f"/data/projects/{session_project}/subjects/{subject}"
-            f"/experiments/{resolved_session_id}/scans/ALL/files"
+            f"/data/projects/{quote_path_segment(session_project)}"
+            f"/subjects/{quote_path_segment(subject)}"
+            f"/experiments/{quote_path_segment(resolved_session_id)}/scans/ALL/files"
         )
         scans_zip = session_dir / "scans.zip"
         stream_to_file(
@@ -395,21 +522,37 @@ class DownloadService(BaseService):
             XNATCtlError: Any typed client-layer failure while listing or
                 streaming a resource.
             DownloadError: On a short read (Content-Length mismatch).
+            PathValidationError: If a server-reported resource label is not
+                safe to use as a local filename component, or two resource
+                labels collide case-insensitively (they would produce the
+                same local ZIP filename on a case-insensitive filesystem --
+                Windows, or macOS/HFS+ by default).
         """
         res_url = (
-            f"/data/projects/{session_project}/subjects/{subject}"
-            f"/experiments/{resolved_session_id}/resources"
+            f"/data/projects/{quote_path_segment(session_project)}"
+            f"/subjects/{quote_path_segment(subject)}"
+            f"/experiments/{quote_path_segment(resolved_session_id)}/resources"
         )
         sess_resources = SessionService(self.client).experiment_resource_rows(
             resolved_session_id, project=session_project, subject=subject
         )
         result = downloaded if downloaded is not None else []
+        seen_resource_names: set[str] = set()
         for res in sess_resources:
             label = res.get("label", "resource")
-            zip_path = session_dir / f"resources_{label}.zip"
+            # `label` is server-reported, not caller input, but a resource
+            # label is still attacker-influenceable in principle (whoever
+            # created it on the server) -- a hostile label fails this
+            # resource's download (see the method's Raises) rather than being
+            # silently aliased onto a generic local filename, while the raw
+            # label is still what the URL and the returned tuple use (the
+            # verification manifest keys on the literal label).
+            safe_name = validate_local_path_component(label, "resource label")
+            check_no_casefold_collision(safe_name, seen_resource_names, "resource label")
+            zip_path = session_dir / f"resources_{safe_name}.zip"
             stream_to_file(
                 self.client,
-                f"{res_url}/{label}/files",
+                f"{res_url}/{quote_path_segment(label)}/files",
                 zip_path,
                 params={"format": "zip"},
             )
@@ -453,7 +596,13 @@ class DownloadService(BaseService):
             The digest map (see :func:`xnatctl.services.verify.key_from_uri`;
             a None digest means the server listed the file with no checksum)
             plus any key two different server-reported files both mapped to.
+
+        Raises:
+            InputValidationError: If ``include_resources`` or
+                ``exclude_resources`` contains an empty/whitespace-only value.
         """
+        _reject_empty_resource_filter_values(include_resources, exclude_resources)
+
         resolved = self._resolve_zip_experiment_ref(session_id, project=project, subject=subject)
         resolved_session_id = resolved.experiment
         experiment_ref = ExperimentRef(
@@ -472,7 +621,11 @@ class DownloadService(BaseService):
 
         for scan_id in scan_ids:
             scan_ref = ScanRef(experiment=experiment_ref, scan_id=scan_id)
-            if resource_filter:
+            # `is not None`, not truthy: `resource_filter=""` is a caller
+            # mistake, not "no single-resource scope" -- it must not silently
+            # widen verification to every resource on the scan.
+            # list_file_rows below rejects the empty string via ResourceRef.
+            if resource_filter is not None:
                 labels = [resource_filter]
             else:
                 labels = [
@@ -484,10 +637,7 @@ class DownloadService(BaseService):
                     labels = [label for label in labels if label not in exclude_set]
 
             for label in labels:
-                # `quote` matches ResourceService's other file-listing callers
-                # (see cli/resource.py): a label may contain characters
-                # (spaces, `#`) invalid unencoded in a URL path segment.
-                rows = resource_svc.list_file_rows(scan_ref, quote(label))
+                rows = resource_svc.list_file_rows(scan_ref, label)
                 collector.ingest(rows, label=label, scan_id=scan_id)
 
         if include_session_resources:
@@ -498,7 +648,7 @@ class DownloadService(BaseService):
                 label = str(res.get("label") or "")
                 if not label:
                     continue
-                rows = resource_svc.list_file_rows(experiment_ref, quote(label))
+                rows = resource_svc.list_file_rows(experiment_ref, label)
                 collector.ingest(rows, label=label, scan_id=None)
 
         return verify.VerificationManifest(
@@ -660,8 +810,11 @@ class DownloadService(BaseService):
                 # contract.
                 resolved_experiment_ref = ExperimentRef(experiment=session_id)
 
-            # Build path - always use /data/experiments/{id}/... for reliable ZIP downloads
-            if scan_id:
+            # Build path - always use /data/experiments/{id}/... for reliable ZIP downloads.
+            # `is not None`, not truthy: `scan_id=""` is a caller mistake, not
+            # "no scan scope" -- it must not silently widen to a session-level
+            # resource. ScanRef's own validation rejects the empty string.
+            if scan_id is not None:
                 path = HierarchyService.build_resource_path(
                     ResourceRef(
                         parent=ScanRef(experiment=resolved_experiment_ref, scan_id=scan_id),
@@ -677,7 +830,13 @@ class DownloadService(BaseService):
 
             params = {"format": "zip"}
 
-            zip_path = output_dir / (zip_filename or f"{resource_label}.zip")
+            # `resource_label` reaches Windows path handling raw wherever it
+            # is joined onto a local path below (e.g. "C:escape" is
+            # drive-relative, discarding the base entirely) unless validated
+            # first -- validate_xnat_resource_label above only covers URL
+            # safety, not local-filesystem safety.
+            safe_resource_label = validate_local_path_component(resource_label, "resource_label")
+            zip_path = _safe_output_path(output_dir, zip_filename, f"{safe_resource_label}.zip")
 
             progress_cb: Callable[[int, int | None], None] | None = None
             if progress_callback is not None:
@@ -699,7 +858,12 @@ class DownloadService(BaseService):
 
             file_count = 1
             if extract:
-                extract_dir = output_dir / resource_label
+                extract_dir = output_dir / safe_resource_label
+                # A pre-existing symlink at exactly this path would resolve
+                # OUTSIDE output_dir -- _safe_extract_zip's own containment
+                # check then anchors to that escaped location. Verified one
+                # level up, against the true caller-supplied root.
+                verify_directory_contained_in(extract_dir, output_dir, "extraction directory")
                 _safe_extract_zip(zip_path, extract_dir)
                 file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
                 zip_path.unlink()
@@ -812,7 +976,24 @@ class DownloadService(BaseService):
             fetch is reported as ``success=False`` with the reason in ``errors``
             rather than raised. Call ``raise_for_status()`` on the summary to
             turn a failed batch into a ``BatchOperationError``.
+
+        Raises:
+            InputValidationError: If ``scan_ids`` is empty, or contains an
+                empty/whitespace-only ID. An empty list would otherwise join
+                to an empty batch spec (``/scans//files`` -- a malformed,
+                different route), and this is caught before any HTTP call or
+                filesystem write, not folded into the batch-failure summary
+                the way a stream failure is.
         """
+        if not scan_ids:
+            raise InputValidationError("scan_ids cannot be empty", field="scan_ids", value=scan_ids)
+        if any(not scan_id.strip() for scan_id in scan_ids):
+            raise InputValidationError(
+                "scan_ids cannot contain an empty or whitespace-only ID",
+                field="scan_ids",
+                value=scan_ids,
+            )
+
         start_time = time.time()
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -834,24 +1015,31 @@ class DownloadService(BaseService):
             # download_resource for the full rationale.
             resolved_experiment_ref = ExperimentRef(experiment=session_id)
 
-        scan_spec = ",".join(scan_ids) if len(scan_ids) > 1 else scan_ids[0]
+        # XNAT's own comma-delimited multi-scan syntax (`/scans/1,2,3/files`) --
+        # NOT a single opaque path segment, so it cannot go through ScanRef +
+        # the normal builder chain the way one scan ID does: that would quote
+        # the whole joined string as one segment, percent-encoding the very
+        # commas that make it a batch spec (and double-encoding any ID that
+        # itself needed escaping). Each ID is quoted on its own instead, then
+        # rejoined with a literal comma.
+        scans_suffix = ",".join(quote_path_segment(scan_id) for scan_id in scan_ids)
+        scans_base_path = HierarchyService.build_experiment_path(
+            HierarchyService.routable_scan_parent(resolved_experiment_ref), "scans"
+        )
 
-        if resource:
-            path = HierarchyService.build_resource_path(
-                ResourceRef(
-                    parent=ScanRef(experiment=resolved_experiment_ref, scan_id=scan_spec),
-                    resource_label=resource,
-                ),
-                "files",
+        # `is not None`, not truthy: `resource=""` is a caller mistake, not
+        # "no resource filter" -- it must not silently widen to all
+        # resources. validate_xnat_resource_label rejects it explicitly.
+        if resource is not None:
+            resource = validate_xnat_resource_label(resource)
+            path = (
+                f"{scans_base_path}/{scans_suffix}/resources/{quote_path_segment(resource)}/files"
             )
         else:
-            path = HierarchyService.build_scan_path(
-                ScanRef(experiment=resolved_experiment_ref, scan_id=scan_spec),
-                "files",
-            )
+            path = f"{scans_base_path}/{scans_suffix}/files"
 
         params = {"format": "zip"}
-        zip_path = output_dir / (zip_filename or "scans.zip")
+        zip_path = _safe_output_path(output_dir, zip_filename, "scans.zip")
 
         try:
             progress_cb: Callable[[int, int | None], None] | None = None
@@ -876,6 +1064,10 @@ class DownloadService(BaseService):
             output_path = str(zip_path)
             if extract:
                 extract_dir = output_dir / "scans"
+                # "scans" is a fixed literal, not identifier-derived, but the
+                # same symlink risk applies to any pre-existing entry at this
+                # path -- verified against the true caller-supplied root.
+                verify_directory_contained_in(extract_dir, output_dir, "extraction directory")
                 _safe_extract_zip(zip_path, extract_dir)
                 file_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
                 if cleanup:

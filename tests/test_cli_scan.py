@@ -725,7 +725,64 @@ class TestScanDownload:
             )
 
         assert result.exit_code != 0
-        assert "path separators" in result.output
+        assert "path separator" in result.output
+
+    def test_scan_download_name_empty_string_is_rejected(self, runner: CliRunner, tmp_path) -> None:
+        """An explicit ``--name ""`` must fail validation, not silently fall
+        back to the session_id -- `if name:` used to skip validation
+        entirely for an empty string and let ``name or session_id`` pick
+        the fallback without ever reporting the caller's bad input.
+        """
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "--name",
+                    "",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "empty" in result.output.lower()
+
+    def test_scan_download_reserved_session_id_fallback_is_rejected(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """Without --name, the raw session_id becomes the local output
+        directory -- "CON" passes validate_session_id (a legal XNAT
+        accession/label) but is a reserved Windows device name, so it must
+        still be rejected before being used as a directory name. Mirrors
+        session download's own fallback validation.
+        """
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "CON",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "reserved" in result.output.lower()
 
     def test_scan_download_multiple_resources_rejected(self, runner: CliRunner, tmp_path) -> None:
         """Multiple --resource values are rejected."""
