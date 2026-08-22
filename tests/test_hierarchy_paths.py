@@ -1133,15 +1133,6 @@ class TestCliNameValidation:
     command body after a successful login.
     """
 
-    # TEMPORARY: the eager-callback product fix (moving --name validation
-    # into a Click option callback that runs before @require_auth) is on
-    # hold in cli/session.py / cli/scan.py while another agent edits those
-    # same files for an unrelated feature. Without it, these two tests
-    # correctly reproduce the CI failure (auth fails before --name is ever
-    # validated) instead of passing. xfail(strict=True) so the suite stays
-    # green now and fails loudly -- forcing this marker's removal -- the
-    # moment the product fix lands and the test starts passing again.
-    @pytest.mark.xfail(strict=True, reason="name validation requires auth-free path")
     def test_session_download_rejects_windows_invalid_name(
         self, no_ambient_credentials: Path
     ) -> None:
@@ -1167,7 +1158,6 @@ class TestCliNameValidation:
         assert "evil:name" in result.output
         assert "Not authenticated" not in result.output
 
-    @pytest.mark.xfail(strict=True, reason="name validation requires auth-free path")
     def test_scan_download_rejects_windows_invalid_name(self, no_ambient_credentials: Path) -> None:
         from click.testing import CliRunner
 
@@ -1856,7 +1846,15 @@ class TestZipExtractExclusionBeforeValidation:
 
         assert extracted == 1
         assert (scan_base / "resources" / "DICOM" / "files" / "a.dcm").exists()
-        assert not (scan_base / "resources" / "dicom").exists()
+        # Not `not (.../"dicom").exists()`: on a case-insensitive filesystem
+        # (macOS, Windows) that path resolves to the very "DICOM" directory
+        # this test just asserted DOES exist, so the negated check would be
+        # platform-dependent even though the underlying behavior (excluding
+        # "dicom" without ever creating a second, colliding directory) is
+        # correct everywhere. Assert the literal directory entry instead --
+        # exactly one, named "DICOM" -- which holds on both filesystem kinds.
+        resource_dirs = sorted(p.name for p in (scan_base / "resources").iterdir())
+        assert resource_dirs == ["DICOM"]
 
     def test_explicit_empty_resource_label_raises(self, tmp_path: Path) -> None:
         """resource_label="" is a caller mistake, not "no override" -- it

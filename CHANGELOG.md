@@ -368,6 +368,11 @@ All notable changes to this project will be documented in this file.
   fetching experiment rows rather than after, so a bad `modality` value no
   longer costs an HTTP request it will just discard.
 
+  `session download`/`scan download`'s `--name` validation now runs in an
+  eager Click option callback, at argument-parsing time, instead of inside
+  the command body -- so an invalid `--name` is rejected before
+  authentication is even attempted, not just before the download starts.
+
 - Locked dependency versions bumped to close two published CVEs with no
   code changes required: `cryptography` 49.0.0 -> 50.0.0 (PYSEC-2026-3552)
   and `pydicom` 3.0.1 -> 3.0.2 (PYSEC-2026-2266). Both stay within their

@@ -17,6 +17,7 @@ from xnatctl.cli.common import (
     require_auth,
     require_project_from_context,
     resolve_workers_from_context,
+    validate_local_path_option_cb,
 )
 from xnatctl.core.exceptions import DownloadError, InputValidationError, ResourceNotFoundError
 from xnatctl.core.output import (
@@ -254,7 +255,13 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
-@click.option("--name", hidden=True, help="Output directory name (defaults to session ID)")
+@click.option(
+    "--name",
+    hidden=True,
+    callback=validate_local_path_option_cb,
+    is_eager=True,
+    help="Output directory name (defaults to session ID)",
+)
 @click.option(
     "--workers",
     "-w",
@@ -379,21 +386,15 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
 
     out_path = Path(out)
 
-    # `is not None`, not truthy: an explicit `--name ""` must fail
-    # validation (it does -- empty is rejected below) rather than silently
-    # falling through to the session_id fallback further down (`name or
-    # session_id`), which would ignore the caller's (invalid) request
-    # instead of reporting it.
-    if name is not None:
-        try:
-            validate_local_path_component(name, "--name")
-        except InputValidationError as e:
-            raise click.ClickException(str(e)) from e
-    else:
-        # Without --name, the output directory falls back to the raw
-        # session_id (see below) -- validated here too, since it goes
-        # through ExperimentRef's URL-safety check (validate_xnat_label,
-        # which does not forbid ':') rather than a local-filesystem check.
+    # `--name` (when given) is validated by validate_local_path_option_cb, an
+    # eager Click callback that runs at argument-parsing time -- before
+    # @require_auth -- so a malformed --name fails without needing a valid
+    # session. Without --name, the output directory falls back to the raw
+    # session_id (see below); that fallback isn't known until here (it
+    # depends on -E), so it's still validated in the command body, and goes
+    # through ExperimentRef's URL-safety check (validate_xnat_label, which
+    # does not forbid ':') rather than a local-filesystem check.
+    if name is None:
         try:
             validate_local_path_component(session_id, "session_id (as the output directory name)")
         except InputValidationError as e:

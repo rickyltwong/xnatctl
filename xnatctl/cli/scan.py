@@ -19,6 +19,7 @@ from xnatctl.cli.common import (
     parallel_options,
     require_auth,
     resolve_workers_from_context,
+    validate_local_path_option_cb,
 )
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
@@ -467,7 +468,13 @@ def scan_delete(
 )
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
-@click.option("--name", hidden=True, help="Output directory name (defaults to experiment value)")
+@click.option(
+    "--name",
+    hidden=True,
+    callback=validate_local_path_option_cb,
+    is_eager=True,
+    help="Output directory name (defaults to experiment value)",
+)
 @click.option(
     "--resource",
     "-r",
@@ -581,25 +588,17 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     if not project:
         project = default_project_from_context(ctx)
 
-    # `is not None`, not truthy: an explicit `--name ""` must fail
-    # validation (it does -- empty is rejected below) rather than silently
-    # falling through to the `name or session_id` fallback used further
-    # down, which would ignore the caller's (invalid) request instead of
-    # reporting it.
-    if name is not None:
-        from xnatctl.core.validation import validate_local_path_component
-
-        try:
-            validate_local_path_component(name, "--name")
-        except InputValidationError as e:
-            raise click.ClickException(str(e)) from e
-    else:
-        # Without --name, the output directory falls back to the raw
-        # session_id (see below) -- validated here too, since it goes
-        # through validate_session_id's URL-safety check rather than a
-        # local-filesystem check, so a label like "CON" (a legal session ID,
-        # but a reserved Windows device name) would otherwise reach the
-        # filesystem unvalidated. Mirrors session download's own fallback.
+    # `--name` (when given) is validated by validate_local_path_option_cb, an
+    # eager Click callback that runs at argument-parsing time -- before
+    # @require_auth -- so a malformed --name fails without needing a valid
+    # session. Without --name, the output directory falls back to the raw
+    # session_id (see below); that fallback isn't known until here (it
+    # depends on -E), so it's still validated in the command body, and goes
+    # through validate_session_id's URL-safety check rather than a
+    # local-filesystem check, so a label like "CON" (a legal session ID, but
+    # a reserved Windows device name) would otherwise reach the filesystem
+    # unvalidated. Mirrors session download's own fallback.
+    if name is None:
         from xnatctl.core.validation import validate_local_path_component
 
         try:
