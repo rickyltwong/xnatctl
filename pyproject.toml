@@ -216,7 +216,10 @@ omit = ["*/tests/*", "*/__pycache__/*"]
 # Keep this identical to --cov-fail-under in .github/workflows/ci.yml.
 # 78 -> 82 once the DICOM tier actually ran in CI: installing the `dicom`
 # extra took cli/dicom_cmd.py from 16% to 88% on its own.
-fail_under = 82
+# 82 -> 88 once cli/subject.py's rename command and cli/project.py's
+# transfer verbs got real CliRunner coverage (previously only exercised
+# via --help smoke tests).
+fail_under = 88
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
