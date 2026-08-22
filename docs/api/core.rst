@@ -4,6 +4,23 @@ Core API
 The core package provides foundational classes for XNAT server communication,
 configuration management, authentication, and error handling.
 
+Package Version
+----------------
+
+``xnatctl.__version__`` is the installed package version, resolved from
+distribution metadata (``importlib.metadata.version("xnatctl")``). It is part
+of the Stable, semver-covered surface -- listed in ``xnatctl.__all__`` despite
+the leading underscore. See :doc:`../stability`.
+
+.. code-block:: python
+
+   import xnatctl
+
+   print(xnatctl.__version__)
+
+.. autodata:: xnatctl.__version__
+   :annotation: -- installed package version, e.g. "0.5.0"
+
 Client
 ------
 
@@ -210,10 +227,16 @@ Input validation utilities for XNAT resource identifiers, URLs, and parameters.
 
 **Validators:**
 
-- ``validate_server_url(url: str) -> str`` - Normalize and validate XNAT server URLs
-- ``validate_project_id(project_id: str) -> None`` - Validate project ID format
-- ``validate_subject_label(label: str) -> None`` - Validate subject label format
-- ``validate_session_label(label: str) -> None`` - Validate session label format
+- ``validate_server_url(url: str) -> str`` - Normalize and validate XNAT server URLs; raises :class:`~xnatctl.core.exceptions.InvalidURLError`
+- ``validate_project_id(project: str) -> str`` - Validate and return a project ID; raises :class:`~xnatctl.core.exceptions.InvalidIdentifierError`
+- ``validate_subject_id(subject: str) -> str`` - Validate and return a subject ID; raises :class:`~xnatctl.core.exceptions.InvalidIdentifierError`
+- ``validate_session_id(session: str) -> str`` - Validate and return a session/experiment ID; raises :class:`~xnatctl.core.exceptions.InvalidIdentifierError`
+- ``validate_xnat_label(value: str, label_type: str = "label") -> str`` - Validate a looser XNAT label (project/subject/experiment/scan labels imported from DICOM metadata, which may contain spaces, dots, and parentheses); raises :class:`~xnatctl.core.exceptions.InvalidIdentifierError`
+
+Every validator returns the validated value rather than ``None`` -- call it
+inline where you would otherwise reassign the variable. The returned value
+may be normalized rather than byte-identical: the ID validators strip
+surrounding whitespace, and ``validate_server_url`` normalizes the URL.
 
 .. automodule:: xnatctl.core.validation
    :members:
@@ -233,13 +256,15 @@ terminal rendering.
 
 **Usage Example:**
 
+The module is a set of functions, not a formatter class -- pick the one that
+matches the format you want:
+
 .. code-block:: python
 
-   from xnatctl.core.output import OutputFormatter
+   from xnatctl.core.output import print_table
 
-   formatter = OutputFormatter(format="table")
-   formatter.print_table(
-       data=[{"id": "proj1", "name": "Project 1"}],
+   print_table(
+       rows=[{"id": "proj1", "name": "Project 1"}],
        columns=["id", "name"]
    )
 

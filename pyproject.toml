@@ -112,8 +112,9 @@ ignore = [
     # enable it: Click's no-rewrap marker is a literal \b, which in a normal
     # docstring becomes the 0x08 byte Click looks for. Making those raw turns
     # it into two characters and every Example block in --help rewraps into a
-    # paragraph -- the exact defect CLI-05 fixed. Verified: the compiled help
-    # text for `scan list` contains 0x08 and renders unwrapped.
+    # paragraph -- the exact help-text defect this rule exclusion prevents.
+    # Verified: the compiled help text for `scan list` contains 0x08 and
+    # renders unwrapped.
     "D301",
     # Constructor arguments are documented on the class, per Google style.
     "D107",

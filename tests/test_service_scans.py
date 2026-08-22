@@ -224,7 +224,7 @@ class TestScanSetNote:
 
 
 class TestScanRefAccessors:
-    """Tests for the ref-based accessors the CLI routes through (ADR-0010)."""
+    """Tests for the ref-based accessors the CLI routes through."""
 
     def _scan_ref(self):
         from xnatctl.models.hierarchy import ExperimentRef, ScanRef

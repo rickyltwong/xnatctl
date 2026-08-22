@@ -288,10 +288,12 @@ class ScanService(BaseService):
     # -------------------------------------------------------------------------
     # Ref-based accessors
     #
-    # The CLI resolves an experiment to a canonical, routable ``ScanRef`` (see
-    # ADR-0010) before addressing a scan. These operate on that already-resolved
-    # ref so the wire path matches what inspection produced, rather than
-    # re-deriving it from ``(session_id, project)``.
+    # The CLI resolves an experiment to a canonical, routable ``ScanRef``
+    # before addressing a scan -- XNAT silently answers a mis-routed scan URL
+    # with the parent experiment document, so the route must be one XNAT
+    # actually dispatches. These operate on that already-resolved ref so the
+    # wire path matches what inspection produced, rather than re-deriving it
+    # from ``(session_id, project)``.
     # -------------------------------------------------------------------------
 
     def get_scan_document(self, scan_ref: ScanRef) -> dict[str, Any] | None:

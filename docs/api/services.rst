@@ -21,11 +21,14 @@ All services follow the service layer pattern:
 
 1. **Instantiate with authenticated client**
 2. **Call service methods** (list, get, create, update, delete)
-3. **Receive typed model objects** (not raw JSON)
+3. **Receive a typed model for the core resource services** (projects,
+   subjects, sessions, scans, resources) **or a plain dict/list for
+   prearchive, pipelines, and admin**, which do not wrap results in
+   Pydantic models
 
 **Benefits:**
 
-- Type-safe operations with Pydantic models
+- Type-safe operations with Pydantic models, for the services that return them
 - Automatic retry and error handling
 - Consistent pagination and filtering
 - Clean separation of concerns
@@ -56,6 +59,12 @@ Each resource type has an accessor: ``client.projects``, ``client.subjects``,
 ``client.exam_uploads``. To point at a server without a saved profile,
 construct :class:`~xnatctl.core.client.XNATClient` directly with ``base_url``
 and credentials.
+
+Most services return typed Pydantic models -- projects, subjects, sessions,
+scans, and resources. A few return plain ``dict``/``list`` results instead
+(raw or lightly normalized XNAT JSON, never Pydantic models): prearchive,
+pipelines, and admin. Each section below notes which
+applies.
 
 Error Contract
 --------------
@@ -116,6 +125,21 @@ Base Service
 Foundation class providing common HTTP method wrappers and pagination utilities.
 
 .. autoclass:: xnatctl.services.base.BaseService
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Hierarchy Service
+------------------
+
+Builds and resolves project/subject/experiment/scan/resource paths, and
+resolves a subject or experiment reference (accession ID or label) to its
+canonical IDs. The resource-scoped services above use this internally; it is
+also useful directly when a caller already has a
+:mod:`~xnatctl.models.hierarchy` ref and wants the same path-building or
+resolution logic without going through a resource-specific service.
+
+.. autoclass:: xnatctl.services.hierarchy.HierarchyService
    :members:
    :undoc-members:
    :show-inheritance:
@@ -191,21 +215,21 @@ Manage subjects (participants) within projects.
 
    # Get specific subject
    subject = service.get(
-       project="MYPROJECT",
-       subject="SUB001"
+       subject_id="SUB001",
+       project="MYPROJECT"
    )
 
    # Rename subject
    service.rename(
-       project="MYPROJECT",
-       subject="SUB001",
-       new_label="PARTICIPANT001"
+       subject_id="SUB001",
+       new_label="PARTICIPANT001",
+       project="MYPROJECT"
    )
 
    # Delete subject (WARNING: destructive)
    service.delete(
-       project="MYPROJECT",
-       subject="SUB001"
+       subject_id="SUB001",
+       project="MYPROJECT"
    )
 
 .. autoclass:: xnatctl.services.subjects.SubjectService
@@ -277,20 +301,20 @@ Manage individual imaging scans (series) within sessions.
 
    # List scans in a session
    scans = service.list(
-       project="MYPROJECT",
-       session="SESSION01"
+       session_id="SESSION01",
+       project="MYPROJECT"
    )
 
    for scan in scans:
-       print(f"{scan.scan_id}: {scan.type}")
+       print(f"{scan.id}: {scan.type}")
        print(f"  Quality: {scan.quality}")
        print(f"  Files: {scan.file_count}")
 
    # Delete a scan
    service.delete(
-       project="MYPROJECT",
-       session="SESSION01",
-       scan="1"
+       session_id="SESSION01",
+       scan_id="1",
+       project="MYPROJECT"
    )
 
 .. autoclass:: xnatctl.services.scans.ScanService
@@ -315,7 +339,14 @@ Common resource categories:
 
 **Upload and Download:**
 
+``ResourceService`` handles listing and single-file upload; downloading a
+resource's files goes through
+:class:`~xnatctl.services.downloads.DownloadService` instead (see
+`Downloads Service`_ below).
+
 .. code-block:: python
+
+   from pathlib import Path
 
    from xnatctl.services.resources import ResourceService
 
@@ -323,24 +354,24 @@ Common resource categories:
 
    # List resources
    resources = service.list(
-       project="MYPROJECT",
-       session="SESSION01"
+       session_id="SESSION01",
+       project="MYPROJECT"
    )
 
-   # Upload files to a resource
-   service.upload(
-       project="MYPROJECT",
-       session="SESSION01",
-       resource="PROCESSED",
-       files=["analysis.nii.gz", "report.pdf"]
+   # Upload a file to a resource
+   service.upload_file(
+       session_id="SESSION01",
+       resource_label="PROCESSED",
+       file_path=Path("analysis.nii.gz"),
+       project="MYPROJECT"
    )
 
-   # Download resource
-   service.download(
-       project="MYPROJECT",
-       session="SESSION01",
-       resource="DICOM",
-       dest="./downloads/"
+   # Download a resource's files
+   client.downloads.download_resource(
+       session_id="SESSION01",
+       resource_label="DICOM",
+       output_dir=Path("./downloads/"),
+       project="MYPROJECT"
    )
 
 .. autoclass:: xnatctl.services.resources.ResourceService
@@ -393,10 +424,16 @@ High-performance parallel upload operations for DICOM and file resources.
 
 **Upload Strategies:**
 
-xnatctl supports two DICOM upload strategies:
+``session upload`` supports three archive modes, selected with ``--mode``:
 
-1. **Gradual DICOM** (default): REST API upload with parallel workers
-2. **Prearchive**: Upload to staging area for review before archiving
+1. **TAR batching** (default): files are packed into parallel TAR archives
+   and sent through the REST import service
+2. **ZIP batching**: same batched-archive path, using ZIP instead of TAR
+3. **Gradual**: individual files streamed one at a time through the REST API,
+   for servers where batched-archive import is unreliable
+
+``session upload-dicom`` is a separate command that sends files over the
+DICOM C-STORE network protocol instead of REST.
 
 **Features:**
 
@@ -410,13 +447,15 @@ xnatctl supports two DICOM upload strategies:
 
 .. code-block:: python
 
+   from pathlib import Path
+
    from xnatctl.services.upload import UploadService
 
    service = UploadService(client)
 
-   # Upload a directory of DICOM files with parallel REST batching
+   # Upload a directory of DICOM files with parallel REST batching (TAR)
    service.upload_dicom_parallel(
-       source_dir="/path/to/dicom",
+       source_dir=Path("/path/to/dicom"),
        project="MYPROJECT",
        subject="SUB001",
        session="SESSION01",
@@ -468,6 +507,9 @@ Manage the XNAT prearchive staging area for reviewing uploads before archiving.
 
 **Operations:**
 
+``PrearchiveService`` returns plain dicts, not typed models -- index with
+``session["name"]``, not attribute access.
+
 .. code-block:: python
 
    from xnatctl.services.prearchive import PrearchiveService
@@ -478,22 +520,22 @@ Manage the XNAT prearchive staging area for reviewing uploads before archiving.
    sessions = service.list(project="MYPROJECT")
 
    for session in sessions:
-       print(f"{session.name} - {session.status}")
-       print(f"  Uploaded: {session.upload_date}")
-       print(f"  Scans: {session.scan_count}")
+       print(f"{session['name']} - {session['status']}")
+       print(f"  Subject: {session.get('subject')}")
+       print(f"  Scan date: {session.get('scan_date')}")
 
    # Archive session from prearchive
    service.archive(
        project="MYPROJECT",
        timestamp="20240101_120000",
-       session="SESSION01"
+       session_name="SESSION01"
    )
 
    # Delete prearchive session
    service.delete(
        project="MYPROJECT",
        timestamp="20240101_120000",
-       session="SESSION01"
+       session_name="SESSION01"
    )
 
 .. autoclass:: xnatctl.services.prearchive.PrearchiveService
@@ -517,18 +559,15 @@ Execute and monitor XNAT processing pipelines.
    # List available pipelines
    pipelines = service.list(project="MYPROJECT")
 
-   # Run pipeline on a session
-   run_id = service.run(
-       project="MYPROJECT",
-       session="SESSION01",
-       pipeline="DicomToNifti"
+   # Run pipeline on a session (returns a dict, e.g. {"job_id": ..., ...})
+   run_result = service.run(
+       pipeline_name="DicomToNifti",
+       experiment_id="XNAT_E00001",
+       project="MYPROJECT"
    )
 
-   # Check pipeline status
-   status = service.status(
-       project="MYPROJECT",
-       run_id=run_id
-   )
+   # Check pipeline job status
+   status = service.status(job_id=run_result["job_id"])
    print(f"Status: {status}")
 
 .. autoclass:: xnatctl.services.pipelines.PipelineService
@@ -555,8 +594,8 @@ Administrative operations including catalog refresh, user management, and audit 
    # List users
    users = service.list_users()
 
-   # View audit logs
-   logs = service.audit_logs(
+   # View audit log
+   logs = service.audit_log(
        project="MYPROJECT",
        limit=100
    )

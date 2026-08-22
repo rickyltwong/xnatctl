@@ -549,7 +549,7 @@ class TestDownloadSessionFast:
         assert outcome == DownloadOutcome(succeeded=0, failed=[], files=0)
 
     def test_all_404_scans_are_not_failures_but_yield_zero_files(self, tmp_path: Path) -> None:
-        """ADR-0010: a 404 per scan is an empty result, not a lost scan."""
+        """A 404 per scan is an empty result, not a lost scan."""
 
         def fake_stream(client, path, dest, *, params=None, **kw):
             raise ResourceNotFoundError("no files", path)

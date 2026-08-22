@@ -419,8 +419,8 @@ class DownloadService(BaseService):
             except ResourceNotFoundError:
                 # A scan with no files of the requested type is normal under -r, so
                 # this is not an error -- but it downloaded nothing, and the zero is
-                # what stops an all-404 session (the failure mode ADR-0010
-                # describes) reading as a complete download.
+                # what stops an all-404 session (XNAT answers a mis-routed URL with
+                # a silent 404/empty 200) reading as a complete download.
                 label_desc = f" ({resource_label})" if resource_label else ""
                 return ScanResult(scan_id, True, 0, f"no files{label_desc}")
             except Exception as e:

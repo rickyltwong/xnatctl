@@ -516,7 +516,7 @@ def test_retry_after_ignored_on_statuses_that_do_not_define_it(sleeps: list[floa
 
 
 # =============================================================================
-# Idempotency gating for ambiguous 5xx (ADR-0011)
+# Idempotency gating for ambiguous 5xx (the request may already have run)
 # =============================================================================
 
 

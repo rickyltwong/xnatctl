@@ -186,9 +186,9 @@ class TestAnEmptyScanIsNotAFailure:
     def test_but_it_is_counted_as_zero_files(self, tmp_path: Path) -> None:
         """An all-404 session must not read as a complete download.
 
-        ADR-0010 records that a mis-routed XNAT URL fails silently as an
-        empty 200 or a 404, so this count is what would expose a future URL
-        regression instead of handing back an empty tree marked success.
+        A mis-routed XNAT URL fails silently as an empty 200 or a 404, so
+        this count is what would expose a future URL regression instead of
+        handing back an empty tree marked success.
         """
         for url in _serve(failing_scan="2", status=404):
             result = _download(url, tmp_path)

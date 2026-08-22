@@ -1,7 +1,8 @@
 """GradualClientPool: the property module-level globals made untestable.
 
 The gradual-DICOM transport used to keep its thread-local httpx client, its
-registry, and its scope refcount as module globals in ``services/uploads.py``.
+registry, and its scope refcount as module globals (now
+``services/upload/gradual_client.py``).
 That made two concurrent gradual operations share teardown: whichever one
 finished first closed clients the other was still using. Moving the same
 mechanism into a ``GradualClientPool`` instance -- created per operation and

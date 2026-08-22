@@ -125,9 +125,10 @@ below.
 Python Package
 --------------
 
-Choose the Python package if you already have a Python 3.11+ environment, want
-to import xnatctl as a library in your own scripts, or need the optional DICOM
-utilities.
+Choose the Python package if you already have a Python 3.11+ environment or
+want to import xnatctl as a library in your own scripts. DICOM utilities and
+OS-keychain password storage ship in every install -- there is no separate
+extra to request.
 
 **Install from PyPI (recommended):**
 
