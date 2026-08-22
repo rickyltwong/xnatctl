@@ -20,6 +20,7 @@ from xnatctl.core.connect import resolve_client_params
 from xnatctl.core.exceptions import (
     AuthenticationError,
     ConfigurationError,
+    InputValidationError,
     OperationCancelledError,
     PermissionDeniedError,
     ProfileNotFoundError,
@@ -642,6 +643,38 @@ def _make_noop_cb(old_flag: str) -> Callable[[click.Context, click.Parameter, An
         return value
 
     return callback
+
+
+def validate_local_path_option_cb(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
+    """Eager Click callback: reject an option value unsafe as a local path.
+
+    Wire this as ``callback=validate_local_path_option_cb, is_eager=True`` on
+    any option (like ``--name``) whose value becomes a local file/directory
+    name. Eager callbacks run during argument parsing, in
+    :meth:`click.Command.parse_args` -- before ``@require_auth`` or any other
+    decorator wrapping the command body runs, since those only execute once
+    Click calls the underlying function. Without ``is_eager=True`` the
+    validation would still technically run before the command body, but
+    only after every other (non-eager) option's callback -- eager forces it
+    first, and more importantly decouples it from needing a valid session at
+    all: a malformed ``--name`` must fail the same way whether or not the
+    caller is authenticated.
+
+    ``None`` (the option was not given) passes through unchanged; the
+    command body is responsible for its own fallback validation in that case
+    (e.g. validating the session ID that will be used as the directory name
+    instead).
+    """
+    del ctx
+    if value is not None:
+        from xnatctl.core.validation import validate_local_path_component
+
+        option = (param.opts or [param.name])[0]
+        try:
+            validate_local_path_component(value, option)
+        except InputValidationError as e:
+            raise click.ClickException(str(e)) from e
+    return value
 
 
 def parallel_options(f: F) -> F:
