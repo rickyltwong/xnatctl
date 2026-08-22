@@ -1,5 +1,10 @@
 # xnatctl
 
+[![PyPI](https://img.shields.io/pypi/v/xnatctl)](https://pypi.org/project/xnatctl/)
+[![CI](https://github.com/rickyltwong/xnatctl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rickyltwong/xnatctl/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/pypi/pyversions/xnatctl)](https://pypi.org/project/xnatctl/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A modern command-line interface for [XNAT](https://xnat.org/) neuroimaging
 server administration.
 
@@ -7,39 +12,6 @@ xnatctl lets you browse projects and subjects, download and upload imaging
 sessions, run processing pipelines, and perform administrative tasks -- all
 from your terminal, in the resource-centric style of `kubectl`:
 `xnatctl <resource> <action> [args]`.
-
-## Use as a Python library
-
-xnatctl is CLI-first, but the same client and service layer is fully
-importable, and the top-level `xnatctl` namespace is a semver-covered surface
-(see the [Stability policy](https://xnatctl.readthedocs.io/en/latest/stability.html)):
-
-```python
-import xnatctl
-
-with xnatctl.XNATClient.from_profile("prod") as client:
-    client.downloads.download_resource(
-        "XNAT_E00001", "DICOM", "./data", extract=True
-    )
-```
-
-`from_profile` resolves credentials from a saved config profile the same way
-the CLI does, and the client logs in on entry when a password is available and
-no session token is cached yet. The core resource types each have a bound
-accessor on the client -- `client.projects`, `client.subjects`,
-`client.sessions`, `client.scans`, `client.resources`, `client.downloads`,
-`client.uploads`, `client.prearchive`, `client.pipelines`, `client.admin`,
-`client.hierarchy`, `client.exam_uploads` -- and errors come back as typed
-exceptions:
-
-```python
-try:
-    client.projects.get("MYPROJECT")
-except xnatctl.SessionExpiredError:
-    ...  # re-authenticate and retry
-```
-
-Full reference: [API docs](https://xnatctl.readthedocs.io/en/latest/api/core.html).
 
 ## Get Started
 
@@ -116,6 +88,7 @@ xnatctl admin        # Administrative operations (users/catalogs/audit)
 xnatctl api          # Raw API access (escape hatch for any endpoint)
 xnatctl local        # Offline operations (extract downloaded ZIPs)
 xnatctl dicom        # DICOM utilities (validate/inspect/anonymize/modify)
+xnatctl whoami | health | completion   # identity, server ping, shell completion
 ```
 
 Resource-oriented commands support `--output json|table` and `--quiet` (IDs
@@ -160,6 +133,39 @@ and non-interactive scripts.
 > Use `--password-stdin`, `XNAT_PASS`, a stored profile credential, or the
 > prompt.
 
+## Use as a Python library
+
+xnatctl is CLI-first, but the same client and service layer is fully
+importable, and the top-level `xnatctl` namespace is a semver-covered surface
+(see the [Stability policy](https://xnatctl.readthedocs.io/en/latest/stability.html)):
+
+```python
+import xnatctl
+
+with xnatctl.XNATClient.from_profile("prod") as client:
+    client.downloads.download_resource(
+        "XNAT_E00001", "DICOM", "./data", extract=True
+    )
+```
+
+`from_profile` resolves credentials from a saved config profile the same way
+the CLI does, and the client logs in on entry when a password is available and
+no session token is cached yet. The core resource types each have a bound
+accessor on the client -- `client.projects`, `client.subjects`,
+`client.sessions`, `client.scans`, `client.resources`, `client.downloads`,
+`client.uploads`, `client.prearchive`, `client.pipelines`, `client.admin`,
+`client.hierarchy`, `client.exam_uploads` -- and errors come back as typed
+exceptions:
+
+```python
+try:
+    client.projects.get("MYPROJECT")
+except xnatctl.SessionExpiredError:
+    ...  # re-authenticate and retry
+```
+
+Full reference: [API docs](https://xnatctl.readthedocs.io/en/latest/api/core.html).
+
 ## Features
 
 - **Resource-centric commands** -- `xnatctl project list`,
@@ -178,14 +184,6 @@ and non-interactive scripts.
   a single binary with no Python environment required -- but the same client
   and services are also a supported Python library; see
   [Use as a Python library](#use-as-a-python-library) above.
-
-## Documentation
-
-Complete documentation is published at
-[xnatctl.readthedocs.io](https://xnatctl.readthedocs.io/en/latest/):
-installation, key concepts, configuration, CLI reference, downloading,
-uploading, workflows, and XNAT compatibility. (Sources live in
-[docs/](docs/).)
 
 ## Development
 
