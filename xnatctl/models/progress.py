@@ -7,8 +7,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
+
+from pydantic import Field as PydanticField
+from pydantic import field_validator
 
 from xnatctl.core.exceptions import BatchOperationError
+from xnatctl.core.redact import redact_url_query
+
+from .base import BaseModel
 
 
 class OperationPhase(Enum):
@@ -232,3 +239,115 @@ class DownloadSummary(OperationResult):
         if self.success:
             return
         raise BatchOperationError("download", self.succeeded, self.failed, self.errors)
+
+
+class TransferItemResult(BaseModel):
+    """One item (scan, resource, batch, or file) within a `-o json` transfer summary."""
+
+    id: str
+    status: Literal["success", "failed"]
+    error: str | None = None
+
+    @field_validator("error")
+    @classmethod
+    def _redact_error(cls, value: str | None) -> str | None:
+        """Redact secret-shaped URL query values before *error* ever reaches JSON.
+
+        `error` is frequently `str(exc)` from an arbitrary caught exception
+        (a request URL, a server response body, ...), so this is the one
+        choke point every construction of a `TransferItemResult` passes
+        through -- no call site can forget to redact, because the model
+        does it regardless of how the value got here.
+        """
+        if value is None:
+            return value
+        return redact_url_query(value)
+
+
+class TransferVerification(BaseModel):
+    """Checksum verification, folded into a transfer summary's `verification` field.
+
+    Field names mirror :class:`VerificationReport` exactly -- this is the
+    shape ``session download --verify -o json`` already emitted standalone;
+    it now nests under a transfer summary instead of standing alone.
+    """
+
+    matched: int = 0
+    mismatched: list[str] = PydanticField(default_factory=list)
+    missing_local: list[str] = PydanticField(default_factory=list)
+    missing_remote: list[str] = PydanticField(default_factory=list)
+    unverifiable: list[str] = PydanticField(default_factory=list)
+    collisions: list[str] = PydanticField(default_factory=list)
+
+    @classmethod
+    def from_report(cls, report: VerificationReport) -> TransferVerification:
+        """Build from a service-layer :class:`VerificationReport`, field-for-field."""
+        return cls(
+            matched=report.matched,
+            mismatched=report.mismatched,
+            missing_local=report.missing_local,
+            missing_remote=report.missing_remote,
+            unverifiable=report.unverifiable,
+            collisions=report.collisions,
+        )
+
+
+class TransferSummary(BaseModel):
+    """Structured `-o json` result for a download/upload transfer command.
+
+    Exactly one of these is printed to stdout at the end of a transfer
+    command in JSON mode; progress and success/error text stay on stderr.
+    ``status`` always agrees with the process exit code: "success" exits 0,
+    "partial" and "failed" exit nonzero.
+    """
+
+    operation: Literal["download", "upload"]
+    session_id: str | None = None
+    project: str | None = None
+    output_dir: str | None = None
+    source: str | None = None
+    scans: int | None = None
+    files: int | None = None
+    bytes: int | None = None
+    duration_seconds: float = 0.0
+    status: Literal["success", "partial", "failed"]
+    items: list[TransferItemResult] = PydanticField(default_factory=list)
+    verification: TransferVerification | None = None
+
+    def emit(self) -> None:
+        """Print this summary as the command's single `-o json` stdout object.
+
+        The one call site every transfer command's JSON-mode branch should
+        use, so the print mechanics (indentation, `default=str`, ...) live in
+        exactly one place.
+        """
+        from xnatctl.core.output import print_json
+
+        print_json(self.model_dump(mode="json"))
+
+
+def transfer_status(
+    *, succeeded: int, failed: int, success: bool | None = None
+) -> Literal["success", "partial", "failed"]:
+    """Map a summary's counts (and, where available, its own verdict) to a status.
+
+    *success*, when given, is the underlying summary's own authoritative
+    outcome flag (e.g. ``UploadSummary.success``) and takes precedence over
+    the counts: a summary that reports failure is never read as "success"
+    just because its per-item counters happen to be ``(0, 0)`` -- zero
+    attempted is not zero failed. When *success* is ``False``, at least one
+    success among *succeeded* downgrades "failed" to "partial"; otherwise
+    it's "failed". When *success* is omitted, the verdict is inferred from
+    counts alone: all succeeded (or nothing to fail) -> "success"; some
+    failed with at least one success -> "partial"; nothing succeeded ->
+    "failed".
+    """
+    if success is True:
+        return "success"
+    if success is False:
+        return "partial" if succeeded > 0 else "failed"
+    if failed == 0:
+        return "success"
+    if succeeded > 0:
+        return "partial"
+    return "failed"

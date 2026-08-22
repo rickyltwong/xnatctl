@@ -87,7 +87,7 @@ def test_gradual_failed_exits_nonzero(
         _upload_gradual_dicom(_ctx(fmt), tmp_path, "PROJ", "SUBJ", "SESS")
     assert exc.value.code == 1
     if fmt is OutputFormat.JSON:
-        assert '"success"' in capsys.readouterr().out
+        assert '"status": "failed"' in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("fmt", [OutputFormat.JSON, OutputFormat.TABLE])

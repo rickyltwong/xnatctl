@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import click
@@ -30,6 +31,7 @@ from xnatctl.core.output import (
     print_warning,
 )
 from xnatctl.core.timeouts import DEFAULT_ARCHIVE_WAIT_SECONDS
+from xnatctl.models.progress import TransferItemResult, TransferSummary, transfer_status
 from xnatctl.services.exam_upload import (
     ExamOutcome,
     ExamUploadResult,
@@ -189,6 +191,22 @@ def session_upload(
 
     # Dry run handling
     if dry_run:
+        if ctx.output_format == OutputFormat.JSON:
+            plan: dict[str, object] = {
+                "operation": "upload",
+                "dry_run": True,
+                "source": str(source_path),
+                "project": project,
+                "subject": subject,
+                "session_id": session,
+                "mode": mode,
+                "workers": workers,
+            }
+            if not gradual:
+                plan["overwrite"] = overwrite
+                plan["direct_archive"] = direct_archive
+            print_output(plan, format=OutputFormat.JSON)
+            return
         click.echo("[DRY-RUN] Would upload with the following settings:", err=True)
         click.echo(f"  Source: {source_path}", err=True)
         click.echo(f"  Project: {project}", err=True)
@@ -455,6 +473,7 @@ def _upload_gradual_dicom(
     from xnatctl.models.progress import UploadProgress
     from xnatctl.services.upload import UploadService
 
+    gradual_start = time.time()
     client = ctx.get_client()
     service = UploadService(client)
 
@@ -477,21 +496,55 @@ def _upload_gradual_dicom(
             direct_archive=direct_archive,
             progress_callback=progress_callback if not ctx.quiet else None,
         )
-    except (ValueError, FileNotFoundError) as e:
-        print_error(str(e))
-        raise SystemExit(1) from e
+    except Exception as e:
+        # Not narrowed to ValueError/FileNotFoundError (the two documented
+        # raises): a corrupt ZIP or an unreadable source directory surfaces
+        # as BadZipFile/PermissionError, and those must still produce a
+        # JSON summary in JSON mode rather than exit silently on stdout.
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="upload",
+                session_id=session,
+                project=project,
+                source=str(source_path),
+                files=None,
+                bytes=None,
+                duration_seconds=round(time.time() - gradual_start, 3),
+                status="failed",
+                items=[TransferItemResult(id="gradual-dicom", status="failed", error=str(e))],
+            ).emit()
+        if isinstance(e, (ValueError, FileNotFoundError)):
+            # Byte-identical to this function's pre-existing human-mode
+            # behavior for its two documented raises: a plain one-line
+            # error, not @handle_errors' "Unexpected error: ..." wrapper.
+            print_error(str(e))
+            raise SystemExit(1) from e
+        # Anything else (BadZipFile, PermissionError, ...) re-raises
+        # unchanged so @handle_errors classifies its exit code normally.
+        raise
 
     if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {
-                "success": summary.success,
-                "total": summary.total,
-                "succeeded": summary.succeeded,
-                "failed": summary.failed,
-                "errors": summary.errors[:10],
-            },
-            format=OutputFormat.JSON,
-        )
+        TransferSummary(
+            operation="upload",
+            session_id=session,
+            project=project,
+            source=str(source_path),
+            files=summary.total_files if summary.success else None,
+            bytes=round(summary.total_size_mb * 1024 * 1024)
+            if summary.success and summary.total_size_mb
+            else None,
+            duration_seconds=round(summary.duration, 3),
+            status=transfer_status(
+                succeeded=summary.succeeded, failed=summary.failed, success=summary.success
+            ),
+            items=[
+                TransferItemResult(
+                    id="gradual-dicom",
+                    status="success" if summary.success else "failed",
+                    error=summary.errors[0] if not summary.success and summary.errors else None,
+                )
+            ],
+        ).emit()
     else:
         if summary.success:
             print_success(f"Uploaded {summary.succeeded} files via gradual-DICOM")
@@ -522,15 +575,31 @@ def _upload_single_archive(
     from xnatctl.core.output import create_progress
     from xnatctl.services.upload import upload_archive_or_raise
 
+    upload_start = time.time()
     client = ctx.get_client()
 
     # Only show progress for table output and not quiet
     show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
 
-    if show_progress:
-        with create_progress() as progress:
-            task = progress.add_task(f"Uploading {archive_path.name}...", total=100)
+    try:
+        if show_progress:
+            with create_progress() as progress:
+                task = progress.add_task(f"Uploading {archive_path.name}...", total=100)
 
+                upload_archive_or_raise(
+                    client,
+                    archive_path,
+                    project,
+                    subject,
+                    session,
+                    overwrite,
+                    direct_archive,
+                    ignore_unparsable,
+                    zip_to_tar,
+                )
+
+                progress.update(task, completed=100)
+        else:
             upload_archive_or_raise(
                 client,
                 archive_path,
@@ -542,26 +611,33 @@ def _upload_single_archive(
                 ignore_unparsable,
                 zip_to_tar,
             )
-
-            progress.update(task, completed=100)
-    else:
-        upload_archive_or_raise(
-            client,
-            archive_path,
-            project,
-            subject,
-            session,
-            overwrite,
-            direct_archive,
-            ignore_unparsable,
-            zip_to_tar,
-        )
+    except Exception as exc:
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="upload",
+                session_id=session,
+                project=project,
+                source=str(archive_path),
+                files=None,
+                bytes=None,
+                duration_seconds=round(time.time() - upload_start, 3),
+                status="failed",
+                items=[TransferItemResult(id=archive_path.name, status="failed", error=str(exc))],
+            ).emit()
+        raise
 
     if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {"success": True, "file": str(archive_path), "session": session},
-            format=OutputFormat.JSON,
-        )
+        TransferSummary(
+            operation="upload",
+            session_id=session,
+            project=project,
+            source=str(archive_path),
+            files=1,
+            bytes=archive_path.stat().st_size,
+            duration_seconds=round(time.time() - upload_start, 3),
+            status="success",
+            items=[TransferItemResult(id=archive_path.name, status="success")],
+        ).emit()
     else:
         print_success(f"Uploaded {archive_path.name}")
 
@@ -600,25 +676,58 @@ def _upload_directory_parallel(
 
     service = UploadService(client)
     show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
+    upload_start = time.time()
 
-    if show_progress:
-        from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+    def _emit_failed_summary(exc: BaseException) -> None:
+        if ctx.output_format != OutputFormat.JSON:
+            return
+        TransferSummary(
+            operation="upload",
+            session_id=session,
+            project=project,
+            source=str(source_dir),
+            files=None,
+            bytes=None,
+            duration_seconds=round(time.time() - upload_start, 3),
+            status="failed",
+            items=[TransferItemResult(id="batches", status="failed", error=str(exc))],
+        ).emit()
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            transient=True,
-        ) as progress:
-            task_id = progress.add_task("Preparing...", total=None)
+    try:
+        if show_progress:
+            from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-            def progress_callback(p: UploadProgress) -> None:
-                """Update the Rich progress UI for parallel uploads."""
-                if p.total > 0:
-                    progress.update(task_id, total=p.total, completed=p.current)
-                progress.update(task_id, description=f"[{p.phase.value}] {p.message}")
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("{task.completed}/{task.total}"),
+                transient=True,
+            ) as progress:
+                task_id = progress.add_task("Preparing...", total=None)
 
+                def progress_callback(p: UploadProgress) -> None:
+                    """Update the Rich progress UI for parallel uploads."""
+                    if p.total > 0:
+                        progress.update(task_id, total=p.total, completed=p.current)
+                    progress.update(task_id, description=f"[{p.phase.value}] {p.message}")
+
+                summary = service.upload_dicom_parallel(
+                    source_dir=source_dir,
+                    project=project,
+                    subject=subject,
+                    session=session,
+                    username=username,
+                    password=password,
+                    upload_workers=upload_workers,
+                    archive_workers=archive_workers,
+                    archive_format=archive_format,
+                    overwrite=overwrite,
+                    direct_archive=direct_archive,
+                    ignore_unparsable=ignore_unparsable,
+                    progress_callback=progress_callback,
+                )
+        else:
             summary = service.upload_dicom_parallel(
                 source_dir=source_dir,
                 project=project,
@@ -632,38 +741,40 @@ def _upload_directory_parallel(
                 overwrite=overwrite,
                 direct_archive=direct_archive,
                 ignore_unparsable=ignore_unparsable,
-                progress_callback=progress_callback,
             )
-    else:
-        summary = service.upload_dicom_parallel(
-            source_dir=source_dir,
-            project=project,
-            subject=subject,
-            session=session,
-            username=username,
-            password=password,
-            upload_workers=upload_workers,
-            archive_workers=archive_workers,
-            archive_format=archive_format,
-            overwrite=overwrite,
-            direct_archive=direct_archive,
-            ignore_unparsable=ignore_unparsable,
-        )
+    except Exception as exc:
+        _emit_failed_summary(exc)
+        raise
 
-    # Output results
+    # Output results. `errors` isn't keyed to batch index, so this is one
+    # aggregate item for the whole directory upload -- not one fabricated
+    # item per batch, which would misattribute which batch each error
+    # belongs to.
     if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {
-                "success": summary.success,
-                "total_files": summary.total_files,
-                "total_size_mb": round(summary.total_size_mb, 2),
-                "duration_seconds": round(summary.duration, 2),
-                "batches_succeeded": summary.batches_succeeded,
-                "batches_failed": summary.batches_failed,
-                "errors": summary.errors,
-            },
-            format=OutputFormat.JSON,
-        )
+        TransferSummary(
+            operation="upload",
+            session_id=session,
+            project=project,
+            source=str(source_dir),
+            # `total_files`/`total_size_mb` count everything the run
+            # attempted across all batches, not only what succeeded -- only
+            # trustworthy as "transferred" when every batch did.
+            files=summary.total_files if summary.success else None,
+            bytes=round(summary.total_size_mb * 1024 * 1024) if summary.success else None,
+            duration_seconds=round(summary.duration, 3),
+            status=transfer_status(
+                succeeded=summary.batches_succeeded,
+                failed=summary.batches_failed,
+                success=summary.success,
+            ),
+            items=[
+                TransferItemResult(
+                    id="batches",
+                    status="success" if summary.success else "failed",
+                    error="; ".join(summary.errors) if summary.errors else None,
+                )
+            ],
+        ).emit()
     else:
         if summary.success:
             print_success(
@@ -696,26 +807,55 @@ def _upload_dicom_store(
     tls_key: str | None = None,
 ) -> None:
     """Upload via DICOM C-STORE protocol."""
+
+    def _emit_preflight_json(message: str) -> None:
+        # These guards run before the upload_dicom_store try/except below,
+        # so without this they'd exit with no JSON at all in JSON mode --
+        # the same silent-failure shape the try/except fixes for everything
+        # downstream of it. Only the JSON side: each guard below prints its
+        # own human-mode text (a plain `print_error` for the ones that raise
+        # SystemExit directly, or Click's own usage-error rendering for the
+        # ones that raise UsageError -- printing both here would double it).
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="upload",
+                source=str(source_path),
+                files=None,
+                duration_seconds=0.0,
+                status="failed",
+                items=[TransferItemResult(id=str(source_path), status="failed", error=message)],
+            ).emit()
+
     if not dicom_host:
-        print_error("DICOM C-STORE requires --dicom-host or XNAT_DICOM_HOST environment variable")
+        message = "DICOM C-STORE requires --dicom-host or XNAT_DICOM_HOST environment variable"
+        _emit_preflight_json(message)
+        print_error(message)
         raise SystemExit(1)
 
     if not called_aet:
-        print_error(
+        message = (
             "DICOM C-STORE requires --called-aet or XNAT_DICOM_CALLED_AET environment variable"
         )
+        _emit_preflight_json(message)
+        print_error(message)
         raise SystemExit(1)
 
     if not source_path.is_dir():
-        print_error("DICOM C-STORE requires a directory of DICOM files, not an archive")
+        message = "DICOM C-STORE requires a directory of DICOM files, not an archive"
+        _emit_preflight_json(message)
+        print_error(message)
         raise SystemExit(1)
 
     from xnatctl.services.upload import UploadService
 
     if tls_key and not tls_cert:
-        raise click.UsageError("--tls-key requires --tls-cert")
+        message = "--tls-key requires --tls-cert"
+        _emit_preflight_json(message)
+        raise click.UsageError(message)
     if (tls_ca_bundle or tls_cert) and not tls:
-        raise click.UsageError("--tls-ca-bundle/--tls-cert/--tls-key have no effect without --tls")
+        message = "--tls-ca-bundle/--tls-cert/--tls-key have no effect without --tls"
+        _emit_preflight_json(message)
+        raise click.UsageError(message)
 
     if not ctx.quiet:
         scheme = "TLS" if tls else "plaintext"
@@ -734,30 +874,62 @@ def _upload_dicom_store(
     client = ctx.get_client()
     service = UploadService(client)
 
-    summary = service.upload_dicom_store(
-        dicom_root=source_path,
-        host=dicom_host,
-        called_aet=called_aet,
-        port=dicom_port,
-        calling_aet=calling_aet,
-        workers=dicom_workers,
-        cleanup=True,
-        tls=tls,
-        tls_ca_bundle=tls_ca_bundle,
-        tls_cert=tls_cert,
-        tls_key=tls_key,
-    )
+    # No -P/-S/-E on this command: C-STORE is native DICOM network transfer,
+    # and where each file lands is decided by the receiver's own routing
+    # rules, not by anything xnatctl passes -- there is no session/project to
+    # report (see the C-STORE section of docs/uploading.rst).
+    upload_start = time.time()
+    try:
+        summary = service.upload_dicom_store(
+            dicom_root=source_path,
+            host=dicom_host,
+            called_aet=called_aet,
+            port=dicom_port,
+            calling_aet=calling_aet,
+            workers=dicom_workers,
+            cleanup=True,
+            tls=tls,
+            tls_ca_bundle=tls_ca_bundle,
+            tls_cert=tls_cert,
+            tls_key=tls_key,
+        )
+    except Exception as exc:
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="upload",
+                source=str(source_path),
+                files=None,
+                duration_seconds=round(time.time() - upload_start, 3),
+                status="failed",
+                items=[
+                    TransferItemResult(
+                        id=f"{dicom_host}:{dicom_port}", status="failed", error=str(exc)
+                    )
+                ],
+            ).emit()
+        raise
 
     if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {
-                "success": summary.success,
-                "total_files": summary.total_files,
-                "sent": summary.sent,
-                "failed": summary.failed,
-            },
-            format=OutputFormat.JSON,
-        )
+        TransferSummary(
+            operation="upload",
+            source=str(source_path),
+            # `sent` is the service's own successfully-transferred count,
+            # distinct from `total_files` (everything scanned, sent or not).
+            files=summary.sent,
+            duration_seconds=round(time.time() - upload_start, 3),
+            status=transfer_status(
+                succeeded=summary.sent, failed=summary.failed, success=summary.success
+            ),
+            items=[
+                TransferItemResult(
+                    id=f"{dicom_host}:{dicom_port}",
+                    status="success" if summary.success else "failed",
+                    error=None
+                    if summary.success
+                    else f"{summary.failed}/{summary.total_files} files failed",
+                )
+            ],
+        ).emit()
     else:
         if summary.success:
             print_success(f"Sent {summary.sent}/{summary.total_files} DICOM files")
@@ -866,6 +1038,22 @@ def session_upload_dicom(
     workers = resolve_workers_from_context(ctx, workers)
 
     if dry_run:
+        if ctx.output_format == OutputFormat.JSON:
+            print_output(
+                {
+                    "operation": "upload",
+                    "dry_run": True,
+                    "source": str(source_path),
+                    "host": host,
+                    "port": port,
+                    "called_aet": called_aet,
+                    "calling_aet": calling_aet,
+                    "workers": workers,
+                    "transport": "tls" if tls else "plaintext",
+                },
+                format=OutputFormat.JSON,
+            )
+            return
         click.echo("[DRY-RUN] Would send DICOM files via C-STORE:", err=True)
         click.echo(f"  Source: {source_path}", err=True)
         click.echo(f"  Host: {host}:{port}", err=True)

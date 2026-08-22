@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import click
@@ -26,7 +27,13 @@ from xnatctl.core.output import (
     print_success,
 )
 from xnatctl.models.hierarchy import ExperimentRef
-from xnatctl.models.progress import VerificationReport
+from xnatctl.models.progress import (
+    TransferItemResult,
+    TransferSummary,
+    TransferVerification,
+    VerificationReport,
+    transfer_status,
+)
 from xnatctl.services.downloads import DownloadOutcome, DownloadService, ScanResult
 from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.sessions import SessionService
@@ -429,6 +436,30 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         raise SystemExit(1)
 
     if dry_run:
+        if ctx.output_format == OutputFormat.JSON:
+            print_json(
+                {
+                    "operation": "download",
+                    "dry_run": True,
+                    "session_id": resolved_session_id,
+                    "project": session_project,
+                    "subject": subject,
+                    "output_dir": str(out_path / (name or session_id)),
+                    "workers": workers,
+                    "resources": list(resource)
+                    if resource
+                    else list(exclude_resource)
+                    if exclude_resource
+                    else "all",
+                    "resource_filter_mode": "include"
+                    if resource
+                    else "exclude"
+                    if exclude_resource
+                    else "all",
+                    "session_resources": session_resources,
+                }
+            )
+            return
         click.echo(f"[DRY-RUN] Would download session {session_id}", err=True)
         if resolved_session_id != session_id:
             click.echo(f"  Resolved ID: {resolved_session_id}", err=True)
@@ -451,11 +482,90 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
 
     from xnatctl.core.output import create_progress
 
+    download_start = time.time()
+
     # Use parallel path when filtering is active (even with workers=1)
     use_parallel = workers > 1 or resource or exclude_resource
 
+    # Keyed by scan_id, not appended per callback: under the include-filter
+    # tier, on_scan_result fires once per (scan, resource) pair, so a scan
+    # with N included resources must still collapse to one item and count
+    # once in `scans` -- not be inflated N-fold.
+    scan_ok: dict[str, bool] = {}
+    scan_errors: dict[str, list[str]] = {}
+    # Non-scan items (session resources, the sequential path's single
+    # archive) -- declared here, before any exception could occur, so
+    # `_emit_failed_summary` can always safely read it, no matter which of
+    # this function's try/except blocks calls it.
+    extra_items: list[TransferItemResult] = []
+
+    def _items_from_scan_ok() -> list[TransferItemResult]:
+        return [
+            TransferItemResult(
+                id=scan_id,
+                status="success" if ok else "failed",
+                error="; ".join(scan_errors[scan_id]) if not ok else None,
+            )
+            for scan_id, ok in scan_ok.items()
+        ]
+
+    def _current_items() -> list[TransferItemResult]:
+        """Every item known so far: per-scan results plus `extra_items`.
+
+        A function, not a value computed once, because both underlying
+        collections keep growing as the command progresses -- called again
+        later it picks up whatever has been added since.
+        """
+        return [*_items_from_scan_ok(), *extra_items]
+
+    def _item_counts(all_items: list[TransferItemResult]) -> tuple[int, int]:
+        """(succeeded, failed) counted from *all_items*.
+
+        This is the same per-scan/per-resource bookkeeping the summary's
+        `items` field reports, so `status` can never disagree with what
+        `items` shows (e.g. one scan whose DICOM resource landed but whose
+        NIFTI resource didn't is one failed item, and must drive an overall
+        "failed"/"partial" verdict from that, not from a separate raw task
+        count).
+        """
+        succeeded = sum(1 for item in all_items if item.status == "success")
+        failed = sum(1 for item in all_items if item.status == "failed")
+        return succeeded, failed
+
+    def _emit_failed_summary(exc: BaseException) -> None:
+        """Print a failed summary in JSON mode before *exc* propagates.
+
+        A no-op in table mode. The exception itself is never swallowed;
+        callers re-raise it unchanged right after this.
+        """
+        if ctx.output_format != OutputFormat.JSON:
+            return
+        failure_items = [
+            *_current_items(),
+            TransferItemResult(id="session", status="failed", error=str(exc)),
+        ]
+        # Derived from the same items every other emission site uses, not
+        # hardcoded: scans that completed before this exception hit (during
+        # verify or extraction) still count as successes, so a run that got
+        # partway must read "partial", not blanket "failed".
+        succeeded_count, failed_count = _item_counts(failure_items)
+        TransferSummary(
+            operation="download",
+            session_id=resolved_session_id,
+            project=session_project,
+            output_dir=str(session_dir),
+            scans=len(scan_ok) if use_parallel else None,
+            # Known when the engine call itself already completed (this
+            # exception came from verify/extraction, afterward) -- null
+            # only when the engine call is what raised, so nothing was
+            # ever reported back to know a file count from.
+            files=outcome.files if outcome is not None else None,
+            duration_seconds=round(time.time() - download_start, 3),
+            status=transfer_status(succeeded=succeeded_count, failed=failed_count),
+            items=failure_items,
+        ).emit()
+
     outcome: DownloadOutcome | None = None
-    succeeded_scan_ids: list[str] = []
     if use_parallel:
 
         def on_scan_start(count: int) -> None:
@@ -467,28 +577,33 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 click.echo(f"Downloading {count} scans in parallel...", err=True)
 
         def on_scan_result(result: ScanResult) -> None:
+            scan_ok[result.scan_id] = scan_ok.get(result.scan_id, True) and result.ok
             if result.ok:
-                succeeded_scan_ids.append(result.scan_id)
                 if not ctx.quiet:
                     status = f" ({result.message})" if result.message else ""
                     click.echo(f"  Scan {result.scan_id} done{status}", err=True)
             else:
+                scan_errors.setdefault(result.scan_id, []).append(result.message)
                 # Reported even under --quiet. Quiet suppresses per-item
                 # chatter, not the news that data is missing -- and --quiet is
                 # the scripting mode, where silence is most dangerous.
                 click.echo(f"  Scan {result.scan_id} FAILED: {result.message}", err=True)
 
-        outcome = DownloadService(client).download_session_fast(
-            session_project=session_project,
-            subject=subject,
-            resolved_session_id=resolved_session_id,
-            session_dir=session_dir,
-            workers=max(workers, 1),
-            include_resources=resource,
-            exclude_resources=exclude_resource,
-            on_start=on_scan_start,
-            on_scan_result=on_scan_result,
-        )
+        try:
+            outcome = DownloadService(client).download_session_fast(
+                session_project=session_project,
+                subject=subject,
+                resolved_session_id=resolved_session_id,
+                session_dir=session_dir,
+                workers=max(workers, 1),
+                include_resources=resource,
+                exclude_resources=exclude_resource,
+                on_start=on_scan_start,
+                on_scan_result=on_scan_result,
+            )
+        except Exception as exc:
+            _emit_failed_summary(exc)
+            raise
         if outcome.failed:
             click.echo(
                 f"{len(outcome.failed)}/{outcome.succeeded + len(outcome.failed)} "
@@ -496,28 +611,62 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 err=True,
             )
     else:
-        with create_progress() as progress:
-            task = progress.add_task("Downloading scans...", total=100)
+        try:
+            with create_progress() as progress:
+                task = progress.add_task("Downloading scans...", total=100)
 
-            def on_scan_progress(written: int, total: int | None) -> None:
-                if total:
-                    progress.update(task, completed=int(written / total * 100))
+                def on_scan_progress(written: int, total: int | None) -> None:
+                    if total:
+                        progress.update(task, completed=int(written / total * 100))
 
-            DownloadService(client).download_session_archive(
-                session_project=session_project,
-                subject=subject,
-                resolved_session_id=resolved_session_id,
-                session_dir=session_dir,
-                progress_cb=on_scan_progress,
-            )
+                DownloadService(client).download_session_archive(
+                    session_project=session_project,
+                    subject=subject,
+                    resolved_session_id=resolved_session_id,
+                    session_dir=session_dir,
+                    progress_cb=on_scan_progress,
+                )
 
-            progress.update(task, completed=100, description="Scans downloaded")
+                progress.update(task, completed=100, description="Scans downloaded")
+        except Exception as exc:
+            _emit_failed_summary(exc)
+            raise
+        # The sequential path never enumerates individual scans (that's the
+        # whole point of the single-ZIP request), so it has no per-scan
+        # items -- but it still needs ONE success item, or a session
+        # resource failing later would be the only item in `items` and read
+        # as a total "failed" instead of "partial" (the scan archive itself
+        # is fine; only the unrelated resource isn't).
+        extra_items.append(TransferItemResult(id="archive", status="success"))
+
+    scans_count = len(scan_ok) if use_parallel else None
+    succeeded_scan_ids = [scan_id for scan_id, ok in scan_ok.items() if ok]
 
     # Download session-level resources (outside scans)
     session_resource_zips: list[tuple[str, Path]] = []
     if session_resources:
         if not ctx.quiet:
             click.echo("Downloading session-level resources...", err=True)
+        # What was actually requested, fetched up front so a resource that
+        # never even started downloading (because an earlier one in the
+        # batch raised) still shows up as a failed item below -- not just
+        # silently missing from `items`. Only fetched for -o json: it costs
+        # an extra listing call that table mode's swallow-and-warn text
+        # output has no use for.
+        requested_resource_labels: list[str] = []
+        listing_error: str | None = None
+        if ctx.output_format == OutputFormat.JSON:
+            try:
+                requested_resource_labels = [
+                    str(row["label"])
+                    for row in SessionService(client).experiment_resource_rows(
+                        resolved_session_id, project=session_project, subject=subject
+                    )
+                    if row.get("label")
+                ]
+            except Exception as exc:
+                listing_error = str(exc)
+        session_resource_error: str | None = None
         try:
             # `downloaded=session_resource_zips`: appended to in place as
             # each resource's ZIP finishes, so if a later resource's
@@ -536,8 +685,51 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                     f"  Session resources downloaded ({len(session_resource_zips)})", err=True
                 )
         except Exception as e:
+            session_resource_error = str(e)
             if not ctx.quiet:
                 click.echo(f"  Session resources: {e}", err=True)
+        # A resource that failed contributes a failed item -- previously
+        # this whole block was swallowed silently outside of --verify, so
+        # -o json could report "success" with a resource missing on disk.
+        succeeded_resource_labels = {label for label, _zip in session_resource_zips}
+        for label in requested_resource_labels:
+            if label in succeeded_resource_labels:
+                extra_items.append(TransferItemResult(id=f"resource:{label}", status="success"))
+            else:
+                extra_items.append(
+                    TransferItemResult(
+                        id=f"resource:{label}",
+                        status="failed",
+                        error=session_resource_error or "not downloaded",
+                    )
+                )
+        if listing_error is not None:
+            # `requested_resource_labels` is empty (the listing failed), so
+            # the loop above had nothing to report.
+            if session_resource_error is None:
+                # But the download itself succeeded -- its own internal
+                # listing worked and everything it found landed. A
+                # transient hiccup in OUR up-front listing call must not
+                # read as a total failure the download never actually was;
+                # report what we now know landed instead.
+                for label in succeeded_resource_labels:
+                    extra_items.append(TransferItemResult(id=f"resource:{label}", status="success"))
+            else:
+                # The download also raised -- but `session_resource_zips`
+                # is appended to in place as each resource finishes, so
+                # anything that landed *before* the exception is still
+                # known even though the batch as a whole didn't complete.
+                # Report those as success items too, or a resource that
+                # genuinely landed would be missing from `items` entirely
+                # while the lone "resources" failure item below made the
+                # whole run read as a flat "failed" instead of "partial".
+                for label in succeeded_resource_labels:
+                    extra_items.append(TransferItemResult(id=f"resource:{label}", status="success"))
+                extra_items.append(
+                    TransferItemResult(
+                        id="resources", status="failed", error=session_resource_error
+                    )
+                )
 
     # Extract ZIPs if requested. With --verify also on, the session-resource
     # ZIPs this run just downloaded are held back here: extraction (and, with
@@ -547,25 +739,44 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     # something worked around here) and, with cleanup on, delete the exact
     # file --verify needs to check.
     resource_zip_paths = [zip_path for _label, zip_path in session_resource_zips]
-    if unzip:
-        if verify and resource_zip_paths:
-            non_resource_zips = [
-                p for p in session_dir.glob("*.zip") if p not in resource_zip_paths
-            ]
-            extract_session_zips(
-                session_dir,
-                cleanup=cleanup,
-                on_message=None if ctx.quiet else _echo_stderr,
-                zip_paths=non_resource_zips,
-            )
-        else:
-            extract_session_zips(
-                session_dir,
-                cleanup=cleanup,
-                on_message=None if ctx.quiet else _echo_stderr,
-            )
+    try:
+        if unzip:
+            if verify and resource_zip_paths:
+                non_resource_zips = [
+                    p for p in session_dir.glob("*.zip") if p not in resource_zip_paths
+                ]
+                extract_session_zips(
+                    session_dir,
+                    cleanup=cleanup,
+                    on_message=None if ctx.quiet else _echo_stderr,
+                    zip_paths=non_resource_zips,
+                )
+            else:
+                extract_session_zips(
+                    session_dir,
+                    cleanup=cleanup,
+                    on_message=None if ctx.quiet else _echo_stderr,
+                )
+    except Exception as exc:
+        _emit_failed_summary(exc)
+        raise
 
     if outcome is not None and outcome.failed:
+        if ctx.output_format == OutputFormat.JSON:
+            all_items = _current_items()
+            succeeded_count, failed_count = _item_counts(all_items)
+            TransferSummary(
+                operation="download",
+                session_id=resolved_session_id,
+                project=session_project,
+                output_dir=str(session_dir),
+                scans=scans_count,
+                files=outcome.files,
+                duration_seconds=round(time.time() - download_start, 3),
+                status=transfer_status(succeeded=succeeded_count, failed=failed_count),
+                items=all_items,
+            ).emit()
+            raise SystemExit(1)
         # Losing scans and exiting 0 is how a partial transfer gets mistaken
         # for a whole one. The names are in the message so the caller can
         # retry exactly what is missing.
@@ -600,17 +811,21 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         # per (scan, resource) pair, so a scan with N included resources
         # would otherwise appear N times and cost N redundant manifest calls.
         verify_scan_ids = list(dict.fromkeys(succeeded_scan_ids)) if use_parallel else None
-        verification = DownloadService(client).verify_scan_downloads(
-            session_id=session_id,
-            project=session_project,
-            subject=subject,
-            scan_ids=verify_scan_ids,
-            include_resources=resource,
-            exclude_resources=exclude_resource,
-            include_session_resources=session_resources,
-            local_root=verify_local_root,
-            zip_paths=verify_zip_paths,
-        )
+        try:
+            verification = DownloadService(client).verify_scan_downloads(
+                session_id=session_id,
+                project=session_project,
+                subject=subject,
+                scan_ids=verify_scan_ids,
+                include_resources=resource,
+                exclude_resources=exclude_resource,
+                include_session_resources=session_resources,
+                local_root=verify_local_root,
+                zip_paths=verify_zip_paths,
+            )
+        except Exception as exc:
+            _emit_failed_summary(exc)
+            raise
         for path in verification.collisions:
             click.echo(f"  COLLISION: {path}", err=True)
         for path in verification.mismatched:
@@ -625,34 +840,41 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                     "checksum and were not verified",
                     err=True,
                 )
-        if ctx.output_format == OutputFormat.JSON:
-            # A minimal, standalone block for now -- a later change folds
-            # this into a full transfer summary alongside the rest of the
-            # command's (currently unstructured) output.
-            print_json(
-                {
-                    "verification": {
-                        "matched": verification.matched,
-                        "mismatched": verification.mismatched,
-                        "missing_local": verification.missing_local,
-                        "missing_remote": verification.missing_remote,
-                        "unverifiable": verification.unverifiable,
-                        "collisions": verification.collisions,
-                    }
-                }
-            )
-
         # Verification has now read the session-resource ZIPs intact; apply
         # the extract/cleanup that was deferred for them above.
-        if unzip and resource_zip_paths:
-            extract_session_zips(
-                session_dir,
-                cleanup=cleanup,
-                on_message=None if ctx.quiet else _echo_stderr,
-                zip_paths=resource_zip_paths,
-            )
+        try:
+            if unzip and resource_zip_paths:
+                extract_session_zips(
+                    session_dir,
+                    cleanup=cleanup,
+                    on_message=None if ctx.quiet else _echo_stderr,
+                    zip_paths=resource_zip_paths,
+                )
+        except Exception as exc:
+            _emit_failed_summary(exc)
+            raise
+
+    files_transferred = outcome.files if outcome is not None else None
 
     if verification is not None and not verification.success:
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="download",
+                session_id=resolved_session_id,
+                project=session_project,
+                output_dir=str(session_dir),
+                scans=scans_count,
+                files=files_transferred,
+                duration_seconds=round(time.time() - download_start, 3),
+                # Always "failed", not derived from _item_counts: a
+                # checksum mismatch/missing file is a data-integrity
+                # failure regardless of how many scans otherwise landed,
+                # unlike a bookkeeping-only resource miss elsewhere.
+                status="failed",
+                items=_current_items(),
+                verification=TransferVerification.from_report(verification),
+            ).emit()
+            raise SystemExit(1)
         if verification.mismatched or verification.missing_local or verification.collisions:
             raise DownloadError(
                 f"Verification failed: {len(verification.mismatched)} mismatched, "
@@ -676,6 +898,30 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
             session_id,
             {"unverifiable": verification.unverifiable},
         )
+
+    if ctx.output_format == OutputFormat.JSON:
+        all_items = _current_items()
+        succeeded_count, failed_count = _item_counts(all_items)
+        json_status = transfer_status(succeeded=succeeded_count, failed=failed_count)
+        TransferSummary(
+            operation="download",
+            session_id=resolved_session_id,
+            project=session_project,
+            output_dir=str(session_dir),
+            scans=scans_count,
+            files=files_transferred,
+            duration_seconds=round(time.time() - download_start, 3),
+            status=json_status,
+            items=all_items,
+            verification=TransferVerification.from_report(verification)
+            if verification is not None
+            else None,
+        ).emit()
+        # A session-resource failure surfaces here even though nothing else
+        # went wrong: it's caught by `items`/`status` now, not just --verify.
+        if json_status != "success":
+            raise SystemExit(1)
+        return
 
     if outcome is not None:
         # Says what arrived rather than only where it was put: "0 scans

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -1095,7 +1096,8 @@ class TestScanDownload:
             )
 
         assert result.exit_code == 1
-        assert '"success"' in result.output  # JSON summary still emitted
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "failed"  # JSON summary still emitted
 
     def test_scan_download_json_output(self, runner: CliRunner, tmp_path) -> None:
         """JSON output includes structured download summary."""
@@ -1134,8 +1136,11 @@ class TestScanDownload:
             )
 
         assert result.exit_code == 0
-        assert '"success"' in result.output
-        assert "XNAT_E00001" in result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "success"
+        assert payload["session_id"] == "XNAT_E00001"
+        assert payload["files"] == 5
+        assert payload["bytes"] == 10 * 1024 * 1024
 
 
 # =============================================================================

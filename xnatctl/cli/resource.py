@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import click
@@ -13,7 +14,7 @@ from xnatctl.cli.common import (
     handle_errors,
     require_auth,
 )
-from xnatctl.core.output import print_error, print_output, print_success
+from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
 from xnatctl.models.hierarchy import (
     ExperimentRef,
     HierarchyParentRef,
@@ -22,6 +23,7 @@ from xnatctl.models.hierarchy import (
     ScanRef,
     SubjectRef,
 )
+from xnatctl.models.progress import TransferItemResult, TransferSummary
 from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.hierarchy import HierarchyService
 
@@ -327,6 +329,16 @@ def resource_upload(
         session_id=session_id, project_id=project_id, subject=subject, scan=scan
     )
 
+    upload_start = time.time()
+    # A single file is PUT as itself, so its size is exactly what was sent.
+    # A directory is zipped server-side by the service and the zip -- not the
+    # raw file sum -- is what actually travels, at a size this command never
+    # sees; reporting the raw sum would be an approximation, not a fact, so
+    # a directory upload leaves files/bytes null rather than guess.
+    is_directory = input_path.is_dir()
+    files_field = None if is_directory else 1
+    bytes_field = None if is_directory else input_path.stat().st_size
+
     # Create resource if it doesn't exist
     try:
         service.create(
@@ -340,7 +352,7 @@ def resource_upload(
 
     try:
         with create_progress() as progress:
-            if input_path.is_dir():
+            if is_directory:
                 task = progress.add_task("Creating archive...", total=None)
                 progress.update(task, description="Uploading...")
                 service.upload_directory(
@@ -361,9 +373,34 @@ def resource_upload(
                 )
                 progress.update(task, completed=100)
     except Exception as exc:
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="upload",
+                session_id=session_id,
+                project=project_id,
+                source=str(input_path),
+                files=None,
+                bytes=None,
+                duration_seconds=round(time.time() - upload_start, 3),
+                status="failed",
+                items=[TransferItemResult(id=resource_label, status="failed", error=str(exc))],
+            ).emit()
         raise click.ClickException(f"Upload failed: {exc}") from exc
 
-    print_success(f"Uploaded to {resource_label}")
+    if ctx.output_format == OutputFormat.JSON:
+        TransferSummary(
+            operation="upload",
+            session_id=session_id,
+            project=project_id,
+            source=str(input_path),
+            files=files_field,
+            bytes=bytes_field,
+            duration_seconds=round(time.time() - upload_start, 3),
+            status="success",
+            items=[TransferItemResult(id=resource_label, status="success")],
+        ).emit()
+    else:
+        print_success(f"Uploaded to {resource_label}")
 
 
 @resource.command("refresh")
@@ -466,15 +503,46 @@ def resource_download(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with create_progress() as progress:
-        task = progress.add_task(f"Downloading {resource_label}...", total=100)
+    download_start = time.time()
+    try:
+        with create_progress() as progress:
+            task = progress.add_task(f"Downloading {resource_label}...", total=100)
 
-        def on_progress(written: int, total: int | None) -> None:
-            if total:
-                progress.update(task, completed=int(written / total * 100))
+            def on_progress(written: int, total: int | None) -> None:
+                if total:
+                    progress.update(task, completed=int(written / total * 100))
 
-        stream_to_file(client, url, out_path, params={"format": "zip"}, progress_cb=on_progress)
+            streamed = stream_to_file(
+                client, url, out_path, params={"format": "zip"}, progress_cb=on_progress
+            )
 
-        progress.update(task, completed=100)
+            progress.update(task, completed=100)
+    except Exception as exc:
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="download",
+                session_id=session_id,
+                project=project_id,
+                output_dir=str(out_path),
+                files=None,
+                bytes=None,
+                duration_seconds=round(time.time() - download_start, 3),
+                status="failed",
+                items=[TransferItemResult(id=resource_label, status="failed", error=str(exc))],
+            ).emit()
+        raise
 
-    print_success(f"Downloaded to {out_path}")
+    if ctx.output_format == OutputFormat.JSON:
+        TransferSummary(
+            operation="download",
+            session_id=session_id,
+            project=project_id,
+            output_dir=str(out_path),
+            files=1,
+            bytes=streamed.bytes_written,
+            duration_seconds=round(time.time() - download_start, 3),
+            status="success",
+            items=[TransferItemResult(id=resource_label, status="success")],
+        ).emit()
+    else:
+        print_success(f"Downloaded to {out_path}")

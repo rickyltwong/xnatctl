@@ -317,6 +317,65 @@ repeating them in every command:
           --dry-run
 
 
+JSON Output
+-----------
+
+Add ``-o json`` to ``session upload``, ``session upload-dicom``, or
+``resource upload`` (single archive, directory batch, ``--mode gradual``, and
+C-STORE all included) and each prints a single ``TransferSummary`` JSON object
+to stdout once the upload finishes -- progress and success/error text stay on
+stderr. ``--dry-run -o json`` prints the plan instead of uploading.
+
+.. code-block:: console
+
+   $ xnatctl session upload /path/to/DICOM_ROOT \
+       -P MYPROJECT -S MYSUBJECT -E MYSESSION -o json
+   {
+     "operation": "upload",
+     "session_id": "MYSESSION",
+     "project": "MYPROJECT",
+     "output_dir": null,
+     "source": "/path/to/DICOM_ROOT",
+     "scans": null,
+     "files": 842,
+     "bytes": 1048576000,
+     "duration_seconds": 46.2,
+     "status": "success",
+     "items": [
+       {"id": "batches", "status": "success", "error": null}
+     ],
+     "verification": null
+   }
+
+A directory upload (REST batch transport, shown above) is one aggregate
+``items`` entry (``id: "batches"``) covering every batch, not one entry per
+batch -- the underlying summary doesn't key its error list to a specific
+batch, so a per-batch breakdown would misattribute which one failed.
+``files``/``bytes`` are ``null`` unless every batch succeeded: the summary's
+raw counts include files from batches that failed, so they're only
+trustworthy as "transferred" when the whole run was.
+
+A single-archive upload and C-STORE (``session upload-dicom``) are each one
+atomic operation too, so ``items`` has exactly one entry for those as well.
+``session upload --mode gradual`` also reports one item; its ``files`` is
+``null`` unless the whole run succeeded, for the same reason as the
+directory-batch case.
+
+``session upload-exam`` has its own, separately documented JSON schema (its
+DICOM/resource split) and is unaffected by this shape.
+
+See :doc:`downloading` for the full field-by-field reference -- the schema is
+shared between download and upload commands, with ``operation: "upload"`` and
+``source`` (instead of ``output_dir``) marking the difference. That page's
+`Item id forms` table lists every ``items[].id`` shape for both download and
+upload commands, including the ones above. ``status``
+``"partial"`` means some items succeeded and some failed; ``"failed"`` means
+none did, even when the underlying summary's own attempted/succeeded counts
+are both zero (an empty or unusable source directory is still a failure, not
+a vacuous success). This shape is part of the :doc:`stability` contract for
+``--output json``.
+
+
 Managing the Prearchive After Upload
 --------------------------------------
 

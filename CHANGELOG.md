@@ -49,6 +49,43 @@ All notable changes to this project will be documented in this file.
   `resources`). Library callers importing from the old module path should
   update to `xnatctl.services.upload` (or `import xnatctl; xnatctl.UploadService`,
   which is unaffected). CLI behavior is unchanged.
+- `-o json` output changes shape on five commands that already shipped
+  structured JSON: `scan download`, `session upload` (single-archive and
+  directory-batch REST transport), `session upload-dicom` (C-STORE), and
+  `session upload --mode gradual`. Every transfer command now prints one
+  `TransferSummary` object -- `operation`, `session_id`, `project`,
+  `output_dir`/`source`, `scans`, `files`, `bytes`, `duration_seconds`,
+  `status` (`"success"`/`"partial"`/`"failed"`, always agreeing with the exit
+  code), `items` (per-item results, each `{"id", "status", "error"}`), and,
+  with `--verify`, a nested `verification` report. `files`/`bytes` are only
+  ever the count/size actually transferred, never an attempted-but-maybe-
+  failed approximation -- `null` where the underlying summary doesn't track
+  that distinction. No compatibility shim is kept; scripts reading the old
+  top-level keys below must update. Field mapping, old -> new:
+  - `scan download`: `output_path` -> `output_dir`; `success` (bool) ->
+    `status` (enum); `total_size_mb` -> `bytes` (now integer bytes, and only
+    present when the download itself succeeded, independent of
+    `--verify`); `errors` -> `items[0].error`; `verification` keeps its
+    inner shape, now nested the same way it always was.
+  - `session upload` (single archive): `success`/`file`/`session` ->
+    `status`/`source`/`session_id`, plus new `files` and `bytes`.
+  - `session upload` (directory batch): `success` -> `status`;
+    `total_files`/`total_size_mb` -> `files`/`bytes`, `null` unless every
+    batch succeeded (the old fields counted files *attempted* across all
+    batches, not transferred); `batches_succeeded`/`batches_failed` collapse
+    into one `items[0]` entry (`id: "batches"`) since `errors` was never
+    keyed to a specific batch; `errors` -> `items[0].error` (joined).
+  - `session upload-dicom` (C-STORE): `success`/`total_files`/`sent`/`failed`
+    -> `status`/`files` (now `sent`, the service's own successfully-sent
+    count, not the scanned total)/dropped/`items[0].error`.
+  - `session upload --mode gradual`: `success`/`total`/`succeeded`/`failed`/
+    `errors` -> `status`/dropped/dropped/dropped/`items[0].error`; `files`
+    is `null` unless the run fully succeeded.
+
+  `session download`, `resource upload`, and `resource download` gaining
+  `-o json` output is net-new, not a schema change (see Features).
+  `session upload-exam`'s existing, separately documented `-o json` contract
+  is unaffected.
 
 **Features**
 
@@ -64,7 +101,14 @@ All notable changes to this project will be documented in this file.
   has no checksum for is reported as unverifiable rather than silently
   skipped -- and if the server had no checksum for anything at all that was
   downloaded, the command fails outright rather than reporting a pass with
-  nothing actually checked.
+  nothing actually checked. `-o json`'s standalone `{"verification": {...}}`
+  block is unreleased, so folding it into `TransferSummary` (see Breaking)
+  is not itself a breaking change.
+- `session download`, `resource upload`, and `resource download` gain
+  structured `-o json` output for the first time -- previously they printed
+  no JSON at all outside table mode. See the Breaking entry above for the
+  shared `TransferSummary` shape and the Downloading/Uploading docs pages
+  for the full schema.
 - DICOM utilities (`xnatctl dicom`, `session upload-dicom` C-STORE) and
   OS-keychain password storage (`config set-password`) now ship in every
   install, including the standalone binary. The `dicom` and `keyring` extras
@@ -323,6 +367,11 @@ All notable changes to this project will be documented in this file.
   `SessionService.list_sessions`'s empty-modality guard now runs before
   fetching experiment rows rather than after, so a bad `modality` value no
   longer costs an HTTP request it will just discard.
+
+- Locked dependency versions bumped to close two published CVEs with no
+  code changes required: `cryptography` 49.0.0 -> 50.0.0 (PYSEC-2026-3552)
+  and `pydicom` 3.0.1 -> 3.0.2 (PYSEC-2026-2266). Both stay within their
+  existing `pyproject.toml` version ranges.
 
 ## 0.3.0 - 2026-08-07
 
