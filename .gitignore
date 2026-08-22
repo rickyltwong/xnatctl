@@ -99,3 +99,6 @@ AGENTS.md
 .worktrees/
 worktrees/
 .harness/
+
+# Internal decision records (never re-add)
+docs/adr/

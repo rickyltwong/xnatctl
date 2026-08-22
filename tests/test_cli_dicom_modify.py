@@ -24,7 +24,7 @@ def _write_fake_dicom(path: Path, patient_id: str = "ORIG") -> None:
         path: Target file path.
         patient_id: PatientID value to set.
     """
-    pydicom = pytest.importorskip("pydicom")
+    import pydicom
     from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
     ds = pydicom.Dataset()
@@ -101,7 +101,8 @@ class TestModifySingleFile:
 
     def test_modify_single_tag(self, runner: CliRunner, tmp_path: Path) -> None:
         """Modify one tag on a single file."""
-        pydicom = pytest.importorskip("pydicom")
+        import pydicom
+
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm, patient_id="ORIG")
 
@@ -114,7 +115,8 @@ class TestModifySingleFile:
 
     def test_modify_multiple_tags(self, runner: CliRunner, tmp_path: Path) -> None:
         """Modify multiple tags at once."""
-        pydicom = pytest.importorskip("pydicom")
+        import pydicom
+
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -138,7 +140,8 @@ class TestModifySingleFile:
 
     def test_value_with_equals_sign(self, runner: CliRunner, tmp_path: Path) -> None:
         """Values containing '=' are preserved."""
-        pydicom = pytest.importorskip("pydicom")
+        import pydicom
+
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -159,7 +162,8 @@ class TestModifyDryRun:
 
     def test_dry_run_no_write(self, runner: CliRunner, tmp_path: Path) -> None:
         """Dry run reports changes but leaves file untouched."""
-        pydicom = pytest.importorskip("pydicom")
+        import pydicom
+
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm, patient_id="ORIG")
 
@@ -183,7 +187,6 @@ class TestModifyBackup:
 
     def test_backup_created(self, runner: CliRunner, tmp_path: Path) -> None:
         """A .bak file is created when --backup is used."""
-        pytest.importorskip("pydicom")
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm, patient_id="ORIG")
 
@@ -195,7 +198,6 @@ class TestModifyBackup:
 
     def test_no_backup_without_flag(self, runner: CliRunner, tmp_path: Path) -> None:
         """No .bak created without --backup."""
-        pytest.importorskip("pydicom")
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -213,7 +215,8 @@ class TestModifyDirectory:
 
     def test_directory_non_recursive(self, runner: CliRunner, tmp_path: Path) -> None:
         """Modify files in a flat directory."""
-        pydicom = pytest.importorskip("pydicom")
+        import pydicom
+
         for i in range(3):
             _write_fake_dicom(tmp_path / f"file{i}.dcm")
 
@@ -227,7 +230,8 @@ class TestModifyDirectory:
 
     def test_recursive_flag(self, runner: CliRunner, tmp_path: Path) -> None:
         """Recurse into subdirectories with -r."""
-        pydicom = pytest.importorskip("pydicom")
+        import pydicom
+
         _write_fake_dicom(tmp_path / "a.dcm")
         _write_fake_dicom(tmp_path / "sub" / "b.dcm")
 
@@ -241,7 +245,6 @@ class TestModifyDirectory:
 
     def test_non_dicom_skipped(self, runner: CliRunner, tmp_path: Path) -> None:
         """Non-DICOM files are skipped, not errored."""
-        pytest.importorskip("pydicom")
         _write_fake_dicom(tmp_path / "good.dcm")
         (tmp_path / "readme.txt").write_text("not dicom")
 
@@ -260,7 +263,6 @@ class TestModifyJsonOutput:
 
     def test_json_output(self, runner: CliRunner, tmp_path: Path) -> None:
         """JSON output contains expected structure."""
-        pytest.importorskip("pydicom")
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -289,7 +291,6 @@ class TestModifyFailedFiles:
 
     def test_write_error_reports_failed(self, runner: CliRunner, tmp_path: Path) -> None:
         """A write error during save is reported as 'failed' with non-zero exit."""
-        pytest.importorskip("pydicom")
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -300,7 +301,6 @@ class TestModifyFailedFiles:
 
     def test_write_error_json(self, runner: CliRunner, tmp_path: Path) -> None:
         """JSON output includes failed count on write error."""
-        pytest.importorskip("pydicom")
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -321,17 +321,3 @@ class TestModifyFailedFiles:
 # =========================================================================
 # No pydicom fallback
 # =========================================================================
-
-
-class TestModifyNoPydicom:
-    """Tests for behaviour when pydicom is not installed."""
-
-    def test_error_without_pydicom(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Command exits with error when pydicom is missing."""
-        dcm = tmp_path / "dummy.dcm"
-        dcm.write_bytes(b"\x00" * 256)
-
-        with patch("xnatctl.cli.dicom_cmd.check_pydicom", return_value=False):
-            result = runner.invoke(cli, ["dicom", "modify", str(dcm), "-t", "PatientID=X"])
-        assert result.exit_code == 1
-        assert "pydicom not installed" in result.output

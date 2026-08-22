@@ -2,6 +2,136 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.0 - 2026-08-22
+
+**Breaking**
+
+- `DownloadService.download_session` is removed. It was never wired to any
+  command; use `download_session_fast`, `download_scans`, or
+  `download_resource`.
+- Three library exceptions no longer shadow stdlib names:
+  `ConnectionError` -> `XNATConnectionError`, `TimeoutError` ->
+  `RequestTimeoutError`, `ValidationError` -> `InputValidationError`. The old
+  names survive as deprecated aliases that warn on instantiation (removed in
+  a later minor release); update `except` clauses to the new names.
+- Single-target download/upload service methods raise typed exceptions
+  instead of returning a failure summary: `download_resource`,
+  `upload_resource`, and `download_scan` (when given a resource label) return
+  their summary only on success. Batch methods still return summaries and
+  gain `raise_for_status()`. The CLI's exit codes and messages are unchanged.
+- `DownloadService.download_session_level_resources` returns the downloaded
+  `(label, path)` pairs instead of an `int` count; use `len(...)`.
+- `xnatctl.services.uploads` is gone; `UploadService` and its helpers now
+  live in `xnatctl.services.upload`, split one module per transport. The
+  top-level `xnatctl.UploadService` import is unaffected.
+- `-o json` changes shape on the five commands that already shipped
+  structured JSON: `scan download`, `session upload` (single-archive and
+  directory-batch), `session upload-dicom`, and `session upload --mode
+  gradual`. Each now prints one shared `TransferSummary` object --
+  `operation`, `session_id`, `project`, `output_dir`/`source`, `scans`,
+  `files`, `bytes`, `duration_seconds`, `status`
+  (`"success"`/`"partial"`/`"failed"`, always agreeing with the exit code),
+  per-item `items`, and a nested `verification` report with `--verify`.
+  `files`/`bytes` only ever count what actually transferred (`null` where
+  the transport doesn't track that). No compatibility shim: scripts reading
+  the old top-level keys (`success`, `output_path`, `total_size_mb`,
+  `total_files`, `sent`, `errors`, ...) must update. Full schema in the
+  Downloading/Uploading docs pages; `session upload-exam`'s separately
+  documented `-o json` contract is unaffected.
+
+**Features**
+
+- **User lifecycle administration.** `admin user` gains `list`, `show`,
+  `enable`/`disable`, `roles`, `groups`, `remove`, and `kill-sessions` --
+  the fix-command for a shared account that has exhausted its
+  concurrent-session limit and started failing every new login with 401s.
+- **Project access and membership.** `project` gains `users`,
+  `grant`/`revoke`, `access` (get, or `--set public|protected|private`), and
+  read-only `requests`. Approving/denying a request is deliberately not
+  offered: XNAT resolves it against whichever account is signed in, so an
+  admin cannot safely act on another user's behalf.
+- **Site config, plugins, and server info.** `admin site-config get [KEY]` /
+  `set KEY VALUE`, `admin plugins` (`plugins show ID` for one), and
+  `admin version`.
+- **`--verify` on `session download` and `scan download`** checks every
+  downloaded file's MD5 against the server's catalog checksums -- extracted
+  or still zipped, session-level resources included, files matched by scan
+  and resource rather than filename alone. A mismatch, a listed file that
+  never landed, an ambiguous mapping, or a run where nothing was verifiable
+  at all (no checksums on record, or an empty server manifest despite files
+  on disk) fails the command; local files the manifest doesn't cover are
+  reported rather than silently skipped.
+- `session download`, `resource upload`, and `resource download` gain
+  structured `-o json` output for the first time, using the shared
+  `TransferSummary` shape.
+- DICOM utilities and OS-keychain password storage now ship in every
+  install, including the standalone binary; the `dicom` and `keyring`
+  extras are gone.
+- `XNATClient.stream()` is a public API: streamed reads (large file
+  downloads) through the client's own retry, auth, and typed-error
+  contract, replacing any need to reach for raw httpx access.
+- **One-call library connect.** `xnatctl.XNATClient.from_profile("prod")`
+  builds a client from a saved profile using the CLI's own credential
+  resolution, each resource type is reachable through a cached accessor
+  (`client.projects`, `client.sessions`, ...), and the package root
+  re-exports the client, config, service classes, models, and the exception
+  hierarchy as the supported public surface. The top-level `xnatctl`
+  namespace is now **Stable** and semver-covered, superseding its earlier
+  Provisional status; submodule internals stay Provisional. README gains a
+  library quickstart.
+
+**Fixes**
+
+- 404 classification no longer depends on error-message text. The client
+  enriches every 404 with `status_code`/`method`/`path` and services
+  dispatch on exception type, so an unrelated error mentioning "404" (a
+  session labelled `SUB404`, say) can no longer be misread as "not found".
+- Downloads now go through the client's retry, auth, and typed-error path
+  instead of talking to httpx directly -- restoring the retry ladder, error
+  mapping, and basic-auth fallback (a client built from credentials but not
+  yet logged in used to fail every download).
+- Downloads are written atomically: bytes stream to a `.part` file renamed
+  into place only after the byte count matches the server's
+  `Content-Length`, so a dropped connection can no longer leave a truncated
+  file that looks whole.
+- A corrupt session ZIP now fails the command -- CRC-checked before
+  extraction, nonzero exit -- instead of printing a note and exiting 0.
+- Cross-server transfer scan imports retry only transient failures, with
+  the same transient-vs-permanent HTTP 400 discrimination the upload paths
+  use; a permanent error fails on the first attempt instead of burning the
+  full backoff ladder.
+- **The service layer now validates and encodes its own REST paths** instead
+  of trusting the CLI to have done it. Every caller-supplied identifier is
+  percent-encoded where it enters a URL, and the hierarchy refs reject
+  separators, dot-only segments, control characters, and leading/trailing
+  whitespace at construction -- a library caller can no longer redirect a
+  request with an ID like `SUB1/experiments/XNAT_E1?activate=` or `..`, and
+  an empty segment raises instead of silently building a collection route
+  (`delete("")` used to become `DELETE /data/projects/`). IDs made of
+  alphanumerics/dots/dashes/underscores produce byte-identical URLs.
+- **An explicit empty string no longer widens scope.** Across the service
+  layer and CLI, a passed-in `""` used to be conflated with "not provided"
+  and silently broadened the operation -- most dangerously
+  `ResourceService.delete(scan_id="")` targeting the session-level resource,
+  and empty project/subject/modality/status filters issuing site-wide
+  queries. All such sites now raise, and six places treating `limit=0` as
+  "no limit" now return zero results.
+- **Server-reported names are validated before touching the local
+  filesystem.** A scan ID or resource label used as a local file or
+  directory name -- in downloads, ZIP extraction, and transfer staging --
+  must be a safe path component on POSIX, Windows, and macOS: separators,
+  drive-qualified values (`C:escape`), reserved device names (`CON`,
+  `COM1`, ...), leading/trailing dots or spaces, Windows-invalid characters,
+  non-NFC Unicode, and control characters are all rejected. Two sibling
+  values differing only by case (`DICOM`/`dicom`) raise instead of silently
+  merging on a case-insensitive filesystem, and extraction verifies the
+  resolved target is still inside the requested output directory, closing a
+  pre-existing-symlink escape. `--name` on `session download`/`scan
+  download` runs the same check, at argument-parsing time.
+- Locked dependency versions bumped to close two published CVEs, staying
+  within their existing ranges: `cryptography` 49.0.0 -> 50.0.0
+  (PYSEC-2026-3552) and `pydicom` 3.0.1 -> 3.0.2 (PYSEC-2026-2266).
+
 ## 0.3.0 - 2026-08-07
 
 A large hardening release. The themes: credentials stop leaking, failures stop
@@ -61,9 +191,8 @@ lying, and Ctrl+C works.
 - Shell completion emits Click's own scripts, so `xnatctl proj<TAB>` completes
   to `project` rather than `plain,project`.
 - New documentation: a Stability and Deprecation Policy page (what scripts may
-  bind to, and for how long), a Performance page (measured throughput and peak
-  RSS for the transfer paths), and `docs/adr/` recording ten decisions that
-  look like mistakes without their context.
+  bind to, and for how long), and a Performance page (measured throughput and
+  peak RSS for the transfer paths).
 
 **Fixes**
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from xnatctl.core.validation import quote_path_segment
 from xnatctl.services.base import BaseService
 
 # Single source of truth for the XSync URL templates so tests can pin them.
@@ -59,15 +60,15 @@ class XsyncService(BaseService):
 
     def get_setup(self, project_id: str) -> Any:
         """Fetch the XSync setup record for a project."""
-        return self._get(_SETUP_PATH.format(project_id=project_id))
+        return self._get(_SETUP_PATH.format(project_id=quote_path_segment(project_id)))
 
     def get_status(self, project_id: str) -> Any:
         """Fetch the XSync status record for a project."""
-        return self._get(_STATUS_PATH.format(project_id=project_id))
+        return self._get(_STATUS_PATH.format(project_id=quote_path_segment(project_id)))
 
     def get_history(self, project_id: str) -> Any:
         """Fetch the XSync run history for a project."""
-        return self._get(_HISTORY_PATH.format(project_id=project_id))
+        return self._get(_HISTORY_PATH.format(project_id=quote_path_segment(project_id)))
 
     def get_progress(self, project_id: str) -> str:
         """Fetch the current XSync progress log as plain text.
@@ -76,18 +77,20 @@ class XsyncService(BaseService):
         straight to stdout without going through the ``api get`` JSON
         fallback path.
         """
-        resp = self.client.get(_PROGRESS_PATH.format(project_id=project_id))
+        resp = self.client.get(_PROGRESS_PATH.format(project_id=quote_path_segment(project_id)))
         return resp.text
 
     # ----- write endpoints ------------------------------------------------
 
     def sync(self, project_id: str) -> Any:
         """Trigger an XSync run for the given project."""
-        return self._post(_SYNC_PATH.format(project_id=project_id))
+        return self._post(_SYNC_PATH.format(project_id=quote_path_segment(project_id)))
 
     def sync_subject(self, experiment_id: str) -> Any:
         """Trigger an XSync run for a single experiment / session."""
-        return self._post(_SYNC_SUBJECT_PATH.format(experiment_id=experiment_id))
+        return self._post(
+            _SYNC_SUBJECT_PATH.format(experiment_id=quote_path_segment(experiment_id))
+        )
 
     def remote_rest(
         self,
@@ -137,7 +140,7 @@ class XsyncService(BaseService):
         """
         body = json.dumps(payload)
         resp = self.client.post(
-            _CREDENTIALS_SAVE_PATH.format(project_id=project_id),
+            _CREDENTIALS_SAVE_PATH.format(project_id=quote_path_segment(project_id)),
             data=body,
             headers=_TEXT_PLAIN_HEADERS,
         )
@@ -162,7 +165,7 @@ class XsyncService(BaseService):
         """
         body = json.dumps(payload)
         resp = self.client.post(
-            _CREDENTIALS_CHECK_PATH.format(project_id=project_id),
+            _CREDENTIALS_CHECK_PATH.format(project_id=quote_path_segment(project_id)),
             data=body,
             headers=_TEXT_PLAIN_HEADERS,
         )

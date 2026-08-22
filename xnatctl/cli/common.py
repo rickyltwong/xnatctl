@@ -16,17 +16,17 @@ import click
 from xnatctl.core.auth import AuthManager
 from xnatctl.core.client import XNATClient
 from xnatctl.core.config import Config, Profile, get_credentials
+from xnatctl.core.connect import resolve_client_params
 from xnatctl.core.exceptions import (
     AuthenticationError,
     ConfigurationError,
+    InputValidationError,
     OperationCancelledError,
     PermissionDeniedError,
     ProfileNotFoundError,
     ResourceNotFoundError,
+    XNATConnectionError,
     XNATCtlError,
-)
-from xnatctl.core.exceptions import (
-    ConnectionError as XNATConnectionError,
 )
 from xnatctl.core.logging import debug_env_enabled, get_audit_logger, setup_logging
 from xnatctl.core.output import OutputFormat, print_error, print_hint, print_warning
@@ -86,16 +86,21 @@ class Context:
         # . Both map to the same exit code.
         profile = self.config.get_profile(self.profile_name)
 
-        # Get credentials (env vars > profile config). If we are using a cached
-        # session token, keep the cached username as a hint for current-user
-        # lookups on servers where /data/user returns a user listing.
-        username, password = get_credentials(profile)
-        session = self.auth_manager.load_session(profile.url)
-        token = self.auth_manager.get_token_from_env() or (session.token if session else None)
-        username_hint = username or (session.username if session else None)
+        # Credential resolution (env > profile, cached/env token, username hint,
+        # auto_reauth) lives in the shared resolver so a library user
+        # (XNATClient.from_profile) gets the exact same client this command
+        # would. Resolved BEFORE the TLS warning prints, so a resolver failure
+        # raises without emitting output -- the pre-refactor order.
+        params = resolve_client_params(
+            self.profile_name,
+            config=self.config,
+            auth_manager=self.auth_manager,
+        )
 
         # Make a disabled-TLS profile impossible to miss for interactive users
-        # (the client-layer logger.warning only shows under --verbose).
+        # (the client-layer logger.warning only shows under --verbose). This is
+        # CLI rendering, so it stays here rather than in build_client_from_profile
+        # -- the builder is shared with library callers and must not print.
         if not profile.verify_ssl and not profile.ca_bundle:
             print_warning(
                 redact_url_query(
@@ -104,22 +109,9 @@ class Context:
                 )
             )
 
-        self.client = XNATClient(
-            base_url=profile.url,
-            username=username_hint,
-            password=password,
-            session_token=token,
-            timeout=profile.timeout,
-            verify_ssl=profile.verify_ssl,
-            ca_bundle=profile.ca_bundle,
-            # Transparently re-authenticate on a mid-command 401 so a session
-            # that expires during a slow mutating operation (e.g. a large
-            # prearchive archive that outlasts the ~15-min JSESSIONID) does not
-            # surface a successful operation as a failure (see issue #20). This
-            # only engages when a password is available; token-only clients fall
-            # back to raising SessionExpiredError as before.
-            auto_reauth=True,
-        )
+        # Construction stays here, through the module-level XNATClient, so it
+        # is the one client every command shares (and tests can patch).
+        self.client = XNATClient(**params)
 
         return self.client
 
@@ -166,6 +158,36 @@ def resolve_workers_from_context(ctx: Context, workers: int | None, default: int
         return profile.workers
 
     return default
+
+
+def resolve_overwrite_from_context(ctx: Context, overwrite: str | None) -> str:
+    """Resolve overwrite mode from explicit option, profile, or ``delete``."""
+    if overwrite is not None:
+        return overwrite
+    profile = get_profile(ctx)
+    if profile and profile.overwrite is not None:
+        return profile.overwrite
+    return "delete"
+
+
+def resolve_direct_archive_from_context(ctx: Context, direct_archive: bool | None) -> bool:
+    """Resolve direct-archive flag from explicit option, profile, or ``True``."""
+    if direct_archive is not None:
+        return direct_archive
+    profile = get_profile(ctx)
+    if profile and profile.direct_archive is not None:
+        return profile.direct_archive
+    return True
+
+
+def resolve_archive_mode_from_context(ctx: Context, mode: str | None) -> str:
+    """Resolve archive mode from explicit option, profile, or ``tar``."""
+    if mode is not None:
+        return mode
+    profile = get_profile(ctx)
+    if profile and profile.archive_mode is not None:
+        return profile.archive_mode
+    return "tar"
 
 
 # =============================================================================
@@ -340,6 +362,14 @@ def require_auth(f: F) -> F:
 # canonical secret-shaped key set plus the CLI's own credential flags.
 _AUDIT_SECRET_PARAMS = SECRET_QUERY_KEYS | {"dest_pass", "dest_password", "passphrase"}
 
+# Parameters whose value is replaced with "***" rather than omitted outright --
+# the audit record should show that something was set without ever revealing
+# what. "value" covers `admin site-config set KEY VALUE`: VALUE can be an
+# arbitrary site-config setting (an SMTP password, an OAuth client secret,
+# ...), and the KEY name that would hint at that is unpredictable across
+# deployments, so it is always masked rather than guessed at from the key.
+_AUDIT_MASKED_PARAMS = frozenset({"value"})
+
 # Parameters that describe *how* a command ran rather than *what* it touched.
 _AUDIT_UNINTERESTING_PARAMS = frozenset(
     {"yes", "dry_run", "output_format", "quiet", "verbose", "profile"}
@@ -351,14 +381,18 @@ def _audit_details(params: dict[str, Any]) -> dict[str, Any]:
 
     A denylist rather than an allowlist: the interesting fields differ per
     command, and an allowlist would silently record nothing for any command
-    added later. Secret-shaped names are dropped outright, and every surviving
-    string is redacted on the way out.
+    added later. Secret-shaped names are dropped outright, masked names are
+    replaced with "***" (so the record shows something was set without
+    revealing what), and every surviving string is redacted on the way out.
     """
     details: dict[str, Any] = {}
     for key, value in params.items():
         if value is None or value is False:
             continue
         if key in _AUDIT_SECRET_PARAMS or key in _AUDIT_UNINTERESTING_PARAMS:
+            continue
+        if key in _AUDIT_MASKED_PARAMS:
+            details[key] = "***"
             continue
         details[key] = value
     return details
@@ -457,6 +491,64 @@ def confirm_destructive(message: str) -> Callable[[F], F]:
     return decorator
 
 
+def confirm_destructive_when(
+    predicate: Callable[[dict[str, Any]], bool], message: str
+) -> Callable[[F], F]:
+    """Like :func:`confirm_destructive`, gated on whether this invocation mutates.
+
+    Some commands are a plain read in their default form and only become
+    destructive when a specific option is present (``project access PROJECT``
+    is a GET; ``project access PROJECT --set public`` is a PUT). ``--yes`` and
+    ``--dry-run`` are still added unconditionally, so the flags exist and
+    behave predictably in ``--help``, but the confirmation prompt, the
+    dry-run notice, and the audit write are all skipped when
+    ``predicate(kwargs)`` is False -- a read is not a destructive operation
+    and must not demand ``--yes`` or grow an audit entry.
+
+    Args:
+        predicate: Called with the command's keyword arguments (after
+            ``yes``/``dry_run`` are pulled out); True means this invocation
+            mutates and should be gated like :func:`confirm_destructive`.
+        message: Confirmation prompt shown when the predicate is True.
+    """
+
+    def decorator(f: F) -> F:
+        """Wrap a command to conditionally enforce confirmation/dry-run behavior."""
+
+        @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+        @click.option("--dry-run", is_flag=True, help="Preview without making changes")
+        @wraps(f)
+        def wrapper(*args: Any, yes: bool, dry_run: bool, **kwargs: Any) -> Any:
+            """Gate on the predicate, then behave exactly like confirm_destructive."""
+            if not predicate(kwargs):
+                kwargs["dry_run"] = False
+                return f(*args, **kwargs)
+
+            if dry_run:
+                click.echo("[DRY-RUN] Preview mode - no changes will be made", err=True)
+                kwargs["dry_run"] = True
+            elif not yes:
+                click.confirm(message, abort=True, err=True)
+                kwargs["dry_run"] = False
+            else:
+                kwargs["dry_run"] = False
+
+            error: str | None = None
+            try:
+                return f(*args, **kwargs)
+            except BaseException as exc:
+                click_ctx = click.get_current_context(silent=True)
+                stashed = click_ctx.meta.get(AUDIT_ERROR_KEY) if click_ctx else None
+                error = stashed or type(exc).__name__
+                raise
+            finally:
+                _record_audit(dry_run=dry_run, confirmed=yes, params=dict(kwargs), error=error)
+
+        return wrapper  # type: ignore
+
+    return decorator
+
+
 # =============================================================================
 # Batch Operations
 # =============================================================================
@@ -494,18 +586,22 @@ class DeprecatedFlag(NamedTuple):
     removed_in: str
     """The release that deletes the flag."""
 
+    deprecated_in: str
+    """The release whose warning first named ``removed_in``. Anchors the
+    two-MINOR-release survival window the policy promises."""
+
 
 DEPRECATED_FLAGS: dict[str, DeprecatedFlag] = {
-    "--no-parallel": DeprecatedFlag("--workers 1", "0.5.0"),
-    "--parallel": DeprecatedFlag("", "0.5.0"),
-    "--unzip": DeprecatedFlag("--extract", "0.5.0"),
-    "--no-unzip": DeprecatedFlag("--no-extract", "0.5.0"),
-    "--cleanup": DeprecatedFlag("", "0.5.0"),
-    "--no-cleanup": DeprecatedFlag("--extract --keep-zips", "0.5.0"),
-    "--include-resources": DeprecatedFlag("--session-resources", "0.5.0"),
-    "--session": DeprecatedFlag("--experiment", "0.5.0"),
-    "--gradual": DeprecatedFlag("--mode gradual", "0.5.0"),
-    "--archive-format": DeprecatedFlag("--mode", "0.5.0"),
+    "--no-parallel": DeprecatedFlag("--workers 1", "0.5.0", "0.3.0"),
+    "--parallel": DeprecatedFlag("", "0.5.0", "0.3.0"),
+    "--unzip": DeprecatedFlag("--extract", "0.5.0", "0.3.0"),
+    "--no-unzip": DeprecatedFlag("--no-extract", "0.5.0", "0.3.0"),
+    "--cleanup": DeprecatedFlag("", "0.5.0", "0.3.0"),
+    "--no-cleanup": DeprecatedFlag("--extract --keep-zips", "0.5.0", "0.3.0"),
+    "--include-resources": DeprecatedFlag("--session-resources", "0.5.0", "0.3.0"),
+    "--session": DeprecatedFlag("--experiment", "0.5.0", "0.3.0"),
+    "--gradual": DeprecatedFlag("--mode gradual", "0.5.0", "0.3.0"),
+    "--archive-format": DeprecatedFlag("--mode", "0.5.0", "0.3.0"),
 }
 """Every deprecated flag, what replaces it, and when it goes away.
 
@@ -516,7 +612,9 @@ the whole command tree and fails on any deprecated option missing from it,
 which is what stops a flag being quietly retired without notice.
 
 The removal release is at least two MINOR releases out from the one that
-deprecated the flag -- see ``docs/stability.rst``.
+deprecated the flag (``deprecated_in``, recorded per entry so the window
+stays anchored there whatever releases ship in between) -- see
+``docs/stability.rst``.
 """
 
 
@@ -621,6 +719,58 @@ def _make_noop_cb(old_flag: str) -> Callable[[click.Context, click.Parameter, An
         return value
 
     return callback
+
+
+def validate_local_path_option_cb(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
+    """Eager Click callback: reject an option value unsafe as a local path.
+
+    Wire this as ``callback=validate_local_path_option_cb, is_eager=True`` on
+    any option (like ``--name``) whose value becomes a local file/directory
+    name. Eager callbacks run during argument parsing, in
+    :meth:`click.Command.parse_args` -- before ``@require_auth`` or any other
+    decorator wrapping the command body runs, since those only execute once
+    Click calls the underlying function. Without ``is_eager=True`` the
+    validation would still technically run before the command body, but
+    only after every other (non-eager) option's callback -- eager forces it
+    first, and more importantly decouples it from needing a valid session at
+    all: a malformed ``--name`` must fail the same way whether or not the
+    caller is authenticated.
+
+    ``None`` (the option was not given) passes through unchanged; the
+    command body is responsible for its own fallback validation in that case
+    (e.g. validating the session ID that will be used as the directory name
+    instead).
+    """
+    del ctx
+    if value is not None:
+        from xnatctl.core.validation import validate_local_path_component
+
+        option = (param.opts or [param.name])[0]
+        try:
+            validate_local_path_component(value, option)
+        except InputValidationError as e:
+            raise click.ClickException(str(e)) from e
+    return value
+
+
+def reject_blank_option_value(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> str | None:
+    """Click callback: reject an explicitly empty/whitespace-only option value.
+
+    ``None`` (the option was not given) passes through unchanged -- only a
+    user-supplied blank string is rejected. This matters most on an option
+    that gates a ``confirm_destructive_when`` predicate written as
+    ``is not None`` (present means mutating) alongside a command body that
+    checks plain truthiness (``not value`` means absent): an empty string
+    satisfies the first and fails the second, so the confirmation
+    prompt/audit fires for what actually runs as a harmless read. Wiring
+    this callback removes the blank state before either check ever sees it.
+    """
+    del ctx, param
+    if value is not None and value.strip() == "":
+        raise click.BadParameter("cannot be empty or whitespace-only")
+    return value
 
 
 def parallel_options(f: F) -> F:
@@ -951,7 +1101,7 @@ def exit_code_for(exc: BaseException) -> int:
     if isinstance(exc, ResourceNotFoundError):
         return ExitCode.NOT_FOUND
     if isinstance(exc, XNATConnectionError):
-        # NetworkError, TimeoutError, RetryExhaustedError, ServerUnreachableError
+        # NetworkError, RequestTimeoutError, RetryExhaustedError, ServerUnreachableError
         return ExitCode.NETWORK_ERROR
     # ClientRequestError/ServerError ("server said no") and everything else.
     return ExitCode.GENERAL_ERROR

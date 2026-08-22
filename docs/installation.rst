@@ -112,8 +112,8 @@ After extracting, verify that xnatctl runs:
    xnatctl.exe --version
 
 If you see ``xnatctl is not recognized`` or ``command not found``, you need to
-add the install directory to your PATH. See the
-:ref:`troubleshooting <installation-troubleshooting>` section below.
+add the install directory to your PATH. See the `Troubleshooting`_ section
+below.
 
 .. note::
 
@@ -125,9 +125,10 @@ add the install directory to your PATH. See the
 Python Package
 --------------
 
-Choose the Python package if you already have a Python 3.11+ environment, want
-to import xnatctl as a library in your own scripts, or need the optional DICOM
-utilities.
+Choose the Python package if you already have a Python 3.11+ environment or
+want to import xnatctl as a library in your own scripts. DICOM utilities and
+OS-keychain password storage ship in every install -- there is no separate
+extra to request.
 
 **Install from PyPI (recommended):**
 
@@ -141,29 +142,9 @@ utilities.
 
    $ uv pip install xnatctl
 
-**With DICOM extras:**
-
-The ``dicom`` extra installs `pydicom <https://pydicom.github.io/>`_ and
-`pynetdicom <https://pydicom.github.io/pynetdicom/>`_, which enable the
-``xnatctl dicom`` commands (validate, inspect, list-tags, anonymize) for local
-DICOM file operations and the ``xnatctl session upload-dicom`` C-STORE
-pathway. See :doc:`dicom` for full command documentation:
-
-.. code-block:: console
-
-   $ pip install "xnatctl[dicom]"
-
-**With keychain support:**
-
-The ``keyring`` extra lets xnatctl store profile passwords in your operating
-system's keychain (macOS Keychain, GNOME Keyring/KWallet, Windows Credential
-Manager) instead of plaintext in ``config.yaml``, via
-``xnatctl config set-password``. See :doc:`configuration` for the migration
-walkthrough:
-
-.. code-block:: console
-
-   $ pip install "xnatctl[keyring]"
+Every install includes the DICOM utilities (``xnatctl dicom``,
+``session upload-dicom`` -- see :doc:`dicom`) and OS-keychain password
+storage (``xnatctl config set-password`` -- see :doc:`configuration`).
 
 **Install from source:**
 

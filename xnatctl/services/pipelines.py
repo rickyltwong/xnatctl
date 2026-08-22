@@ -7,7 +7,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from xnatctl.core.exceptions import OperationError, ResourceNotFoundError
+from xnatctl.core.exceptions import InputValidationError, OperationError, ResourceNotFoundError
+from xnatctl.core.validation import quote_path_segment
 
 from .base import BaseService
 
@@ -27,8 +28,9 @@ class PipelineService(BaseService):
         Returns:
             List of pipeline dicts
         """
-        if project:
-            path = f"/data/projects/{project}/pipelines"
+        # `is not None`, not truthy -- see list_jobs below for the rationale.
+        if project is not None:
+            path = f"/data/projects/{quote_path_segment(project)}/pipelines"
         else:
             path = "/data/pipelines"
 
@@ -53,25 +55,28 @@ class PipelineService(BaseService):
         Raises:
             ResourceNotFoundError: If pipeline not found
         """
-        if project:
-            path = f"/data/projects/{project}/pipelines/{pipeline_name}"
+        # `is not None`, not truthy -- see list_jobs below for the rationale.
+        if project is not None:
+            path = (
+                f"/data/projects/{quote_path_segment(project)}"
+                f"/pipelines/{quote_path_segment(pipeline_name)}"
+            )
         else:
-            path = f"/data/pipelines/{pipeline_name}"
+            path = f"/data/pipelines/{quote_path_segment(pipeline_name)}"
 
         params = {"format": "json"}
 
         try:
             data = self._get(path, params=params)
-            if isinstance(data, dict):
-                return data
-            results = self._extract_results(data)
-            if results:
-                return results[0]
-            raise ResourceNotFoundError("pipeline", pipeline_name)
-        except Exception as e:
-            if "404" in str(e):
-                raise ResourceNotFoundError("pipeline", pipeline_name) from e
-            raise
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("pipeline", pipeline_name) from e
+
+        if isinstance(data, dict):
+            return data
+        results = self._extract_results(data)
+        if results:
+            return results[0]
+        raise ResourceNotFoundError("pipeline", pipeline_name)
 
     def run(
         self,
@@ -91,7 +96,10 @@ class PipelineService(BaseService):
         Returns:
             Job information dict with job ID
         """
-        path = f"/data/experiments/{experiment_id}/pipelines/{pipeline_name}"
+        path = (
+            f"/data/experiments/{quote_path_segment(experiment_id)}"
+            f"/pipelines/{quote_path_segment(pipeline_name)}"
+        )
 
         request_params: dict[str, Any] = {}
         if params:
@@ -127,7 +135,7 @@ class PipelineService(BaseService):
         Returns:
             Job status dict
         """
-        path = f"/data/pipelines/jobs/{job_id}"
+        path = f"/data/pipelines/jobs/{quote_path_segment(job_id)}"
         params = {"format": "json"}
 
         data = self._get(path, params=params)
@@ -198,7 +206,7 @@ class PipelineService(BaseService):
         Returns:
             True if cancelled successfully
         """
-        path = f"/data/pipelines/jobs/{job_id}"
+        path = f"/data/pipelines/jobs/{quote_path_segment(job_id)}"
         params = {"action": "kill"}
         self._post(path, params=params)
         return True
@@ -221,15 +229,27 @@ class PipelineService(BaseService):
         Returns:
             List of job dicts
         """
-        if experiment_id:
-            path = f"/data/experiments/{experiment_id}/pipelines/jobs"
-        elif project:
-            path = f"/data/projects/{project}/pipelines/jobs"
+        # `is not None`, not truthy: an explicitly-supplied `experiment_id=""`
+        # (or `project=""`) is a caller mistake, not "no filter" -- it must
+        # not silently widen to the unfiltered, server-wide job listing.
+        # quote_path_segment already rejects the empty string.
+        if experiment_id is not None:
+            path = f"/data/experiments/{quote_path_segment(experiment_id)}/pipelines/jobs"
+        elif project is not None:
+            path = f"/data/projects/{quote_path_segment(project)}/pipelines/jobs"
         else:
             path = "/data/pipelines/jobs"
 
         params: dict[str, Any] = {"format": "json", "limit": limit}
-        if status:
+        # `is not None`, not truthy: `status=""` is a caller mistake, not
+        # "no status filter" -- it must not silently widen to every status.
+        if status is not None:
+            if status.strip() == "":
+                raise InputValidationError(
+                    "status filter cannot be empty or whitespace-only",
+                    field="status",
+                    value=status,
+                )
             params["status"] = status
 
         data = self._get(path, params=params)

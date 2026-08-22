@@ -222,7 +222,7 @@ def run_download(
     workers: int, scans: int, files_per_scan: int, file_kib: int, latency_ms: int
 ) -> Result:
     """Time ``session download``'s parallel path end to end, including extraction."""
-    from xnatctl.cli.session import _download_session_fast
+    from xnatctl.services.downloads import DownloadService
 
     payloads = _Payloads(scans, files_per_scan, file_kib * 1024, latency_ms)
     server = _start_server(payloads)
@@ -233,14 +233,12 @@ def run_download(
     try:
         client = _make_client(server.url)
         start = time.perf_counter()
-        _download_session_fast(
-            client=client,
+        DownloadService(client).download_session_fast(
             session_project=PROJECT,
             subject=SUBJECT,
             resolved_session_id=EXPERIMENT,
             session_dir=out_dir,
             workers=workers,
-            quiet=True,
         )
         elapsed = time.perf_counter() - start
 
@@ -274,7 +272,7 @@ def run_gradual(workers: int, files: int, file_kib: int, latency_ms: int) -> Res
     latency and connection reuse decide the wall time -- and the case the
     performance audit never examined.
     """
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
     payloads = _Payloads(scans=1, files_per_scan=1, file_bytes=1024, latency_ms=latency_ms)
     server = _start_server(payloads)
@@ -319,7 +317,7 @@ def run_upload(
     workers: int, files: int, file_kib: int, archive_format: str, latency_ms: int
 ) -> Result:
     """Time the parallel REST upload: batching, archiving, and POSTing."""
-    from xnatctl.services.uploads import UploadService
+    from xnatctl.services.upload import UploadService
 
     payloads = _Payloads(scans=1, files_per_scan=1, file_bytes=1024, latency_ms=latency_ms)
     server = _start_server(payloads)
@@ -364,9 +362,8 @@ def run_upload(
 def _write_synthetic_dicom(root: Path, count: int, file_bytes: int) -> None:
     """Write files the collector accepts: 128-byte preamble, then ``DICM``.
 
-    Real pixel data is not needed -- the parallel REST path tars or zips the
-    files and POSTs them without parsing -- and generating it with pydicom
-    would make the benchmark depend on an optional extra.
+    Real pixel data is not needed: the parallel REST path tars or zips the
+    files and POSTs them without parsing them.
     """
     body = os.urandom(max(0, file_bytes - 132))
     header = b"\0" * 128 + b"DICM"

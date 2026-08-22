@@ -195,7 +195,7 @@ class TestSessionUploadPassword:
         (src / "a.dcm").write_bytes(b"DICM")
         harness = make_authenticated_cli(default_project="PROJ")
 
-        with patch("xnatctl.cli.session._upload_directory_parallel") as upload:
+        with patch("xnatctl.cli.session_upload._upload_directory_parallel") as upload:
             result = harness.invoke(
                 [
                     "session",
@@ -222,7 +222,7 @@ class TestSessionUploadPassword:
         (src / "a.dcm").write_bytes(b"DICM")
         harness = make_authenticated_cli(default_project="PROJ")
 
-        with patch("xnatctl.cli.session._upload_directory_parallel") as upload:
+        with patch("xnatctl.cli.session_upload._upload_directory_parallel") as upload:
             result = harness.invoke(
                 [
                     "session",

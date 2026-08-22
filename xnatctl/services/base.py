@@ -119,14 +119,3 @@ class BaseService:
             else:
                 return []
         return results if isinstance(results, list) else []
-
-    def _build_path(self, *parts: str) -> str:
-        """Build API path from parts.
-
-        Args:
-            *parts: Path segments
-
-        Returns:
-            Joined path string
-        """
-        return "/" + "/".join(p.strip("/") for p in parts if p)

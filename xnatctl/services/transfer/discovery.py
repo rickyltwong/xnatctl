@@ -6,7 +6,30 @@ import enum
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from xnatctl.core.exceptions import InputValidationError
+from xnatctl.core.validation import quote_path_segment
 from xnatctl.services.base import BaseService
+
+
+def _parse_cutoff(last_sync_time: str | None) -> datetime | None:
+    """Parse an optional ISO 8601 sync-cutoff timestamp.
+
+    ``None`` means "no cutoff" (full discovery) and is the real omitted
+    case. An explicitly-supplied empty/whitespace-only STRING is a
+    different thing: ``if last_sync_time else None`` used to treat it the
+    same as ``None``, silently turning an incremental sync into a full
+    resync of every subject/experiment on the source instead of failing on
+    the caller's malformed timestamp.
+    """
+    if last_sync_time is None:
+        return None
+    if last_sync_time.strip() == "":
+        raise InputValidationError(
+            "last_sync_time cannot be empty or whitespace-only",
+            field="last_sync_time",
+            value=last_sync_time,
+        )
+    return datetime.fromisoformat(last_sync_time)
 
 
 class ChangeType(enum.Enum):
@@ -96,8 +119,8 @@ class DiscoveryService(BaseService):
         Returns:
             List of discovered subject entities
         """
-        cutoff = datetime.fromisoformat(last_sync_time) if last_sync_time else None
-        data = self._get(f"/data/projects/{project}/subjects")
+        cutoff = _parse_cutoff(last_sync_time)
+        data = self._get(f"/data/projects/{quote_path_segment(project)}/subjects")
         results = self._extract_results(data)
 
         entities: list[DiscoveredEntity] = []
@@ -140,8 +163,11 @@ class DiscoveryService(BaseService):
         Returns:
             List of discovered experiment entities
         """
-        cutoff = datetime.fromisoformat(last_sync_time) if last_sync_time else None
-        data = self._get(f"/data/projects/{project}/subjects/{subject_id}/experiments")
+        cutoff = _parse_cutoff(last_sync_time)
+        data = self._get(
+            f"/data/projects/{quote_path_segment(project)}"
+            f"/subjects/{quote_path_segment(subject_id)}/experiments"
+        )
         results = self._extract_results(data)
 
         entities: list[DiscoveredEntity] = []

@@ -6,7 +6,10 @@ import builtins
 import re
 from typing import Any
 
-from xnatctl.core.exceptions import ResourceNotFoundError, ValidationError
+import httpx
+
+from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
+from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.subject import Subject
 
 from .base import BaseService
@@ -32,8 +35,10 @@ class SubjectService(BaseService):
         Returns:
             List of Subject objects
         """
-        if project:
-            path = f"/data/projects/{project}/subjects"
+        # `is not None`, not truthy: `project=""` is a caller mistake, not
+        # "no filter" -- it must not silently widen to the site-wide listing.
+        if project is not None:
+            path = f"/data/projects/{quote_path_segment(project)}/subjects"
         else:
             path = "/data/subjects"
 
@@ -44,7 +49,7 @@ class SubjectService(BaseService):
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit:
+        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
             results = results[:limit]
 
         return [Subject(**r) for r in results]
@@ -66,28 +71,30 @@ class SubjectService(BaseService):
         Raises:
             ResourceNotFoundError: If subject not found
         """
-        if project:
-            path = f"/data/projects/{project}/subjects/{subject_id}"
+        if project is not None:  # not truthy -- "" must raise, not fall to the flat subjects path
+            path = (
+                f"/data/projects/{quote_path_segment(project)}"
+                f"/subjects/{quote_path_segment(subject_id)}"
+            )
         else:
-            path = f"/data/subjects/{subject_id}"
+            path = f"/data/subjects/{quote_path_segment(subject_id)}"
 
         params = {"format": "json"}
 
         try:
             data = self._get(path, params=params)
-            item = HierarchyService.extract_first_item(data) if isinstance(data, dict) else None
-            if item is not None:
-                fields, _meta = item
-                return Subject.model_validate(fields)
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("subject", subject_id) from e
 
-            results = HierarchyService.extract_rows(data)
-            if results:
-                return Subject.model_validate(results[0])
-            raise ResourceNotFoundError("subject", subject_id)
-        except Exception as e:
-            if "404" in str(e):
-                raise ResourceNotFoundError("subject", subject_id) from e
-            raise
+        item = HierarchyService.extract_first_item(data) if isinstance(data, dict) else None
+        if item is not None:
+            fields, _meta = item
+            return Subject.model_validate(fields)
+
+        results = HierarchyService.extract_rows(data)
+        if results:
+            return Subject.model_validate(results[0])
+        raise ResourceNotFoundError("subject", subject_id)
 
     def create(
         self,
@@ -109,7 +116,7 @@ class SubjectService(BaseService):
         Returns:
             Created Subject object
         """
-        path = f"/data/projects/{project}/subjects/{label}"
+        path = f"/data/projects/{quote_path_segment(project)}/subjects/{quote_path_segment(label)}"
         params: dict[str, Any] = {}
 
         if group:
@@ -164,10 +171,13 @@ class SubjectService(BaseService):
                     "to cascade-delete them."
                 )
 
-        if project:
-            path = f"/data/projects/{project}/subjects/{subject_id}"
+        if project is not None:  # not truthy -- see get() above
+            path = (
+                f"/data/projects/{quote_path_segment(project)}"
+                f"/subjects/{quote_path_segment(subject_id)}"
+            )
         else:
-            path = f"/data/subjects/{subject_id}"
+            path = f"/data/subjects/{quote_path_segment(subject_id)}"
 
         params: dict[str, Any] = {}
         if remove_files:
@@ -191,10 +201,13 @@ class SubjectService(BaseService):
         Returns:
             Updated Subject object
         """
-        if project:
-            path = f"/data/projects/{project}/subjects/{subject_id}"
+        if project is not None:  # not truthy -- see get() above
+            path = (
+                f"/data/projects/{quote_path_segment(project)}"
+                f"/subjects/{quote_path_segment(subject_id)}"
+            )
         else:
-            path = f"/data/subjects/{subject_id}"
+            path = f"/data/subjects/{quote_path_segment(subject_id)}"
 
         params = {"label": new_label}
         self._put(path, params=params)
@@ -283,7 +296,7 @@ class SubjectService(BaseService):
         try:
             pattern = re.compile(match_pattern)
         except re.error as e:
-            raise ValidationError(f"Invalid regex pattern: {e}") from e
+            raise InputValidationError(f"Invalid regex pattern: {e}") from e
 
         subjects = self.list(project=project)
         results: dict[str, Any] = {
@@ -399,10 +412,13 @@ class SubjectService(BaseService):
         Returns:
             List of session data dicts
         """
-        if project:
-            path = f"/data/projects/{project}/subjects/{subject_id}/experiments"
+        if project is not None:  # not truthy -- see get() above
+            path = (
+                f"/data/projects/{quote_path_segment(project)}"
+                f"/subjects/{quote_path_segment(subject_id)}/experiments"
+            )
         else:
-            path = f"/data/subjects/{subject_id}/experiments"
+            path = f"/data/subjects/{quote_path_segment(subject_id)}/experiments"
 
         params = {"format": "json"}
         data = self._get(path, params=params)
@@ -474,7 +490,7 @@ class SubjectService(BaseService):
         # reintroduce that pattern. Verified on the dev XNAT on 2026-04-23.
         target_id = target.id
         if not target_id:
-            raise ValidationError(
+            raise InputValidationError(
                 f"Could not resolve internal subject ID for target '{target_label}'. "
                 "Refusing to merge without a resolved target subject ID."
             )
@@ -483,7 +499,11 @@ class SubjectService(BaseService):
             if not exp_id:
                 continue
 
-            path = f"/data/projects/{project}/subjects/{target_id}/experiments/{exp_id}"
+            path = (
+                f"/data/projects/{quote_path_segment(project)}"
+                f"/subjects/{quote_path_segment(target_id)}"
+                f"/experiments/{quote_path_segment(exp_id)}"
+            )
             self._put(
                 path,
                 params={
@@ -497,7 +517,9 @@ class SubjectService(BaseService):
             # and confirm its subject_ID is now the target. If the PUT failed
             # silently or destructively, this guard aborts before we touch
             # the source subject.
-            verify = self._get(f"/data/experiments/{exp_id}", params={"format": "json"})
+            verify = self._get(
+                f"/data/experiments/{quote_path_segment(exp_id)}", params={"format": "json"}
+            )
             item = HierarchyService.extract_first_item(verify) if isinstance(verify, dict) else None
             if item is None:
                 raise RuntimeError(
@@ -535,3 +557,48 @@ class SubjectService(BaseService):
         result["source_deleted"] = True
 
         return result
+
+    # -------------------------------------------------------------------------
+    # Raw-row / raw-response accessors
+    #
+    # The typed ``list``/``rename``/``delete`` above return models or run extra
+    # safety round-trips. These issue exactly the request the CLI has always
+    # sent and hand back the untyped rows (or the raw response, for mutations
+    # whose status code the CLI branches on).
+    # -------------------------------------------------------------------------
+
+    def list_rows(
+        self, project: str | None, columns: str | None = None
+    ) -> builtins.list[dict[str, Any]]:
+        """Return raw subject rows for a project."""
+        path = HierarchyService.build_subject_collection_path(project)
+        if columns:
+            data = self.client.get_json(path, params={"columns": columns})
+        else:
+            data = self.client.get_json(path)
+        return HierarchyService.extract_rows(data)
+
+    def experiment_rows(self, project: str | None, subject: str) -> builtins.list[dict[str, Any]]:
+        """Return raw experiment rows for a subject."""
+        path = HierarchyService.build_experiment_collection_path(project, subject)
+        return HierarchyService.extract_rows(self.client.get_json(path))
+
+    def delete_raw(self, project: str, subject_id: str) -> httpx.Response:
+        """DELETE a subject and return the raw response for status inspection."""
+        return self.client.delete(
+            f"/data/projects/{quote_path_segment(project)}"
+            f"/subjects/{quote_path_segment(subject_id)}"
+        )
+
+    def rename_raw(self, project: str, label: str, new_label: str) -> httpx.Response:
+        """PUT a new label on a subject and return the raw response.
+
+        ``new_label`` is validated by the caller (see
+        ``cli/subject.py::_validate_rename_target``) before it reaches here --
+        it is CLI/patterns-file-derived text (regex substitution, template
+        expansion), not a value XNAT has already round-tripped.
+        """
+        return self.client.put(
+            f"/data/projects/{quote_path_segment(project)}/subjects/{quote_path_segment(label)}",
+            params={"label": new_label},
+        )

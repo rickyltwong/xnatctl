@@ -6,34 +6,47 @@ Provides retry logic, pagination, and session-based authentication.
 from __future__ import annotations
 
 import logging
-import random
 import re
 import ssl
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import quote
 
 import httpx
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from xnatctl.services.admin import AdminService
+    from xnatctl.services.downloads import DownloadService
+    from xnatctl.services.exam_upload import ExamUploadService
+    from xnatctl.services.hierarchy import HierarchyService
+    from xnatctl.services.pipelines import PipelineService
+    from xnatctl.services.prearchive import PrearchiveService
+    from xnatctl.services.projects import ProjectService
+    from xnatctl.services.resources import ResourceService
+    from xnatctl.services.scans import ScanService
+    from xnatctl.services.sessions import SessionService
+    from xnatctl.services.subjects import SubjectService
+    from xnatctl.services.upload import UploadService
+
+from xnatctl.core import transport
 from xnatctl.core.exceptions import (
     AuthenticationError,
-    ClientRequestError,
     NetworkError,
     PermissionDeniedError,
-    ResourceNotFoundError,
-    RetryExhaustedError,
-    ServerError,
     ServerUnreachableError,
     SessionExpiredError,
 )
 from xnatctl.core.exceptions import (
-    TimeoutError as XNATTimeoutError,
+    RequestTimeoutError as XNATTimeoutError,
 )
 from xnatctl.core.redact import redact_url_query
+from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, RETRYABLE_TRANSPORT_ERRORS
 from xnatctl.core.timeouts import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_HTTP_TIMEOUT_SECONDS,
@@ -47,136 +60,11 @@ from xnatctl.core.validation import validate_server_url
 
 DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
 DEFAULT_MAX_RETRIES = 3
-RETRY_BACKOFF_BASE = 2
-# Statuses safe to retry on the core client path. 429/500 join the original
-# 502/503/504; 400 stays upload-only (it encodes a transient XNAT
-# import-race quirk handled in services/uploads.py), so it is NOT listed here.
-RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-# Of those, the ones safe to retry on ANY method: both are refusals the server
-# issues *before* running the work, so no side effect can exist yet. That they
-# are also exactly the two codes carrying Retry-After semantics is not a
-# coincidence -- both say "I did not do this; come back later".
-_METHOD_AGNOSTIC_RETRY_CODES = {429, 503}
-_RETRY_AFTER_STATUS_CODES = {429, 503}
-# The rest are ambiguous, so they follow the same idempotency rule as a
-# send-phase transport failure. A 500 means the handler ran and crashed, which
-# may have left side effects behind. A 502 is a dropped connection mid-response
-# with a proxy in front of it, and a 504 is a read timeout with a proxy in
-# front of it -- and the client already refuses to retry both of those raw
-# forms on a POST. Without this the same wire event behaved differently
-# depending on whether nginx was in the path, which is not a policy anyone
-# chose. See docs/adr/0011.
-#
-# Derived, not written out, so the two sets cannot drift apart when a status is
-# added to RETRYABLE_STATUS_CODES: anything new is ambiguous until someone
-# deliberately declares it a pre-execution refusal.
-_AMBIGUOUS_RETRY_CODES = RETRYABLE_STATUS_CODES - _METHOD_AGNOSTIC_RETRY_CODES
-# Cap on how long an explicit Retry-After is honoured: 300 is
-# what shipped and what the tests pin. A server asking for longer than 5 minutes
-# is telling us to give up, so we fall back to normal backoff and let the retry
-# budget drain instead of sleeping for an unbounded time.
-_MAX_RETRY_AFTER_SECONDS = 300
-
-# Methods whose retry after a READ-phase failure is safe. The request reached the
-# server, so a retry re-executes it; only methods XNAT treats as idempotent may
-# be repeated. POST/PATCH are excluded -- retrying them risks a double archive or
-# a double pipeline launch.
-IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS"})
-
-# Transport failures that are NOT ConnectError/TimeoutException but are still
-# transient: the socket died mid-exchange, or a proxy hiccupped. These are the
-# classic long-transfer failure mode for this tool (a dropped connection during
-# a multi-GB DICOM read), so they retry like a read timeout rather than escaping
-# raw (contract: no httpx exception may leave XNATClient).
-RETRYABLE_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
-    httpx.ReadError,
-    httpx.WriteError,
-    httpx.RemoteProtocolError,
-    httpx.ProxyError,
-    # Failure tearing the connection down. Harmless on its own, but it aborts
-    # the request that was in flight, so it needs the same treatment.
-    httpx.CloseError,
-)
-# Permanent transport failures: a bad scheme or an undecodable body will not fix
-# itself, so they raise immediately instead of burning the retry budget.
-PERMANENT_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
-    httpx.UnsupportedProtocol,
-    httpx.DecodingError,
-    httpx.InvalidURL,
-    # A redirect loop is not hypothetical here: an uninitialized XNAT bounces
-    # essentially every request to /setup, and a misconfigured siteUrl or a
-    # login-wall proxy does the same.
-    httpx.TooManyRedirects,
-    # We built a malformed request. That is a bug rather than a network event,
-    # and repeating it produces the same bug, so it fails immediately -- but it
-    # still leaves as a typed error rather than a traceback.
-    httpx.LocalProtocolError,
-)
-_BODY_SNIPPET_CHARS = 200
 _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
 
 logger = logging.getLogger(__name__)
 
-# Module-level RNG for backoff jitter. Separate from the global `random` state so
-# seeding it in a test cannot be perturbed by unrelated code.
-_RNG = random.Random()
-
-
-def _body_snippet(resp: httpx.Response) -> str:
-    """Return a short, redacted snippet of a response body for error details."""
-    try:
-        return redact_url_query(resp.text[:_BODY_SNIPPET_CHARS])
-    except Exception:
-        return ""
-
-
-def _retry_after_seconds(resp: httpx.Response) -> float | None:
-    """Return a bounded Retry-After delay in seconds, or None to use backoff.
-
-    RFC 9110 allows both forms of the header and real proxies emit both:
-    delta-seconds (``120``) and an HTTP-date (``Wed, 21 Oct 2026 07:28:00 GMT``).
-    Anything unparseable, negative, or beyond the cap returns None so the caller
-    falls back to exponential backoff.
-    """
-    if resp.status_code not in _RETRY_AFTER_STATUS_CODES:
-        return None
-    raw = resp.headers.get("Retry-After")
-    if raw is None:
-        return None
-
-    raw = raw.strip()
-    seconds: float | None = None
-    try:
-        seconds = float(int(raw))
-    except (ValueError, TypeError):
-        # HTTP-date form: convert to a delay relative to now.
-        try:
-            when = parsedate_to_datetime(raw)
-        except (TypeError, ValueError):
-            return None
-        if when is None:
-            return None
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=UTC)
-        seconds = (when - datetime.now(UTC)).total_seconds()
-
-    if seconds is None:
-        return None
-    # A date already in the past means "retry now", not "sleep negative".
-    seconds = max(seconds, 0.0)
-    if seconds <= _MAX_RETRY_AFTER_SECONDS:
-        return seconds
-    return None
-
-
-def _backoff_delay(attempt: int, rng: random.Random = _RNG) -> float:
-    """Full-jitter exponential backoff for retry ``attempt`` (0-based).
-
-    Without jitter every parallel worker retries on the same tick and
-    re-stampedes a server that is already struggling -- the exact failure mode
-    behind concurrent-session exhaustion under ``--workers``.
-    """
-    return rng.uniform(0.0, float(RETRY_BACKOFF_BASE ** (attempt + 1)))
+_ServiceT = TypeVar("_ServiceT")
 
 
 # =============================================================================
@@ -203,10 +91,48 @@ class XNATClient:
     transport: httpx.BaseTransport | None = None
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
     _ssl_context: ssl.SSLContext | None = field(init=False, default=None, repr=False)
+    # Lazily-built service objects, cached per client instance so repeated
+    # ``client.projects`` access returns the same bound service.
+    _services: dict[str, Any] = field(init=False, default_factory=dict, repr=False)
+    # Serializes session refresh across parallel streams: without it, N workers
+    # hitting one expiry each open their own fresh session, which is exactly
+    # the concurrent-session exhaustion that locks out shared service accounts.
+    _reauth_lock: threading.Lock = field(init=False, default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
         """Validate and normalize URL."""
         self.base_url = validate_server_url(self.base_url)
+
+    @classmethod
+    def from_profile(
+        cls,
+        name: str | None = None,
+        *,
+        config_path: Path | None = None,
+    ) -> XNATClient:
+        """Build a client from a config profile, resolving credentials.
+
+        The one-call entry point for library use: it runs the same credential
+        resolution the CLI does (env vars over profile config, cached/env
+        session token, ``auto_reauth`` on). See
+        :func:`xnatctl.core.connect.build_client_from_profile`.
+
+        Args:
+            name: Profile name. ``None`` uses the config default.
+            config_path: Optional config file path.
+
+        Returns:
+            A ready-to-use XNATClient.
+
+        Raises:
+            ProfileNotFoundError: If the named profile does not exist.
+        """
+        # Function-local to avoid the core.connect -> core.client import cycle:
+        # connect imports this module, so this module cannot import connect at
+        # module scope.
+        from xnatctl.core.connect import build_client_from_profile
+
+        return build_client_from_profile(name, config_path=config_path)
 
     # =========================================================================
     # Client Management
@@ -260,10 +186,118 @@ class XNATClient:
             self._client = None
 
     def __enter__(self) -> XNATClient:
+        # Authenticate on entry only when a password login is both possible and
+        # needed: credentials present and no token yet. An env or cached token
+        # already authenticates the client, so entering must not spend a login
+        # round-trip -- and a token-only client (no password) has nothing to log
+        # in with.
+        if self.session_token is None and self.username and self.password:
+            self.authenticate()
         return self
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+    # =========================================================================
+    # Service Accessors
+    # =========================================================================
+
+    def _service(self, name: str, factory: Callable[[XNATClient], _ServiceT]) -> _ServiceT:
+        """Return the cached service for ``name``, building it once on first use.
+
+        The service imports are function-local at each property to avoid the
+        core -> services import cycle (services import core.client); this just
+        holds the per-instance cache so repeated access returns one object.
+        """
+        service = self._services.get(name)
+        if service is None:
+            service = factory(self)
+            self._services[name] = service
+        return cast("_ServiceT", service)
+
+    @property
+    def projects(self) -> ProjectService:
+        """Bound :class:`ProjectService` for this client (cached)."""
+        from xnatctl.services.projects import ProjectService
+
+        return self._service("projects", ProjectService)
+
+    @property
+    def subjects(self) -> SubjectService:
+        """Bound :class:`SubjectService` for this client (cached)."""
+        from xnatctl.services.subjects import SubjectService
+
+        return self._service("subjects", SubjectService)
+
+    @property
+    def sessions(self) -> SessionService:
+        """Bound :class:`SessionService` for this client (cached)."""
+        from xnatctl.services.sessions import SessionService
+
+        return self._service("sessions", SessionService)
+
+    @property
+    def scans(self) -> ScanService:
+        """Bound :class:`ScanService` for this client (cached)."""
+        from xnatctl.services.scans import ScanService
+
+        return self._service("scans", ScanService)
+
+    @property
+    def resources(self) -> ResourceService:
+        """Bound :class:`ResourceService` for this client (cached)."""
+        from xnatctl.services.resources import ResourceService
+
+        return self._service("resources", ResourceService)
+
+    @property
+    def prearchive(self) -> PrearchiveService:
+        """Bound :class:`PrearchiveService` for this client (cached)."""
+        from xnatctl.services.prearchive import PrearchiveService
+
+        return self._service("prearchive", PrearchiveService)
+
+    @property
+    def pipelines(self) -> PipelineService:
+        """Bound :class:`PipelineService` for this client (cached)."""
+        from xnatctl.services.pipelines import PipelineService
+
+        return self._service("pipelines", PipelineService)
+
+    @property
+    def admin(self) -> AdminService:
+        """Bound :class:`AdminService` for this client (cached)."""
+        from xnatctl.services.admin import AdminService
+
+        return self._service("admin", AdminService)
+
+    @property
+    def hierarchy(self) -> HierarchyService:
+        """Bound :class:`HierarchyService` for this client (cached)."""
+        from xnatctl.services.hierarchy import HierarchyService
+
+        return self._service("hierarchy", HierarchyService)
+
+    @property
+    def downloads(self) -> DownloadService:
+        """Bound :class:`DownloadService` for this client (cached)."""
+        from xnatctl.services.downloads import DownloadService
+
+        return self._service("downloads", DownloadService)
+
+    @property
+    def uploads(self) -> UploadService:
+        """Bound :class:`UploadService` for this client (cached)."""
+        from xnatctl.services.upload import UploadService
+
+        return self._service("uploads", UploadService)
+
+    @property
+    def exam_uploads(self) -> ExamUploadService:
+        """Bound :class:`ExamUploadService` for this client (cached)."""
+        from xnatctl.services.exam_upload import ExamUploadService
+
+        return self._service("exam_uploads", ExamUploadService)
 
     # =========================================================================
     # Authentication
@@ -350,7 +384,50 @@ class XNATClient:
             return (self.username, self.password)
         return None
 
-    def _request(  # noqa: C901  # pre-existing; see pyproject
+    def stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: int | None = None,
+    ) -> AbstractContextManager[httpx.Response]:
+        """Stream a response through the client's retry/auth/error contract.
+
+        The public streaming entry point every download path uses instead of
+        reaching for ``_get_client()`` and raw ``httpx`` -- so streamed reads
+        get the same retry ladder, typed-error mapping, and basic-auth fallback
+        as ``_request``.
+
+        Retries (retryable statuses, connect drops, and read-phase failures for
+        idempotent methods) happen ONLY before the body is yielded; a mid-body
+        transport failure is translated to the matching typed error but never
+        retried, because a consumed stream cannot be resumed. Error statuses
+        are mapped to the same typed exceptions ``_request`` raises. No raw
+        ``httpx`` exception escapes.
+
+        Args:
+            method: HTTP method (GET in practice; the idempotency check stays
+                honest for anything else).
+            path: API path.
+            params: Query parameters.
+            headers: Additional request headers.
+            timeout: Read-timeout override in seconds.
+
+        Yields:
+            The open streaming response (2xx). Closed on context exit.
+
+        Raises:
+            SessionExpiredError, PermissionDeniedError, ResourceNotFoundError,
+            ClientRequestError, ServerError: mapped from the error status.
+            RequestTimeoutError, NetworkError, ServerUnreachableError: from transport
+                failures, mirroring ``_request``.
+            RetryExhaustedError: when retries drain.
+        """
+        return transport.stream(self, method, path, params=params, headers=headers, timeout=timeout)
+
+    def _request(
         self,
         method: str,
         path: str,
@@ -391,219 +468,24 @@ class XNATClient:
             ResourceNotFoundError: On 404.
             ClientRequestError: On any other 4xx.
             ServerError: On a 5xx that is not retryable or after retries drain.
-            TimeoutError: On a connect-phase timeout (fails fast, not retried),
+            RequestTimeoutError: On a connect-phase timeout (fails fast, not retried),
                 or on a read-phase timeout for a non-idempotent method.
             RetryExhaustedError: When retryable statuses or connect/read-timeout
                 failures exhaust ``max_retries``.
         """
-        client = self._get_client()
-
-        # Read/write ceiling for this call (int, also used in error messages).
-        # Wrapped in a structured httpx.Timeout so a per-request override cannot
-        # re-flatten connect back to the multi-hour scalar.
-        read_timeout = timeout or self.timeout
-        request_timeout = build_httpx_timeout(read_timeout)
-        last_error: Exception | None = None
-        did_reauth = False
-        may_retry_after_send = method.upper() in IDEMPOTENT_METHODS or retry_non_idempotent
-
-        attempt = 0
-        while attempt <= self.max_retries:
-            # Set the session cookie on the client instance rather than passing
-            # ``cookies=`` per request (httpx 0.28 deprecates per-request
-            # cookies). Refreshed each iteration so a mid-loop reauth is picked
-            # up on the retry.
-            if self.session_token:
-                client.cookies.set("JSESSIONID", self.session_token)
-            else:
-                client.cookies.delete("JSESSIONID")
-            auth = self._get_auth()
-            started = time.monotonic()
-            try:
-                resp = client.request(
-                    method,
-                    path,
-                    params=params,
-                    json=json,
-                    data=data if data is not None else None,
-                    content=content,
-                    files=files,
-                    headers=headers,
-                    auth=auth,
-                    timeout=request_timeout,
-                )
-
-                # One line per attempt is the backbone of `-v` diagnostics: it
-                # is what tells a user whether a slow command is stuck on one
-                # request or grinding through retries. The full URL
-                # goes through redaction -- query strings carry tokens.
-                logger.debug(
-                    "%s %s -> %d in %dms (attempt %d/%d)",
-                    method.upper(),
-                    redact_url_query(str(resp.request.url)),
-                    resp.status_code,
-                    (time.monotonic() - started) * 1000,
-                    attempt + 1,
-                    self.max_retries + 1,
-                )
-
-                # Handle auth errors
-                if resp.status_code == 401:
-                    if self.auto_reauth and not did_reauth and self.username and self.password:
-                        logger.debug(
-                            "401 on %s %s; re-authenticating and retrying once", method, path
-                        )
-                        self.authenticate()
-                        did_reauth = True
-                        continue
-
-                    logger.debug(
-                        "401 on %s %s; not re-authenticating (auto_reauth=%s, "
-                        "already_retried=%s, credentials=%s)",
-                        method,
-                        path,
-                        self.auto_reauth,
-                        did_reauth,
-                        bool(self.username and self.password),
-                    )
-
-                    expired_err = SessionExpiredError(self.base_url)
-                    expired_err.details.update(
-                        {"status_code": resp.status_code, "method": method, "path": path}
-                    )
-                    raise expired_err
-
-                if resp.status_code == 403:
-                    denied_err = PermissionDeniedError(
-                        resource=path,
-                        operation=method.lower(),
-                        url=self.base_url,
-                    )
-                    denied_err.details.update(
-                        {"status_code": resp.status_code, "method": method, "path": path}
-                    )
-                    raise denied_err
-
-                # Handle 404
-                if resp.status_code == 404:
-                    raise ResourceNotFoundError("resource", path)
-
-                # Retry on retryable statuses; on exhaustion raise a typed
-                # RetryExhaustedError rather than leaking httpx.HTTPStatusError.
-                if resp.status_code in RETRYABLE_STATUS_CODES:
-                    last_error = ServerError(resp.status_code, method, path, _body_snippet(resp))
-
-                    # 429/503 retry on any method; 500/502/504 only where a
-                    # repeat is safe, because the request may already have run.
-                    if resp.status_code in _AMBIGUOUS_RETRY_CODES and not may_retry_after_send:
-                        ambiguous = ServerError(resp.status_code, method, path, _body_snippet(resp))
-                        # The reason goes in the hint, not the message: the
-                        # message is the one line CLI-09 always prints, and the
-                        # hint is where it puts the next step. Without it the
-                        # operator sees "HTTP 504" and reasonably assumes the
-                        # request did nothing.
-                        ambiguous.hint = (
-                            f"The server sent {resp.status_code} after receiving the "
-                            f"{method.upper()}, so it may have partially executed. It was "
-                            "not retried automatically -- check server state before "
-                            "repeating it."
-                        )
-                        raise ambiguous
-
-                    if attempt < self.max_retries:
-                        # An explicit Retry-After is an instruction, so it is used
-                        # verbatim; only our own backoff gets jitter.
-                        retry_after = _retry_after_seconds(resp)
-                        delay = retry_after if retry_after is not None else _backoff_delay(attempt)
-                        # WARNING, not DEBUG: a retry storm is the single most
-                        # common cause of "xnatctl is hanging", and it used to
-                        # be completely invisible.
-                        logger.warning(
-                            "HTTP %d on %s %s; retrying in %.1fs%s (attempt %d/%d)",
-                            resp.status_code,
-                            method.upper(),
-                            path,
-                            delay,
-                            " per Retry-After" if retry_after is not None else "",
-                            attempt + 1,
-                            self.max_retries + 1,
-                        )
-                        time.sleep(delay)
-                        attempt += 1
-                        continue
-                    raise RetryExhaustedError("request", self.max_retries + 1, last_error)
-
-                # Non-retryable error status: surface a typed error, never a raw
-                # httpx.HTTPStatusError (401/403/404 are already handled above).
-                if resp.status_code >= 400:
-                    if resp.status_code < 500:
-                        raise ClientRequestError(
-                            resp.status_code, method, path, _body_snippet(resp)
-                        )
-                    raise ServerError(resp.status_code, method, path, _body_snippet(resp))
-
-                return resp
-
-            except httpx.ConnectTimeout as e:
-                # Fail fast: the connect phase timed out (host blackholed /
-                # firewall-DROPped). A typed TimeoutError instead of the generic
-                # NetworkError bucket, and NOT retried -- an unreachable host will
-                # not recover within the backoff window, and the whole point of
-                # the split timeout is failing in seconds, not hours. (A future
-                # revision may add
-                # idempotency-aware connect retries.)
-                raise XNATTimeoutError(self.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
-            except httpx.ConnectError:
-                # Connect phase: the request never reached the server, so a retry
-                # cannot duplicate a side effect regardless of method.
-                last_error = ServerUnreachableError(self.base_url)
-            except httpx.TimeoutException as e:
-                # Read/write/pool phase: the server HAS seen the request. Retrying
-                # a non-idempotent method here risks executing it twice.
-                if not may_retry_after_send:
-                    raise XNATTimeoutError(
-                        self.base_url,
-                        read_timeout,
-                        f"{method.upper()} {path} timed out after the request was sent; "
-                        "it may have partially executed on the server. Not retried "
-                        "automatically - check server state before repeating it.",
-                    ) from e
-                last_error = NetworkError(self.base_url, f"Timeout after {read_timeout}s")
-            except PERMANENT_TRANSPORT_ERRORS as e:
-                # Wrong scheme, malformed URL, undecodable body: retrying cannot
-                # help, so fail now with a typed error rather than after backoff.
-                raise NetworkError(self.base_url, f"{type(e).__name__}: {e}") from e
-            except RETRYABLE_TRANSPORT_ERRORS as e:
-                # Socket died mid-exchange / proxy hiccup. Same send-phase hazard
-                # as a read timeout, so it obeys the same idempotency rule.
-                if not may_retry_after_send:
-                    raise NetworkError(
-                        self.base_url,
-                        f"{type(e).__name__} on {method.upper()} {path} after the request "
-                        "was sent; it may have partially executed on the server. "
-                        "Not retried automatically.",
-                    ) from e
-                last_error = NetworkError(self.base_url, f"{type(e).__name__}: {e}")
-            except (AuthenticationError, ResourceNotFoundError):
-                raise
-
-            # Retry with full-jitter backoff.
-            if attempt < self.max_retries:
-                delay = _backoff_delay(attempt)
-                logger.warning(
-                    "%s on %s %s; retrying in %.1fs (attempt %d/%d)",
-                    type(last_error).__name__ if last_error else "Transport error",
-                    method.upper(),
-                    path,
-                    delay,
-                    attempt + 1,
-                    self.max_retries + 1,
-                )
-                time.sleep(delay)
-
-            attempt += 1
-
-        raise RetryExhaustedError("request", self.max_retries + 1, last_error)
+        return transport.request(
+            self,
+            method,
+            path,
+            params=params,
+            json=json,
+            data=data,
+            content=content,
+            files=files,
+            headers=headers,
+            timeout=timeout,
+            retry_non_idempotent=retry_non_idempotent,
+        )
 
     def get(
         self,

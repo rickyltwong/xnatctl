@@ -5,6 +5,9 @@ from __future__ import annotations
 import click
 
 from xnatctl import __version__
+from xnatctl.cli import (
+    session_upload as _session_upload,  # noqa: F401  # registers upload commands on the session group
+)
 from xnatctl.cli.admin import admin
 from xnatctl.cli.api import api
 from xnatctl.cli.auth import auth

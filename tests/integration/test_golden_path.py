@@ -48,7 +48,7 @@ def _make_session(root: Path, subject: str, session: str) -> dict[str, str]:
     the file bytes do not survive the round trip -- see
     :meth:`TestRoundTrip.test_the_image_data_survives_the_round_trip`.
     """
-    pydicom = pytest.importorskip("pydicom", reason="the dicom extra is required")
+    import pydicom
     from pydicom.dataset import Dataset, FileMetaDataset
     from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
 
@@ -180,7 +180,7 @@ class TestRoundTrip:
     def uploaded(
         self, xnat_client: Any, integration_project: str, tmp_path_factory: Any
     ) -> dict[str, Any]:
-        from xnatctl.services.uploads import UploadService
+        from xnatctl.services.upload import UploadService
 
         subject = "RTSUBJ"
         session = "RTSESS"
@@ -272,17 +272,15 @@ class TestRoundTrip:
         """
         import pydicom
 
-        from xnatctl.cli.session import _download_session_fast
+        from xnatctl.services.downloads import DownloadService
 
         out = tmp_path / "downloaded"
-        _download_session_fast(
-            client=xnat_client,
+        DownloadService(xnat_client).download_session_fast(
             session_project=integration_project,
             subject=uploaded["subject"],
             resolved_session_id=archived,
             session_dir=out,
             workers=2,
-            quiet=True,
         )
 
         got = {}
@@ -312,17 +310,15 @@ class TestRoundTrip:
         tmp_path: Path,
     ) -> None:
         """scans/{id}/resources/{label}/files/ -- what the docs promise users."""
-        from xnatctl.cli.session import _download_session_fast
+        from xnatctl.services.downloads import DownloadService
 
         out = tmp_path / "layout"
-        _download_session_fast(
-            client=xnat_client,
+        DownloadService(xnat_client).download_session_fast(
             session_project=integration_project,
             subject=uploaded["subject"],
             resolved_session_id=archived,
             session_dir=out,
             workers=2,
-            quiet=True,
         )
 
         for scan_id in SCAN_IDS:
@@ -354,7 +350,7 @@ class TestPrearchive:
         it -- which is exactly what the docstring says to do.
         """
         from xnatctl.services.prearchive import PrearchiveService
-        from xnatctl.services.uploads import UploadService
+        from xnatctl.services.upload import UploadService
 
         xnat_client.put(f"/data/projects/{integration_project}/prearchive_code/0")
 

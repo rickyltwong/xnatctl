@@ -302,6 +302,40 @@ def isolate_session_cache(
     return path
 
 
+@pytest.fixture
+def no_ambient_credentials(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Make ``Config.load()`` blind to the developer's real profile.
+
+    ``Config.load()`` defaults to ``~/.config/xnatctl/config.yaml``
+    (``CONFIG_FILE``), and reads ``XNAT_URL``/``XNAT_USER``/``XNAT_PASS``/
+    ``XNAT_TOKEN`` as overrides on top of it. A ``CliRunner`` test that
+    invokes the real ``cli`` entry point without patching the harness's own
+    ``_CONFIG_LOAD_SEAM`` (``authenticated_seams``/``authenticated_cli``) would
+    otherwise silently pick up the developer machine's real config file and
+    any ambient env vars -- passing there for the wrong reason (a real
+    profile happens to authenticate) while failing in CI, where none of that
+    exists and ``@require_auth`` raises "Not authenticated" before the
+    command body ever runs. The path points at a directory that is never
+    created, so ``CONFIG_FILE.exists()`` is reliably False.
+
+    Request this explicitly in a test that deliberately exercises the
+    unauthenticated/no-credentials path, or that must prove something (like
+    an eager option callback) runs before ``@require_auth`` regardless of
+    ambient state. Not autouse: a large slice of the existing suite already
+    relies, pre-existing and out of this change's scope, on a bare
+    ``CliRunner()`` picking up *some* profile from elsewhere in the harness;
+    scrubbing credentials suite-wide breaks those independently of anything
+    here.
+    """
+    path = tmp_path_factory.mktemp("config") / "config.yaml"
+    monkeypatch.setattr("xnatctl.core.config.CONFIG_FILE", path)
+    for var in ("XNAT_URL", "XNAT_USER", "XNAT_PASS", "XNAT_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    return path
+
+
 class _NullHighlighter:
     """A Rich highlighter that adds no styling."""
 

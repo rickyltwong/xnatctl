@@ -21,7 +21,7 @@ xnatctl
   prearchive list | archive | delete | rebuild | move
   pipeline  list | run | status | jobs | cancel
   admin     refresh-catalogs | user add | audit
-  dicom     validate | inspect | list-tags | anonymize   (requires xnatctl[dicom])
+  dicom     validate | inspect | list-tags | anonymize
   api       get | post | put | delete                    (raw REST escape hatch)
   whoami
   health ping
@@ -223,7 +223,7 @@ xnatctl api post /data/projects -d '{"ID":"NEW_PROJ","name":"New Project"}'
 xnatctl api delete /data/experiments/XNAT_E00001 --yes
 ```
 
-### DICOM Tools (requires `xnatctl[dicom]`)
+### DICOM Tools
 
 ```bash
 # Validate DICOM files

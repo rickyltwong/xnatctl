@@ -4,6 +4,23 @@ Core API
 The core package provides foundational classes for XNAT server communication,
 configuration management, authentication, and error handling.
 
+Package Version
+----------------
+
+``xnatctl.__version__`` is the installed package version, resolved from
+distribution metadata (``importlib.metadata.version("xnatctl")``). It is part
+of the Stable, semver-covered surface -- listed in ``xnatctl.__all__`` despite
+the leading underscore. See :doc:`../stability`.
+
+.. code-block:: python
+
+   import xnatctl
+
+   print(xnatctl.__version__)
+
+.. autodata:: xnatctl.__version__
+   :annotation: -- installed package version, e.g. "0.5.0"
+
 Client
 ------
 
@@ -22,28 +39,34 @@ connection pooling.
 
 **Basic Usage:**
 
+The one-call entry point is
+:meth:`XNATClient.from_profile <xnatctl.core.client.XNATClient.from_profile>`,
+which resolves credentials from a saved config profile exactly as the CLI does.
+Entering the context manager logs in when a password is available and no session
+token is cached yet:
+
+.. code-block:: python
+
+   import xnatctl
+
+   with xnatctl.XNATClient.from_profile("prod") as client:
+       projects = client.projects.list()
+
+To target a server without a saved profile, construct the client directly:
+
 .. code-block:: python
 
    from xnatctl.core.client import XNATClient
 
-   # Create and authenticate client
    client = XNATClient(
        base_url="https://xnat.example.org",
        username="admin",
        password="secret",
        timeout=60,
-       verify_ssl=True
+       verify_ssl=True,
    )
-
    client.authenticate()
-
-   # Make API calls
    response = client.get("/data/projects")
-
-   # Use as context manager
-   with XNATClient(base_url="https://xnat.example.org") as client:
-       client.authenticate()
-       data = client.get("/data/projects")
 
 **Class Reference:**
 
@@ -51,6 +74,18 @@ connection pooling.
    :members:
    :undoc-members:
    :special-members: __init__, __enter__, __exit__
+
+Retry Policy
+------------
+
+The single home for retry policy: the status-code sets and backoff helpers the
+client ladder consumes, the response-based upload ladder with its
+transient-vs-permanent HTTP 400 discrimination, and the generic
+``retry_call`` primitive.
+
+.. automodule:: xnatctl.core.retry
+   :members:
+   :undoc-members:
 
 Config
 ------
@@ -97,6 +132,18 @@ The ``Config`` class resolves credentials in this priority order:
    :members:
    :undoc-members:
 
+Connect
+-------
+
+One-call client construction from a config profile. This is the credential
+resolution the CLI runs before every command, extracted so a library caller
+(and :meth:`XNATClient.from_profile <xnatctl.core.client.XNATClient.from_profile>`)
+gets the same client.
+
+.. automodule:: xnatctl.core.connect
+   :members:
+   :undoc-members:
+
 Authentication
 --------------
 
@@ -118,21 +165,34 @@ Exceptions
 
 Comprehensive exception hierarchy for error handling.
 
-**Exception Hierarchy:**
+**Exception Hierarchy** (excerpt -- the most commonly caught branches; the
+autodoc below lists every class, including the HTTP-response, operation,
+DICOM, transfer, and cancellation branches):
 
 .. code-block:: text
 
    XNATCtlError (base)
    ├── ConfigurationError
    │   └── ProfileNotFoundError
+   ├── InputValidationError
    ├── AuthenticationError
-   ├── ValidationError
-   ├── NetworkError
-   │   ├── ConnectionError
+   │   ├── SessionExpiredError
+   │   └── PermissionDeniedError
+   ├── XNATConnectionError
+   │   ├── NetworkError
    │   ├── ServerUnreachableError
-   │   ├── RetryExhaustedError
-   │   └── TimeoutError
-   └── ResourceNotFoundError
+   │   ├── RequestTimeoutError
+   │   └── RetryExhaustedError
+   └── ResourceError
+       ├── ResourceNotFoundError
+       └── ResourceExistsError
+
+The stdlib-shadowing names ``ConnectionError``, ``TimeoutError``, and
+``ValidationError`` remain as deprecated subclass aliases of
+``XNATConnectionError``, ``RequestTimeoutError``, and ``InputValidationError``.
+They are never raised internally and emit a ``DeprecationWarning`` on
+instantiation, so ``except xnatctl.ConnectionError`` no longer matches the
+connection errors the library raises. They are removed in a later minor release.
 
 **Usage Example:**
 
@@ -167,10 +227,16 @@ Input validation utilities for XNAT resource identifiers, URLs, and parameters.
 
 **Validators:**
 
-- ``validate_server_url(url: str) -> str`` - Normalize and validate XNAT server URLs
-- ``validate_project_id(project_id: str) -> None`` - Validate project ID format
-- ``validate_subject_label(label: str) -> None`` - Validate subject label format
-- ``validate_session_label(label: str) -> None`` - Validate session label format
+- ``validate_server_url(url: str) -> str`` - Normalize and validate XNAT server URLs; raises :class:`~xnatctl.core.exceptions.InvalidURLError`
+- ``validate_project_id(project: str) -> str`` - Validate and return a project ID; raises :class:`~xnatctl.core.exceptions.InvalidIdentifierError`
+- ``validate_subject_id(subject: str) -> str`` - Validate and return a subject ID; raises :class:`~xnatctl.core.exceptions.InvalidIdentifierError`
+- ``validate_session_id(session: str) -> str`` - Validate and return a session/experiment ID; raises :class:`~xnatctl.core.exceptions.InvalidIdentifierError`
+- ``validate_xnat_label(value: str, label_type: str = "label") -> str`` - Validate a looser XNAT label (project/subject/experiment/scan labels imported from DICOM metadata, which may contain spaces, dots, and parentheses); raises :class:`~xnatctl.core.exceptions.InvalidIdentifierError`
+
+Every validator returns the validated value rather than ``None`` -- call it
+inline where you would otherwise reassign the variable. The returned value
+may be normalized rather than byte-identical: the ID validators strip
+surrounding whitespace, and ``validate_server_url`` normalizes the URL.
 
 .. automodule:: xnatctl.core.validation
    :members:
@@ -190,13 +256,15 @@ terminal rendering.
 
 **Usage Example:**
 
+The module is a set of functions, not a formatter class -- pick the one that
+matches the format you want:
+
 .. code-block:: python
 
-   from xnatctl.core.output import OutputFormatter
+   from xnatctl.core.output import print_table
 
-   formatter = OutputFormatter(format="table")
-   formatter.print_table(
-       data=[{"id": "proj1", "name": "Project 1"}],
+   print_table(
+       rows=[{"id": "proj1", "name": "Project 1"}],
        columns=["id", "name"]
    )
 

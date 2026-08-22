@@ -1,19 +1,20 @@
 """A session download that loses scans must not report success.
 
-``_download_session_fast`` used to collect per-scan failures, echo a warning,
-and return nothing. ``session_download`` then printed "Downloaded session to:
+The engine (formerly the CLI helper ``_download_session_fast``, now
+``DownloadService.download_session_fast``) used to collect per-scan failures,
+echo a warning, and return nothing. ``session_download`` then printed "Downloaded session to:
 ..." and exited 0 regardless -- and because the warning was suppressed under
 ``--quiet``, the scripting mode said nothing at all. So
 ``xnatctl session download -q ... && process_data`` proceeded on an incomplete
 dataset with no signal that anything was missing.
 
-ROB-01 fixed exactly this for uploads and ``scan download``; this path has no
-summary object, so it was missed and nothing covered it.
+The exit-nonzero-under-json fix covered uploads and ``scan download``; this
+path has no summary object, so it was missed and nothing covered it.
 
 These tests drive a real local HTTP server rather than mocking the transport,
-because ``_download_session_fast`` builds its own ``httpx.Client`` with no
-injection seam -- so a mocked transport would prove nothing about the code that
-actually runs.
+so they exercise the streaming, retry, and typed-error path that
+``download_session_fast`` actually runs -- a mocked transport would prove
+nothing about it.
 """
 
 from __future__ import annotations
@@ -185,9 +186,9 @@ class TestAnEmptyScanIsNotAFailure:
     def test_but_it_is_counted_as_zero_files(self, tmp_path: Path) -> None:
         """An all-404 session must not read as a complete download.
 
-        ADR-0010 records that a mis-routed XNAT URL fails silently as an
-        empty 200 or a 404, so this count is what would expose a future URL
-        regression instead of handing back an empty tree marked success.
+        A mis-routed XNAT URL fails silently as an empty 200 or a 404, so
+        this count is what would expose a future URL regression instead of
+        handing back an empty tree marked success.
         """
         for url in _serve(failing_scan="2", status=404):
             result = _download(url, tmp_path)
@@ -199,19 +200,17 @@ class TestOutcomeShape:
     """The return value exists so the caller can decide the exit code."""
 
     def test_it_reports_counts_and_failures(self, tmp_path: Path) -> None:
-        from xnatctl.cli.session import _download_session_fast
+        from xnatctl.services.downloads import DownloadService
 
         for url in _serve(failing_scan="2"):
             client = XNATClient(base_url=url, session_token="tok", max_retries=0, timeout=30)
             try:
-                outcome = _download_session_fast(
-                    client=client,
+                outcome = DownloadService(client).download_session_fast(
                     session_project="P",
                     subject="XNAT_S1",
                     resolved_session_id=EXPERIMENT,
                     session_dir=tmp_path / "out",
                     workers=3,
-                    quiet=True,
                 )
             finally:
                 client.close()
@@ -221,18 +220,16 @@ class TestOutcomeShape:
         assert outcome.files == 2
 
     def test_no_scans_returns_an_empty_outcome(self, tmp_path: Path) -> None:
-        from xnatctl.cli.session import _download_session_fast
+        from xnatctl.services.downloads import DownloadService
 
         with patch.object(XNATClient, "get_json", return_value={"ResultSet": {"Result": []}}):
             client = XNATClient(base_url="https://x.example.org", session_token="t")
-            outcome = _download_session_fast(
-                client=client,
+            outcome = DownloadService(client).download_session_fast(
                 session_project="P",
                 subject="S",
                 resolved_session_id=EXPERIMENT,
                 session_dir=tmp_path / "empty",
                 workers=2,
-                quiet=True,
             )
 
         assert outcome == (0, [], 0)

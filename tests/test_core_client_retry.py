@@ -25,15 +25,7 @@ from email.utils import format_datetime
 import httpx
 import pytest
 
-from xnatctl.core.client import (
-    _MAX_RETRY_AFTER_SECONDS,
-    IDEMPOTENT_METHODS,
-    RETRY_BACKOFF_BASE,
-    XNATClient,
-)
-from xnatctl.core.client import (
-    RETRYABLE_STATUS_CODES as CLIENT_RETRYABLE_STATUS_CODES,
-)
+from xnatctl.core.client import XNATClient
 from xnatctl.core.exceptions import (
     ClientRequestError,
     NetworkError,
@@ -44,7 +36,15 @@ from xnatctl.core.exceptions import (
     XNATCtlError,
 )
 from xnatctl.core.exceptions import (
-    TimeoutError as XNATTimeoutError,
+    RequestTimeoutError as XNATTimeoutError,
+)
+from xnatctl.core.retry import (
+    _MAX_RETRY_AFTER_SECONDS,
+    IDEMPOTENT_METHODS,
+    RETRY_BACKOFF_BASE,
+)
+from xnatctl.core.retry import (
+    RETRYABLE_STATUS_CODES as CLIENT_RETRYABLE_STATUS_CODES,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -338,11 +338,11 @@ def test_authenticate_maps_transport_errors_too(exc_name: str) -> None:
 
 def test_retryable_status_policy_has_a_single_source() -> None:
     """Uploads extends the client's set rather than redefining it."""
-    from xnatctl.services.uploads import (
-        RETRYABLE_STATUS_CODES as UPLOAD_CODES,
-    )
-    from xnatctl.services.uploads import (
+    from xnatctl.core.retry import (
         UPLOAD_ONLY_RETRYABLE_STATUS_CODES,
+    )
+    from xnatctl.core.retry import (
+        UPLOAD_RETRYABLE_STATUS_CODES as UPLOAD_CODES,
     )
 
     assert CLIENT_RETRYABLE_STATUS_CODES <= UPLOAD_CODES
@@ -516,7 +516,7 @@ def test_retry_after_ignored_on_statuses_that_do_not_define_it(sleeps: list[floa
 
 
 # =============================================================================
-# Idempotency gating for ambiguous 5xx (ADR-0011)
+# Idempotency gating for ambiguous 5xx (the request may already have run)
 # =============================================================================
 
 
@@ -599,7 +599,7 @@ class TestAmbiguous5xxRespectsIdempotency:
 
     def test_the_two_sets_partition_the_retryable_ones(self) -> None:
         """Derived, so a status added later cannot fall through both checks."""
-        from xnatctl.core.client import (
+        from xnatctl.core.retry import (
             _AMBIGUOUS_RETRY_CODES,
             _METHOD_AGNOSTIC_RETRY_CODES,
         )
@@ -611,7 +611,7 @@ class TestAmbiguous5xxRespectsIdempotency:
 
     def test_retry_after_applies_to_exactly_the_method_agnostic_set(self) -> None:
         """Not a coincidence worth letting drift: both mean "I did not run it"."""
-        from xnatctl.core.client import (
+        from xnatctl.core.retry import (
             _METHOD_AGNOSTIC_RETRY_CODES,
             _RETRY_AFTER_STATUS_CODES,
         )

@@ -1,8 +1,7 @@
-"""DICOM commands for xnatctl (optional, requires pydicom)."""
+"""DICOM commands for xnatctl."""
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import click
@@ -24,25 +23,9 @@ def _normalize_errors(errors: object) -> list[str]:
     return []
 
 
-def check_pydicom() -> bool:
-    """Check if pydicom is available."""
-    return importlib.util.find_spec("pydicom") is not None
-
-
 @click.group()
 def dicom() -> None:
-    """DICOM utilities (requires pydicom).
-
-    Install with: pip install xnatctl[dicom]
-    """
-    # No warning here: every subcommand already refuses with the same sentence
-    # and a non-zero exit. Emitting it at group level too printed the identical
-    # line twice, once as a warning and once as an error, which reads like two
-    # separate problems.
-    #
-    # The group body still runs for `xnatctl dicom --help`, where a bare
-    # warning would be noise -- the docstring above already says what to
-    # install.
+    """DICOM utilities."""
 
 
 @dicom.command("validate")
@@ -63,10 +46,6 @@ def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom validate /path/to/dicom
         xnatctl dicom validate /path/to/dicom -r
     """
-    if not check_pydicom():
-        print_error("pydicom not installed. Install with: pip install xnatctl[dicom]")
-        raise SystemExit(1)
-
     import pydicom
 
     path_obj = Path(path)
@@ -209,10 +188,6 @@ def dicom_inspect(
         xnatctl dicom inspect /path/to/file.dcm
         xnatctl dicom inspect /path/to/file.dcm --tag PatientID --tag Modality
     """
-    if not check_pydicom():
-        print_error("pydicom not installed. Install with: pip install xnatctl[dicom]")
-        raise SystemExit(1)
-
     import pydicom
 
     file_path = Path(file)
@@ -296,10 +271,6 @@ def dicom_list_tags(
     Example:
         xnatctl dicom list-tags /path/to/file.dcm
     """
-    if not check_pydicom():
-        print_error("pydicom not installed. Install with: pip install xnatctl[dicom]")
-        raise SystemExit(1)
-
     import pydicom
 
     file_path = Path(file)
@@ -363,10 +334,6 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom anonymize input.dcm output.dcm --patient-id ANON001
         xnatctl dicom anonymize /input/dir /output/dir -r --remove-private
     """
-    if not check_pydicom():
-        print_error("pydicom not installed. Install with: pip install xnatctl[dicom]")
-        raise SystemExit(1)
-
     import pydicom
 
     input_obj = Path(input_path)
@@ -516,10 +483,6 @@ def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom modify ./dicoms -r -t PatientID=ANON -t StudyDescription=Demo
         xnatctl dicom modify ./dicoms -r -t PatientID=ANON --backup --dry-run
     """
-    if not check_pydicom():
-        print_error("pydicom not installed. Install with: pip install xnatctl[dicom]")
-        raise SystemExit(1)
-
     import os
     import shutil
     import tempfile

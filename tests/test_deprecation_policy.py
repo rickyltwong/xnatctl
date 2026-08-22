@@ -107,18 +107,43 @@ class TestRegistryCoverage:
     def test_removal_releases_are_versions(self) -> None:
         for flag, entry in DEPRECATED_FLAGS.items():
             assert re.fullmatch(r"\d+\.\d+\.\d+", entry.removed_in), f"{flag}: {entry.removed_in}"
+            assert re.fullmatch(r"\d+\.\d+\.\d+", entry.deprecated_in), (
+                f"{flag}: {entry.deprecated_in}"
+            )
 
-    def test_removal_is_at_least_two_minor_releases_out(self) -> None:
-        """The policy promises a window; a same-MINOR removal is not one."""
+    def test_removal_is_at_least_two_minor_releases_after_deprecation(self) -> None:
+        """The policy promises a window, anchored to the deprecating release.
+
+        Anchoring to the CURRENT version instead would be wrong twice over: an
+        intermediate release (0.3.0 deprecates for 0.5.0, then 0.4.0 ships)
+        would spuriously fail even though the promised window is intact, and
+        the policy says the removal release is decided at deprecation time and
+        does not move.
+        """
+        for flag, entry in DEPRECATED_FLAGS.items():
+            d_major, d_minor, _ = (int(p) for p in entry.deprecated_in.split("."))
+            r_major, r_minor, _ = (int(p) for p in entry.removed_in.split("."))
+            assert (r_major, r_minor) >= (d_major, d_minor + 2), (
+                f"{flag} was deprecated in {entry.deprecated_in} but is removed in "
+                f"{entry.removed_in}, less than two MINOR releases later"
+            )
+
+    def test_no_flag_outlives_its_named_removal_release(self) -> None:
+        """Reaching the named release with the flag still present fails the gate.
+
+        This is what forces the actual deletion when the removal release is
+        being cut: the version bump lands, and any flag whose ``removed_in``
+        is now due turns the suite red until the flag (and its entry) go.
+        """
         from importlib.metadata import version
 
-        major, minor, _patch = (int(p) for p in version("xnatctl").split(".")[:3])
+        current = tuple(int(p) for p in version("xnatctl").split(".")[:3])
 
         for flag, entry in DEPRECATED_FLAGS.items():
-            r_major, r_minor, _ = (int(p) for p in entry.removed_in.split("."))
-            assert (r_major, r_minor) >= (major, minor + 2), (
-                f"{flag} is removed in {entry.removed_in}, which is less than two "
-                f"MINOR releases after the current {major}.{minor}.x"
+            removal = tuple(int(p) for p in entry.removed_in.split("."))
+            assert current < removal, (
+                f"{flag} was scheduled for removal in {entry.removed_in}, but "
+                f"{'.'.join(str(p) for p in current)} still carries it"
             )
 
 

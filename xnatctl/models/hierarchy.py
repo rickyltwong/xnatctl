@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import Field
 
+from xnatctl.core.validation import validate_xnat_label, validate_xnat_resource_label
+
 from .base import BaseModel
 
 
@@ -15,6 +17,15 @@ class ProjectRef:
     """Reference to a project."""
 
     project_id: str
+
+    def __post_init__(self) -> None:
+        """Reject identifiers that could redirect the request off-route.
+
+        These refs feed straight into REST path construction, and the
+        library surface lets callers build them directly -- so this is the
+        one place that is guaranteed to run for every caller, CLI or library.
+        """
+        validate_xnat_label(self.project_id, "project_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +41,12 @@ class SubjectRef:
     project_id: str | None = None
     is_label: bool = False
 
+    def __post_init__(self) -> None:
+        """Reject identifiers that could redirect the request off-route."""
+        validate_xnat_label(self.subject, "subject")
+        if self.project_id is not None:
+            validate_xnat_label(self.project_id, "project_id")
+
 
 @dataclass(frozen=True, slots=True)
 class ExperimentRef:
@@ -41,6 +58,14 @@ class ExperimentRef:
     experiment_is_label: bool = False
     subject_is_label: bool = False
 
+    def __post_init__(self) -> None:
+        """Reject identifiers that could redirect the request off-route."""
+        validate_xnat_label(self.experiment, "experiment")
+        if self.project_id is not None:
+            validate_xnat_label(self.project_id, "project_id")
+        if self.subject is not None:
+            validate_xnat_label(self.subject, "subject")
+
 
 @dataclass(frozen=True, slots=True)
 class ScanRef:
@@ -48,6 +73,13 @@ class ScanRef:
 
     experiment: ExperimentRef
     scan_id: str
+
+    def __post_init__(self) -> None:
+        """Reject identifiers that could redirect the request off-route.
+
+        ``experiment`` validated itself in its own ``__post_init__``.
+        """
+        validate_xnat_label(self.scan_id, "scan_id")
 
 
 HierarchyParentRef = ProjectRef | SubjectRef | ExperimentRef | ScanRef
@@ -59,6 +91,17 @@ class ResourceRef:
 
     parent: HierarchyParentRef
     resource_label: str
+
+    def __post_init__(self) -> None:
+        """Reject identifiers that could redirect the request off-route.
+
+        ``parent`` validated itself in its own ``__post_init__``. Resource
+        labels get the looser :func:`validate_xnat_resource_label` -- ``#``,
+        ``?``, and ``%`` are routine in real resource labels and the path
+        builder's ``quote_path_segment`` encodes them unambiguously, so
+        rejecting them here would break real labels for no routing benefit.
+        """
+        validate_xnat_resource_label(self.resource_label, "resource_label")
 
 
 class ResultSetData(BaseModel):

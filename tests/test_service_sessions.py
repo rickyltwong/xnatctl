@@ -150,6 +150,23 @@ class TestSessionGet:
         with pytest.raises(ResourceNotFoundError):
             service.get("MISSING")
 
+    def test_get_not_found_dispatches_on_type_not_message_text(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """A typed 404 is classified by its class, not by sniffing the message.
+
+        The client can raise ``ResourceNotFoundError`` with any message; a
+        session labelled e.g. "SUB404" must not defeat classification the way
+        a substring check on "404" would.
+        """
+        mock_client.get.side_effect = ResourceNotFoundError("resource", "no such thing here")
+
+        with pytest.raises(ResourceNotFoundError) as excinfo:
+            service.get("MISSING")
+
+        assert excinfo.value.details.get("resource_type") == "session"
+        assert excinfo.value.details.get("resource_id") == "MISSING"
+
 
 class TestSessionCreate:
     """Tests for SessionService.create."""
@@ -274,3 +291,152 @@ class TestSessionShare:
 
         put_params = mock_client.put.call_args[1]["params"]
         assert put_params["primary"] == "true"
+
+
+class TestSessionRawAccessors:
+    """Tests for the raw-row accessors the CLI screens/engine route through."""
+
+    def test_list_project_experiment_rows_no_subject(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """The session-list rows carry the fixed column set and no subject filter."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "EXP01"}]}}
+
+        rows = service.list_project_experiment_rows("PROJ01")
+
+        assert rows == [{"ID": "EXP01"}]
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/experiments",
+            params={"columns": "ID,label,subject_label,date,xsiType"},
+        )
+
+    def test_list_project_experiment_rows_with_subject(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """A subject adds a subject_label filter to the same request."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        service.list_project_experiment_rows("PROJ01", subject="SUBJ01")
+
+        params = mock_client.get_json.call_args[1]["params"]
+        assert params["subject_label"] == "SUBJ01"
+
+    def test_list_project_experiment_rows_missing_resultset(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """A response without a ResultSet yields an empty list."""
+        mock_client.get_json.return_value = {}
+
+        assert service.list_project_experiment_rows("PROJ01") == []
+
+    def test_scan_rows_uses_flat_experiment_url(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Without a project the scans URL is the routable flat form."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "1"}]}}
+
+        rows = service.scan_rows("EXP01")
+
+        assert rows == [{"ID": "1"}]
+        mock_client.get_json.assert_called_once_with("/data/experiments/EXP01/scans")
+
+    def test_experiment_resource_rows_subject_scoped(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Session-level resources are read from the subject-scoped experiment URL."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"label": "MISC"}]}}
+
+        rows = service.experiment_resource_rows("EXP01", project="PROJ01", subject="SUBJ01")
+
+        assert rows == [{"label": "MISC"}]
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/subjects/SUBJ01/experiments/EXP01/resources"
+        )
+
+
+class TestListSessions:
+    """Tests for SessionService.list_sessions (classification + modality filter)."""
+
+    ROWS = {
+        "ResultSet": {
+            "Result": [
+                {
+                    "ID": "XNAT_E1",
+                    "label": "MR001",
+                    "subject_label": "SUB1",
+                    "date": "2026-01-01",
+                    "xsiType": "xnat:mrSessionData",
+                },
+                {
+                    "ID": "XNAT_E2",
+                    "label": "PET001",
+                    "subject_label": "SUB2",
+                    "date": "2026-01-02",
+                    "xsiType": "xnat:petSessionData",
+                },
+                {
+                    "ID": "XNAT_E3",
+                    "label": "OTHER",
+                    "subject_label": "SUB3",
+                    "date": "",
+                    "xsiType": "xnat:otherData",
+                },
+            ]
+        }
+    }
+
+    def test_classifies_each_row_and_maps_fields(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = self.ROWS
+
+        rows = service.list_sessions("PROJ01")
+
+        assert rows == [
+            {
+                "id": "XNAT_E1",
+                "label": "MR001",
+                "subject": "SUB1",
+                "date": "2026-01-01",
+                "modality": "MR",
+            },
+            {
+                "id": "XNAT_E2",
+                "label": "PET001",
+                "subject": "SUB2",
+                "date": "2026-01-02",
+                "modality": "PET",
+            },
+            {
+                "id": "XNAT_E3",
+                "label": "OTHER",
+                "subject": "SUB3",
+                "date": "",
+                "modality": "?",
+            },
+        ]
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/experiments",
+            params={"columns": "ID,label,subject_label,date,xsiType"},
+        )
+
+    def test_modality_filter_drops_non_matching_rows(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = self.ROWS
+
+        rows = service.list_sessions("PROJ01", modality="MR")
+
+        assert [r["id"] for r in rows] == ["XNAT_E1"]
+
+    def test_subject_filter_is_forwarded_as_subject_label(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        service.list_sessions("PROJ01", subject="SUB1")
+
+        mock_client.get_json.assert_called_once_with(
+            "/data/projects/PROJ01/experiments",
+            params={"columns": "ID,label,subject_label,date,xsiType", "subject_label": "SUB1"},
+        )

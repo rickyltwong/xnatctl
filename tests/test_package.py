@@ -45,7 +45,7 @@ class TestPackageImports:
             scans,
             sessions,
             subjects,
-            uploads,
+            upload,
         )
 
         assert base is not None
@@ -55,7 +55,7 @@ class TestPackageImports:
         assert scans is not None
         assert resources is not None
         assert downloads is not None
-        assert uploads is not None
+        assert upload is not None
         assert prearchive is not None
         assert pipelines is not None
         assert admin is not None

@@ -78,17 +78,18 @@ Download all scans for an experiment to a local directory:
 
    $ xnatctl session download -P myproject -E SESSION_LABEL --out ./data
 
-Upload a batch of DICOM files into a subject, with parallel workers:
+Send a batch of DICOM files over C-STORE to XNAT's DICOM receiver, with
+parallel associations:
 
 .. code-block:: console
 
-   $ xnatctl session upload-dicom -P myproject -S SUBJ01 ./dicoms/ --workers 4
+   $ xnatctl session upload-dicom ./dicoms/ --host xnat.example.org --called-aet XNAT --workers 4
 
 Trigger a catalog refresh for a specific project (admin operation):
 
 .. code-block:: console
 
-   $ xnatctl admin refresh-catalogs --project myproject
+   $ xnatctl admin refresh-catalogs myproject
 
 .. tip::
 
@@ -127,7 +128,6 @@ Trigger a catalog refresh for a specific project (admin operation):
    debugging
    performance
    contributing
-   adr/README
    changelog
 
 .. toctree::

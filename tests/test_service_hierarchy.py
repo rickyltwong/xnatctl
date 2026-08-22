@@ -412,3 +412,38 @@ class TestRoutableScanParent:
         assert HierarchyService.build_resource_collection_path(ref) == (
             "/data/projects/PROJ/experiments/XNAT_E00001/resources"
         )
+
+
+class TestGetExperimentJson:
+    """Tests for the raw experiment-document accessor."""
+
+    def test_no_params_issues_plain_get(
+        self, service: HierarchyService, mock_client: MagicMock
+    ) -> None:
+        """Without params the accessor issues a plain get_json (no params kwarg)."""
+        mock_client.get_json.return_value = {"items": []}
+
+        service.get_experiment_json(ExperimentRef(experiment="EXP01"))
+
+        mock_client.get_json.assert_called_once_with("/data/experiments/EXP01")
+
+    def test_parts_and_params_forwarded(
+        self, service: HierarchyService, mock_client: MagicMock
+    ) -> None:
+        """Sub-resource parts extend the path and params are forwarded verbatim."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        service.get_experiment_json(
+            ExperimentRef(experiment="EXP01"), "scans", params={"xsiType": "x"}
+        )
+
+        mock_client.get_json.assert_called_once_with(
+            "/data/experiments/EXP01/scans", params={"xsiType": "x"}
+        )
+
+    def test_returns_parsed_json(self, service: HierarchyService, mock_client: MagicMock) -> None:
+        """The parsed JSON is returned unchanged."""
+        payload = {"ResultSet": {"Result": [{"ID": "1"}]}}
+        mock_client.get_json.return_value = payload
+
+        assert service.get_experiment_json(ExperimentRef(experiment="EXP01")) is payload

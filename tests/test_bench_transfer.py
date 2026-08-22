@@ -1,7 +1,7 @@
 """Keep the benchmark from bitrotting.
 
-``scripts/bench_transfer.py`` drives private internals -- ``_download_session_fast``
-in the session CLI, ``upload_dicom_parallel`` and ``upload_dicom_gradual_files``
+``scripts/bench_transfer.py`` drives internals -- ``DownloadService.download_session_fast``
+in the download service, ``upload_dicom_parallel`` and ``upload_dicom_gradual_files``
 in the upload service. Those move, and a benchmark nobody runs between releases
 would break silently and only be noticed when someone needed a number.
 
@@ -66,7 +66,7 @@ class TestScenarios:
 class TestHarness:
     def test_the_synthetic_files_look_like_dicom_to_the_collector(self, tmp_path: Path) -> None:
         """The collector accepts them, or every upload scenario measures zero files."""
-        from xnatctl.services.uploads import collect_dicom_files
+        from xnatctl.services.upload import collect_dicom_files
 
         bench._write_synthetic_dicom(tmp_path, 5, 2048)
 

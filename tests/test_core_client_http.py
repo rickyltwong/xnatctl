@@ -30,7 +30,7 @@ from xnatctl.core.exceptions import (
     ServerUnreachableError,
 )
 from xnatctl.core.exceptions import (
-    TimeoutError as XNATTimeoutError,
+    RequestTimeoutError as XNATTimeoutError,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]

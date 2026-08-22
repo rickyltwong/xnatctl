@@ -130,8 +130,10 @@ in :doc:`workflows`.
 User Management
 ---------------
 
-The ``admin user`` subgroup provides commands for managing XNAT user
-permissions. Currently, xnatctl supports adding users to project groups.
+The ``admin user`` subgroup provides commands for managing XNAT user accounts:
+adding a user to project groups, listing and inspecting accounts, enabling or
+disabling an account, granting or revoking site-wide roles, removing project
+membership, and killing a user's active sessions.
 
 **Adding a user to groups**
 
@@ -166,23 +168,44 @@ To add a new team member to multiple projects at once:
        --projects STUDY_A,STUDY_B,STUDY_C \
        --role collaborator
 
-**Listing and removing users**
-
-User listing and removal are not yet available as dedicated commands. Use the
-``api`` escape hatch as a workaround:
+**Listing and inspecting users**
 
 .. code-block:: console
 
-   # List all users on the server
-   $ xnatctl api get /data/users
+   $ xnatctl admin user list
+   $ xnatctl admin user list --active   # only users with a live session
+   $ xnatctl admin user show jsmith
 
-   # List users in a specific project
-   $ xnatctl api get /data/projects/MYPROJECT/users
+**Enabling, disabling, and site-wide roles**
 
-   # Remove a user from a project (requires confirmation)
-   $ xnatctl api delete /data/projects/MYPROJECT/users/member/jsmith --yes
+.. code-block:: console
 
-See :ref:`admin-api-escape-hatch` below for more examples.
+   $ xnatctl admin user disable jsmith --yes
+   $ xnatctl admin user enable jsmith --yes
+   $ xnatctl admin user roles jsmith                          # list roles
+   $ xnatctl admin user roles jsmith --grant Administrator --yes
+   $ xnatctl admin user roles jsmith --revoke Administrator --yes
+
+**Removing a user from a project, killing sessions, and listing groups**
+
+.. code-block:: console
+
+   $ xnatctl admin user remove jsmith --project MYPROJECT --yes
+   $ xnatctl admin user kill-sessions jsmith --yes
+   $ xnatctl admin user groups jsmith
+
+.. tip::
+
+   ``kill-sessions`` is the fix for a shared/service account that has
+   exhausted its concurrent-session limit -- every new login starts failing
+   with 401s even though the password is correct, because XNAT enforces a
+   per-user cap on concurrent sessions and the shared credential has
+   accumulated sessions from crashed or timed-out clients that never logged
+   out. Killing them frees the slots back up.
+
+Project-level membership (which role a user holds on a specific project, as
+opposed to the server-wide groups above) is managed with ``project users``,
+``project grant``, and ``project revoke`` -- see :doc:`cli-reference`.
 
 
 Audit Log
@@ -251,58 +274,37 @@ against a manifest), see the "Auditing a Project" section in :doc:`workflows`.
 Using the API for Additional Admin Tasks
 -----------------------------------------
 
-Several administrative operations are available through XNAT's REST API but
-do not yet have dedicated xnatctl commands. You can access them using the
-``api`` escape hatch.
+Server version, site configuration, installed plugins, and per-project user
+listings now all have dedicated commands (``admin version``,
+``admin site-config get``/``set``, ``admin plugins``, ``project users`` --
+see :doc:`cli-reference`). The ``api`` escape hatch remains useful for
+anything else XNAT's REST API exposes that xnatctl does not wrap yet.
 
 **Server information**
 
 .. code-block:: console
 
-   $ xnatctl api get /xapi/siteConfig/buildInfo/version
-
-Returns the XNAT version string (e.g. ``1.9.1.2``).
+   $ xnatctl admin version
+   $ xnatctl admin version -q   # bare version string
 
 **Site configuration**
 
 .. code-block:: console
 
-   # View all site configuration
-   $ xnatctl api get /xapi/siteConfig
+   $ xnatctl admin site-config get              # entire site config
+   $ xnatctl admin site-config get siteId        # one key
+   $ xnatctl admin site-config set siteId MyXNAT --yes
 
-   # View a specific setting
-   $ xnatctl api get /xapi/siteConfig/siteId
-
-**User details**
+**Installed plugins**
 
 .. code-block:: console
 
-   # List all users
-   $ xnatctl api get /data/users
-
-   # Get details for a specific user
-   $ xnatctl api get /data/users/jsmith
-
-   # List users in a project with their roles
-   $ xnatctl api get /data/projects/MYPROJECT/users
+   $ xnatctl admin plugins
+   $ xnatctl admin plugins show container-service
 
 .. tip::
 
    The ``api get`` command automatically formats XNAT's ``ResultSet``
    responses as tables, so you get readable output without extra processing.
-   Use ``--output json`` when you need machine-readable data.
-
-
-Planned Commands
-----------------
-
-The following admin commands are planned for future releases:
-
-- ``admin user list`` -- List users (server-wide or per-project)
-- ``admin user show`` -- Show detailed information for a user
-- ``admin user remove`` -- Remove a user from project groups
-- ``admin server-info`` -- Display XNAT server version and build information
-- ``admin site-config`` -- View and modify site configuration
-
-Until these commands are available, use ``xnatctl api get`` as described
-above. See :doc:`cli-reference` for full ``api`` command documentation.
+   Use ``--output json`` when you need machine-readable data for an endpoint
+   that has no dedicated command yet.

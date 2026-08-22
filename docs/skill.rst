@@ -23,7 +23,7 @@ Command hierarchy
      prearchive list | archive | delete | rebuild | move
      pipeline  list | run | status | jobs | cancel
      admin     refresh-catalogs | user add | audit
-     dicom     validate | inspect | list-tags | anonymize   (requires xnatctl[dicom])
+     dicom     validate | inspect | list-tags | anonymize
      api       get | post | put | delete                    (raw REST escape hatch)
      whoami
      health ping
@@ -281,8 +281,8 @@ Raw API (escape hatch)
    xnatctl api delete /data/experiments/XNAT_E00001 --yes
 
 
-DICOM tools (requires ``xnatctl[dicom]``)
------------------------------------------
+DICOM tools
+-----------
 
 .. code-block:: console
 

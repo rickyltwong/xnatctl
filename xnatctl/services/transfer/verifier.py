@@ -10,6 +10,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from xnatctl.core.validation import quote_path_segment
+
 logger = logging.getLogger(__name__)
 
 
@@ -191,18 +193,20 @@ class Verifier:
         mismatched: list[tuple[str, str, int, int]] = []
 
         for scan_id in sorted(source_scans):
-            src_scan_path = f"{source_experiment_path}/scans/{scan_id}"
-            dst_scan_path = f"{dest_experiment_path}/scans/{scan_id}"
+            q_scan_id = quote_path_segment(scan_id)
+            src_scan_path = f"{source_experiment_path}/scans/{q_scan_id}"
+            dst_scan_path = f"{dest_experiment_path}/scans/{q_scan_id}"
 
             src_resources = self._get_resource_labels(self._source, src_scan_path)
 
             for res_label in src_resources:
+                q_res_label = quote_path_segment(res_label)
                 src_count = self._get_file_count(
-                    self._source, f"{src_scan_path}/resources/{res_label}/files"
+                    self._source, f"{src_scan_path}/resources/{q_res_label}/files"
                 )
                 try:
                     dst_count = self._get_file_count(
-                        self._dest, f"{dst_scan_path}/resources/{res_label}/files"
+                        self._dest, f"{dst_scan_path}/resources/{q_res_label}/files"
                     )
                 except Exception as e:
                     logger.debug(

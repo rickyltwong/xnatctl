@@ -48,9 +48,10 @@ Architecture Decisions
 ----------------------
 
 A change that constrains future code -- a retry policy, a URL convention, a
-lint rule deliberately left off -- needs an Architecture Decision Record in
-``docs/adr/``. Copy ``docs/adr/template.md``, number it sequentially, and link
-it from ``docs/adr/README.md``.
+lint rule deliberately left off -- needs its reasoning recorded. Decision
+records are kept by the maintainer outside this repository; in a pull request,
+state the decision and its rationale in the PR description and leave a short
+comment at the constraint itself.
 
 The test is whether the decision would surprise someone reading only the code.
 If it would, the reasoning belongs somewhere it will be found before it is
@@ -308,14 +309,14 @@ You can also use the service layer programmatically outside the CLI:
 
 .. code-block:: python
 
-   from xnatctl.core.client import XNATClient
-   from xnatctl.services.projects import ProjectService
+   import xnatctl
 
-   client = XNATClient(base_url="https://xnat.example.org", ...)
-   client.authenticate()
+   with xnatctl.XNATClient.from_profile("prod") as client:
+       projects = client.projects.list()
 
-   service = ProjectService(client)
-   projects = service.list()
+   # Or, hand-wired (what from_profile does for you): construct an
+   # XNATClient with explicit credentials, call ``authenticate()``, and
+   # pass it to any service class.
 
 
 Code Style

@@ -8,7 +8,11 @@ import httpx
 import pytest
 
 from xnatctl.core.client import XNATClient
-from xnatctl.core.exceptions import PermissionDeniedError, SessionExpiredError
+from xnatctl.core.exceptions import (
+    PermissionDeniedError,
+    ResourceNotFoundError,
+    SessionExpiredError,
+)
 
 
 def _make_response(status_code: int) -> httpx.Response:
@@ -117,6 +121,28 @@ def test_request_raises_permission_denied_on_403_without_reauth(monkeypatch):
     client.authenticate.assert_not_called()
     err = excinfo.value
     assert err.details["status_code"] == 403
+    assert err.details["method"] == "GET"
+    assert err.details["path"] == "/data/user"
+
+
+def test_request_raises_resource_not_found_on_404_with_status_details(monkeypatch):
+    client = XNATClient(
+        base_url="https://example.org",
+        username="user",
+        password="pass",
+        session_token="token",
+        max_retries=0,
+    )
+
+    mock_httpx = MagicMock()
+    mock_httpx.request = MagicMock(return_value=_make_response(404))
+    monkeypatch.setattr(client, "_get_client", MagicMock(return_value=mock_httpx))
+
+    with pytest.raises(ResourceNotFoundError) as excinfo:
+        client.get("/data/user")
+
+    err = excinfo.value
+    assert err.details["status_code"] == 404
     assert err.details["method"] == "GET"
     assert err.details["path"] == "/data/user"
 

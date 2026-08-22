@@ -52,9 +52,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        # The dicom extra is required: the round-trip test builds real
-        # datasets with pydicom, and XNAT drops anything it cannot parse.
-        run: uv sync --dev --extra dicom
+        run: uv sync --dev
 
       - name: Start XNAT
         run: docker compose -f docker-compose.integration.yml up -d --wait

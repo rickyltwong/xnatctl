@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from urllib.parse import quote
 
 import click
 
@@ -14,7 +14,7 @@ from xnatctl.cli.common import (
     handle_errors,
     require_auth,
 )
-from xnatctl.core.output import print_error, print_output, print_success
+from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
 from xnatctl.models.hierarchy import (
     ExperimentRef,
     HierarchyParentRef,
@@ -23,6 +23,8 @@ from xnatctl.models.hierarchy import (
     ScanRef,
     SubjectRef,
 )
+from xnatctl.models.progress import TransferItemResult, TransferSummary
+from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.hierarchy import HierarchyService
 
 
@@ -122,9 +124,9 @@ def resource_list(
         validate_session_id,
         validate_subject_id,
     )
+    from xnatctl.services.resources import ResourceService
 
     client = ctx.get_client()
-    hierarchy = HierarchyService(client)
 
     if project_id:
         project_id = validate_project_id(project_id)
@@ -139,8 +141,7 @@ def resource_list(
         session_id=session_id, project_id=project_id, subject=subject, scan=scan
     )
 
-    resp = client.get_json(hierarchy.build_resource_collection_path(resource_parent))
-    results = HierarchyService.extract_rows(resp)
+    results = ResourceService(client).list_rows(resource_parent)
 
     resources = []
     for r in results:
@@ -190,11 +191,11 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
         validate_scan_id,
         validate_session_id,
     )
+    from xnatctl.services.resources import ResourceService
 
     session_id = validate_session_id(session_id)
     resource_label = validate_resource_label(resource_label)
-    client = ctx.get_client()
-    hierarchy = HierarchyService(client)
+    service = ResourceService(ctx.get_client())
     experiment_ref = ExperimentRef(experiment=session_id)
 
     resource_parent: HierarchyParentRef
@@ -203,12 +204,10 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
         resource_parent = ScanRef(experiment=experiment_ref, scan_id=scan)
     else:
         resource_parent = experiment_ref
-    encoded_label = quote(resource_label)
 
     # Get resource info from the collection endpoint. The direct
     # /resources/{label} endpoint often returns XML catalogs instead of JSON.
-    resp = client.get_json(hierarchy.build_resource_collection_path(resource_parent))
-    results = HierarchyService.extract_rows(resp)
+    results = service.list_rows(resource_parent)
     resource_data = next((row for row in results if row.get("label") == resource_label), None)
 
     if resource_data is None:
@@ -217,13 +216,7 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
 
     # Get files
     try:
-        files_resp = client.get_json(
-            hierarchy.build_resource_path(
-                ResourceRef(parent=resource_parent, resource_label=encoded_label),
-                "files",
-            )
-        )
-        files = HierarchyService.extract_rows(files_resp)
+        files = service.list_file_rows(resource_parent, resource_label)
     except Exception:
         files = []
 
@@ -336,6 +329,16 @@ def resource_upload(
         session_id=session_id, project_id=project_id, subject=subject, scan=scan
     )
 
+    upload_start = time.time()
+    # A single file is PUT as itself, so its size is exactly what was sent.
+    # A directory is zipped server-side by the service and the zip -- not the
+    # raw file sum -- is what actually travels, at a size this command never
+    # sees; reporting the raw sum would be an approximation, not a fact, so
+    # a directory upload leaves files/bytes null rather than guess.
+    is_directory = input_path.is_dir()
+    files_field = None if is_directory else 1
+    bytes_field = None if is_directory else input_path.stat().st_size
+
     # Create resource if it doesn't exist
     try:
         service.create(
@@ -349,7 +352,7 @@ def resource_upload(
 
     try:
         with create_progress() as progress:
-            if input_path.is_dir():
+            if is_directory:
                 task = progress.add_task("Creating archive...", total=None)
                 progress.update(task, description="Uploading...")
                 service.upload_directory(
@@ -370,9 +373,34 @@ def resource_upload(
                 )
                 progress.update(task, completed=100)
     except Exception as exc:
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="upload",
+                session_id=session_id,
+                project=project_id,
+                source=str(input_path),
+                files=None,
+                bytes=None,
+                duration_seconds=round(time.time() - upload_start, 3),
+                status="failed",
+                items=[TransferItemResult(id=resource_label, status="failed", error=str(exc))],
+            ).emit()
         raise click.ClickException(f"Upload failed: {exc}") from exc
 
-    print_success(f"Uploaded to {resource_label}")
+    if ctx.output_format == OutputFormat.JSON:
+        TransferSummary(
+            operation="upload",
+            session_id=session_id,
+            project=project_id,
+            source=str(input_path),
+            files=files_field,
+            bytes=bytes_field,
+            duration_seconds=round(time.time() - upload_start, 3),
+            status="success",
+            items=[TransferItemResult(id=resource_label, status="success")],
+        ).emit()
+    else:
+        print_success(f"Uploaded to {resource_label}")
 
 
 @resource.command("refresh")
@@ -395,11 +423,10 @@ def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
           /archive/projects/MYPROJ/subjects/SUBJ/experiments/EXP/scans/1/resources/DICOM \\
           --options append --options populateStats
     """
-    client = ctx.get_client()
-    params: dict[str, str] = {"resource": uri}
-    if options:
-        params["options"] = ",".join(options)
-    resp = client.post("/data/services/refresh/catalog", params=params)
+    from xnatctl.services.admin import AdminService
+
+    options_str = ",".join(options) if options else None
+    resp = AdminService(ctx.get_client()).refresh_catalog(uri, options_str)
     if resp.status_code != 200:
         raise click.ClickException(f"Refresh failed [{resp.status_code}]: {resp.text}")
     payload = {"resource": uri, "options": list(options), "status": "ok"}
@@ -439,8 +466,6 @@ def resource_download(
         xnatctl resource download -P MYPROJ TEMPLATEFLOW -f ./tf.zip
         xnatctl resource download -P MYPROJ -S SUB01 QC -f ./qc.zip
     """
-    from urllib.parse import quote
-
     from xnatctl.core.output import create_progress
     from xnatctl.core.validation import (
         validate_project_id,
@@ -473,28 +498,51 @@ def resource_download(
         session_id=session_id, project_id=project_id, subject=subject, scan=scan
     )
     url = HierarchyService.build_resource_path(
-        ResourceRef(parent=parent, resource_label=quote(resource_label)), "files"
+        ResourceRef(parent=parent, resource_label=resource_label), "files"
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with create_progress() as progress:
-        task = progress.add_task(f"Downloading {resource_label}...", total=100)
+    download_start = time.time()
+    try:
+        with create_progress() as progress:
+            task = progress.add_task(f"Downloading {resource_label}...", total=100)
 
-        with client._get_client().stream(
-            "GET", url, params={"format": "zip"}, cookies=client._get_cookies()
-        ) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-            downloaded = 0
+            def on_progress(written: int, total: int | None) -> None:
+                if total:
+                    progress.update(task, completed=int(written / total * 100))
 
-            with open(out_path, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        progress.update(task, completed=int(downloaded / total * 100))
+            streamed = stream_to_file(
+                client, url, out_path, params={"format": "zip"}, progress_cb=on_progress
+            )
 
-        progress.update(task, completed=100)
+            progress.update(task, completed=100)
+    except Exception as exc:
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="download",
+                session_id=session_id,
+                project=project_id,
+                output_dir=str(out_path),
+                files=None,
+                bytes=None,
+                duration_seconds=round(time.time() - download_start, 3),
+                status="failed",
+                items=[TransferItemResult(id=resource_label, status="failed", error=str(exc))],
+            ).emit()
+        raise
 
-    print_success(f"Downloaded to {out_path}")
+    if ctx.output_format == OutputFormat.JSON:
+        TransferSummary(
+            operation="download",
+            session_id=session_id,
+            project=project_id,
+            output_dir=str(out_path),
+            files=1,
+            bytes=streamed.bytes_written,
+            duration_seconds=round(time.time() - download_start, 3),
+            status="success",
+            items=[TransferItemResult(id=resource_label, status="success")],
+        ).emit()
+    else:
+        print_success(f"Downloaded to {out_path}")

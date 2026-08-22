@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import click
 
@@ -18,9 +19,10 @@ from xnatctl.cli.common import (
     parallel_options,
     require_auth,
     resolve_workers_from_context,
+    validate_local_path_option_cb,
 )
 from xnatctl.core.cancellation import cancellable_pool
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
     err_console,
@@ -31,6 +33,8 @@ from xnatctl.core.output import (
 )
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 from xnatctl.services.hierarchy import HierarchyService
+from xnatctl.services.resources import ResourceService
+from xnatctl.services.scans import ScanService
 
 
 def _inspect_experiment(
@@ -57,7 +61,7 @@ def _inspect_experiment(
         Tuple of (canonical experiment ref, experiment xsiType).
     """
     try:
-        data = hierarchy.client.get_json(hierarchy.build_experiment_path(experiment_ref))
+        data = hierarchy.get_experiment_json(experiment_ref)
     except ResourceNotFoundError:
         return experiment_ref, None
     if not isinstance(data, dict):
@@ -296,14 +300,7 @@ def scan_show(
     experiment_ref, _session_xsi = _inspect_experiment(hierarchy, source_ref)
     _require_scan_addressable(experiment_ref)
     scan_ref = ScanRef(experiment=experiment_ref, scan_id=scan_id)
-    resp = client.get_json(hierarchy.build_scan_path(scan_ref))
-    scan_data: dict[str, Any] | None
-    scan_item = hierarchy.extract_first_item(resp)
-    if scan_item is not None:
-        scan_data, _scan_meta = scan_item
-    else:
-        results = HierarchyService.extract_rows(resp)
-        scan_data = results[0] if results else None
+    scan_data = ScanService(client).get_scan_document(scan_ref)
 
     if not scan_data:
         print_error(f"Scan not found: {scan_id}")
@@ -311,8 +308,7 @@ def scan_show(
 
     # Get resources
     try:
-        res_resp = client.get_json(hierarchy.build_resource_collection_path(scan_ref))
-        resources = HierarchyService.extract_rows(res_resp)
+        resources = ResourceService(client).list_rows(scan_ref)
     except Exception:
         resources = []
 
@@ -409,13 +405,12 @@ def scan_delete(
 
     deleted = []
     failed = []
+    scan_svc = ScanService(client)
 
     def delete_scan(scan_id: str) -> tuple[str, bool, str]:
         """Delete a scan and return status and error message."""
         try:
-            resp = client.delete(
-                hierarchy.build_scan_path(ScanRef(experiment=experiment_ref, scan_id=scan_id))
-            )
+            resp = scan_svc.delete_scan_ref(ScanRef(experiment=experiment_ref, scan_id=scan_id))
             return scan_id, resp.status_code in (200, 204), ""
         except Exception as e:
             return scan_id, False, str(e)
@@ -473,7 +468,13 @@ def scan_delete(
 )
 @click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
-@click.option("--name", hidden=True, help="Output directory name (defaults to experiment value)")
+@click.option(
+    "--name",
+    hidden=True,
+    callback=validate_local_path_option_cb,
+    is_eager=True,
+    help="Output directory name (defaults to experiment value)",
+)
 @click.option(
     "--resource",
     "-r",
@@ -515,6 +516,14 @@ def scan_delete(
     expose_value=False,
     callback=_make_alias_cb("--no-cleanup", "keep_zips", True),
 )
+@click.option(
+    "--verify",
+    is_flag=True,
+    help=(
+        "Verify downloaded files against server MD5 checksums after download; "
+        "fails if the server has no checksums for anything downloaded"
+    ),
+)
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
 @handle_errors
@@ -530,6 +539,7 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     resource: tuple[str, ...],
     extract: bool,
     keep_zips: bool,
+    verify: bool,
     dry_run: bool,
 ) -> None:
     """Download scans from an image session.
@@ -550,9 +560,20 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
         xnatctl scan download -E XNAT_E00001 -s 1 --out ./data
         xnatctl scan download -P PROJECT -E SESSION_LABEL -s 1,2,3 --out ./data
         xnatctl scan download -P PROJECT -E SESSION -s '*' --out ./data
+        xnatctl scan download -E XNAT_E00001 -s 1 --verify
     """
+    import dataclasses
+
     from xnatctl.core.validation import validate_scan_ids_input, validate_session_id
-    from xnatctl.models.progress import DownloadProgress, OperationPhase
+    from xnatctl.models.progress import (
+        DownloadProgress,
+        OperationPhase,
+        TransferItemResult,
+        TransferSummary,
+        TransferVerification,
+        VerificationReport,
+        transfer_status,
+    )
     from xnatctl.services.downloads import DownloadService
 
     # Map extract/keep_zips to internal unzip/cleanup
@@ -567,8 +588,23 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     if not project:
         project = default_project_from_context(ctx)
 
-    if name and ("/" in name or "\\" in name):
-        raise click.ClickException("--name cannot contain path separators")
+    # `--name` (when given) is validated by validate_local_path_option_cb, an
+    # eager Click callback that runs at argument-parsing time -- before
+    # @require_auth -- so a malformed --name fails without needing a valid
+    # session. Without --name, the output directory falls back to the raw
+    # session_id (see below); that fallback isn't known until here (it
+    # depends on -E), so it's still validated in the command body, and goes
+    # through validate_session_id's URL-safety check rather than a
+    # local-filesystem check, so a label like "CON" (a legal session ID, but
+    # a reserved Windows device name) would otherwise reach the filesystem
+    # unvalidated. Mirrors session download's own fallback.
+    if name is None:
+        from xnatctl.core.validation import validate_local_path_component
+
+        try:
+            validate_local_path_component(session_id, "session_id (as the output directory name)")
+        except InputValidationError as e:
+            raise click.ClickException(str(e)) from e
 
     use_all_keyword = scan_ids_input is None
     if scan_ids_input is None:
@@ -585,8 +621,21 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     resource_filter: str | None = resource[0] if resource else None
 
     if dry_run:
-        scan_desc = "all scans" if use_all_keyword else f"{len(scan_ids)} scans"
         resource_desc = resource[0] if resource else "all resources"
+        if ctx.output_format == OutputFormat.JSON:
+            print_json(
+                {
+                    "operation": "download",
+                    "dry_run": True,
+                    "session_id": session_id,
+                    "project": project,
+                    "scans": "all" if use_all_keyword else scan_ids,
+                    "resource": resource_desc,
+                    "output_dir": str(output_dir / (name or session_id)),
+                }
+            )
+            return
+        scan_desc = "all scans" if use_all_keyword else f"{len(scan_ids)} scans"
         click.echo(
             f"[DRY-RUN] Would download {scan_desc} ({resource_desc}) "
             f"to {output_dir}/{name or session_id}/",
@@ -609,6 +658,15 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
 
     from xnatctl.core.exceptions import ResourceNotFoundError
 
+    download_start = time.time()
+
+    # One ZIP request covers the whole spec (XNAT's comma-separated batch
+    # download) -- it succeeds or fails atomically, so it is exactly one
+    # item, identified by what was asked for, not by the individual IDs in
+    # it (there is no per-scan outcome to report).
+    spec_id = "ALL" if use_all_keyword else ",".join(scan_ids)
+    requested_scan_count = None if use_all_keyword else len(scan_ids)
+
     try:
         summary = service.download_scans(
             session_id=session_id,
@@ -623,6 +681,19 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
             progress_callback=progress_cb if not ctx.quiet else None,
         )
     except (ValueError, ResourceNotFoundError) as e:
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="download",
+                session_id=session_id,
+                project=project,
+                output_dir=str(session_output),
+                scans=requested_scan_count,
+                files=None,
+                bytes=None,
+                duration_seconds=round(time.time() - download_start, 3),
+                status="failed",
+                items=[TransferItemResult(id=spec_id, status="failed", error=str(e))],
+            ).emit()
         print_error(str(e))
         raise SystemExit(1) from None
 
@@ -630,16 +701,107 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
         # Terminate the \r progress line above, which also lives on stderr.
         click.echo(err=True)
 
-    if ctx.output_format == OutputFormat.JSON:
-        print_json(
-            {
-                "session_id": session_id,
-                "output_path": summary.output_path,
-                "success": summary.success,
-                "total_size_mb": round(summary.total_size_mb, 2),
-                "errors": summary.errors,
-            }
+    download_succeeded = summary.success
+    verification: VerificationReport | None = None
+    verification_error: str | None = None
+    if verify and summary.success:
+        if not ctx.quiet:
+            click.echo("Verifying downloaded files...", err=True)
+        verify_local_root = session_output / "scans" if unzip else None
+        verify_zip_paths = () if verify_local_root is not None else (session_output / "scans.zip",)
+        try:
+            verification = service.verify_scan_downloads(
+                session_id=session_id,
+                project=project,
+                subject=subject,
+                scan_ids=None if use_all_keyword else scan_ids,
+                resource_filter=resource_filter,
+                local_root=verify_local_root,
+                # `_safe_extract_zip` preserves a raw ZIP member's own
+                # session/experiment-label wrapper unstripped under this
+                # extraction root -- always wrapped, never session download's
+                # unwrapped shape.
+                local_root_wrapped=True,
+                zip_paths=verify_zip_paths,
+            )
+        except Exception as exc:
+            if ctx.output_format == OutputFormat.JSON:
+                TransferSummary(
+                    operation="download",
+                    session_id=session_id,
+                    project=project,
+                    output_dir=summary.output_path,
+                    scans=requested_scan_count,
+                    # The download itself succeeded (this block only runs
+                    # when it did); only verification blew up.
+                    files=summary.total_files,
+                    bytes=round(summary.total_size_mb * 1024 * 1024),
+                    duration_seconds=round(time.time() - download_start, 3),
+                    status="failed",
+                    items=[TransferItemResult(id=spec_id, status="failed", error=str(exc))],
+                ).emit()
+            raise
+        if not verification.success:
+            if verification.mismatched or verification.missing_local or verification.collisions:
+                verification_error = (
+                    f"{len(verification.mismatched)} mismatched, "
+                    f"{len(verification.missing_local)} missing, "
+                    f"{len(verification.collisions)} colliding file(s)"
+                )
+            elif verification.unverifiable:
+                # Nothing mismatched or missing, but nothing matched either --
+                # every checked file landed in unverifiable, so the server had
+                # no checksums on record for anything the command downloaded.
+                verification_error = (
+                    "the server provided no checksums for any downloaded file "
+                    f"({len(verification.unverifiable)} unverifiable); nothing was verified"
+                )
+            else:
+                # The manifest listed nothing at all for a scope that has
+                # files on disk -- nothing was verified.
+                verification_error = (
+                    "the server manifest listed none of the "
+                    f"{len(verification.missing_remote)} in-scope local file(s); "
+                    "nothing was verified"
+                )
+        summary = dataclasses.replace(
+            summary,
+            verification=verification,
+            success=summary.success and verification.success,
+            errors=[*summary.errors, verification_error] if verification_error else summary.errors,
         )
+        for path in verification.collisions:
+            click.echo(f"  COLLISION: {path}", err=True)
+        for path in verification.mismatched:
+            click.echo(f"  MISMATCH: {path}", err=True)
+        for path in verification.missing_local:
+            click.echo(f"  MISSING: {path}", err=True)
+
+    if ctx.output_format == OutputFormat.JSON:
+        item_status: Literal["success", "failed"] = "success" if summary.success else "failed"
+        item_error = None if summary.success else (summary.errors[0] if summary.errors else None)
+        TransferSummary(
+            operation="download",
+            session_id=session_id,
+            project=project,
+            output_dir=summary.output_path,
+            scans=requested_scan_count,
+            # Gated on the download itself succeeding, not the (possibly
+            # verify-combined) final `summary.success`: files that landed
+            # and then failed checksum verification were still transferred.
+            files=summary.total_files if download_succeeded else None,
+            bytes=round(summary.total_size_mb * 1024 * 1024) if download_succeeded else None,
+            duration_seconds=round(time.time() - download_start, 3),
+            status=transfer_status(
+                succeeded=1 if summary.success else 0,
+                failed=0 if summary.success else 1,
+                success=summary.success,
+            ),
+            items=[TransferItemResult(id=spec_id, status=item_status, error=item_error)],
+            verification=TransferVerification.from_report(verification)
+            if verification is not None
+            else None,
+        ).emit()
     else:
         if summary.success:
             if unzip and not cleanup:
@@ -653,6 +815,24 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
             print_success(
                 f"Downloaded scans ({summary.total_size_mb:.1f} MB) to {summary.output_path}{kept_zip_suffix}"
             )
+            if verification is not None and not ctx.quiet:
+                click.echo(f"  Verified {verification.matched} files", err=True)
+                if verification.unverifiable:
+                    click.echo(
+                        f"  {len(verification.unverifiable)} file(s) have no server "
+                        "checksum and were not verified",
+                        err=True,
+                    )
+                if verification.missing_remote:
+                    click.echo(
+                        f"  {len(verification.missing_remote)} local file(s) absent "
+                        "from the server manifest were not verified",
+                        err=True,
+                    )
+        elif download_succeeded:
+            # The download itself succeeded; only verification failed -- say
+            # so, rather than the misleading "Download failed".
+            print_error(f"Verification failed: {verification_error}")
         else:
             print_error(
                 f"Download failed: {summary.errors[0] if summary.errors else 'Unknown error'}"

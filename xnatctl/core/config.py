@@ -75,8 +75,7 @@ def _parse_bool_env(name: str, default: bool) -> bool:
 
 _OPERATIONAL_FIELDS = ("workers", "overwrite", "direct_archive", "archive_mode", "extract")
 
-# Keychain integration. `keyring` is an optional extra: install with
-# `pip install 'xnatctl[keyring]'`.
+# Keychain integration.
 KEYRING_SERVICE = "xnatctl"
 PASSWORD_SOURCE_KEYRING = "keyring"
 
@@ -91,19 +90,13 @@ def keyring_key(profile_name: str, url: str) -> str:
 
 
 def load_keyring() -> Any:
-    """Import the optional ``keyring`` backend or raise an actionable error.
+    """Import the ``keyring`` backend.
 
-    Imported lazily inside the function, per this repo's convention: keyring is
-    an optional dependency, and importing it eagerly would make every xnatctl
-    invocation pay for a backend probe it usually does not need.
+    Imported lazily inside the function: importing keyring eagerly would make
+    every xnatctl invocation pay for a backend probe it usually does not need.
     """
-    try:
-        import keyring
-    except ImportError as e:
-        raise ConfigurationError(
-            "Keychain support requires the 'keyring' package, which is not "
-            "installed. Install it with: pip install 'xnatctl[keyring]'"
-        ) from e
+    import keyring
+
     return keyring
 
 
@@ -188,8 +181,7 @@ class Profile:
 
         Raises:
             ConfigurationError: If the keychain is the configured source but
-                the optional dependency is missing, the profile has no name to
-                key on, or no entry exists.
+                the profile has no name to key on, or no entry exists.
         """
         if self.password_source != PASSWORD_SOURCE_KEYRING:
             return self.password

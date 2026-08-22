@@ -554,9 +554,8 @@ class TestResourceRefresh:
 
 
 def _wire_stream(client: MagicMock, capture: dict) -> None:
-    """Wire ``client._get_client().stream(...)`` to capture the requested URL."""
+    """Wire ``client.stream(...)`` to capture the requested URL."""
     resp = MagicMock()
-    resp.raise_for_status.return_value = None
     resp.headers = {"content-length": "0"}
     resp.iter_bytes.return_value = iter([b""])
     cm = MagicMock()
@@ -568,10 +567,7 @@ def _wire_stream(client: MagicMock, capture: dict) -> None:
         capture["url"] = url
         return cm
 
-    inner = MagicMock()
-    inner.stream.side_effect = stream
-    client._get_client.return_value = inner
-    client._get_cookies.return_value = {}
+    client.stream.side_effect = stream
 
 
 class TestResourceScopeLevels:
@@ -659,6 +655,34 @@ class TestResourceScopeLevels:
 
         assert result.exit_code != 0
         assert "Provide a SESSION argument" in result.output
+
+    def test_download_typed_failure_exits_cleanly(self, runner: CliRunner) -> None:
+        """A typed failure from the streamer exits nonzero with a clean message.
+
+        @handle_errors turns the propagated exception into the documented exit
+        code (3 for an auth failure) and a one-line message -- no traceback, no
+        stringified success summary.
+        """
+        from xnatctl.core.exceptions import SessionExpiredError
+
+        client = _mock_client()
+
+        with runner.isolated_filesystem():
+            with core_config_seam(_mock_config()):
+                with config_seam(_mock_config()):
+                    with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                        with patch(
+                            "xnatctl.cli.resource.stream_to_file",
+                            side_effect=SessionExpiredError("https://xnat.example.org"),
+                        ):
+                            result = runner.invoke(
+                                cli,
+                                ["resource", "download", "XNAT_E00001", "DICOM", "-f", "out.zip"],
+                            )
+
+        assert result.exit_code == 3, result.output
+        assert "Session expired" in result.output
+        assert "Traceback" not in result.output
 
     # ---- upload ------------------------------------------------------------
 

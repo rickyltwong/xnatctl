@@ -7,6 +7,8 @@ from collections.abc import Callable
 from concurrent.futures import as_completed
 from typing import Any
 
+import httpx
+
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
@@ -104,17 +106,16 @@ class ScanService(BaseService):
 
         try:
             data = self._get(path, params=params)
-            results = self._extract_results(data)
-            if results:
-                results[0]["session_id"] = session_id
-                if project:
-                    results[0]["project"] = project
-                return Scan(**results[0])
-            raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}")
-        except Exception as e:
-            if "404" in str(e):
-                raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}") from e
-            raise
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}") from e
+
+        results = self._extract_results(data)
+        if results:
+            results[0]["session_id"] = session_id
+            if project:
+                results[0]["project"] = project
+            return Scan(**results[0])
+        raise ResourceNotFoundError("scan", f"{session_id}/{scan_id}")
 
     def delete(
         self,
@@ -283,3 +284,27 @@ class ScanService(BaseService):
         params = {"xnat:imageScanData/note": note}
         self._put(path, params=params)
         return True
+
+    # -------------------------------------------------------------------------
+    # Ref-based accessors
+    #
+    # The CLI resolves an experiment to a canonical, routable ``ScanRef``
+    # before addressing a scan -- XNAT silently answers a mis-routed scan URL
+    # with the parent experiment document, so the route must be one XNAT
+    # actually dispatches. These operate on that already-resolved ref so the
+    # wire path matches what inspection produced, rather than re-deriving it
+    # from ``(session_id, project)``.
+    # -------------------------------------------------------------------------
+
+    def get_scan_document(self, scan_ref: ScanRef) -> dict[str, Any] | None:
+        """Return a scan's raw detail row, or ``None`` if not found."""
+        data = self.client.get_json(HierarchyService.build_scan_path(scan_ref))
+        item = HierarchyService.extract_first_item(data)
+        if item is not None:
+            return item[0]
+        rows = HierarchyService.extract_rows(data)
+        return rows[0] if rows else None
+
+    def delete_scan_ref(self, scan_ref: ScanRef) -> httpx.Response:
+        """DELETE a scan addressed by ref and return the raw response."""
+        return self.client.delete(HierarchyService.build_scan_path(scan_ref))

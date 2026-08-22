@@ -10,6 +10,7 @@ import click
 from xnatctl.cli.common import (
     Context,
     confirm_destructive,
+    default_project_from_context,
     global_options,
     handle_errors,
     require_auth,
@@ -19,6 +20,7 @@ from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.core.output import print_error, print_output, print_success
 from xnatctl.models.hierarchy import SubjectRef
 from xnatctl.services.hierarchy import HierarchyService
+from xnatctl.services.subjects import SubjectService
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,24 @@ def _apply_template(*, template: str, project: str, groups: tuple[str | None, ..
     for i, g in enumerate(groups, start=1):
         target = target.replace(f"{{{i}}}", g or "")
     return target
+
+
+def _validate_rename_target(target: str) -> str | None:
+    """Reject a rename target that is not a legal XNAT label.
+
+    Every rename target here is derived text -- a regex substitution, a
+    template expansion, or a raw value from a user-supplied mapping/patterns
+    JSON file -- none of it XNAT has validated yet. Returns an error message
+    if invalid, or ``None`` if the target is safe to use.
+    """
+    from xnatctl.core.exceptions import InvalidIdentifierError
+    from xnatctl.core.validation import validate_xnat_label
+
+    try:
+        validate_xnat_label(target, "subject label")
+    except InvalidIdentifierError as e:
+        return str(e)
+    return None
 
 
 def _projects_in_patterns_file(path: str) -> set[str]:
@@ -128,15 +148,10 @@ def subject_list(ctx: Context, project: str | None, filter_expr: str | None) -> 
     from xnatctl.core.validation import validate_project_id
 
     project = validate_project_id(require_project_from_context(ctx, project))
-    client = ctx.get_client()
-    hierarchy = HierarchyService(client)
+    service = SubjectService(ctx.get_client())
 
     # Get subjects
-    resp = client.get_json(
-        hierarchy.build_subject_collection_path(project),
-        params={"columns": "ID,label,src"},
-    )
-    results = HierarchyService.extract_rows(resp)
+    results = service.list_rows(project, columns="ID,label,src")
 
     # Transform for output
     subjects = []
@@ -163,10 +178,7 @@ def subject_list(ctx: Context, project: str | None, filter_expr: str | None) -> 
     if len(subjects) <= 50 and not ctx.quiet:
         for subj in subjects:
             try:
-                sess_resp = client.get_json(
-                    hierarchy.build_experiment_collection_path(project, subj["id"])
-                )
-                subj["sessions"] = len(HierarchyService.extract_rows(sess_resp))
+                subj["sessions"] = len(service.experiment_rows(project, subj["id"]))
             except Exception:
                 subj["sessions"] = "?"
 
@@ -199,6 +211,7 @@ def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
     subject_id = validate_subject_id(subject_id)
     client = ctx.get_client()
     hierarchy = HierarchyService(client)
+    service = SubjectService(client)
 
     # Get subject details
     try:
@@ -209,10 +222,7 @@ def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
 
     # Get sessions
     try:
-        sess_resp = client.get_json(
-            hierarchy.build_experiment_collection_path(project, resolved.subject_id)
-        )
-        sessions = HierarchyService.extract_rows(sess_resp)
+        sessions = service.experiment_rows(project, resolved.subject_id)
         session_labels = [s.get("label", s.get("ID", "")) for s in sessions]
     except Exception:
         session_labels = []
@@ -255,14 +265,14 @@ def subject_delete(ctx: Context, subject_id: str, project: str | None, dry_run: 
 
     project = validate_project_id(require_project_from_context(ctx, project))
     subject_id = validate_subject_id(subject_id)
-    client = ctx.get_client()
+    service = SubjectService(ctx.get_client())
 
     if dry_run:
         click.echo(f"Would delete subject: {subject_id} from project: {project}", err=True)
         return
 
     # Delete subject
-    resp = client.delete(f"/data/projects/{project}/subjects/{subject_id}")
+    resp = service.delete_raw(project, subject_id)
 
     if resp.status_code in (200, 204):
         print_success(f"Deleted subject: {subject_id}")
@@ -314,11 +324,9 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
     import json
 
     from xnatctl.core.validation import validate_project_id, validate_regex_pattern
-    from xnatctl.services.subjects import SubjectService
 
     if not project:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        project = profile.default_project if profile else None
+        project = default_project_from_context(ctx)
         if not project and patterns_file:
             try:
                 projects = _projects_in_patterns_file(patterns_file)
@@ -338,8 +346,7 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
         project = require_project_from_context(ctx, project)
 
     project = validate_project_id(require_project_from_context(ctx, project))
-    client = ctx.get_client()
-    hierarchy = HierarchyService(client)
+    subject_svc = SubjectService(ctx.get_client())
 
     if patterns_file:
         if mapping or pattern or to_template:
@@ -350,8 +357,7 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
         raise SystemExit(1)
 
     # Get current subjects
-    resp = client.get_json(hierarchy.build_subject_collection_path(project))
-    subjects = HierarchyService.extract_rows(resp)
+    subjects = subject_svc.list_rows(project)
     current_labels = {s["label"] for s in subjects}
 
     renamed = {}
@@ -392,6 +398,11 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                 skipped.append((label, "already matches"))
                 continue
 
+            invalid_reason = _validate_rename_target(target)
+            if invalid_reason is not None:
+                skipped.append((label, f"invalid target label: {invalid_reason}"))
+                continue
+
             target_exists = target in current_labels
             if dry_run:
                 if target_exists:
@@ -403,7 +414,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                 continue
 
             if target_exists:
-                subject_svc = SubjectService(ctx.get_client())
                 try:
                     result = subject_svc.merge_subjects(
                         project=project,
@@ -421,10 +431,7 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                 except Exception as e:
                     skipped.append((label, f"merge failed: {e}"))
             else:
-                resp = client.put(
-                    f"/data/projects/{project}/subjects/{label}",
-                    params={"label": target},
-                )
+                resp = subject_svc.rename_raw(project, label, target)
                 if resp.status_code == 200:
                     renamed[label] = target
                     current_labels.discard(label)
@@ -448,6 +455,15 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                 skipped.append((old_label, "same label"))
                 continue
 
+            if not isinstance(new_label, str):
+                skipped.append((old_label, "invalid target label: must be a string"))
+                continue
+
+            invalid_reason = _validate_rename_target(new_label)
+            if invalid_reason is not None:
+                skipped.append((old_label, f"invalid target label: {invalid_reason}"))
+                continue
+
             target_exists = new_label in current_labels
 
             if dry_run:
@@ -459,7 +475,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                 # Execute rename/merge
                 if target_exists:
                     # Merge: move all experiments from source to target
-                    subject_svc = SubjectService(ctx.get_client())
                     try:
                         result = subject_svc.merge_subjects(
                             project=project,
@@ -476,10 +491,7 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                     except Exception as e:
                         skipped.append((old_label, f"merge failed: {e}"))
                 else:
-                    resp = client.put(
-                        f"/data/projects/{project}/subjects/{old_label}",
-                        params={"label": new_label},
-                    )
+                    resp = subject_svc.rename_raw(project, old_label, new_label)
                     if resp.status_code == 200:
                         renamed[old_label] = new_label
                         current_labels.discard(old_label)
@@ -507,6 +519,11 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                 skipped.append((label, "already matches"))
                 continue
 
+            invalid_reason = _validate_rename_target(target)
+            if invalid_reason is not None:
+                skipped.append((label, f"invalid target label: {invalid_reason}"))
+                continue
+
             target_exists = target in current_labels
 
             if dry_run:
@@ -517,7 +534,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
             else:
                 if target_exists:
                     # Merge: move all experiments from source to target
-                    subject_svc = SubjectService(ctx.get_client())
                     try:
                         result = subject_svc.merge_subjects(
                             project=project,
@@ -534,10 +550,7 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                     except Exception as e:
                         skipped.append((label, f"merge failed: {e}"))
                 else:
-                    resp = client.put(
-                        f"/data/projects/{project}/subjects/{label}",
-                        params={"label": target},
-                    )
+                    resp = subject_svc.rename_raw(project, label, target)
                     if resp.status_code == 200:
                         renamed[label] = target
                         current_labels.discard(label)

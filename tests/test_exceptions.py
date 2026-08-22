@@ -17,13 +17,13 @@ import pytest
 from xnatctl.core.exceptions import (
     AuthenticationError,
     ConfigurationError,
+    InputValidationError,
     NetworkError,
     PermissionDeniedError,
     ProfileNotFoundError,
     ResourceNotFoundError,
     ServerUnreachableError,
     SessionExpiredError,
-    ValidationError,
     XNATCtlError,
 )
 
@@ -66,7 +66,7 @@ def test_details_survive_for_verbose_output() -> None:
 
 
 def test_message_attribute_and_str_agree() -> None:
-    error = ValidationError("bad input", field="name", value="x")
+    error = InputValidationError("bad input", field="name", value="x")
 
     assert str(error) == error.message == "bad input"
 
@@ -167,3 +167,43 @@ def test_hint_is_redacted(capsys: pytest.CaptureFixture[str]) -> None:
     err = plain(capsys.readouterr().err)
     assert "s3cret" not in err
     assert "token=***" in err
+
+
+# =============================================================================
+# Deprecated stdlib-shadowing aliases
+# =============================================================================
+
+
+def test_deprecated_connection_error_warns_and_subclasses_canonical() -> None:
+    from xnatctl.core.exceptions import ConnectionError as DeprecatedConnectionError
+    from xnatctl.core.exceptions import XNATConnectionError
+
+    assert issubclass(DeprecatedConnectionError, XNATConnectionError)
+    with pytest.warns(DeprecationWarning, match="XNATConnectionError"):
+        DeprecatedConnectionError("boom")
+
+
+def test_deprecated_timeout_error_warns_and_subclasses_canonical() -> None:
+    from xnatctl.core.exceptions import RequestTimeoutError
+    from xnatctl.core.exceptions import TimeoutError as DeprecatedTimeoutError
+
+    assert issubclass(DeprecatedTimeoutError, RequestTimeoutError)
+    with pytest.warns(DeprecationWarning, match="RequestTimeoutError"):
+        DeprecatedTimeoutError("https://x", 5)
+
+
+def test_deprecated_validation_error_warns_and_subclasses_canonical() -> None:
+    from xnatctl.core.exceptions import InputValidationError
+    from xnatctl.core.exceptions import ValidationError as DeprecatedValidationError
+
+    assert issubclass(DeprecatedValidationError, InputValidationError)
+    with pytest.warns(DeprecationWarning, match="InputValidationError"):
+        DeprecatedValidationError("bad")
+
+
+def test_internal_connection_errors_are_not_the_deprecated_alias() -> None:
+    """The rename's whole point: raised errors no longer match ``except ConnectionError``."""
+    from xnatctl.core.exceptions import ConnectionError as DeprecatedConnectionError
+
+    assert not isinstance(NetworkError("https://x"), DeprecatedConnectionError)
+    assert not isinstance(ServerUnreachableError("https://x"), DeprecatedConnectionError)

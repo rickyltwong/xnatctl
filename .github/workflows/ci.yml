@@ -105,12 +105,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        # --extra dicom so the pydicom-gated tests actually execute. Without it
-        # they had never once run in CI: every one of them reported
-        # "could not import pydicom" and the suite was green regardless.
-        # The min-deps job deliberately stays on plain --dev, which is what
-        # proves the CLI still imports and skips cleanly without the extra.
-        run: uv sync --dev --extra dicom
+        run: uv sync --dev
 
       - name: Run tests
         # -rs lists skips, so a silently-not-running tier is visible in the log
@@ -120,7 +115,7 @@ jobs:
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         # Keep --cov-fail-under identical to fail_under in pyproject.toml.
-        run: uv run pytest tests/ --cov=xnatctl --cov-report=xml --cov-fail-under=82
+        run: uv run pytest tests/ --cov=xnatctl --cov-report=xml --cov-fail-under=88
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
@@ -394,7 +389,7 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           pip install pyinstaller
-          pip install ".[dicom]"
+          pip install .
 
       - name: Build binary
         run: pyinstaller xnatctl.spec --noconfirm --clean

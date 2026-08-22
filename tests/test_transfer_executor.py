@@ -11,7 +11,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from conftest import make_response
 
-from xnatctl.services.transfer.executor import TransferExecutor
+from xnatctl.core.exceptions import (
+    ClientRequestError,
+    NetworkError,
+    PermissionDeniedError,
+    RetryExhaustedError,
+    ServerError,
+)
+from xnatctl.services.transfer.executor import TransferExecutor, _retryable_import_failure
 
 
 def _make_valid_zip() -> bytes:
@@ -58,19 +65,15 @@ def _make_nested_zip(
 
 
 def _mock_stream_download(source_client: MagicMock, data: bytes) -> None:
-    """Configure source_client to return data from streaming download."""
+    """Configure source_client.stream() to yield ``data`` for stream_to_file."""
     stream_ctx = MagicMock()
     stream_resp = MagicMock()
     stream_resp.headers = {"content-length": str(len(data))}
     stream_resp.iter_bytes.return_value = [data]
-    stream_resp.raise_for_status = MagicMock()
     stream_ctx.__enter__ = MagicMock(return_value=stream_resp)
     stream_ctx.__exit__ = MagicMock(return_value=False)
 
-    inner_client = MagicMock()
-    inner_client.stream.return_value = stream_ctx
-    source_client._get_client.return_value = inner_client
-    source_client._get_cookies.return_value = {}
+    source_client.stream.return_value = stream_ctx
 
 
 @pytest.fixture
@@ -231,9 +234,9 @@ class TestTransferScanDicom:
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
 
-        # First import fails, second succeeds
+        # First import fails transiently, second succeeds
         dest_client.post.side_effect = [
-            RuntimeError("import failed"),
+            ServerError(502, "POST", "/data/services/import"),
             make_response(text="/data/experiments/E999"),
         ]
 
@@ -427,8 +430,7 @@ class TestDownloadScanDicom:
             )
 
         assert result == Path(tmpdir) / "scan_1_secondary.zip"
-        inner_client = source_client._get_client.return_value
-        call_path = inner_client.stream.call_args[0][1]
+        call_path = source_client.stream.call_args[0][1]
         assert call_path == "/data/experiments/XNAT_E001/scans/1/resources/secondary/files"
 
     def test_raises_on_invalid_zip(
@@ -536,6 +538,147 @@ class TestUploadScanDicom:
                     retry_delay=0.01,
                 )
             assert zip_path.exists()
+
+    def test_sends_the_same_wire_params_as_before_the_builder(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """The shared params builder must not change what goes on the wire."""
+        dest_client.post.return_value = make_response(text="OK")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            executor.upload_scan_dicom(
+                zip_path=zip_path,
+                dest_project="DST",
+                dest_subject="SUB001",
+                dest_experiment_label="EXP001",
+            )
+
+        args, kwargs = dest_client.post.call_args
+        assert args[0] == "/data/services/import"
+        assert kwargs["params"] == {
+            "import-handler": "DICOM-zip",
+            "PROJECT_ID": "DST",
+            "SUBJECT_ID": "SUB001",
+            "EXPT_LABEL": "EXP001",
+            "overwrite": "append",
+            "destination": "/archive",
+        }
+
+    def test_a_programming_error_is_not_retried(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """A bug must fail on attempt one, not after three backoffs."""
+        dest_client.post.side_effect = RuntimeError("boom")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            with pytest.raises(RuntimeError, match="boom"):
+                executor.upload_scan_dicom(
+                    zip_path=zip_path,
+                    dest_project="DST",
+                    dest_subject="SUB001",
+                    dest_experiment_label="EXP001",
+                    retry_delay=0.01,
+                )
+        assert dest_client.post.call_count == 1
+
+    def test_a_transient_400_is_retried(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """XNAT's import-race 400s clear on their own, so they earn a retry."""
+        dest_client.post.side_effect = [
+            ClientRequestError(
+                400, "POST", "/data/services/import", body="Session processing in progress"
+            ),
+            make_response(text="/data/experiments/E999"),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            result = executor.upload_scan_dicom(
+                zip_path=zip_path,
+                dest_project="DST",
+                dest_subject="SUB001",
+                dest_experiment_label="EXP001",
+                retry_delay=0.01,
+            )
+        assert result == "/data/experiments/E999"
+        assert dest_client.post.call_count == 2
+
+    def test_a_permanent_400_fails_on_the_first_attempt(
+        self,
+        executor: TransferExecutor,
+        dest_client: MagicMock,
+    ) -> None:
+        """A misconfigured destination says the same thing after every backoff."""
+        dest_client.post.side_effect = ClientRequestError(
+            400, "POST", "/data/services/import", body="Unable to identify destination project"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "scan_1_DICOM.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("test.dcm", "data")
+
+            with pytest.raises(ClientRequestError):
+                executor.upload_scan_dicom(
+                    zip_path=zip_path,
+                    dest_project="DST",
+                    dest_subject="SUB001",
+                    dest_experiment_label="EXP001",
+                    retry_delay=0.01,
+                )
+        assert dest_client.post.call_count == 1
+
+
+class TestRetryableImportFailurePredicate:
+    """Classification table for the transfer import's retry predicate."""
+
+    def test_transient_conditions_are_retryable(self) -> None:
+        import httpx
+
+        path = "/data/services/import"
+        for exc in [
+            ClientRequestError(400, "POST", path, body="Session processing in progress"),
+            ClientRequestError(400, "POST", path, body=""),  # unrecognised 400: retried
+            ServerError(502, "POST", path),
+            RetryExhaustedError("request", 4),
+            NetworkError("https://x", "socket died"),
+            httpx.ReadError("mid-stream"),
+            OSError("NFS blip"),
+        ]:
+            assert _retryable_import_failure(exc) is True, exc
+
+    def test_permanent_conditions_fail_fast(self) -> None:
+        import httpx
+
+        path = "/data/services/import"
+        for exc in [
+            ClientRequestError(400, "POST", path, body="Unable to identify destination project"),
+            ClientRequestError(409, "POST", path),
+            PermissionDeniedError(path, "post"),
+            FileNotFoundError("scan_1_DICOM.zip"),
+            PermissionError("scan_1_DICOM.zip"),
+            httpx.UnsupportedProtocol("htp://typo"),
+            RuntimeError("bug"),
+        ]:
+            assert _retryable_import_failure(exc) is False, exc
 
 
 class TestDownloadResource:
@@ -739,17 +882,31 @@ class TestValidateZip:
         bad.write_bytes(b"not a zip at all")
         assert TransferExecutor.validate_zip(bad) is False
 
-    def test_content_length_mismatch_fails(self, tmp_path: Path) -> None:
-        zip_path = tmp_path / "test.zip"
-        data = _make_valid_zip()
-        zip_path.write_bytes(data)
-        assert TransferExecutor.validate_zip(zip_path, expected_size=999) is False
+    @pytest.mark.parametrize("compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+    def test_corrupt_member_payload_fails(self, tmp_path: Path, compression: int) -> None:
+        """A structurally parseable archive with a corrupt member is rejected.
 
-    def test_content_length_match_passes(self, tmp_path: Path) -> None:
+        Structure-only checks pass this file; only ``testzip()`` catches it,
+        and without that a same-length corrupt archive gets imported. A
+        STORED member fails its CRC; a DEFLATED one raises from the
+        decompressor (``zlib.error``) -- both must come back False.
+        """
+        payload = bytes(range(256)) * 16
         zip_path = tmp_path / "test.zip"
-        data = _make_valid_zip()
-        zip_path.write_bytes(data)
-        assert TransferExecutor.validate_zip(zip_path, expected_size=len(data)) is True
+        with zipfile.ZipFile(zip_path, "w", compression=compression) as zf:
+            zf.writestr("scan.dcm", payload)
+        raw = bytearray(zip_path.read_bytes())
+        # Locate the member data by slicing between the local header and the
+        # central directory, then flip bytes in its middle.
+        start = raw.find(b"scan.dcm") + len("scan.dcm")
+        end = raw.rfind(b"PK\x01\x02")
+        assert 0 < start < end
+        mid = (start + end) // 2
+        for i in range(mid, mid + 8):
+            raw[i] ^= 0xFF
+        zip_path.write_bytes(raw)
+
+        assert TransferExecutor.validate_zip(zip_path) is False
 
 
 class TestFindPrearchiveEntry:
@@ -1057,133 +1214,6 @@ class TestFetchExperimentXml:
             "/data/experiments/XNAT_E001",
             params={"format": "xml"},
         )
-
-
-class TestRewriteExperimentXml:
-    def test_strips_internal_elements(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-
-        # Flatten all local tag names
-        all_tags = {
-            elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag for elem in root.iter()
-        }
-
-        assert "subject_ID" not in all_tags
-        assert "prearchivePath" not in all_tags
-        assert "image_session_ID" not in all_tags
-        assert "sharing" not in all_tags
-        assert "share" not in all_tags
-        assert "fields" not in all_tags
-        assert "file" not in all_tags
-
-    def test_strips_session_level_resources(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-
-        # Session-level resources should be removed
-        # But scan-level elements should remain
-        all_tags = {
-            elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag for elem in root.iter()
-        }
-        assert "resources" not in all_tags
-
-    def test_strips_schema_location(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-
-        xsi_ns = "http://www.w3.org/2001/XMLSchema-instance"
-        assert f"{{{xsi_ns}}}schemaLocation" not in root.attrib
-
-    def test_strips_html_comments(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        assert "hidden_fields" not in cleaned
-
-    def test_preserves_session_type(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-        assert root.attrib.get("session_type") == "Guimond, Synthia^Development"
-
-    def test_preserves_scan_quality(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-
-        xnat_ns = ""
-        for elem in root.iter():
-            if "xnat" in elem.tag and "}" in elem.tag:
-                xnat_ns = elem.tag[1 : elem.tag.index("}")]
-                break
-
-        qualities = root.findall(f".//{{{xnat_ns}}}quality")
-        assert len(qualities) == 2
-
-    def test_preserves_scan_parameters(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-
-        xnat_ns = ""
-        for elem in root.iter():
-            if "xnat" in elem.tag and "}" in elem.tag:
-                xnat_ns = elem.tag[1 : elem.tag.index("}")]
-                break
-
-        tr_elems = root.findall(f".//{{{xnat_ns}}}tr")
-        assert len(tr_elems) == 1
-        assert tr_elems[0].text == "2300"
-
-    def test_preserves_acquisition_site(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-
-        xnat_ns = ""
-        for elem in root.iter():
-            if "xnat" in elem.tag and "}" in elem.tag:
-                xnat_ns = elem.tag[1 : elem.tag.index("}")]
-                break
-
-        site = root.find(f"{{{xnat_ns}}}acquisition_site")
-        assert site is not None
-        assert site.text == "Site A"
-
-    def test_preserves_add_param(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-
-        xnat_ns = ""
-        for elem in root.iter():
-            if "xnat" in elem.tag and "}" in elem.tag:
-                xnat_ns = elem.tag[1 : elem.tag.index("}")]
-                break
-
-        params = root.findall(f"{{{xnat_ns}}}addParam")
-        assert len(params) == 1
-        assert params[0].text == "extra_value"
-
-    def test_rewrites_experiment_id(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML, "XNAT_E999")
-        root = ET.fromstring(cleaned)
-        assert root.attrib["ID"] == "XNAT_E999"
-
-    def test_rewrites_project_attribute(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML, dest_project="DST")
-        root = ET.fromstring(cleaned)
-        assert root.attrib["project"] == "DST"
-
-    def test_preserves_id_when_no_dest(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-        assert root.attrib["ID"] == "XNAT_E001"
-
-    def test_preserves_project_when_no_dest(self, executor: TransferExecutor) -> None:
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-        assert root.attrib["project"] == "SRC"
-
-    def test_strips_label_attribute(self, executor: TransferExecutor) -> None:
-        """Label is always stripped to avoid 400 on destination PUT."""
-        cleaned = executor._rewrite_experiment_xml(_SAMPLE_XML)
-        root = ET.fromstring(cleaned)
-        assert "label" not in root.attrib
 
 
 class TestApplyXmlOverlay:

@@ -7,22 +7,63 @@ DICOM-zip imports with retry, non-DICOM resource uploads, and ZIP validation.
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import time
-import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
 
-import defusedxml.ElementTree as DefusedET
 import httpx
+
+from xnatctl.core.exceptions import ClientRequestError, ServerError, XNATConnectionError
+from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, is_permanent_400, retry_call
+from xnatctl.core.validation import quote_path_segment, validate_local_path_component
+from xnatctl.core.validation import quote_prearchive_segment as _quote_path_segment
+from xnatctl.services.downloads import stream_to_file
+from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
+from xnatctl.services.transfer.xml_overlay import rewrite_experiment_xml
 
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
 
 logger = logging.getLogger(__name__)
+
+
+def _retryable_import_failure(exc: Exception) -> bool:
+    """Whether a failed import POST is worth another attempt.
+
+    ``dest.post`` goes through ``XNATClient._request``, which raises typed
+    errors -- so what reaches this predicate has already been through the
+    client's own ladder (429/503 for a POST). What this ladder adds:
+
+    * Transient import-race 400s, which the client cannot know about -- only
+      the import service's 400s are retryable, discriminated by body.
+    * Server-side failures the client refuses to repeat for a non-idempotent
+      method (500/502/504) plus exhausted/connection failures. Re-importing
+      the same DICOM ZIP with ``overwrite=append`` re-sends the same SOP
+      instances, so a repeat is safe here even if the first attempt partially
+      ran.
+    * Local file reads (OSError) and any raw httpx failure from a
+      non-XNATClient transport.
+
+    Fail-fast cases: permanent 400s, auth/permission/not-found errors, a ZIP
+    that is missing or unreadable, transport errors that cannot self-heal, and
+    programming errors -- retrying a bug just makes it a slower bug. The
+    connection family is deliberately retried whole even though a slice of it
+    (e.g. a connect timeout the client already declared unrecoverable) is
+    likely permanent: the wrapped cause is not distinguishable by type, and a
+    transfer pipeline prefers a few bounded retries over dropping a scan.
+    """
+    if isinstance(exc, ClientRequestError):
+        return exc.status_code == 400 and not is_permanent_400(exc.body)
+    if isinstance(exc, FileNotFoundError | PermissionError | IsADirectoryError):
+        # The local ZIP is gone or unreadable; no backoff brings it back.
+        return False
+    if isinstance(exc, PERMANENT_TRANSPORT_ERRORS):
+        # Wrong scheme, malformed URL, redirect loop: same on every attempt.
+        return False
+    return isinstance(exc, XNATConnectionError | ServerError | httpx.HTTPError | OSError)
 
 
 def _strip_xnat_prefix(filename: str) -> str:
@@ -42,11 +83,6 @@ def _strip_xnat_prefix(filename: str) -> str:
     if len(parts) == 2 and parts[1]:
         return parts[1]
     return Path(filename).name
-
-
-def _quote_path_segment(value: str) -> str:
-    """Encode a single REST path segment for XNAT service URIs."""
-    return quote(value, safe="").replace(".", "%2E")
 
 
 class TransferExecutor:
@@ -71,7 +107,7 @@ class TransferExecutor:
             Set of subject accession IDs present on the destination.
         """
         resp = self.dest.get(
-            f"/data/projects/{dest_project}/subjects",
+            f"/data/projects/{quote_path_segment(dest_project)}/subjects",
             params={"format": "json", "columns": "ID"},
         )
         data = resp.json()
@@ -88,7 +124,7 @@ class TransferExecutor:
             Set of experiment accession IDs present on the destination.
         """
         resp = self.dest.get(
-            f"/data/projects/{dest_project}/experiments",
+            f"/data/projects/{quote_path_segment(dest_project)}/experiments",
             params={"format": "json", "columns": "ID"},
         )
         data = resp.json()
@@ -105,7 +141,10 @@ class TransferExecutor:
         Returns:
             Response text (usually URI of created subject).
         """
-        resp = self.dest.put(f"/data/archive/projects/{dest_project}/subjects/{label}")
+        resp = self.dest.put(
+            f"/data/archive/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(label)}"
+        )
         return resp.text.strip()
 
     def create_experiment(
@@ -127,7 +166,9 @@ class TransferExecutor:
             Response text (usually URI of created experiment).
         """
         resp = self.dest.put(
-            f"/data/archive/projects/{dest_project}/subjects/{dest_subject}/experiments/{label}",
+            f"/data/archive/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(dest_subject)}"
+            f"/experiments/{quote_path_segment(label)}",
             params={"xsiType": xsi_type},
         )
         return resp.text.strip()
@@ -155,8 +196,10 @@ class TransferExecutor:
             Response text from PUT.
         """
         resp = self.dest.put(
-            f"/data/projects/{dest_project}/subjects/{dest_subject}"
-            f"/experiments/{dest_experiment}/scans/{scan_id}",
+            f"/data/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(dest_subject)}"
+            f"/experiments/{quote_path_segment(dest_experiment)}"
+            f"/scans/{quote_path_segment(scan_id)}",
             params={"xsiType": xsi_type, "type": scan_type},
         )
         return resp.text.strip()
@@ -172,7 +215,7 @@ class TransferExecutor:
             Experiment ID if found, None otherwise.
         """
         resp = self.dest.get(
-            f"/data/projects/{dest_project}/experiments",
+            f"/data/projects/{quote_path_segment(dest_project)}/experiments",
             params={"format": "json", "label": label},
         )
         data = resp.json()
@@ -192,7 +235,7 @@ class TransferExecutor:
             List of scan dicts with ID, type, series_description, etc.
         """
         resp = self.source.get(
-            f"/data/experiments/{experiment_id}/scans",
+            f"/data/experiments/{quote_path_segment(experiment_id)}/scans",
             params={"format": "json"},
         )
         data = resp.json()
@@ -210,7 +253,8 @@ class TransferExecutor:
             List of resource dicts with label, file_count, etc.
         """
         resp = self.source.get(
-            f"/data/experiments/{experiment_id}/scans/{scan_id}/resources",
+            f"/data/experiments/{quote_path_segment(experiment_id)}"
+            f"/scans/{quote_path_segment(scan_id)}/resources",
             params={"format": "json"},
         )
         data = resp.json()
@@ -227,7 +271,7 @@ class TransferExecutor:
             List of resource dicts with label, file_count, etc.
         """
         resp = self.source.get(
-            f"/data/experiments/{experiment_id}/resources",
+            f"/data/experiments/{quote_path_segment(experiment_id)}/resources",
             params={"format": "json"},
         )
         data = resp.json()
@@ -256,22 +300,30 @@ class TransferExecutor:
             ValueError: If ZIP validation fails.
         """
         work_dir.mkdir(parents=True, exist_ok=True)
-        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", resource_label)
-        zip_path = work_dir / f"scan_{scan_id}_{safe_label}.zip"
+        # Both are server-reported (the source XNAT), not caller input, but
+        # still local-path components -- validated, not mangled: a
+        # character-whitelist substitution (the previous approach here) is
+        # not injective, so two differently-hostile values could still
+        # collide on the same local ZIP name.
+        safe_scan_id = validate_local_path_component(scan_id, "scan_id")
+        safe_label = validate_local_path_component(resource_label, "resource_label")
+        zip_path = work_dir / f"scan_{safe_scan_id}_{safe_label}.zip"
         encoded_label = _quote_path_segment(resource_label)
 
-        total_bytes, content_length = self._stream_download(
+        stream_to_file(
             self.source,
-            f"/data/experiments/{source_experiment_id}"
-            f"/scans/{scan_id}/resources/{encoded_label}/files",
-            {"format": "zip"},
+            f"/data/experiments/{quote_path_segment(source_experiment_id)}"
+            f"/scans/{quote_path_segment(scan_id)}/resources/{encoded_label}/files",
             zip_path,
+            params={"format": "zip"},
         )
 
-        if not self.validate_zip(zip_path, content_length):
+        # stream_to_file already enforced the Content-Length match; validate_zip
+        # adds the zipfile-integrity check on top.
+        if not self.validate_zip(zip_path):
             raise ValueError(
                 f"ZIP validation failed for scan {scan_id}/{resource_label}: "
-                f"downloaded {total_bytes} bytes, expected {content_length}"
+                "downloaded content is not a valid ZIP"
             )
 
         return zip_path
@@ -302,68 +354,49 @@ class TransferExecutor:
             Exception: If all retries exhausted.
         """
         scan_id = zip_path.stem.removeprefix("scan_").removesuffix("_DICOM")
-
-        last_error: Exception | None = None
-        for attempt in range(retry_count):
-            try:
-                with open(zip_path, "rb") as f:
-                    resp = self.dest.post(
-                        "/data/services/import",
-                        params={
-                            "import-handler": "DICOM-zip",
-                            "PROJECT_ID": dest_project,
-                            "SUBJECT_ID": dest_subject,
-                            "EXPT_LABEL": dest_experiment_label,
-                            "overwrite": "append",
-                            "destination": "/archive",
-                        },
-                        files={"file": (zip_path.name, f, "application/zip")},
-                    )
-                zip_path.unlink(missing_ok=True)
-                return resp.text.strip() if isinstance(resp.text, str) else str(resp)
-            except httpx.HTTPStatusError as e:
-                last_error = e
-                body = e.response.text[:500] if e.response else ""
-                if attempt < retry_count - 1:
-                    delay = retry_delay * (2**attempt)
-                    logger.warning(
-                        "Scan %s DICOM import failed (attempt %d/%d), "
-                        "retrying in %.1fs: %s — response: %s",
-                        scan_id,
-                        attempt + 1,
-                        retry_count,
-                        delay,
-                        e,
-                        body,
-                    )
-                    time.sleep(delay)
-            except Exception as e:
-                last_error = e
-                if attempt < retry_count - 1:
-                    delay = retry_delay * (2**attempt)
-                    logger.warning(
-                        "Scan %s DICOM import failed (attempt %d/%d), retrying in %.1fs: %s",
-                        scan_id,
-                        attempt + 1,
-                        retry_count,
-                        delay,
-                        e,
-                    )
-                    time.sleep(delay)
-
-        # Retain ZIP on final failure for debugging
-        body = ""
-        if isinstance(last_error, httpx.HTTPStatusError) and last_error.response:
-            body = last_error.response.text[:500]
-        logger.error(
-            "Scan %s DICOM import failed after %d attempts. "
-            "ZIP retained at %s for debugging. Last response: %s",
-            scan_id,
-            retry_count,
-            zip_path,
-            body or "(no response body)",
+        params = build_import_params(
+            import_handler="DICOM-zip",
+            project=dest_project,
+            subject=dest_subject,
+            session=dest_experiment_label,
+            entity_keys="experiment",
+            # append, never the CLI default "delete": a transfer must not wipe
+            # scans that already arrived in an earlier run of the same session.
+            overwrite="append",
+            destination="/archive",
         )
-        raise last_error  # type: ignore[misc]
+
+        def _import() -> str:
+            # Reopened per attempt: a retried POST must not resend an
+            # exhausted file handle.
+            with open(zip_path, "rb") as f:
+                resp = self.dest.post(
+                    IMPORT_ENDPOINT,
+                    params=params,
+                    files={"file": (zip_path.name, f, "application/zip")},
+                )
+            return resp.text.strip() if isinstance(resp.text, str) else str(resp)
+
+        try:
+            result = retry_call(
+                _import,
+                retryable=_retryable_import_failure,
+                max_attempts=retry_count,
+                backoff_base=retry_delay,
+                label=f"scan {scan_id} DICOM import",
+            )
+        except Exception as e:
+            # Retain ZIP on failure for debugging
+            logger.error(
+                "Scan %s DICOM import failed. ZIP retained at %s for debugging: %s",
+                scan_id,
+                zip_path,
+                e,
+            )
+            raise
+
+        zip_path.unlink(missing_ok=True)
+        return result
 
     def transfer_scan_dicom(
         self,
@@ -431,19 +464,22 @@ class TransferExecutor:
             ValueError: If ZIP validation fails.
         """
         work_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = work_dir / f"{resource_label}.zip"
+        safe_label = validate_local_path_component(resource_label, "resource_label")
+        zip_path = work_dir / f"{safe_label}.zip"
 
-        total_bytes, content_length = self._stream_download(
-            self.source, source_path, {"format": "zip"}, zip_path
-        )
+        total_bytes = stream_to_file(
+            self.source, source_path, zip_path, params={"format": "zip"}
+        ).bytes_written
 
-        if not self.validate_zip(zip_path, content_length):
+        # stream_to_file already enforced the Content-Length match; validate_zip
+        # adds the zipfile-integrity check on top.
+        if not self.validate_zip(zip_path):
             raise ValueError(
                 f"ZIP validation failed for resource {resource_label}: "
-                f"downloaded {total_bytes} bytes, expected {content_length}"
+                "downloaded content is not a valid ZIP"
             )
 
-        flat_zip_path = work_dir / f"{resource_label}_flat.zip"
+        flat_zip_path = work_dir / f"{safe_label}_flat.zip"
         try:
             self._flatten_zip(zip_path, flat_zip_path)
         finally:
@@ -680,133 +716,10 @@ class TransferExecutor:
             Raw XML string.
         """
         resp = self.source.get(
-            f"/data/experiments/{experiment_id}",
+            f"/data/experiments/{quote_path_segment(experiment_id)}",
             params={"format": "xml"},
         )
         return resp.text
-
-    def _rewrite_experiment_xml(  # noqa: C901  # pre-existing; see pyproject
-        self,
-        xml_text: str,
-        dest_experiment_id: str | None = None,
-        dest_project: str | None = None,
-    ) -> str:
-        """Strip internal references from experiment XML for overlay.
-
-        Removes file/catalog elements, subject_ID, prearchivePath,
-        image_session_ID, sharing, fields, session-level resources,
-        schemaLocation, and label. Rewrites experiment ID and project
-        if provided.
-
-        The label attribute is always stripped because XNAT rejects PUT
-        requests that include a label differing from the destination
-        experiment's current label (400: "Label must be modified through
-        separate URI."). Since xnatctl currently only supports same-label
-        transfers, stripping it avoids the mismatch entirely.
-
-        .. todo:: Support regex-based label transformation. When implemented,
-           accept a ``dest_label`` parameter and rewrite instead of strip.
-
-        Args:
-            xml_text: Raw source experiment XML.
-            dest_experiment_id: Destination experiment accession ID.
-            dest_project: Destination project ID.
-
-        Returns:
-            Cleaned XML string suitable for PUT overlay.
-        """
-        # Strip HTML comments (hidden_fields, internal DB refs)
-        xml_text = re.sub(r"<!--.*?-->", "", xml_text, flags=re.DOTALL)
-
-        root = DefusedET.fromstring(xml_text)
-
-        # Collect all namespace URIs used in the document (tags + attributes)
-        ns_uris: set[str] = set()
-        for elem in root.iter():
-            tag = elem.tag
-            if tag.startswith("{"):
-                ns_uris.add(tag[1 : tag.index("}")])
-            for attr_name in elem.attrib:
-                if attr_name.startswith("{"):
-                    ns_uris.add(attr_name[1 : attr_name.index("}")])
-
-        # Build namespace map: prefix -> URI
-        ns_map: dict[str, str] = {}
-        for uri in ns_uris:
-            if "xnat" in uri:
-                ns_map["xnat"] = uri
-            elif "XMLSchema-instance" in uri:
-                ns_map["xsi"] = uri
-
-        xnat_ns = ns_map.get("xnat", "")
-        xsi_ns = ns_map.get("xsi", "")
-
-        # Elements to remove (direct children or nested within scans)
-        remove_local_names = {
-            "file",
-            "subject_ID",
-            "prearchivePath",
-            "image_session_ID",
-            "sharing",
-            "fields",
-        }
-
-        # Remove session-level resources (but not scan-level resources)
-        # Session-level resources are direct children of root
-        if xnat_ns:
-            for tag_name in ("resources",):
-                for child in root.findall(f"{{{xnat_ns}}}{tag_name}"):
-                    root.remove(child)
-
-        # Recursively remove targeted elements
-        self._remove_elements_recursive(root, remove_local_names, xnat_ns)
-
-        # Remove xsi:schemaLocation attribute
-        if xsi_ns:
-            schema_attr = f"{{{xsi_ns}}}schemaLocation"
-            if schema_attr in root.attrib:
-                del root.attrib[schema_attr]
-
-        # Rewrite root ID and project attributes
-        if dest_experiment_id is not None and "ID" in root.attrib:
-            root.attrib["ID"] = dest_experiment_id
-        if dest_project is not None and "project" in root.attrib:
-            root.attrib["project"] = dest_project
-
-        # Strip label to avoid 400 "Label must be modified through separate URI"
-        # TODO: rewrite label instead of stripping when label transformation is supported
-        if "label" in root.attrib:
-            del root.attrib["label"]
-
-        # Register namespaces to avoid ns0/ns1 prefixes in output
-        for prefix, uri in ns_map.items():
-            ET.register_namespace(prefix, uri)
-
-        return ET.tostring(root, encoding="unicode", xml_declaration=True)
-
-    @staticmethod
-    def _remove_elements_recursive(
-        parent: ET.Element,
-        local_names: set[str],
-        xnat_ns: str,
-    ) -> None:
-        """Remove elements matching local names from parent and descendants.
-
-        Args:
-            parent: Parent XML element.
-            local_names: Set of local tag names to remove.
-            xnat_ns: XNAT namespace URI.
-        """
-        to_remove: list[ET.Element] = []
-        for child in parent:
-            tag = child.tag
-            local = tag.rsplit("}", 1)[-1] if "}" in tag else tag
-            if local in local_names:
-                to_remove.append(child)
-            else:
-                TransferExecutor._remove_elements_recursive(child, local_names, xnat_ns)
-        for child in to_remove:
-            parent.remove(child)
 
     def apply_xml_overlay(
         self,
@@ -827,11 +740,12 @@ class TransferExecutor:
 
         dest_experiment_id = self.check_experiment_exists(dest_project, dest_experiment_label)
 
-        cleaned_xml = self._rewrite_experiment_xml(xml_text, dest_experiment_id, dest_project)
+        cleaned_xml = rewrite_experiment_xml(xml_text, dest_experiment_id, dest_project)
 
         dest_path = (
-            f"/data/projects/{dest_project}/subjects/{dest_subject}"
-            f"/experiments/{dest_experiment_label}"
+            f"/data/projects/{quote_path_segment(dest_project)}"
+            f"/subjects/{quote_path_segment(dest_subject)}"
+            f"/experiments/{quote_path_segment(dest_experiment_label)}"
         )
         logger.debug(
             "XML overlay PUT %s (payload %d bytes):\n%s",
@@ -893,7 +807,7 @@ class TransferExecutor:
             )
             return 0
 
-    def wait_for_archive(  # noqa: C901  # pre-existing; see pyproject
+    def wait_for_archive(
         self,
         dest_project: str,
         subject_label: str,
@@ -923,106 +837,9 @@ class TransferExecutor:
 
         while True:
             if not prearchive_cleared:
-                try:
-                    entry = self.find_prearchive_entry(dest_project, experiment_label)
-                except Exception:
-                    logger.debug(
-                        "Poll cycle error for %s, retrying next cycle",
-                        experiment_label,
-                        exc_info=True,
-                    )
-                else:
-                    if entry is None:
-                        prearchive_cleared = True
-                    else:
-                        status = entry.get("status", "")
-                        if status == "RECEIVING":
-                            logger.debug(
-                                "Prearchive entry for %s still RECEIVING, waiting...",
-                                experiment_label,
-                            )
-                        elif status == "READY":
-                            timestamp = entry.get("timestamp", "")
-                            if not timestamp:
-                                logger.warning(
-                                    "Prearchive entry for %s is READY but has no timestamp,"
-                                    " skipping",
-                                    experiment_label,
-                                )
-                            else:
-                                logger.info(
-                                    "Archiving prearchive entry for %s (status=READY)",
-                                    experiment_label,
-                                )
-                                try:
-                                    self.archive_prearchive(
-                                        dest_project=dest_project,
-                                        timestamp=timestamp,
-                                        session_name=entry.get("folderName")
-                                        or entry.get("name", experiment_label),
-                                        subject_label=subject_label,
-                                        experiment_label=experiment_label,
-                                    )
-                                except httpx.HTTPStatusError as exc:
-                                    body = exc.response.text[:500] if exc.response else ""
-                                    logger.error(
-                                        "Archiving prearchive entry failed for %s: %s — response: %s",
-                                        experiment_label,
-                                        exc,
-                                        body or "(no response body)",
-                                    )
-                                    raise
-                                except Exception:
-                                    logger.error(
-                                        "Archiving prearchive entry failed for %s",
-                                        experiment_label,
-                                        exc_info=True,
-                                    )
-                                    raise
-                        elif status == "CONFLICT":
-                            timestamp = entry.get("timestamp", "")
-                            folder = entry.get("folderName") or entry.get("name", experiment_label)
-                            if timestamp:
-                                logger.info(
-                                    "Resolving CONFLICT for %s by archiving with overwrite",
-                                    experiment_label,
-                                )
-                                try:
-                                    self.archive_prearchive(
-                                        dest_project=dest_project,
-                                        timestamp=timestamp,
-                                        session_name=folder,
-                                        subject_label=subject_label,
-                                        experiment_label=experiment_label,
-                                        overwrite="append",
-                                    )
-                                except httpx.HTTPStatusError as exc:
-                                    body = exc.response.text[:500] if exc.response else ""
-                                    logger.error(
-                                        "CONFLICT resolution failed for %s: %s — response: %s",
-                                        experiment_label,
-                                        exc,
-                                        body or "(no response body)",
-                                    )
-                                    raise
-                                except Exception:
-                                    logger.error(
-                                        "CONFLICT resolution failed for %s",
-                                        experiment_label,
-                                        exc_info=True,
-                                    )
-                                    raise
-                        elif status == "_BUILDING":
-                            logger.debug(
-                                "Prearchive entry for %s is building, waiting...",
-                                experiment_label,
-                            )
-                        else:
-                            logger.debug(
-                                "Prearchive entry for %s has status=%s, waiting...",
-                                experiment_label,
-                                status,
-                            )
+                prearchive_cleared = self._poll_and_resolve_prearchive(
+                    dest_project, subject_label, experiment_label
+                )
 
             if prearchive_cleared:
                 actual = self._safe_count_dest_scans(
@@ -1052,56 +869,142 @@ class TransferExecutor:
 
             time.sleep(interval)
 
+    def _poll_and_resolve_prearchive(
+        self,
+        dest_project: str,
+        subject_label: str,
+        experiment_label: str,
+    ) -> bool:
+        """Fetch the prearchive entry once and resolve READY/CONFLICT status.
+
+        Args:
+            dest_project: Destination project ID.
+            subject_label: Subject label.
+            experiment_label: Experiment label.
+
+        Returns:
+            True if the experiment has left the prearchive (no entry found).
+
+        Raises:
+            httpx.HTTPStatusError: If archiving a READY/CONFLICT entry fails.
+        """
+        try:
+            entry = self.find_prearchive_entry(dest_project, experiment_label)
+        except Exception:
+            logger.debug(
+                "Poll cycle error for %s, retrying next cycle",
+                experiment_label,
+                exc_info=True,
+            )
+            return False
+
+        if entry is None:
+            return True
+
+        status = entry.get("status", "")
+        if status == "RECEIVING":
+            logger.debug("Prearchive entry for %s still RECEIVING, waiting...", experiment_label)
+        elif status in ("READY", "CONFLICT"):
+            self._archive_entry(status, entry, dest_project, subject_label, experiment_label)
+        elif status == "_BUILDING":
+            logger.debug("Prearchive entry for %s is building, waiting...", experiment_label)
+        else:
+            logger.debug(
+                "Prearchive entry for %s has status=%s, waiting...",
+                experiment_label,
+                status,
+            )
+        return False
+
+    def _archive_entry(
+        self,
+        status: str,
+        entry: dict[str, Any],
+        dest_project: str,
+        subject_label: str,
+        experiment_label: str,
+    ) -> None:
+        """Archive a READY prearchive entry, or resolve a CONFLICT one.
+
+        A CONFLICT is resolved the same way as READY, just with
+        ``overwrite="append"``. A missing timestamp skips the entry (with a
+        warning for READY, silently for CONFLICT).
+
+        Args:
+            status: ``"READY"`` or ``"CONFLICT"``.
+            entry: Prearchive entry dict.
+            dest_project: Destination project ID.
+            subject_label: Subject label.
+            experiment_label: Experiment label.
+
+        Raises:
+            httpx.HTTPStatusError: If the archive POST fails.
+        """
+        timestamp = entry.get("timestamp", "")
+        if not timestamp:
+            if status == "READY":
+                logger.warning(
+                    "Prearchive entry for %s is READY but has no timestamp, skipping",
+                    experiment_label,
+                )
+            return
+
+        if status == "CONFLICT":
+            logger.info("Resolving CONFLICT for %s by archiving with overwrite", experiment_label)
+            error_prefix = "CONFLICT resolution failed"
+            overwrite = "append"
+        else:
+            logger.info("Archiving prearchive entry for %s (status=READY)", experiment_label)
+            error_prefix = "Archiving prearchive entry failed"
+            overwrite = None
+
+        try:
+            self.archive_prearchive(
+                dest_project=dest_project,
+                timestamp=timestamp,
+                session_name=entry.get("folderName") or entry.get("name", experiment_label),
+                subject_label=subject_label,
+                experiment_label=experiment_label,
+                overwrite=overwrite,
+            )
+        except httpx.HTTPStatusError as exc:
+            body = exc.response.text[:500] if exc.response else ""
+            logger.error(
+                "%s for %s: %s — response: %s",
+                error_prefix,
+                experiment_label,
+                exc,
+                body or "(no response body)",
+            )
+            raise
+        except Exception:
+            logger.error(
+                "%s for %s",
+                error_prefix,
+                experiment_label,
+                exc_info=True,
+            )
+            raise
+
     @staticmethod
-    def validate_zip(zip_path: Path, expected_size: int | None = None) -> bool:
-        """Validate a downloaded ZIP file.
+    def validate_zip(zip_path: Path) -> bool:
+        """Check that a downloaded file is a ZIP whose members pass their CRCs.
+
+        Size verification against Content-Length happens in
+        ``stream_to_file``; this guards the archive itself -- structure AND
+        member checksums, because a same-length corrupt archive would
+        otherwise be imported into the destination server.
 
         Args:
             zip_path: Path to the ZIP file.
-            expected_size: Expected file size from Content-Length header.
 
         Returns:
             True if the ZIP is valid.
         """
-        if not zip_path.exists():
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                return zf.testzip() is None
+        except (zipfile.BadZipFile, OSError, zlib.error):
+            # zlib.error: corruption inside a DEFLATED member surfaces from the
+            # decompressor, not as BadZipFile.
             return False
-        if not zipfile.is_zipfile(zip_path):
-            return False
-        if expected_size is not None:
-            actual_size = zip_path.stat().st_size
-            if actual_size != expected_size:
-                return False
-        return True
-
-    @staticmethod
-    def _stream_download(
-        client: XNATClient,
-        path: str,
-        params: dict[str, str],
-        dest: Path,
-    ) -> tuple[int, int | None]:
-        """Stream a file download from an XNAT client.
-
-        Args:
-            client: XNATClient to download from.
-            path: API endpoint path.
-            params: Query parameters.
-            dest: Local file path to write to.
-
-        Returns:
-            Tuple of (total_bytes_written, content_length_from_header).
-        """
-        http_client = client._get_client()
-        cookies = client._get_cookies()
-        total_bytes = 0
-        content_length: int | None = None
-        with http_client.stream("GET", path, params=params, cookies=cookies) as response:
-            response.raise_for_status()
-            cl_header = response.headers.get("content-length")
-            if cl_header is not None:
-                content_length = int(cl_header)
-            with open(dest, "wb") as f:
-                for chunk in response.iter_bytes(chunk_size=8192):
-                    f.write(chunk)
-                    total_bytes += len(chunk)
-        return total_bytes, content_length

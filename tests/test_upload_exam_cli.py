@@ -114,7 +114,7 @@ def test_session_upload_exam_only_dicoms_does_not_resolve_experiment_id(
                 errors=[],
             )
 
-    monkeypatch.setattr("xnatctl.services.uploads.UploadService", UploadServiceSpy)
+    monkeypatch.setattr("xnatctl.services.upload.UploadService", UploadServiceSpy)
 
     with runner.isolated_filesystem():
         monkeypatch.setenv("HOME", str(Path.cwd()))
@@ -233,7 +233,7 @@ def test_session_upload_exam_wait_for_archive_default_succeeds(
                 )
             )
 
-    monkeypatch.setattr("xnatctl.services.uploads.UploadService", UploadServiceStub)
+    monkeypatch.setattr("xnatctl.services.upload.UploadService", UploadServiceStub)
     monkeypatch.setattr("xnatctl.services.resources.ResourceService", ResourceServiceSpy)
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
@@ -338,7 +338,7 @@ def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
                 errors=[],
             )
 
-    monkeypatch.setattr("xnatctl.services.uploads.UploadService", UploadServiceStub)
+    monkeypatch.setattr("xnatctl.services.upload.UploadService", UploadServiceStub)
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
     monotonic_calls = {"i": 0}
@@ -347,7 +347,7 @@ def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
         monotonic_calls["i"] += 1
         return 0.0 if monotonic_calls["i"] == 1 else 9999.0
 
-    monkeypatch.setattr("xnatctl.cli.session.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("xnatctl.services.exam_upload.time.monotonic", fake_monotonic)
 
     def fake_get_json(path: str, *, params: dict[str, object] | None = None) -> object:
         # The hierarchy fallback (B01) issues a project listing when the

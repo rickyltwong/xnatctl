@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import InvalidIdentifierError, ResourceNotFoundError
+from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.hierarchy import (
     ExperimentRef,
     HierarchyParentRef,
@@ -28,8 +29,48 @@ _ACCESSION_ID_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9]*_E\d+$")
 
 
 def join_api_path(*parts: str | None) -> str:
-    """Join API path segments into a normalized absolute path."""
-    return "/" + "/".join(part.strip("/") for part in parts if part)
+    """Join API path segments into a normalized absolute path.
+
+    Each part is percent-encoded as its own path segment via
+    :func:`~xnatctl.core.validation.quote_path_segment` -- dots stay literal
+    (XNAT subject/experiment labels routinely contain them), but a reserved
+    character embedded in a caller-supplied identifier (``/``, ``?``, ``#``,
+    etc.) is neutralized into that same segment rather than allowed to route
+    the request somewhere else. Refs (:mod:`xnatctl.models.hierarchy`) already
+    reject those characters at construction; this is defense in depth for the
+    few builders below that still take a raw string directly (e.g.
+    ``build_subject_collection_path(project_id=...)``).
+
+    ``None`` is the one deliberate "omit this part" sentinel (an optional
+    segment a caller genuinely doesn't have); every part actually supplied is
+    a plain string with no reason to carry a leading/trailing ``/`` of its
+    own -- every static literal in this module is a single bare word ("data",
+    "projects", "scans", ...), and every caller-supplied value either goes
+    through a ref (which already rejects ``/`` outright) or is quoted here.
+    So a leading/trailing ``/`` at this point is never legitimate content to
+    silently reinterpret; it used to be quietly stripped (``"/TARGET"`` ->
+    ``"TARGET"``, a different resource for what was actually invalid input,
+    and a bare ``"/"`` collapsing to an empty segment -- a double-slash
+    route), and is now rejected instead.
+
+    Raises:
+        InvalidIdentifierError: If a supplied (non-``None``) part is empty,
+            composed entirely of ``/`` characters, or has a leading or
+            trailing ``/``.
+    """
+    segments = []
+    for part in parts:
+        if part is None:
+            continue
+        stripped = part.strip("/")
+        if stripped == "":
+            raise InvalidIdentifierError("path segment", part, "cannot be empty or slash-only")
+        if stripped != part:
+            raise InvalidIdentifierError(
+                "path segment", part, "cannot have a leading or trailing '/'"
+            )
+        segments.append(quote_path_segment(part))
+    return "/" + "/".join(segments)
 
 
 class HierarchyService(BaseService):
@@ -42,8 +83,23 @@ class HierarchyService(BaseService):
 
     @staticmethod
     def build_subject_collection_path(project_id: str | None = None) -> str:
-        """Build a subject collection path."""
-        if project_id:
+        """Build a subject collection path.
+
+        ``project_id`` is a raw string, not a ref, so nothing has validated
+        it yet. ``None`` means "no project filter" (the site-wide
+        collection) -- but an explicitly-supplied empty string is a
+        different thing and must not silently widen to that same site-wide
+        scope, so it is rejected rather than treated as falsy.
+
+        Raises:
+            InvalidIdentifierError: If ``project_id`` is supplied but empty
+                or whitespace-only.
+        """
+        if project_id is not None:
+            if project_id.strip() == "":
+                raise InvalidIdentifierError(
+                    "project_id", project_id, "cannot be empty when explicitly supplied"
+                )
             return join_api_path("data", "projects", project_id, "subjects")
         return join_api_path("data", "subjects")
 
@@ -62,12 +118,32 @@ class HierarchyService(BaseService):
     def build_experiment_collection_path(
         project_id: str | None = None, subject: str | None = None
     ) -> str:
-        """Build an experiment collection path."""
-        if subject and not project_id:
+        """Build an experiment collection path.
+
+        ``project_id``/``subject`` are raw strings, not refs, so nothing has
+        validated them yet. ``None`` means "no filter at this level" (widens
+        the scope) -- an explicitly-supplied empty string is a different
+        thing and must not silently widen the same way, so it is rejected
+        rather than treated as falsy.
+
+        Raises:
+            ValueError: If ``subject`` is supplied without ``project_id``.
+            InvalidIdentifierError: If ``project_id`` or ``subject`` is
+                supplied but empty or whitespace-only.
+        """
+        if project_id is not None and project_id.strip() == "":
+            raise InvalidIdentifierError(
+                "project_id", project_id, "cannot be empty when explicitly supplied"
+            )
+        if subject is not None and subject.strip() == "":
+            raise InvalidIdentifierError(
+                "subject", subject, "cannot be empty when explicitly supplied"
+            )
+        if subject is not None and project_id is None:
             raise ValueError("Subject scope requires project context")
-        if project_id and subject:
+        if project_id is not None and subject is not None:
             return join_api_path("data", "projects", project_id, "subjects", subject, "experiments")
-        if project_id:
+        if project_id is not None:
             return join_api_path("data", "projects", project_id, "experiments")
         return join_api_path("data", "experiments")
 
@@ -137,6 +213,23 @@ class HierarchyService(BaseService):
         """Build a scan collection path."""
         return cls.build_experiment_path(cls.routable_scan_parent(ref), "scans")
 
+    def get_experiment_json(
+        self,
+        ref: ExperimentRef,
+        *parts: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        """Fetch an experiment document, or one of its sub-resources, as JSON.
+
+        The single raw read behind experiment inspection and the session-show
+        scans/resources listings. Keeping it here lets the CLI operate on
+        hierarchy refs without reaching through ``service.client``.
+        """
+        path = self.build_experiment_path(ref, *parts)
+        if params is None:
+            return self.client.get_json(path)
+        return self.client.get_json(path, params=params)
+
     @classmethod
     def build_scan_path(cls, ref: ScanRef, *parts: str) -> str:
         """Build a scan item path."""
@@ -194,12 +287,18 @@ class HierarchyService(BaseService):
 
     @classmethod
     def build_resource_path(cls, ref: ResourceRef, *parts: str) -> str:
-        """Build a resource item path for any supported parent level."""
-        return join_api_path(
-            cls.build_resource_collection_path(ref.parent),
-            ref.resource_label,
-            *parts,
-        )
+        """Build a resource item path for any supported parent level.
+
+        ``build_resource_collection_path`` already returns a fully-joined,
+        fully-quoted path (a leading ``/`` and internal ``/``s between real
+        segments) -- passing it back through ``join_api_path`` as one more
+        "part" would quote its internal slashes too, mangling the URL. Only
+        the new segments (``resource_label``, ``*parts``) are raw and need
+        quoting; the collection prefix is concatenated as-is.
+        """
+        prefix = cls.build_resource_collection_path(ref.parent).rstrip("/")
+        suffix = join_api_path(ref.resource_label, *parts)
+        return f"{prefix}{suffix}"
 
     @staticmethod
     def extract_rows(data: dict[str, Any] | list[dict[str, Any]]) -> list[dict[str, Any]]:

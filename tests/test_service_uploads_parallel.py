@@ -28,7 +28,7 @@ import pytest
 
 from xnatctl.core.client import XNATClient
 from xnatctl.models.progress import OperationPhase, UploadProgress
-from xnatctl.services.uploads import UploadService
+from xnatctl.services.upload import UploadService
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -53,7 +53,7 @@ def mock_uploads_http(handler: Handler) -> Iterator[list[httpx.Request]]:
         kwargs["transport"] = httpx.MockTransport(recording)
         return real_client(**kwargs)  # type: ignore[arg-type]
 
-    with patch("xnatctl.services.uploads.httpx.Client", factory):
+    with patch("xnatctl.services.upload.rest_batch.httpx.Client", factory):
         yield seen
 
 
@@ -422,7 +422,7 @@ def test_archives_are_cleaned_up_on_success(
         return path
 
     with (
-        patch("xnatctl.services.uploads.tempfile.mkdtemp", tracking),
+        patch("xnatctl.services.upload.rest_batch.tempfile.mkdtemp", tracking),
         mock_uploads_http(ok),
     ):
         service.upload_dicom_parallel(dicom_tree, "PROJ", "SUB001", "SESS01", upload_workers=2)
@@ -442,7 +442,7 @@ def test_archives_are_cleaned_up_after_a_failure(service: UploadService, dicom_t
         return path
 
     with (
-        patch("xnatctl.services.uploads.tempfile.mkdtemp", tracking),
+        patch("xnatctl.services.upload.rest_batch.tempfile.mkdtemp", tracking),
         mock_uploads_http(lambda r: httpx.Response(500, text="boom")),
     ):
         service.upload_dicom_parallel(dicom_tree, "PROJ", "SUB001", "SESS01", upload_workers=2)

@@ -386,14 +386,6 @@ class TestConfigSetPassword:
         assert result.exit_code == 1
         assert "not found" in result.output
 
-    def test_missing_keyring_package_reports_the_install_hint(self, runner: CliRunner) -> None:
-        with core_config_seam(self._config()), patch.dict("sys.modules", {"keyring": None}):
-            result = runner.invoke(cli, ["config", "set-password", "prod"])
-
-        assert result.exit_code == 1
-        # Rich colourises inside the message, so compare on the plain text.
-        assert "xnatctl[keyring]" in _strip_ansi(result.output)
-
     def test_keychain_write_failure_does_not_rewrite_the_config(self, runner: CliRunner) -> None:
         """A failed keychain write must not leave the profile claiming its
         password lives somewhere it does not.

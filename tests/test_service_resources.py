@@ -332,3 +332,41 @@ class TestResourceUploadFile:
         kwargs = mock_client.put.call_args.kwargs
         assert "content" in kwargs and kwargs["content"] is not None
         assert kwargs.get("data") is None
+
+
+class TestResourceRawAccessors:
+    """Tests for the raw-row accessors the resource/scan screens route through."""
+
+    def _experiment_parent(self):
+        from xnatctl.models.hierarchy import ExperimentRef
+
+        return ExperimentRef(experiment="EXP01")
+
+    def test_list_rows_keeps_every_key(
+        self, service: ResourceService, mock_client: MagicMock
+    ) -> None:
+        """list_rows returns untyped rows verbatim (no model normalization)."""
+        row = {"label": "DICOM", "format": "DICOM", "file_count": "5", "extra": "kept"}
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [row]}}
+
+        rows = service.list_rows(self._experiment_parent())
+
+        assert rows == [row]
+        mock_client.get_json.assert_called_once_with("/data/experiments/EXP01/resources")
+
+    def test_list_rows_empty(self, service: ResourceService, mock_client: MagicMock) -> None:
+        """An empty ResultSet yields an empty list."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
+
+        assert service.list_rows(self._experiment_parent()) == []
+
+    def test_list_file_rows(self, service: ResourceService, mock_client: MagicMock) -> None:
+        """list_file_rows reads the resource's files collection for the given label."""
+        mock_client.get_json.return_value = {"ResultSet": {"Result": [{"Name": "a.dcm"}]}}
+
+        rows = service.list_file_rows(self._experiment_parent(), "DICOM")
+
+        assert rows == [{"Name": "a.dcm"}]
+        mock_client.get_json.assert_called_once_with(
+            "/data/experiments/EXP01/resources/DICOM/files"
+        )

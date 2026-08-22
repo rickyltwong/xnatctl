@@ -1,7 +1,6 @@
 """Tests for all-resource download support.
 
 Covers:
-- _extract_scan_zip helper function
 - session download --resource / --exclude-resource / --session-resources flags
 - scan download multiple --resource support
 - download_scan service layer default (resource=None)
@@ -9,7 +8,6 @@ Covers:
 
 from __future__ import annotations
 
-import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,8 +16,8 @@ from click.testing import CliRunner
 from conftest import authenticated_seams, make_authenticated_context
 
 from xnatctl.cli.main import cli
-from xnatctl.cli.session import DownloadOutcome, _extract_scan_zip
 from xnatctl.models.progress import DownloadSummary
+from xnatctl.services.downloads import DownloadOutcome
 
 # =============================================================================
 # Fixtures
@@ -30,247 +28,6 @@ from xnatctl.models.progress import DownloadSummary
 def runner() -> CliRunner:
     """Create a CLI test runner."""
     return CliRunner()
-
-
-# =============================================================================
-# _extract_scan_zip tests
-# =============================================================================
-
-
-class TestExtractScanZip:
-    """Tests for the _extract_scan_zip helper function."""
-
-    def test_unfiltered_zip_multi_resource(self, tmp_path: Path) -> None:
-        """Unfiltered ZIP with multiple resources preserves resource structure."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/img001.dcm",
-                b"dicom data",
-            )
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/SNAPSHOTS/files/thumb.jpg",
-                b"jpeg data",
-            )
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/NII/files/brain.nii.gz",
-                b"nifti data",
-            )
-
-        extracted, renamed = _extract_scan_zip(zip_path, scan_base)
-
-        assert extracted == 3
-        assert renamed == 0
-        assert (scan_base / "resources" / "DICOM" / "files" / "img001.dcm").exists()
-        assert (scan_base / "resources" / "SNAPSHOTS" / "files" / "thumb.jpg").exists()
-        assert (scan_base / "resources" / "NII" / "files" / "brain.nii.gz").exists()
-
-    def test_filtered_zip_single_resource(self, tmp_path: Path) -> None:
-        """Filtered ZIP with resource_label puts all files under that label."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/img001.dcm",
-                b"dicom data",
-            )
-
-        extracted, renamed = _extract_scan_zip(
-            zip_path,
-            scan_base,
-            resource_label="DICOM",
-        )
-
-        assert extracted == 1
-        assert (scan_base / "resources" / "DICOM" / "files" / "img001.dcm").exists()
-
-    def test_exclude_resources(self, tmp_path: Path) -> None:
-        """Excluded resources are not extracted."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/img001.dcm",
-                b"dicom",
-            )
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/SNAPSHOTS/files/thumb.jpg",
-                b"snap",
-            )
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/NII/files/brain.nii.gz",
-                b"nifti",
-            )
-
-        extracted, _ = _extract_scan_zip(
-            zip_path,
-            scan_base,
-            exclude_resources=frozenset({"SNAPSHOTS"}),
-        )
-
-        assert extracted == 2
-        assert (scan_base / "resources" / "DICOM" / "files" / "img001.dcm").exists()
-        assert (scan_base / "resources" / "NII" / "files" / "brain.nii.gz").exists()
-        assert not (scan_base / "resources" / "SNAPSHOTS").exists()
-
-    def test_exclude_multiple_resources(self, tmp_path: Path) -> None:
-        """Multiple resources can be excluded simultaneously."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/img.dcm",
-                b"dicom",
-            )
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/SNAPSHOTS/files/t.jpg",
-                b"snap",
-            )
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/NII/files/b.nii.gz",
-                b"nii",
-            )
-
-        extracted, _ = _extract_scan_zip(
-            zip_path,
-            scan_base,
-            exclude_resources=frozenset({"SNAPSHOTS", "NII"}),
-        )
-
-        assert extracted == 1
-        assert (scan_base / "resources" / "DICOM" / "files" / "img.dcm").exists()
-
-    def test_skips_hidden_files(self, tmp_path: Path) -> None:
-        """Hidden files (starting with .) are not extracted."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/img001.dcm",
-                b"dicom",
-            )
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/.DS_Store",
-                b"macos",
-            )
-
-        extracted, _ = _extract_scan_zip(zip_path, scan_base)
-
-        assert extracted == 1
-        assert not (scan_base / "resources" / "DICOM" / "files" / ".DS_Store").exists()
-
-    def test_duplicate_filenames_renamed(self, tmp_path: Path) -> None:
-        """Duplicate filenames are renamed with __dup suffix."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        # Pre-create a file to trigger duplicate handling
-        target = scan_base / "resources" / "DICOM" / "files"
-        target.mkdir(parents=True)
-        (target / "img.dcm").write_bytes(b"existing")
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/img.dcm",
-                b"new data",
-            )
-
-        extracted, renamed = _extract_scan_zip(zip_path, scan_base)
-
-        assert extracted == 1
-        assert renamed == 1
-        assert (target / "img.dcm").read_bytes() == b"existing"
-        assert (target / "img__dup1.dcm").read_bytes() == b"new data"
-
-    def test_path_traversal_blocked(self, tmp_path: Path) -> None:
-        """Path traversal attempts are silently skipped."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/../../evil.txt",
-                b"evil",
-            )
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/good.dcm",
-                b"good",
-            )
-
-        extracted, _ = _extract_scan_zip(zip_path, scan_base)
-
-        # Only the safe file should be extracted
-        assert extracted == 1
-        assert (scan_base / "resources" / "DICOM" / "files" / "good.dcm").exists()
-        assert not (tmp_path / "evil.txt").exists()
-
-    def test_unknown_label_uses_fallback(self, tmp_path: Path) -> None:
-        """Files without detectable resource label use UNKNOWN."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            # No resources/ or files/ in path
-            zf.writestr("some/random/path/data.dat", b"data")
-
-        extracted, _ = _extract_scan_zip(zip_path, scan_base)
-
-        assert extracted == 1
-        assert (
-            scan_base / "resources" / "UNKNOWN" / "files" / "random" / "path" / "data.dat"
-        ).exists()
-
-    def test_empty_zip(self, tmp_path: Path) -> None:
-        """Empty ZIP produces zero extractions."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        with zipfile.ZipFile(zip_path, "w"):
-            pass
-
-        extracted, renamed = _extract_scan_zip(zip_path, scan_base)
-
-        assert extracted == 0
-        assert renamed == 0
-
-    def test_directory_entries_skipped(self, tmp_path: Path) -> None:
-        """Directory entries in ZIP are skipped."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr("XNAT_E00001/scans/1/resources/DICOM/", b"")
-            zf.writestr("XNAT_E00001/scans/1/resources/DICOM/files/", b"")
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/img.dcm",
-                b"data",
-            )
-
-        extracted, _ = _extract_scan_zip(zip_path, scan_base)
-        assert extracted == 1
-
-    def test_preserves_binary_content(self, tmp_path: Path) -> None:
-        """Binary content is preserved through extraction."""
-        zip_path = tmp_path / "scan.zip"
-        scan_base = tmp_path / "scans" / "1"
-        binary_content = bytes(range(256))
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr(
-                "XNAT_E00001/scans/1/resources/DICOM/files/binary.dcm",
-                binary_content,
-            )
-
-        _extract_scan_zip(zip_path, scan_base)
-
-        result = scan_base / "resources" / "DICOM" / "files" / "binary.dcm"
-        assert result.read_bytes() == binary_content
 
 
 # =============================================================================
@@ -532,7 +289,7 @@ class TestSessionDownloadResourceFlags:
         with (
             authenticated_seams(ctx, mock_client),
             patch(
-                "xnatctl.cli.session._download_session_fast",
+                "xnatctl.services.downloads.DownloadService.download_session_fast",
                 # A bare MagicMock's .failed is truthy, and the command now
                 # reads that field to decide its exit code -- a stand-in has to
                 # honour the return contract or it fakes a failed download.
@@ -584,7 +341,7 @@ class TestSessionDownloadResourceFlags:
         with (
             authenticated_seams(ctx, mock_client),
             patch(
-                "xnatctl.cli.session._download_session_fast",
+                "xnatctl.services.downloads.DownloadService.download_session_fast",
                 # A bare MagicMock's .failed is truthy, and the command now
                 # reads that field to decide its exit code -- a stand-in has to
                 # honour the return contract or it fakes a failed download.

@@ -64,14 +64,10 @@ A project is the top-level organizational unit in XNAT. It contains subjects
 
 .. code-block:: python
 
-   from xnatctl.core.client import XNATClient
-   from xnatctl.services.projects import ProjectService
+   import xnatctl
 
-   client = XNATClient(base_url="https://xnat.example.org")
-   client.authenticate()
-
-   service = ProjectService(client)
-   projects = service.list()
+   with xnatctl.XNATClient.from_profile("prod") as client:
+       projects = client.projects.list()
 
    for project in projects:
        print(f"{project.id}: {project.name}")
@@ -172,16 +168,26 @@ XNAT resource. Common resource types include DICOM, NIFTI, SNAPSHOTS.
 
    service = ResourceService(client)
    resources = service.list(
-       project="MYPROJECT",
-       session="SESSION01"
+       session_id="SESSION01",
+       project="MYPROJECT"
    )
 
    for resource in resources:
        print(f"{resource.label} - {resource.file_count} files")
-       print(f"  Size: {resource.size_bytes} bytes")
+       print(f"  Size: {resource.file_size_display}")
        print(f"  Format: {resource.format}")
 
 .. autoclass:: xnatctl.models.resource.Resource
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+**ResourceFile**
+
+Represents a single file within a resource, as returned by
+:meth:`ResourceService.list_files <xnatctl.services.resources.ResourceService.list_files>`.
+
+.. autoclass:: xnatctl.models.resource.ResourceFile
    :members:
    :undoc-members:
    :show-inheritance:

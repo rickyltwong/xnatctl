@@ -5,6 +5,7 @@ Provides typed exceptions for different failure modes with clear error messages.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 
@@ -93,7 +94,7 @@ class ProfileNotFoundError(ConfigurationError):
 # =============================================================================
 
 
-class ValidationError(XNATCtlError):
+class InputValidationError(XNATCtlError):
     """Input validation failed."""
 
     def __init__(
@@ -112,7 +113,7 @@ class ValidationError(XNATCtlError):
         self.value = value
 
 
-class InvalidURLError(ValidationError):
+class InvalidURLError(InputValidationError):
     """Invalid URL format."""
 
     def __init__(self, url: str, reason: str = ""):
@@ -124,7 +125,7 @@ class InvalidURLError(ValidationError):
         self.reason = reason
 
 
-class InvalidPortError(ValidationError):
+class InvalidPortError(InputValidationError):
     """Invalid port number."""
 
     def __init__(self, port: Any):
@@ -136,7 +137,7 @@ class InvalidPortError(ValidationError):
         self.port = port
 
 
-class InvalidIdentifierError(ValidationError):
+class InvalidIdentifierError(InputValidationError):
     """Invalid XNAT identifier (project, subject, session, scan)."""
 
     def __init__(self, identifier_type: str, value: str, reason: str = ""):
@@ -148,7 +149,7 @@ class InvalidIdentifierError(ValidationError):
         self.reason = reason
 
 
-class PathValidationError(ValidationError):
+class PathValidationError(InputValidationError):
     """Path validation failed."""
 
     def __init__(self, path: str, reason: str):
@@ -157,12 +158,36 @@ class PathValidationError(ValidationError):
         self.reason = reason
 
 
+class ValidationError(InputValidationError):
+    """Deprecated alias for :class:`InputValidationError`.
+
+    Renamed to stop colliding with ``pydantic.ValidationError``, which this
+    package also surfaces through model validation. Never raised internally;
+    the classes raised by the library are :class:`InputValidationError`
+    instances, so ``except ValidationError`` no longer matches them.
+    Instantiating this alias warns; it is removed in a later minor release.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        field: str | None = None,
+        value: Any = None,
+    ):
+        warnings.warn(
+            "ValidationError is deprecated; use InputValidationError instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(message, field=field, value=value)
+
+
 # =============================================================================
 # Connection Errors
 # =============================================================================
 
 
-class ConnectionError(XNATCtlError):
+class XNATConnectionError(XNATCtlError):
     """Base class for connection-related errors."""
 
     def __init__(self, message: str, url: str | None = None):
@@ -171,7 +196,7 @@ class ConnectionError(XNATCtlError):
         self.url = url
 
 
-class NetworkError(ConnectionError):
+class NetworkError(XNATConnectionError):
     """Network-level error (DNS, TCP, TLS)."""
 
     def __init__(self, url: str, cause: str | None = None):
@@ -182,7 +207,7 @@ class NetworkError(ConnectionError):
         self.cause = cause
 
 
-class ServerUnreachableError(ConnectionError):
+class ServerUnreachableError(XNATConnectionError):
     """Server is not reachable."""
 
     default_hint = "Check the server URL, and whether you need a VPN to reach it."
@@ -191,7 +216,7 @@ class ServerUnreachableError(ConnectionError):
         super().__init__(f"Server unreachable: {url}", url)
 
 
-class TimeoutError(ConnectionError):
+class RequestTimeoutError(XNATConnectionError):
     """Request timed out.
 
     Raised by ``XNATClient`` when the CONNECT phase times out (host blackholed /
@@ -210,7 +235,7 @@ class TimeoutError(ConnectionError):
         self.timeout = timeout
 
 
-class RetryExhaustedError(ConnectionError):
+class RetryExhaustedError(XNATConnectionError):
     """All retry attempts failed."""
 
     def __init__(self, operation: str, attempts: int, last_error: Exception | None = None):
@@ -221,6 +246,43 @@ class RetryExhaustedError(ConnectionError):
         self.operation = operation
         self.attempts = attempts
         self.last_error = last_error
+
+
+class ConnectionError(XNATConnectionError):
+    """Deprecated alias for :class:`XNATConnectionError`.
+
+    Renamed off the builtin ``ConnectionError`` name it shadowed. Never raised
+    internally; the connection errors the library raises (``NetworkError``,
+    ``RequestTimeoutError``, ...) are :class:`XNATConnectionError` instances, so
+    ``except ConnectionError`` no longer matches them. Instantiating this alias
+    warns; it is removed in a later minor release.
+    """
+
+    def __init__(self, message: str, url: str | None = None):
+        warnings.warn(
+            "ConnectionError is deprecated; use XNATConnectionError instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(message, url)
+
+
+class TimeoutError(RequestTimeoutError):
+    """Deprecated alias for :class:`RequestTimeoutError`.
+
+    Renamed off the builtin ``TimeoutError`` name it shadowed. Never raised
+    internally; ``XNATClient`` raises :class:`RequestTimeoutError`, so
+    ``except TimeoutError`` no longer matches it. Instantiating this alias
+    warns; it is removed in a later minor release.
+    """
+
+    def __init__(self, url: str, timeout: int, message: str | None = None):
+        warnings.warn(
+            "TimeoutError is deprecated; use RequestTimeoutError instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(url, timeout, message)
 
 
 # =============================================================================
@@ -423,7 +485,7 @@ class BatchOperationError(OperationError):
     ):
         super().__init__(
             operation,
-            f"Batch {operation} partially failed: {succeeded} succeeded, {failed} failed",
+            f"Batch {operation} did not fully succeed: {succeeded} succeeded, {failed} failed",
             {"succeeded": succeeded, "failed": failed},
         )
         self.succeeded = succeeded

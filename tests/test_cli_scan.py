@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +11,7 @@ from click.testing import CliRunner
 from conftest import authenticated_seams, make_authenticated_context
 
 from xnatctl.cli.main import cli
-from xnatctl.models.progress import DownloadSummary
+from xnatctl.models.progress import DownloadSummary, VerificationReport
 
 
 @pytest.fixture
@@ -725,7 +726,64 @@ class TestScanDownload:
             )
 
         assert result.exit_code != 0
-        assert "path separators" in result.output
+        assert "path separator" in result.output
+
+    def test_scan_download_name_empty_string_is_rejected(self, runner: CliRunner, tmp_path) -> None:
+        """An explicit ``--name ""`` must fail validation, not silently fall
+        back to the session_id -- `if name:` used to skip validation
+        entirely for an empty string and let ``name or session_id`` pick
+        the fallback without ever reporting the caller's bad input.
+        """
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "--name",
+                    "",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "empty" in result.output.lower()
+
+    def test_scan_download_reserved_session_id_fallback_is_rejected(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """Without --name, the raw session_id becomes the local output
+        directory -- "CON" passes validate_session_id (a legal XNAT
+        accession/label) but is a reserved Windows device name, so it must
+        still be rejected before being used as a directory name. Mirrors
+        session download's own fallback validation.
+        """
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "CON",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "reserved" in result.output.lower()
 
     def test_scan_download_multiple_resources_rejected(self, runner: CliRunner, tmp_path) -> None:
         """Multiple --resource values are rejected."""
@@ -789,6 +847,271 @@ class TestScanDownload:
 
         assert result.exit_code == 0
         assert "Downloaded" in result.output
+
+    def test_scan_download_verify_clean_exits_zero(self, runner: CliRunner, tmp_path) -> None:
+        """--verify with a clean comparison exits 0 and reports what was verified."""
+        ctx, mock_client = make_authenticated_context()
+        mock_summary = DownloadSummary(
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=2.5,
+            total_files=1,
+            total_size_mb=1.0,
+            output_path=str(tmp_path / "XNAT_E00001"),
+            session_id="XNAT_E00001",
+        )
+        clean_report = VerificationReport(matched=1)
+
+        with (
+            authenticated_seams(ctx, mock_client),
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
+            mock_dl_cls.return_value.download_scans.return_value = mock_summary
+            mock_dl_cls.return_value.verify_scan_downloads.return_value = clean_report
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "--verify",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Verified 1 files" in result.stderr
+
+    def test_scan_download_verify_mismatch_fails_the_command(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """A mismatch found by --verify must fail the command and name the file."""
+        ctx, mock_client = make_authenticated_context()
+        mock_summary = DownloadSummary(
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=2.5,
+            total_files=1,
+            total_size_mb=1.0,
+            output_path=str(tmp_path / "XNAT_E00001"),
+            session_id="XNAT_E00001",
+        )
+        bad_report = VerificationReport(matched=0, mismatched=["scans/1/resources/DICOM/0001.dcm"])
+
+        with (
+            authenticated_seams(ctx, mock_client),
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
+            mock_dl_cls.return_value.download_scans.return_value = mock_summary
+            mock_dl_cls.return_value.verify_scan_downloads.return_value = bad_report
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "--verify",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "MISMATCH" in result.stderr
+        assert "scans/1/resources/DICOM/0001.dcm" in result.stderr
+        # The download itself succeeded; only verification failed -- the
+        # message must say so, not the misleading "Download failed".
+        assert "Verification failed" in result.stderr
+        assert "Download failed" not in result.stderr
+
+    def test_scan_download_verify_all_unverifiable_fails(self, runner: CliRunner, tmp_path) -> None:
+        """The server had no checksums for anything downloaded -- must not
+        pass silently just because nothing mismatched.
+        """
+        ctx, mock_client = make_authenticated_context()
+        mock_summary = DownloadSummary(
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=2.5,
+            total_files=1,
+            total_size_mb=1.0,
+            output_path=str(tmp_path / "XNAT_E00001"),
+            session_id="XNAT_E00001",
+        )
+        unverifiable_report = VerificationReport(
+            matched=0, unverifiable=["scans/1/resources/DICOM/0001.dcm"]
+        )
+
+        with (
+            authenticated_seams(ctx, mock_client),
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
+            mock_dl_cls.return_value.download_scans.return_value = mock_summary
+            mock_dl_cls.return_value.verify_scan_downloads.return_value = unverifiable_report
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "--verify",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "no checksums" in result.stderr.lower()
+
+    def test_scan_download_verify_empty_manifest_fails(self, runner: CliRunner, tmp_path) -> None:
+        """An empty server manifest over files on disk must fail, not read as
+        'Verified 0 files'.
+        """
+        ctx, mock_client = make_authenticated_context()
+        mock_summary = DownloadSummary(
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=2.5,
+            total_files=1,
+            total_size_mb=1.0,
+            output_path=str(tmp_path / "XNAT_E00001"),
+            session_id="XNAT_E00001",
+        )
+        empty_manifest_report = VerificationReport(
+            missing_remote=["scans/1/resources/DICOM/0001.dcm"]
+        )
+
+        with (
+            authenticated_seams(ctx, mock_client),
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
+            mock_dl_cls.return_value.download_scans.return_value = mock_summary
+            mock_dl_cls.return_value.verify_scan_downloads.return_value = empty_manifest_report
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "--verify",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "listed none" in result.stderr
+        assert "nothing was verified" in result.stderr
+
+    def test_scan_download_verify_reports_files_absent_from_manifest(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """Manifest-uncovered files do not fail a run that matched something,
+        but must be reported rather than staying silent.
+        """
+        ctx, mock_client = make_authenticated_context()
+        mock_summary = DownloadSummary(
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=2.5,
+            total_files=2,
+            total_size_mb=1.0,
+            output_path=str(tmp_path / "XNAT_E00001"),
+            session_id="XNAT_E00001",
+        )
+        partial_report = VerificationReport(
+            matched=1, missing_remote=["scans/1/resources/DICOM/0002.dcm"]
+        )
+
+        with (
+            authenticated_seams(ctx, mock_client),
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
+            mock_dl_cls.return_value.download_scans.return_value = mock_summary
+            mock_dl_cls.return_value.verify_scan_downloads.return_value = partial_report
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "--verify",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert "Verified 1 files" in result.stderr
+        assert "absent from the server manifest" in result.stderr
+
+    def test_scan_download_verify_collision_fails(self, runner: CliRunner, tmp_path) -> None:
+        ctx, mock_client = make_authenticated_context()
+        mock_summary = DownloadSummary(
+            success=True,
+            total=1,
+            succeeded=1,
+            failed=0,
+            duration=2.5,
+            total_files=1,
+            total_size_mb=1.0,
+            output_path=str(tmp_path / "XNAT_E00001"),
+            session_id="XNAT_E00001",
+        )
+        colliding_report = VerificationReport(
+            matched=0, collisions=["scans/1/resources/DICOM/0001.dcm"]
+        )
+
+        with (
+            authenticated_seams(ctx, mock_client),
+            patch("xnatctl.services.downloads.DownloadService") as mock_dl_cls,
+        ):
+            mock_dl_cls.return_value.download_scans.return_value = mock_summary
+            mock_dl_cls.return_value.verify_scan_downloads.return_value = colliding_report
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "download",
+                    "-E",
+                    "XNAT_E00001",
+                    "-s",
+                    "1",
+                    "--out",
+                    str(tmp_path),
+                    "--verify",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "COLLISION" in result.stderr
+        assert "scans/1/resources/DICOM/0001.dcm" in result.stderr
 
     def test_scan_download_failure(self, runner: CliRunner, tmp_path) -> None:
         """Failed download exits 1."""
@@ -865,7 +1188,8 @@ class TestScanDownload:
             )
 
         assert result.exit_code == 1
-        assert '"success"' in result.output  # JSON summary still emitted
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "failed"  # JSON summary still emitted
 
     def test_scan_download_json_output(self, runner: CliRunner, tmp_path) -> None:
         """JSON output includes structured download summary."""
@@ -904,8 +1228,11 @@ class TestScanDownload:
             )
 
         assert result.exit_code == 0
-        assert '"success"' in result.output
-        assert "XNAT_E00001" in result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "success"
+        assert payload["session_id"] == "XNAT_E00001"
+        assert payload["files"] == 5
+        assert payload["bytes"] == 10 * 1024 * 1024
 
 
 # =============================================================================

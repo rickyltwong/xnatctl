@@ -27,6 +27,12 @@ Handler = Callable[[httpx.Request], httpx.Response]
 
 SECRET = "s3cret-token-value"
 CLIENT_LOGGER = "xnatctl.core.client"
+# The retry-ladder implementation (per-attempt/retry/reauth logging) lives in
+# xnatctl.core.transport, not xnatctl.core.client -- XNATClient.stream()/
+# _request() are thin wrappers around it. Tests asserting on those lines must
+# raise this logger's level too, or the DEBUG ones are silently dropped
+# before they ever reach caplog's handler.
+TRANSPORT_LOGGER = "xnatctl.core.transport"
 AUTH_LOGGER = "xnatctl.core.auth"
 
 
@@ -79,7 +85,10 @@ def test_each_attempt_logs_method_path_status_and_timing(
 ) -> None:
     client = make_client(lambda r: httpx.Response(200, json={}))
 
-    with caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER):
+    with (
+        caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER),
+        caplog.at_level(logging.DEBUG, logger=TRANSPORT_LOGGER),
+    ):
         client.get("/data/projects")
 
     line = next(m for m in messages(caplog) if "-> 200" in m)
@@ -101,7 +110,10 @@ def test_retries_are_logged_at_warning_with_the_backoff(
         attempts["n"] += 1
         return httpx.Response(200 if attempts["n"] > 2 else 503, json={})
 
-    with caplog.at_level(logging.WARNING, logger=CLIENT_LOGGER):
+    with (
+        caplog.at_level(logging.WARNING, logger=CLIENT_LOGGER),
+        caplog.at_level(logging.WARNING, logger=TRANSPORT_LOGGER),
+    ):
         make_client(flaky).get("/data/projects")
 
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -119,7 +131,10 @@ def test_retry_after_is_reported_as_such(caplog: pytest.LogCaptureFixture) -> No
             return httpx.Response(429, headers={"Retry-After": "7"}, json={})
         return httpx.Response(200, json={})
 
-    with caplog.at_level(logging.WARNING, logger=CLIENT_LOGGER):
+    with (
+        caplog.at_level(logging.WARNING, logger=CLIENT_LOGGER),
+        caplog.at_level(logging.WARNING, logger=TRANSPORT_LOGGER),
+    ):
         make_client(throttled).get("/data/projects")
 
     assert "per Retry-After" in messages(caplog)[0]
@@ -135,7 +150,10 @@ def test_transport_failure_retry_names_the_error(caplog: pytest.LogCaptureFixtur
             raise httpx.ReadError("connection reset")
         return httpx.Response(200, json={})
 
-    with caplog.at_level(logging.WARNING, logger=CLIENT_LOGGER):
+    with (
+        caplog.at_level(logging.WARNING, logger=CLIENT_LOGGER),
+        caplog.at_level(logging.WARNING, logger=TRANSPORT_LOGGER),
+    ):
         make_client(flaky).get("/data/projects")
 
     assert "retrying in" in messages(caplog)[0]
@@ -172,7 +190,10 @@ def test_reauth_decision_is_logged(caplog: pytest.LogCaptureFixture) -> None:
 
     client = make_client(expiring, username="u", password="p", auto_reauth=True)
 
-    with caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER):
+    with (
+        caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER),
+        caplog.at_level(logging.DEBUG, logger=TRANSPORT_LOGGER),
+    ):
         client.get("/data/projects")
 
     assert any("re-authenticating" in m for m in messages(caplog))
@@ -184,7 +205,10 @@ def test_refusal_to_reauth_explains_why(caplog: pytest.LogCaptureFixture) -> Non
 
     client = make_client(lambda r: httpx.Response(401, json={}))
 
-    with caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER):
+    with (
+        caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER),
+        caplog.at_level(logging.DEBUG, logger=TRANSPORT_LOGGER),
+    ):
         with pytest.raises(SessionExpiredError):
             client.get("/data/projects")
 
@@ -204,7 +228,10 @@ def test_request_logging_redacts_query_secrets(caplog: pytest.LogCaptureFixture)
     """
     client = make_client(lambda r: httpx.Response(200, json={}))
 
-    with caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER):
+    with (
+        caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER),
+        caplog.at_level(logging.DEBUG, logger=TRANSPORT_LOGGER),
+    ):
         client.get("/data/projects", params={"token": SECRET, "format": "json"})
 
     joined = " ".join(messages(caplog))

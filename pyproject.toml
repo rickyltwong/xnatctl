@@ -1,6 +1,6 @@
 [project]
 name = "xnatctl"
-version = "0.3.0"
+version = "0.4.0"
 description = "Modern CLI for XNAT neuroimaging server administration"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,19 +32,15 @@ dependencies = [
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
     "defusedxml>=0.7.1",
+    "pydicom>=2.4.0",
+    "pynetdicom>=2.0.0",
+    "keyring>=24",
 ]
 
 [project.scripts]
 xnatctl = "xnatctl.cli.main:main"
 
 [project.optional-dependencies]
-dicom = [
-    "pydicom>=2.4.0",
-    "pynetdicom>=2.0.0",
-]
-keyring = [
-    "keyring>=24",
-]
 dev = [
     "pytest>=9.0.0",
     "pytest-cov>=4.0.0",
@@ -56,9 +52,6 @@ dev = [
     "pre-commit>=3.7.0",
     "types-PyYAML>=6.0.0",
     "types-defusedxml>=0.7",
-    # Dev-only so the keychain code path is type-checked rather than
-    # suppressed; it stays an optional extra for users.
-    "keyring>=24",
     # Generates throwaway certs for the DICOM TLS tests. Without it those
     # tests skip, which is how the DICOM tier went years without running.
     "cryptography>=42",
@@ -98,9 +91,6 @@ dev = [
     "ruff>=0.4.0",
     "types-PyYAML>=6.0.0",
     "types-defusedxml>=0.7",
-    # Dev-only so the keychain code path is type-checked rather than
-    # suppressed; it stays an optional extra for users.
-    "keyring>=24",
 ]
 
 [tool.ruff]
@@ -122,8 +112,9 @@ ignore = [
     # enable it: Click's no-rewrap marker is a literal \b, which in a normal
     # docstring becomes the 0x08 byte Click looks for. Making those raw turns
     # it into two characters and every Example block in --help rewraps into a
-    # paragraph -- the exact defect CLI-05 fixed. Verified: the compiled help
-    # text for `scan list` contains 0x08 and renders unwrapped.
+    # paragraph -- the exact help-text defect this rule exclusion prevents.
+    # Verified: the compiled help text for `scan list` contains 0x08 and
+    # renders unwrapped.
     "D301",
     # Constructor arguments are documented on the class, per Google style.
     "D107",
@@ -226,7 +217,10 @@ omit = ["*/tests/*", "*/__pycache__/*"]
 # Keep this identical to --cov-fail-under in .github/workflows/ci.yml.
 # 78 -> 82 once the DICOM tier actually ran in CI: installing the `dicom`
 # extra took cli/dicom_cmd.py from 16% to 88% on its own.
-fail_under = 82
+# 82 -> 88 once cli/subject.py's rename command and cli/project.py's
+# transfer verbs got real CliRunner coverage (previously only exercised
+# via --help smoke tests).
+fail_under = 88
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",

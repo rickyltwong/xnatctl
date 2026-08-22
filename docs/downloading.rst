@@ -260,6 +260,226 @@ The output is always a single ZIP file written to the path you specify with
 ``--file``.
 
 
+JSON Output
+-----------
+
+Add ``-o json`` to ``session download``, ``scan download``, or
+``resource download`` and each prints a single ``TransferSummary`` JSON object
+to stdout once the transfer finishes -- progress and success/error text stay
+on stderr, so the two never interleave. ``--dry-run -o json`` prints the plan
+instead of running the transfer.
+
+.. code-block:: console
+
+   $ xnatctl session download -E XNAT_E00001 --out ./data -o json
+   {
+     "operation": "download",
+     "session_id": "XNAT_E00001",
+     "project": "MYPROJECT",
+     "output_dir": "./data/XNAT_E00001",
+     "source": null,
+     "scans": 4,
+     "files": 128,
+     "bytes": null,
+     "duration_seconds": 12.4,
+     "status": "success",
+     "items": [
+       {"id": "1", "status": "success", "error": null},
+       {"id": "2", "status": "success", "error": null}
+     ],
+     "verification": null
+   }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Type
+     - Meaning
+   * - ``operation``
+     - string
+     - ``"download"`` or ``"upload"``.
+   * - ``session_id``
+     - string or null
+     - The session the transfer targeted, when applicable.
+   * - ``project``
+     - string or null
+     - The project the transfer targeted, when known.
+   * - ``output_dir`` / ``source``
+     - string or null
+     - Where files landed (downloads) or came from (uploads).
+   * - ``scans``
+     - integer or null
+     - Number of distinct scans covered, deduplicated (a scan touched by
+       several resource requests still counts once). ``null`` when the
+       command has no way to know the count -- the sequential single-ZIP
+       ``session download`` path and ``scan download -s '*'`` don't enumerate
+       scans up front.
+   * - ``files`` / ``bytes``
+     - integer or null
+     - The count/size actually transferred -- never an approximation of what
+       was merely attempted. ``null`` whenever the underlying summary
+       doesn't track transferred-vs-attempted separately (for example, a
+       partially-failed batch whose summary only has a combined total).
+   * - ``duration_seconds``
+     - number
+     - Wall-clock time the command spent on the transfer.
+   * - ``status``
+     - string
+     - ``"success"``, ``"partial"`` (some items failed), or ``"failed"``
+       (nothing succeeded). Exit code always agrees: ``0`` for ``"success"``,
+       non-zero otherwise.
+   * - ``items``
+     - array
+     - Results for each unit the command tracks separately:
+       ``{"id", "status", "error"}``. ``session download`` reports one item
+       per scan (deduplicated across resource requests); ``scan download``
+       and ``resource download`` are a single atomic request, so ``items``
+       has exactly one entry, identified by what was requested (e.g. the
+       scan spec ``"1,2"`` or ``"ALL"``) rather than by individual scan IDs.
+   * - ``verification``
+     - object or null
+     - Present only with ``--verify``; see below.
+
+This shape is part of the :doc:`stability` contract for ``--output json``:
+existing fields keep their name, type, and meaning, and new fields may be
+added at any time.
+
+Item id forms
+~~~~~~~~~~~~~
+
+What ``items[].id`` identifies depends on the command and, for
+``session download``, on which path within it produced the item. This table
+covers every command that emits ``TransferSummary`` (download and upload
+alike).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 30 40
+
+   * - Command
+     - ``id`` form
+     - When it appears
+   * - ``session download`` (parallel path)
+     - the scan ID, e.g. ``"1"``
+     - One item per scan, deduplicated across resource requests -- see
+       above. Used whenever ``--workers`` > 1, or ``-r``/``--exclude-resource``
+       is given.
+   * - ``session download`` (sequential path)
+     - ``"archive"``
+     - The single-ZIP fallback path (``--workers 1``, no resource filter)
+       has no per-scan breakdown, so a successful download is one
+       ``"archive"`` item rather than zero items -- otherwise a session
+       resource failing alongside it (below) would have nothing to weigh
+       its "partial" verdict against.
+   * - ``session download --session-resources``
+     - ``"resource:{label}"``, e.g. ``"resource:QC"``
+     - One item per requested session-level resource.
+   * - ``session download --session-resources`` (listing failure)
+     - ``"resources"``
+     - The up-front call that finds out *which* session resources exist
+       failed **and** the download itself failed too. Since neither call
+       told us the full requested set, per-label items can't be produced
+       for what's missing -- this one item reports that instead of the
+       request silently vanishing. Any resource that landed *before* the
+       download's own failure still gets its own ``"resource:{label}"``
+       success item alongside it, so the run can read "partial" rather
+       than a flat "failed" when something really did succeed. If the
+       download succeeded outright (its own internal listing worked),
+       per-label ``"resource:{label}"`` success items are reported for
+       everything, with no ``"resources"`` item at all.
+   * - ``scan download``
+     - the requested scan spec, e.g. ``"1,2"`` or ``"ALL"``
+     - Always exactly one item -- see :ref:`scan-download-single-item`
+       below.
+   * - ``resource download``
+     - the resource label, e.g. ``"NIFTI"``
+     - Always exactly one item (one resource per invocation).
+   * - ``session upload`` (single archive)
+     - the archive's file name, e.g. ``"archive.zip"``
+     - Always exactly one item.
+   * - ``session upload`` (directory, REST batch transport)
+     - ``"batches"``
+     - One aggregate item covering every batch -- see the
+       :doc:`uploading` JSON section for why this isn't split per batch.
+   * - ``session upload --mode gradual``
+     - ``"gradual-dicom"``
+     - Always exactly one item.
+   * - ``session upload-dicom`` (C-STORE)
+     - ``"{host}:{port}"``, e.g. ``"xnat.example.org:8104"``
+     - Always exactly one item. A pre-flight rejection (a file instead of a
+       directory, or an invalid ``--tls-*`` combination) uses the source
+       path instead, since the host/port aren't the problem in those cases.
+       ``--host``/``--called-aet`` are required Click options, so a missing
+       one is rejected before the command body -- and any JSON output --
+       ever runs.
+   * - ``resource upload``
+     - the resource label, e.g. ``"NIFTI"``
+     - Always exactly one item.
+   * - ``session download``, on an unhandled exception
+     - ``"session"``
+     - An exception during verification or ZIP extraction (after the
+       download itself already reported some items) adds one more failed
+       ``"session"`` item alongside whatever already succeeded, rather than
+       replacing them.
+
+.. _scan-download-single-item:
+
+``scan download``'s single-item shape
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``scan download`` fetches every requested scan in one batched ZIP request
+that succeeds or fails as a whole -- there is no per-scan outcome to report.
+Its summary reflects that:
+
+.. code-block:: console
+
+   $ xnatctl scan download -E XNAT_E00001 -s 1,2 --out ./data -o json
+   {
+     "operation": "download",
+     "session_id": "XNAT_E00001",
+     "scans": 2,
+     "files": 12,
+     "bytes": 4194304,
+     "status": "success",
+     "items": [
+       {"id": "1,2", "status": "success", "error": null}
+     ],
+     "...": "..."
+   }
+
+``scans`` is the number of scan IDs requested, or ``null`` for ``-s '*'``
+(the count isn't known without enumerating the session first).
+
+Verification in JSON output
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``--verify -o json`` folds the checksum verification report into the
+summary's ``verification`` field instead of printing it separately:
+
+.. code-block:: console
+
+   $ xnatctl session download -E XNAT_E00001 --out ./data --verify -o json
+   {
+     "...": "... the same TransferSummary fields as above ...",
+     "verification": {
+       "matched": 128,
+       "mismatched": [],
+       "missing_local": [],
+       "missing_remote": [],
+       "unverifiable": [],
+       "collisions": []
+     }
+   }
+
+A verification failure sets ``status`` to ``"failed"`` and the command exits
+non-zero, same as without ``-o json``. Failures are a mismatch, a missing
+file, a collision, or a run where nothing was actually verified: the server
+had no checksums on record for anything downloaded, or its manifest listed
+nothing at all for a scope with files on disk.
+
+
 Understanding the Output Directory Structure
 --------------------------------------------
 

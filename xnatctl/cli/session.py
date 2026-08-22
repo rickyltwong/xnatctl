@@ -3,42 +3,47 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
-from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
 
 import click
 
 from xnatctl.cli.common import (
     Context,
     _make_alias_cb,
-    _make_forwarding_alias_cb,
     _make_noop_cb,
     default_project_from_context,
     global_options,
     handle_errors,
-    read_password_stdin,
-    reject_argv_password,
     require_auth,
     require_project_from_context,
     resolve_workers_from_context,
+    validate_local_path_option_cb,
 )
-from xnatctl.core.cancellation import cancellable_pool
-
-if TYPE_CHECKING:  # import cycle: client imports nothing from cli
-    from xnatctl.core.client import XNATClient
-from xnatctl.core.exceptions import DownloadError, ResourceNotFoundError
+from xnatctl.core.exceptions import DownloadError, InputValidationError, ResourceNotFoundError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
+    print_json,
     print_output,
     print_success,
-    print_warning,
 )
-from xnatctl.core.timeouts import DEFAULT_ARCHIVE_WAIT_SECONDS, DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.hierarchy import ExperimentRef
+from xnatctl.models.progress import (
+    TransferItemResult,
+    TransferSummary,
+    TransferVerification,
+    VerificationReport,
+    transfer_status,
+)
+from xnatctl.services.downloads import DownloadOutcome, DownloadService, ScanResult
 from xnatctl.services.hierarchy import HierarchyService
+from xnatctl.services.sessions import SessionService
+from xnatctl.services.zip_extract import extract_session_zips
+
+
+def _echo_stderr(message: str) -> None:
+    """Render a service progress line to stderr, unchanged."""
+    click.echo(message, err=True)
 
 
 @click.group()
@@ -73,49 +78,9 @@ def session_list(
     from xnatctl.core.validation import validate_project_id
 
     project = validate_project_id(require_project_from_context(ctx, project))
-    client = ctx.get_client()
-
-    # Build query
-    params = {"columns": "ID,label,subject_label,date,xsiType"}
-    if subject:
-        params["subject_label"] = subject
-
-    # Get sessions
-    resp = client.get_json(f"/data/projects/{project}/experiments", params=params)
-    results = resp.get("ResultSet", {}).get("Result", [])
-
-    # Filter and transform
-    sessions = []
-    for r in results:
-        xsi_type = r.get("xsiType", "")
-        xsi_lower = xsi_type.lower()
-
-        # Filter by modality (case-insensitive)
-        if modality:
-            marker = _MODALITY_XSI_MARKERS.get(modality)
-            if marker and marker not in xsi_lower:
-                continue
-
-        # Extract modality from xsiType (case-insensitive)
-        detected_modality = "?"
-        if "mrsession" in xsi_lower:
-            detected_modality = "MR"
-        elif "petsession" in xsi_lower:
-            detected_modality = "PET"
-        elif "ctsession" in xsi_lower:
-            detected_modality = "CT"
-        elif "eegsession" in xsi_lower:
-            detected_modality = "EEG"
-
-        sessions.append(
-            {
-                "id": r.get("ID", ""),
-                "label": r.get("label", ""),
-                "subject": r.get("subject_label", ""),
-                "date": r.get("date", ""),
-                "modality": detected_modality,
-            }
-        )
+    sessions = SessionService(ctx.get_client()).list_sessions(
+        project, subject=subject, modality=modality
+    )
 
     print_output(
         sessions,
@@ -191,16 +156,14 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
         scan_xsi = hierarchy.resolve_scan_xsi_type(resolved.xsi_type)
         if scan_xsi:
             scan_params["xsiType"] = scan_xsi
-        scans_resp = client.get_json(
-            hierarchy.build_experiment_path(nested_ref, "scans"), params=scan_params
-        )
+        scans_resp = hierarchy.get_experiment_json(nested_ref, "scans", params=scan_params)
         scans = HierarchyService.extract_rows(scans_resp)
     except Exception:
         scans = []
 
     # Get resources
     try:
-        res_resp = client.get_json(hierarchy.build_experiment_path(nested_ref, "resources"))
+        res_resp = hierarchy.get_experiment_json(nested_ref, "resources")
         resources = HierarchyService.extract_rows(res_resp)
     except Exception:
         resources = []
@@ -277,309 +240,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             )
 
 
-def _extract_scan_zip(  # noqa: C901  # pre-existing; see pyproject
-    zip_path: Path,
-    scan_base: Path,
-    *,
-    resource_label: str | None = None,
-    exclude_resources: frozenset[str] = frozenset(),
-) -> tuple[int, int]:
-    """Extract a scan ZIP into standard XNAT layout.
-
-    Handles both filtered ZIPs (single resource) and unfiltered ZIPs
-    (multiple resources).  XNAT ZIP structure:
-        {exp}/scans/{id}/resources/{label}/files/{filename...}
-
-    Args:
-        zip_path: Path to the downloaded ZIP file.
-        scan_base: Target directory (e.g. session_dir/scans/{scan_id}).
-        resource_label: If set, all files go under resources/{label}/files/.
-            When None, resource labels are inferred from ZIP paths.
-        exclude_resources: Resource labels to skip during extraction.
-
-    Returns:
-        Tuple of (files_extracted, duplicates_renamed).
-    """
-    import shutil
-    import zipfile
-
-    files_extracted = 0
-    duplicates_renamed = 0
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        for member in zf.infolist():
-            if member.is_dir():
-                continue
-            member_path = Path(member.filename)
-            if any(part.startswith(".") for part in member_path.parts):
-                continue
-
-            parts = member_path.parts
-
-            # Detect resource label and relative file path from ZIP entry.
-            detected_label: str | None = None
-            rel: Path | None = None
-            if "resources" in parts and "files" in parts:
-                res_idx = parts.index("resources")
-                files_idx = parts.index("files")
-                if files_idx > res_idx + 1:
-                    detected_label = parts[res_idx + 1]
-                    rel_parts = parts[files_idx + 1 :]
-                    if rel_parts:
-                        rel = Path(*rel_parts)
-
-            # Fallback: strip up to "files/" if present, else strip top folder.
-            if rel is None:
-                if "files" in parts:
-                    idx = parts.index("files")
-                    rel_parts = parts[idx + 1 :]
-                    if not rel_parts:
-                        continue
-                    rel = Path(*rel_parts)
-                elif len(parts) > 1:
-                    rel = Path(*parts[1:])
-                else:
-                    rel = member_path
-
-            if not rel.name or rel.name.startswith("."):
-                continue
-
-            effective_label = resource_label or detected_label or "UNKNOWN"
-
-            if effective_label in exclude_resources:
-                continue
-
-            target_dir = scan_base / "resources" / effective_label / "files"
-            target_dir.mkdir(parents=True, exist_ok=True)
-            resolved_root = target_dir.resolve()
-
-            dest = (target_dir / rel).resolve()
-            if not dest.is_relative_to(resolved_root):
-                continue
-
-            dest.parent.mkdir(parents=True, exist_ok=True)
-
-            final_dest = dest
-            if final_dest.exists():
-                duplicates_renamed += 1
-                stem = final_dest.stem
-                suffix = final_dest.suffix
-                i = 1
-                while True:
-                    candidate = final_dest.with_name(f"{stem}__dup{i}{suffix}")
-                    if not candidate.exists():
-                        final_dest = candidate
-                        break
-                    i += 1
-
-            with zf.open(member) as src, open(final_dest, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-            files_extracted += 1
-
-    return files_extracted, duplicates_renamed
-
-
-#: Substring that identifies each modality inside an experiment's xsiType,
-#: e.g. "xnat:mrSessionData" for MR. Previously four `elif` branches; ruff's
-#: SIM114 autofix collapsed them into one 200-character boolean, which is how
-#: this table came to exist instead.
-_MODALITY_XSI_MARKERS = {
-    "MR": "mrsession",
-    "PET": "petsession",
-    "CT": "ctsession",
-    "EEG": "eegsession",
-}
-
-
-class _ScanResult(NamedTuple):
-    """One scan download attempt."""
-
-    scan_id: str
-    ok: bool
-    files: int
-    message: str
-
-
-class DownloadOutcome(NamedTuple):
-    """What a parallel session download actually achieved.
-
-    Returned rather than discarded because the caller has to decide the exit
-    code: a download that lost scans is not a success, and for a long time it
-    was reported as one.
-    """
-
-    succeeded: int
-    failed: list[tuple[str, str]]
-    files: int
-
-
-def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
-    client: XNATClient,
-    session_project: str,
-    subject: str,
-    resolved_session_id: str,
-    session_dir: Path,
-    workers: int = 8,
-    quiet: bool = False,
-    include_resources: tuple[str, ...] = (),
-    exclude_resources: tuple[str, ...] = (),
-) -> DownloadOutcome:
-    """Download session scans in parallel and extract to standard structure.
-
-    Uses a two-tier strategy:
-    - No filter / exclude filter: one unfiltered request per scan
-      (``/scans/{id}/files``), exclude applied during extraction.
-    - Include filter: one request per (scan, resource) pair
-      (``/scans/{id}/resources/{label}/files``).
-
-    Args:
-        client: Authenticated XNATClient.
-        session_project: Project ID.
-        subject: Subject ID.
-        resolved_session_id: Resolved XNAT experiment ID.
-        session_dir: Output directory for session data.
-        workers: Maximum parallel download workers.
-        quiet: Suppress progress output.
-        include_resources: Resource types to include (empty = all).
-        exclude_resources: Resource types to exclude.
-
-    Produces the XNAT compressed-uploader layout:
-        {session_dir}/scans/{scan_id}/resources/{label}/files/{files...}
-    """
-    import tempfile
-    from concurrent.futures import as_completed
-
-    import httpx
-
-    from xnatctl.core.timeouts import build_httpx_timeout
-
-    scans_resp = client.get_json(f"/data/experiments/{resolved_session_id}/scans")
-    results = scans_resp.get("ResultSet", {}).get("Result", [])
-    scan_ids = [r.get("ID") for r in results if r.get("ID")]
-
-    if not scan_ids:
-        if not quiet:
-            click.echo("No scans found in session", err=True)
-        return DownloadOutcome(succeeded=0, failed=[], files=0)
-
-    if not quiet:
-        click.echo(f"Downloading {len(scan_ids)} scans in parallel...", err=True)
-
-    base_url = client.base_url
-    session_token = client.session_token
-    verify_ssl = client.httpx_verify()  # inherits ca_bundle, not just the bool
-    timeout = client.timeout
-    exclude_set = frozenset(exclude_resources)
-
-    # Two-tier task list: (scan_id, resource_label_or_None)
-    download_tasks: list[tuple[str, str | None]] = []
-    if include_resources:
-        for sid in scan_ids:
-            for res in include_resources:
-                download_tasks.append((sid, res))
-    else:
-        for sid in scan_ids:
-            download_tasks.append((sid, None))
-
-    def download_and_extract(
-        scan_id: str,
-        resource_label: str | None,
-    ) -> _ScanResult:
-        """Download a scan ZIP and extract into standard layout."""
-        base = (
-            f"/data/projects/{session_project}/subjects/{subject}"
-            f"/experiments/{resolved_session_id}/scans/{scan_id}"
-        )
-        if resource_label:
-            scan_url = f"{base}/resources/{resource_label}/files"
-        else:
-            scan_url = f"{base}/files"
-
-        try:
-            with httpx.Client(
-                base_url=base_url,
-                timeout=build_httpx_timeout(timeout),  # connect fails fast
-                verify=verify_ssl,
-            ) as http:
-                cookies = {"JSESSIONID": session_token} if session_token else {}
-                with http.stream(
-                    "GET",
-                    scan_url,
-                    params={"format": "zip"},
-                    cookies=cookies,
-                ) as resp:
-                    resp.raise_for_status()
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".zip",
-                        delete=False,
-                    ) as tmp:
-                        tmp_path = Path(tmp.name)
-                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                            tmp.write(chunk)
-
-            try:
-                scan_base = session_dir / "scans" / scan_id
-                extracted, renamed = _extract_scan_zip(
-                    tmp_path,
-                    scan_base,
-                    resource_label=resource_label,
-                    exclude_resources=exclude_set,
-                )
-            finally:
-                tmp_path.unlink(missing_ok=True)
-
-            parts = []
-            if resource_label:
-                parts.append(resource_label)
-            if extracted == 0:
-                parts.append("empty")
-            if renamed:
-                parts.append(f"renamed {renamed} duplicates")
-            status = ", ".join(parts) if parts else ""
-            return _ScanResult(scan_id, True, extracted, status)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                # A scan with no files of the requested type is normal under
-                # -r, so this is not an error -- but it downloaded nothing,
-                # and the zero is what stops an all-404 session (the failure
-                # mode ADR-0010 describes) reading as a complete download.
-                label_desc = f" ({resource_label})" if resource_label else ""
-                return _ScanResult(scan_id, True, 0, f"no files{label_desc}")
-            return _ScanResult(scan_id, False, 0, str(e))
-        except Exception as e:
-            return _ScanResult(scan_id, False, 0, str(e))
-
-    succeeded: list[str] = []
-    failed: list[tuple[str, str]] = []
-    total_files = 0
-
-    pool_size = min(len(download_tasks), workers)
-    with cancellable_pool(pool_size) as (executor, _token):
-        futures = {
-            executor.submit(download_and_extract, sid, res): (sid, res)
-            for sid, res in download_tasks
-        }
-        for future in as_completed(futures):
-            result = future.result()
-            if result.ok:
-                succeeded.append(result.scan_id)
-                total_files += result.files
-                if not quiet:
-                    status = f" ({result.message})" if result.message else ""
-                    click.echo(f"  Scan {result.scan_id} done{status}", err=True)
-            else:
-                failed.append((result.scan_id, result.message))
-                # Reported even under --quiet. Quiet suppresses per-item
-                # chatter, not the news that data is missing -- and --quiet is
-                # the scripting mode, where silence is most dangerous.
-                click.echo(f"  Scan {result.scan_id} FAILED: {result.message}", err=True)
-
-    if failed:
-        click.echo(f"{len(failed)}/{len(download_tasks)} scan downloads failed", err=True)
-
-    return DownloadOutcome(succeeded=len(succeeded), failed=failed, files=total_files)
-
-
 @session.command("download")
 @click.option(
     "--experiment",
@@ -595,7 +255,13 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     help="Project ID (enables lookup by label; defaults to profile default_project)",
 )
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
-@click.option("--name", hidden=True, help="Output directory name (defaults to session ID)")
+@click.option(
+    "--name",
+    hidden=True,
+    callback=validate_local_path_option_cb,
+    is_eager=True,
+    help="Output directory name (defaults to session ID)",
+)
 @click.option(
     "--workers",
     "-w",
@@ -661,6 +327,14 @@ def _download_session_fast(  # noqa: C901  # pre-existing; see pyproject
     expose_value=False,
     callback=_make_alias_cb("--no-cleanup", "keep_zips", True),
 )
+@click.option(
+    "--verify",
+    is_flag=True,
+    help=(
+        "Verify downloaded files against server MD5 checksums after download; "
+        "fails if the server has no checksums for anything downloaded"
+    ),
+)
 @click.option("--dry-run", is_flag=True, help="Preview what would be downloaded")
 @global_options
 @handle_errors
@@ -677,6 +351,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     session_resources: bool,
     extract: bool,
     keep_zips: bool,
+    verify: bool,
     dry_run: bool,
 ) -> None:
     """Download session data.
@@ -697,8 +372,9 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         xnatctl session download -E XNAT_E00001 -w 8 --exclude-resource SNAPSHOTS
         xnatctl session download -E XNAT_E00001 --out ./data --session-resources
         xnatctl session download -E XNAT_E00001 --out ./data --dry-run
+        xnatctl session download -E XNAT_E00001 --verify
     """
-    from xnatctl.core.validation import validate_path_writable
+    from xnatctl.core.validation import validate_local_path_component, validate_path_writable
 
     # Map extract/keep_zips to internal unzip/cleanup
     unzip = extract or keep_zips
@@ -710,8 +386,19 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
 
     out_path = Path(out)
 
-    if name and ("/" in name or "\\" in name):
-        raise click.ClickException("--name cannot contain path separators")
+    # `--name` (when given) is validated by validate_local_path_option_cb, an
+    # eager Click callback that runs at argument-parsing time -- before
+    # @require_auth -- so a malformed --name fails without needing a valid
+    # session. Without --name, the output directory falls back to the raw
+    # session_id (see below); that fallback isn't known until here (it
+    # depends on -E), so it's still validated in the command body, and goes
+    # through ExperimentRef's URL-safety check (validate_xnat_label, which
+    # does not forbid ':') rather than a local-filesystem check.
+    if name is None:
+        try:
+            validate_local_path_component(session_id, "session_id (as the output directory name)")
+        except InputValidationError as e:
+            raise click.ClickException(str(e)) from e
 
     # Resolve project and workers from profile defaults
     if not project:
@@ -750,6 +437,30 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         raise SystemExit(1)
 
     if dry_run:
+        if ctx.output_format == OutputFormat.JSON:
+            print_json(
+                {
+                    "operation": "download",
+                    "dry_run": True,
+                    "session_id": resolved_session_id,
+                    "project": session_project,
+                    "subject": subject,
+                    "output_dir": str(out_path / (name or session_id)),
+                    "workers": workers,
+                    "resources": list(resource)
+                    if resource
+                    else list(exclude_resource)
+                    if exclude_resource
+                    else "all",
+                    "resource_filter_mode": "include"
+                    if resource
+                    else "exclude"
+                    if exclude_resource
+                    else "all",
+                    "session_resources": session_resources,
+                }
+            )
+            return
         click.echo(f"[DRY-RUN] Would download session {session_id}", err=True)
         if resolved_session_id != session_id:
             click.echo(f"  Resolved ID: {resolved_session_id}", err=True)
@@ -772,90 +483,301 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
 
     from xnatctl.core.output import create_progress
 
+    download_start = time.time()
+
     # Use parallel path when filtering is active (even with workers=1)
     use_parallel = workers > 1 or resource or exclude_resource
 
+    # Keyed by scan_id, not appended per callback: under the include-filter
+    # tier, on_scan_result fires once per (scan, resource) pair, so a scan
+    # with N included resources must still collapse to one item and count
+    # once in `scans` -- not be inflated N-fold.
+    scan_ok: dict[str, bool] = {}
+    scan_errors: dict[str, list[str]] = {}
+    # Non-scan items (session resources, the sequential path's single
+    # archive) -- declared here, before any exception could occur, so
+    # `_emit_failed_summary` can always safely read it, no matter which of
+    # this function's try/except blocks calls it.
+    extra_items: list[TransferItemResult] = []
+
+    def _items_from_scan_ok() -> list[TransferItemResult]:
+        return [
+            TransferItemResult(
+                id=scan_id,
+                status="success" if ok else "failed",
+                error="; ".join(scan_errors[scan_id]) if not ok else None,
+            )
+            for scan_id, ok in scan_ok.items()
+        ]
+
+    def _current_items() -> list[TransferItemResult]:
+        """Every item known so far: per-scan results plus `extra_items`.
+
+        A function, not a value computed once, because both underlying
+        collections keep growing as the command progresses -- called again
+        later it picks up whatever has been added since.
+        """
+        return [*_items_from_scan_ok(), *extra_items]
+
+    def _item_counts(all_items: list[TransferItemResult]) -> tuple[int, int]:
+        """(succeeded, failed) counted from *all_items*.
+
+        This is the same per-scan/per-resource bookkeeping the summary's
+        `items` field reports, so `status` can never disagree with what
+        `items` shows (e.g. one scan whose DICOM resource landed but whose
+        NIFTI resource didn't is one failed item, and must drive an overall
+        "failed"/"partial" verdict from that, not from a separate raw task
+        count).
+        """
+        succeeded = sum(1 for item in all_items if item.status == "success")
+        failed = sum(1 for item in all_items if item.status == "failed")
+        return succeeded, failed
+
+    def _emit_failed_summary(exc: BaseException) -> None:
+        """Print a failed summary in JSON mode before *exc* propagates.
+
+        A no-op in table mode. The exception itself is never swallowed;
+        callers re-raise it unchanged right after this.
+        """
+        if ctx.output_format != OutputFormat.JSON:
+            return
+        failure_items = [
+            *_current_items(),
+            TransferItemResult(id="session", status="failed", error=str(exc)),
+        ]
+        # Derived from the same items every other emission site uses, not
+        # hardcoded: scans that completed before this exception hit (during
+        # verify or extraction) still count as successes, so a run that got
+        # partway must read "partial", not blanket "failed".
+        succeeded_count, failed_count = _item_counts(failure_items)
+        TransferSummary(
+            operation="download",
+            session_id=resolved_session_id,
+            project=session_project,
+            output_dir=str(session_dir),
+            scans=len(scan_ok) if use_parallel else None,
+            # Known when the engine call itself already completed (this
+            # exception came from verify/extraction, afterward) -- null
+            # only when the engine call is what raised, so nothing was
+            # ever reported back to know a file count from.
+            files=outcome.files if outcome is not None else None,
+            duration_seconds=round(time.time() - download_start, 3),
+            status=transfer_status(succeeded=succeeded_count, failed=failed_count),
+            items=failure_items,
+        ).emit()
+
     outcome: DownloadOutcome | None = None
     if use_parallel:
-        outcome = _download_session_fast(
-            client=client,
-            session_project=session_project,
-            subject=subject,
-            resolved_session_id=resolved_session_id,
-            session_dir=session_dir,
-            workers=max(workers, 1),
-            quiet=ctx.quiet,
-            include_resources=resource,
-            exclude_resources=exclude_resource,
-        )
-    else:
-        with create_progress() as progress:
-            task = progress.add_task("Downloading scans...", total=100)
 
-            scans_url = (
-                f"/data/projects/{session_project}/subjects/{subject}"
-                f"/experiments/{resolved_session_id}/scans/ALL/files"
+        def on_scan_start(count: int) -> None:
+            if ctx.quiet:
+                return
+            if count == 0:
+                click.echo("No scans found in session", err=True)
+            else:
+                click.echo(f"Downloading {count} scans in parallel...", err=True)
+
+        def on_scan_result(result: ScanResult) -> None:
+            scan_ok[result.scan_id] = scan_ok.get(result.scan_id, True) and result.ok
+            if result.ok:
+                if not ctx.quiet:
+                    status = f" ({result.message})" if result.message else ""
+                    click.echo(f"  Scan {result.scan_id} done{status}", err=True)
+            else:
+                scan_errors.setdefault(result.scan_id, []).append(result.message)
+                # Reported even under --quiet. Quiet suppresses per-item
+                # chatter, not the news that data is missing -- and --quiet is
+                # the scripting mode, where silence is most dangerous.
+                click.echo(f"  Scan {result.scan_id} FAILED: {result.message}", err=True)
+
+        try:
+            outcome = DownloadService(client).download_session_fast(
+                session_project=session_project,
+                subject=subject,
+                resolved_session_id=resolved_session_id,
+                session_dir=session_dir,
+                workers=max(workers, 1),
+                include_resources=resource,
+                exclude_resources=exclude_resource,
+                on_start=on_scan_start,
+                on_scan_result=on_scan_result,
             )
-            scans_zip = session_dir / "scans.zip"
+        except Exception as exc:
+            _emit_failed_summary(exc)
+            raise
+        if outcome.failed:
+            click.echo(
+                f"{len(outcome.failed)}/{outcome.succeeded + len(outcome.failed)} "
+                "scan downloads failed",
+                err=True,
+            )
+    else:
+        try:
+            with create_progress() as progress:
+                task = progress.add_task("Downloading scans...", total=100)
 
-            with client._get_client().stream(
-                "GET",
-                scans_url,
-                params={"format": "zip"},
-                cookies=client._get_cookies(),
-            ) as resp:
-                resp.raise_for_status()
-                total = int(resp.headers.get("content-length", 0))
-                downloaded = 0
+                def on_scan_progress(written: int, total: int | None) -> None:
+                    if total:
+                        progress.update(task, completed=int(written / total * 100))
 
-                with open(scans_zip, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total:
-                            progress.update(task, completed=int(downloaded / total * 100))
+                DownloadService(client).download_session_archive(
+                    session_project=session_project,
+                    subject=subject,
+                    resolved_session_id=resolved_session_id,
+                    session_dir=session_dir,
+                    progress_cb=on_scan_progress,
+                )
 
-            progress.update(task, completed=100, description="Scans downloaded")
+                progress.update(task, completed=100, description="Scans downloaded")
+        except Exception as exc:
+            _emit_failed_summary(exc)
+            raise
+        # The sequential path never enumerates individual scans (that's the
+        # whole point of the single-ZIP request), so it has no per-scan
+        # items -- but it still needs ONE success item, or a session
+        # resource failing later would be the only item in `items` and read
+        # as a total "failed" instead of "partial" (the scan archive itself
+        # is fine; only the unrelated resource isn't).
+        extra_items.append(TransferItemResult(id="archive", status="success"))
+
+    scans_count = len(scan_ok) if use_parallel else None
+    succeeded_scan_ids = [scan_id for scan_id, ok in scan_ok.items() if ok]
 
     # Download session-level resources (outside scans)
+    session_resource_zips: list[tuple[str, Path]] = []
     if session_resources:
         if not ctx.quiet:
             click.echo("Downloading session-level resources...", err=True)
+        # What was actually requested, fetched up front so a resource that
+        # never even started downloading (because an earlier one in the
+        # batch raised) still shows up as a failed item below -- not just
+        # silently missing from `items`. Only fetched for -o json: it costs
+        # an extra listing call that table mode's swallow-and-warn text
+        # output has no use for.
+        requested_resource_labels: list[str] = []
+        listing_error: str | None = None
+        if ctx.output_format == OutputFormat.JSON:
+            try:
+                requested_resource_labels = [
+                    str(row["label"])
+                    for row in SessionService(client).experiment_resource_rows(
+                        resolved_session_id, project=session_project, subject=subject
+                    )
+                    if row.get("label")
+                ]
+            except Exception as exc:
+                listing_error = str(exc)
+        session_resource_error: str | None = None
         try:
-            res_url = (
-                f"/data/projects/{session_project}/subjects/{subject}"
-                f"/experiments/{resolved_session_id}/resources"
+            # `downloaded=session_resource_zips`: appended to in place as
+            # each resource's ZIP finishes, so if a later resource's
+            # download raises here, everything that landed before it is
+            # still in this list for verification below -- not lost with
+            # the exception this except block is about to catch.
+            DownloadService(client).download_session_level_resources(
+                session_project=session_project,
+                subject=subject,
+                resolved_session_id=resolved_session_id,
+                session_dir=session_dir,
+                downloaded=session_resource_zips,
             )
-            res_resp = client.get_json(res_url)
-            sess_resources = res_resp.get("ResultSet", {}).get("Result", [])
-
-            for res in sess_resources:
-                label = res.get("label", "resource")
-                res_zip = session_dir / f"resources_{label}.zip"
-                files_url = f"{res_url}/{label}/files"
-
-                with client._get_client().stream(
-                    "GET",
-                    files_url,
-                    params={"format": "zip"},
-                    cookies=client._get_cookies(),
-                ) as resp:
-                    resp.raise_for_status()
-                    with open(res_zip, "wb") as f:
-                        for chunk in resp.iter_bytes():
-                            f.write(chunk)
-
             if not ctx.quiet:
-                click.echo(f"  Session resources downloaded ({len(sess_resources)})", err=True)
+                click.echo(
+                    f"  Session resources downloaded ({len(session_resource_zips)})", err=True
+                )
         except Exception as e:
+            session_resource_error = str(e)
             if not ctx.quiet:
                 click.echo(f"  Session resources: {e}", err=True)
+        # A resource that failed contributes a failed item -- previously
+        # this whole block was swallowed silently outside of --verify, so
+        # -o json could report "success" with a resource missing on disk.
+        succeeded_resource_labels = {label for label, _zip in session_resource_zips}
+        for label in requested_resource_labels:
+            if label in succeeded_resource_labels:
+                extra_items.append(TransferItemResult(id=f"resource:{label}", status="success"))
+            else:
+                extra_items.append(
+                    TransferItemResult(
+                        id=f"resource:{label}",
+                        status="failed",
+                        error=session_resource_error or "not downloaded",
+                    )
+                )
+        if listing_error is not None:
+            # `requested_resource_labels` is empty (the listing failed), so
+            # the loop above had nothing to report.
+            if session_resource_error is None:
+                # But the download itself succeeded -- its own internal
+                # listing worked and everything it found landed. A
+                # transient hiccup in OUR up-front listing call must not
+                # read as a total failure the download never actually was;
+                # report what we now know landed instead.
+                for label in succeeded_resource_labels:
+                    extra_items.append(TransferItemResult(id=f"resource:{label}", status="success"))
+            else:
+                # The download also raised -- but `session_resource_zips`
+                # is appended to in place as each resource finishes, so
+                # anything that landed *before* the exception is still
+                # known even though the batch as a whole didn't complete.
+                # Report those as success items too, or a resource that
+                # genuinely landed would be missing from `items` entirely
+                # while the lone "resources" failure item below made the
+                # whole run read as a flat "failed" instead of "partial".
+                for label in succeeded_resource_labels:
+                    extra_items.append(TransferItemResult(id=f"resource:{label}", status="success"))
+                extra_items.append(
+                    TransferItemResult(
+                        id="resources", status="failed", error=session_resource_error
+                    )
+                )
 
-    # Extract ZIPs if requested
-    if unzip:
-        _extract_session_zips(session_dir, cleanup=cleanup, quiet=ctx.quiet)
+    # Extract ZIPs if requested. With --verify also on, the session-resource
+    # ZIPs this run just downloaded are held back here: extraction (and, with
+    # cleanup, deletion) is deferred until after verification has read them
+    # intact, further down. Extracting them now would both flatten away the
+    # resource label they carry (a known extract_session_zips limitation, not
+    # something worked around here) and, with cleanup on, delete the exact
+    # file --verify needs to check.
+    resource_zip_paths = [zip_path for _label, zip_path in session_resource_zips]
+    try:
+        if unzip:
+            if verify and resource_zip_paths:
+                non_resource_zips = [
+                    p for p in session_dir.glob("*.zip") if p not in resource_zip_paths
+                ]
+                extract_session_zips(
+                    session_dir,
+                    cleanup=cleanup,
+                    on_message=None if ctx.quiet else _echo_stderr,
+                    zip_paths=non_resource_zips,
+                )
+            else:
+                extract_session_zips(
+                    session_dir,
+                    cleanup=cleanup,
+                    on_message=None if ctx.quiet else _echo_stderr,
+                )
+    except Exception as exc:
+        _emit_failed_summary(exc)
+        raise
 
     if outcome is not None and outcome.failed:
+        if ctx.output_format == OutputFormat.JSON:
+            all_items = _current_items()
+            succeeded_count, failed_count = _item_counts(all_items)
+            TransferSummary(
+                operation="download",
+                session_id=resolved_session_id,
+                project=session_project,
+                output_dir=str(session_dir),
+                scans=scans_count,
+                files=outcome.files,
+                duration_seconds=round(time.time() - download_start, 3),
+                status=transfer_status(succeeded=succeeded_count, failed=failed_count),
+                items=all_items,
+            ).emit()
+            raise SystemExit(1)
         # Losing scans and exiting 0 is how a partial transfer gets mistaken
         # for a whole one. The names are in the message so the caller can
         # retry exactly what is missing.
@@ -868,6 +790,155 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
             {"failed_scans": dict(outcome.failed)},
         )
 
+    verification: VerificationReport | None = None
+    if verify:
+        if not ctx.quiet:
+            click.echo("Verifying downloaded files...", err=True)
+        # The parallel engine always extracts, regardless of --extract; the
+        # sequential engine only does when --extract was passed, else the
+        # (still verifiable) ZIP is left in place.
+        verify_local_root = session_dir if (use_parallel or unzip) else None
+        verify_zip_paths: list[Path | tuple[Path, str]] = (
+            [] if verify_local_root is not None else [session_dir / "scans.zip"]
+        )
+        # Exactly the session-resource ZIPs THIS run downloaded, never
+        # rediscovered by globbing the directory -- a stale
+        # resources_QC.zip left over from an earlier run must not be able to
+        # stand in for a resource whose download failed just now. Verified
+        # from the ZIP directly regardless of --extract (see above): each is
+        # scoped to exactly one label, keyed with no marker search at all.
+        verify_zip_paths.extend((zip_path, label) for label, zip_path in session_resource_zips)
+        # De-duped: under the include-filter tier, on_scan_result fires once
+        # per (scan, resource) pair, so a scan with N included resources
+        # would otherwise appear N times and cost N redundant manifest calls.
+        verify_scan_ids = list(dict.fromkeys(succeeded_scan_ids)) if use_parallel else None
+        try:
+            verification = DownloadService(client).verify_scan_downloads(
+                session_id=session_id,
+                project=session_project,
+                subject=subject,
+                scan_ids=verify_scan_ids,
+                include_resources=resource,
+                exclude_resources=exclude_resource,
+                include_session_resources=session_resources,
+                local_root=verify_local_root,
+                zip_paths=verify_zip_paths,
+            )
+        except Exception as exc:
+            _emit_failed_summary(exc)
+            raise
+        for path in verification.collisions:
+            click.echo(f"  COLLISION: {path}", err=True)
+        for path in verification.mismatched:
+            click.echo(f"  MISMATCH: {path}", err=True)
+        for path in verification.missing_local:
+            click.echo(f"  MISSING: {path}", err=True)
+        if verification.success and not ctx.quiet:
+            print_success(f"Verified {verification.matched} files")
+            if verification.unverifiable:
+                click.echo(
+                    f"  {len(verification.unverifiable)} file(s) have no server "
+                    "checksum and were not verified",
+                    err=True,
+                )
+            if verification.missing_remote:
+                click.echo(
+                    f"  {len(verification.missing_remote)} local file(s) absent "
+                    "from the server manifest were not verified",
+                    err=True,
+                )
+        # Verification has now read the session-resource ZIPs intact; apply
+        # the extract/cleanup that was deferred for them above.
+        try:
+            if unzip and resource_zip_paths:
+                extract_session_zips(
+                    session_dir,
+                    cleanup=cleanup,
+                    on_message=None if ctx.quiet else _echo_stderr,
+                    zip_paths=resource_zip_paths,
+                )
+        except Exception as exc:
+            _emit_failed_summary(exc)
+            raise
+
+    files_transferred = outcome.files if outcome is not None else None
+
+    if verification is not None and not verification.success:
+        if ctx.output_format == OutputFormat.JSON:
+            TransferSummary(
+                operation="download",
+                session_id=resolved_session_id,
+                project=session_project,
+                output_dir=str(session_dir),
+                scans=scans_count,
+                files=files_transferred,
+                duration_seconds=round(time.time() - download_start, 3),
+                # Always "failed", not derived from _item_counts: a
+                # checksum mismatch/missing file is a data-integrity
+                # failure regardless of how many scans otherwise landed,
+                # unlike a bookkeeping-only resource miss elsewhere.
+                status="failed",
+                items=_current_items(),
+                verification=TransferVerification.from_report(verification),
+            ).emit()
+            raise SystemExit(1)
+        if verification.mismatched or verification.missing_local or verification.collisions:
+            raise DownloadError(
+                f"Verification failed: {len(verification.mismatched)} mismatched, "
+                f"{len(verification.missing_local)} missing, "
+                f"{len(verification.collisions)} colliding file(s). Session directory: "
+                f"{session_dir}",
+                session_id,
+                {
+                    "mismatched": verification.mismatched,
+                    "missing_local": verification.missing_local,
+                    "collisions": verification.collisions,
+                },
+            )
+        # No mismatches, no missing files, no collisions -- nothing was
+        # actually verified: either every checked file landed in
+        # `unverifiable` (the server had no checksums on record), or the
+        # manifest listed nothing at all for a scope with files on disk.
+        if verification.unverifiable:
+            raise DownloadError(
+                "Verification failed: the server provided no checksums for any "
+                f"downloaded file ({len(verification.unverifiable)} unverifiable); "
+                "nothing was verified.",
+                session_id,
+                {"unverifiable": verification.unverifiable},
+            )
+        raise DownloadError(
+            "Verification failed: the server manifest listed none of the "
+            f"{len(verification.missing_remote)} in-scope local file(s); "
+            "nothing was verified.",
+            session_id,
+            {"missing_remote": verification.missing_remote},
+        )
+
+    if ctx.output_format == OutputFormat.JSON:
+        all_items = _current_items()
+        succeeded_count, failed_count = _item_counts(all_items)
+        json_status = transfer_status(succeeded=succeeded_count, failed=failed_count)
+        TransferSummary(
+            operation="download",
+            session_id=resolved_session_id,
+            project=session_project,
+            output_dir=str(session_dir),
+            scans=scans_count,
+            files=files_transferred,
+            duration_seconds=round(time.time() - download_start, 3),
+            status=json_status,
+            items=all_items,
+            verification=TransferVerification.from_report(verification)
+            if verification is not None
+            else None,
+        ).emit()
+        # A session-resource failure surfaces here even though nothing else
+        # went wrong: it's caught by `items`/`status` now, not just --verify.
+        if json_status != "success":
+            raise SystemExit(1)
+        return
+
     if outcome is not None:
         # Says what arrived rather than only where it was put: "0 scans
         # (0 files)" is the honest report for a session that yielded nothing.
@@ -876,1322 +947,6 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         )
     else:
         print_success(f"Downloaded session to: {session_dir}")
-
-
-@session.command("upload")
-@click.argument("input_path", type=click.Path(exists=True))
-@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
-@click.option("--subject", "-S", required=True, help="Subject ID")
-@click.option("--experiment", "-E", required=True, help="Session/experiment label")
-@click.option(
-    "--session",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("--session", "experiment"),
-)
-@click.option("--username", "-u", hidden=True, help="XNAT username (REST upload)")
-@click.option(
-    "--password",
-    hidden=True,
-    expose_value=False,
-    is_eager=True,
-    callback=reject_argv_password(
-        "Use --password-stdin, set XNAT_PASS, run 'xnatctl auth login' first, "
-        "or let the command prompt."
-    ),
-    help="REFUSED: use --password-stdin, XNAT_PASS, or the prompt",
-)
-@click.option(
-    "--password-stdin",
-    is_flag=True,
-    hidden=True,
-    help="Read the upload password from stdin (one line)",
-)
-@click.option(
-    "--mode",
-    type=click.Choice(["tar", "zip", "gradual"]),
-    default=None,
-    help="Upload mode (default: tar)",
-)
-@click.option(
-    "--gradual",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("--gradual", "mode", "gradual"),
-)
-@click.option(
-    "--archive-format",
-    type=click.Choice(["tar", "zip"]),
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("--archive-format", "mode"),
-)
-@click.option(
-    "--zip-to-tar/--no-zip-to-tar",
-    default=False,
-    hidden=True,
-    help="Convert ZIP archive to TAR before REST upload",
-)
-@click.option(
-    "--workers",
-    "-w",
-    type=int,
-    default=None,
-    show_default="4 (or profile)",
-    help="Parallel workers",
-)
-@click.option(
-    "--overwrite",
-    type=click.Choice(["none", "append", "delete"]),
-    default=None,
-    help="Overwrite mode (default: delete)",
-)
-@click.option(
-    "--direct-archive/--prearchive",
-    default=None,
-    help="Direct archive or route to prearchive (default: direct). Note: --prearchive is best-effort; projects with auto-archive enabled will still auto-archive after receive.",
-)
-@click.option(
-    "--ignore-unparsable/--no-ignore-unparsable",
-    default=True,
-    hidden=True,
-    help="Skip unparsable DICOM files (default: yes)",
-)
-@click.option("--dry-run", is_flag=True, help="Preview without uploading")
-@global_options
-@handle_errors
-@require_auth
-def session_upload(
-    ctx: Context,
-    input_path: str,
-    project: str | None,
-    subject: str,
-    experiment: str,
-    username: str | None,
-    password_stdin: bool,
-    mode: str | None,
-    zip_to_tar: bool,
-    workers: int | None,
-    overwrite: str | None,
-    direct_archive: bool | None,
-    ignore_unparsable: bool,
-    dry_run: bool,
-) -> None:
-    """Upload DICOM session via REST import.
-
-    Supports both single archive files and directories of DICOM files.
-    For directories, files are split into N batches where N = workers.
-
-    For DICOM C-STORE network transfer, use `session upload-dicom` instead.
-
-    \b
-    Example:
-        xnatctl session upload ./archive.zip -P MYPROJ -S SUB001 -E SESS001
-        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001
-        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --workers 16
-        xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --mode gradual -w 40
-    """
-    from xnatctl.core.validation import (
-        validate_project_id,
-        validate_session_id,
-        validate_subject_id,
-    )
-
-    # A password value on argv is refused by the --password callback;
-    # stdin is the only explicit per-command source. Downstream fallbacks
-    # (XNAT_PASS, prompt) live in _upload_directory_parallel.
-    password = read_password_stdin("--password-stdin") if password_stdin else None
-
-    # Resolve profile defaults
-    profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-    if not project:
-        project = profile.default_project if profile else None
-        if not project:
-            profile_name = ctx.profile_name or (
-                ctx.config.default_profile if ctx.config else "default"
-            )
-            raise click.ClickException(
-                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-            )
-    if mode is None:
-        mode = profile.archive_mode if (profile and profile.archive_mode is not None) else "tar"
-    if workers is None:
-        workers = profile.workers if (profile and profile.workers is not None) else 4
-    if overwrite is None:
-        overwrite = profile.overwrite if (profile and profile.overwrite is not None) else "delete"
-    if direct_archive is None:
-        direct_archive = (
-            profile.direct_archive if (profile and profile.direct_archive is not None) else True
-        )
-
-    # Map mode to internal gradual/archive_format
-    gradual = mode == "gradual"
-    archive_format = mode if mode in ("tar", "zip") else "tar"
-
-    session = experiment
-    project = validate_project_id(project)
-    subject = validate_subject_id(subject)
-    session = validate_session_id(session)
-
-    source_path = Path(input_path)
-
-    # Dry run handling
-    if dry_run:
-        click.echo("[DRY-RUN] Would upload with the following settings:", err=True)
-        click.echo(f"  Source: {source_path}", err=True)
-        click.echo(f"  Project: {project}", err=True)
-        click.echo(f"  Subject: {subject}", err=True)
-        click.echo(f"  Session: {session}", err=True)
-        click.echo(f"  Mode: {mode}", err=True)
-        click.echo(f"  Workers: {workers}", err=True)
-        if not gradual:
-            click.echo(f"  Overwrite: {overwrite}", err=True)
-            click.echo(f"  Direct archive: {direct_archive}", err=True)
-        return
-
-    # Gradual per-file upload
-    if gradual:
-        _upload_gradual_dicom(
-            ctx=ctx,
-            source_path=source_path,
-            project=project,
-            subject=subject,
-            session=session,
-            workers=workers,
-            direct_archive=direct_archive,
-        )
-        return
-
-    # REST transport
-    if source_path.is_file():
-        # Single archive upload
-        _upload_single_archive(
-            ctx=ctx,
-            archive_path=source_path,
-            project=project,
-            subject=subject,
-            session=session,
-            overwrite=overwrite,
-            direct_archive=direct_archive,
-            ignore_unparsable=ignore_unparsable,
-            zip_to_tar=zip_to_tar,
-        )
-    elif source_path.is_dir():
-        # Directory upload with parallel batching
-        _upload_directory_parallel(
-            ctx=ctx,
-            source_dir=source_path,
-            project=project,
-            subject=subject,
-            session=session,
-            username=username,
-            password=password,
-            upload_workers=workers,
-            archive_workers=workers,
-            archive_format=archive_format,
-            overwrite=overwrite,
-            direct_archive=direct_archive,
-            ignore_unparsable=ignore_unparsable,
-        )
-
-
-@session.command("upload-exam")
-@click.argument("exam_root", type=click.Path(exists=True, file_okay=False))
-@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
-@click.option("--subject", "-S", required=True, help="Subject ID")
-@click.option("--experiment", "-E", required=True, help="Session/experiment label")
-@click.option(
-    "--session",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("--session", "experiment"),
-)
-@click.option(
-    "--workers",
-    "-w",
-    type=int,
-    default=None,
-    show_default="4 (or profile)",
-    help="Parallel workers",
-)
-@click.option(
-    "--misc-label",
-    default="MISC",
-    show_default=True,
-    hidden=True,
-    help="Resource label to use for top-level misc files",
-)
-@click.option(
-    "--skip-resources",
-    is_flag=True,
-    hidden=True,
-    help="Skip attaching top-level resource dirs and misc files",
-)
-@click.option(
-    "--attach-only",
-    is_flag=True,
-    hidden=True,
-    help="Attach resources only (skip DICOM upload)",
-)
-@click.option(
-    "--direct-archive/--prearchive",
-    default=None,
-    help="Direct archive or route to prearchive (default: direct). Note: --prearchive is best-effort; projects with auto-archive enabled will still auto-archive after receive.",
-)
-@click.option(
-    "--wait",
-    type=click.IntRange(min=0),
-    default=DEFAULT_ARCHIVE_WAIT_SECONDS,
-    show_default=True,
-    help="Seconds to wait for archiving before attaching resources (0 = skip)",
-)
-@click.option(
-    "--wait-interval",
-    type=click.IntRange(min=1),
-    default=5,
-    hidden=True,
-    help="Seconds between archive checks",
-)
-@click.option(
-    "--wait-timeout",
-    type=click.IntRange(min=0),
-    hidden=True,
-    expose_value=False,
-    callback=lambda ctx, param, value: (ctx.params.update({"wait": value}) or value)
-    if value is not None
-    and param.name
-    and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
-    else value,
-)
-@click.option(
-    "--wait-for-archive/--no-wait-for-archive",
-    default=None,
-    hidden=True,
-    expose_value=False,
-    callback=lambda ctx, param, value: (
-        ctx.params.update({"wait": DEFAULT_ARCHIVE_WAIT_SECONDS if value else 0}) or value
-    )
-    if value is not None
-    and param.name
-    and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
-    else value,
-)
-@click.option("--dry-run", is_flag=True, help="Preview without uploading")
-@global_options
-@handle_errors
-@require_auth
-def session_upload_exam(  # noqa: C901  # pre-existing; see pyproject
-    ctx: Context,
-    exam_root: str,
-    project: str | None,
-    subject: str,
-    experiment: str,
-    workers: int | None,
-    misc_label: str,
-    skip_resources: bool,
-    attach_only: bool,
-    direct_archive: bool | None,
-    wait: int,
-    wait_interval: int,
-    dry_run: bool,
-) -> None:
-    """Upload an exam root (DICOM + session resources).
-
-    \b
-    Exam roots follow a common folder convention:
-    - DICOM files may appear anywhere under the root (recursive)
-    - Top-level directories without DICOM-like files are treated as session-level
-      resources (label = directory name)
-    - Top-level non-DICOM files are treated as misc attachments under --misc-label
-    """
-    from xnatctl.core.exam import classify_exam_root
-    from xnatctl.core.exceptions import ResourceNotFoundError
-    from xnatctl.core.validation import (
-        validate_project_id,
-        validate_resource_label,
-        validate_session_id,
-        validate_subject_id,
-    )
-    from xnatctl.services.resources import ResourceService
-    from xnatctl.services.uploads import UploadService
-
-    # Resolve profile defaults
-    profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-    if not project:
-        project = profile.default_project if profile else None
-        if not project:
-            profile_name = ctx.profile_name or (
-                ctx.config.default_profile if ctx.config else "default"
-            )
-            raise click.ClickException(
-                f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-            )
-    if workers is None:
-        workers = profile.workers if (profile and profile.workers is not None) else 4
-    if direct_archive is None:
-        direct_archive = (
-            profile.direct_archive if (profile and profile.direct_archive is not None) else True
-        )
-
-    # Map wait to internal wait_for_archive/wait_timeout
-    wait_for_archive = wait > 0
-    wait_timeout = wait
-
-    session = experiment
-    project = validate_project_id(project)
-    subject = validate_subject_id(subject)
-    session = validate_session_id(session)
-
-    misc_label = validate_resource_label(misc_label)
-
-    exam_root_path = Path(exam_root)
-    classification = classify_exam_root(exam_root_path)
-
-    resource_labels: list[str] = []
-    for resource_dir in classification.resource_dirs:
-        resource_labels.append(validate_resource_label(resource_dir.name))
-
-    if dry_run:
-        click.echo("[DRY-RUN] Would upload exam with the following settings:", err=True)
-        click.echo(f"  Exam root: {exam_root_path}", err=True)
-        click.echo(f"  Project: {project}", err=True)
-        click.echo(f"  Subject: {subject}", err=True)
-        click.echo(f"  Session: {session}", err=True)
-        click.echo(f"  Workers: {workers}", err=True)
-        click.echo(f"  Direct archive: {direct_archive}", err=True)
-        click.echo(f"  Resource dirs ({len(resource_labels)}):", err=True)
-        for label in resource_labels:
-            click.echo(f"    - {label}", err=True)
-        click.echo(f"  Misc label: {misc_label}", err=True)
-        return
-
-    client = ctx.get_client()
-
-    dicom_total = len(classification.dicom_files)
-    dicom_uploaded = 0
-
-    if not attach_only:
-        if not classification.dicom_files:
-            raise click.ClickException(f"No DICOM files found under: {exam_root_path}")
-
-        upload_service = UploadService(client)
-        summary = upload_service.upload_dicom_gradual_files(
-            files=classification.dicom_files,
-            project=project,
-            subject=subject,
-            session=session,
-            workers=workers,
-            direct_archive=direct_archive,
-        )
-        if not summary.success:
-            errors = "; ".join(summary.errors[:3])
-            raise click.ClickException(
-                f"DICOM upload failed ({summary.succeeded}/{summary.total} succeeded): {errors}"
-            )
-        dicom_uploaded = summary.succeeded
-
-    has_attachable_resources = bool(classification.resource_dirs) or bool(classification.misc_files)
-
-    if skip_resources or not has_attachable_resources:
-        if ctx.output_format == OutputFormat.JSON:
-            print_output(
-                {
-                    "project": project,
-                    "subject": subject,
-                    "session": session,
-                    "exam_root": str(exam_root_path),
-                    "dicom": {
-                        "skipped": attach_only,
-                        "total": dicom_total,
-                        "uploaded": dicom_uploaded,
-                    },
-                    "resources": {
-                        "skipped": bool(skip_resources),
-                        "resource_dirs": 0,
-                        "misc_files": 0,
-                        "misc_label": misc_label,
-                    },
-                },
-                format=OutputFormat.JSON,
-            )
-        else:
-            dicom_msg = (
-                f"DICOM uploaded {dicom_uploaded}/{dicom_total}"
-                if not attach_only
-                else "DICOM skipped"
-            )
-            resources_msg = (
-                "resources skipped" if skip_resources else ("resources attached 0 dirs + 0 files")
-            )
-            print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
-        return
-
-    def _resolve_experiment_id() -> str | None:
-        try:
-            hierarchy = HierarchyService(client)
-            resolved = hierarchy.resolve_experiment(
-                ExperimentRef(
-                    experiment=session,
-                    project_id=project,
-                    experiment_is_label=True,
-                )
-            )
-        except ResourceNotFoundError:
-            return None
-        return resolved.experiment_id or session
-
-    resolved_experiment_id = _resolve_experiment_id()
-    if not resolved_experiment_id and wait_for_archive:
-        deadline = time.monotonic() + wait_timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(wait_interval, remaining))
-            resolved_experiment_id = _resolve_experiment_id()
-            if resolved_experiment_id:
-                break
-
-    if not resolved_experiment_id:
-        # Archiving outlived the wait window (or --wait 0 on a not-yet-archived
-        # session). Don't discard the successful DICOM upload or silently drop
-        # resources: report an actionable partial result so the caller can attach
-        # resources with --attach-only once archiving completes.
-        pending = len(classification.resource_dirs) + len(classification.misc_files)
-        rerun = (
-            f"xnatctl session upload-exam '{exam_root_path}' "
-            f"-P {project} -S {subject} -E {session} --attach-only"
-        )
-        if ctx.output_format == OutputFormat.JSON:
-            print_output(
-                {
-                    "project": project,
-                    "subject": subject,
-                    "session": session,
-                    "exam_root": str(exam_root_path),
-                    "dicom": {
-                        "skipped": attach_only,
-                        "total": dicom_total,
-                        "uploaded": dicom_uploaded,
-                    },
-                    "resources": {
-                        "skipped": False,
-                        "attached": False,
-                        "pending": pending,
-                        "resource_dirs": 0,
-                        "misc_files": 0,
-                        "misc_label": misc_label,
-                        "reason": "session not archived before wait timeout",
-                        "rerun": rerun,
-                    },
-                },
-                format=OutputFormat.JSON,
-            )
-        else:
-            dicom_msg = (
-                "DICOM skipped" if attach_only else f"DICOM uploaded {dicom_uploaded}/{dicom_total}"
-            )
-            waited = f" after waiting {wait_timeout}s" if wait_for_archive else ""
-            print_warning(
-                f"{dicom_msg}; session '{session}' not archived yet{waited}. "
-                f"{pending} resource item(s) not attached -- re-run once archived:\n  {rerun}"
-            )
-        # Deliberate exit 0: this is documented partial success --
-        # the DICOM upload succeeded and the emitted --attach-only command
-        # recovers the pending resources once archiving completes. Returning
-        # nonzero here would make callers treat a recoverable state as failure.
-        return
-
-    resource_service = ResourceService(client)
-
-    for resource_dir in classification.resource_dirs:
-        label = validate_resource_label(resource_dir.name)
-        resource_service.create(
-            session_id=resolved_experiment_id,
-            resource_label=label,
-            project=project,
-        )
-        resource_service.upload_directory(
-            session_id=resolved_experiment_id,
-            resource_label=label,
-            directory_path=resource_dir,
-            project=project,
-        )
-
-    if classification.misc_files:
-        import tempfile
-        from zipfile import ZIP_DEFLATED, ZipFile
-
-        resource_service.create(
-            session_id=resolved_experiment_id,
-            resource_label=misc_label,
-            project=project,
-        )
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            zip_path = Path(tmp_dir) / f"{misc_label}.zip"
-            with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
-                for misc_file in classification.misc_files:
-                    zf.write(misc_file, arcname=misc_file.name)
-            resource_service.upload_file(
-                session_id=resolved_experiment_id,
-                resource_label=misc_label,
-                file_path=zip_path,
-                project=project,
-                extract=True,
-            )
-
-    attached_resource_dirs = len(classification.resource_dirs)
-    attached_misc_files = len(classification.misc_files)
-
-    if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {
-                "project": project,
-                "subject": subject,
-                "session": session,
-                "exam_root": str(exam_root_path),
-                "dicom": {
-                    "skipped": attach_only,
-                    "total": dicom_total,
-                    "uploaded": dicom_uploaded,
-                },
-                "resources": {
-                    "skipped": False,
-                    "resource_dirs": attached_resource_dirs,
-                    "misc_files": attached_misc_files,
-                    "misc_label": misc_label,
-                },
-            },
-            format=OutputFormat.JSON,
-        )
-    else:
-        dicom_msg = (
-            f"DICOM uploaded {dicom_uploaded}/{dicom_total}" if not attach_only else "DICOM skipped"
-        )
-        resources_msg = (
-            f"resources attached {attached_resource_dirs} dirs + {attached_misc_files} files"
-        )
-        print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
-
-
-def _upload_gradual_dicom(
-    ctx: Context,
-    source_path: Path,
-    project: str,
-    subject: str,
-    session: str,
-    workers: int = 4,
-    direct_archive: bool = True,
-) -> None:
-    """Upload DICOM files using gradual-DICOM handler (parallel per-file)."""
-    from xnatctl.models.progress import UploadProgress
-    from xnatctl.services.uploads import UploadService
-
-    client = ctx.get_client()
-    service = UploadService(client)
-
-    progress_counter = 0
-
-    def progress_callback(p: UploadProgress) -> None:
-        nonlocal progress_counter
-        progress_counter += 1
-        if p.phase.value == "uploading" and progress_counter % 100 != 0:
-            return
-        click.echo(f"  [{p.phase.value}] {p.message}", err=True)
-
-    try:
-        summary = service.upload_dicom_gradual(
-            source_path=source_path,
-            project=project,
-            subject=subject,
-            session=session,
-            workers=workers,
-            direct_archive=direct_archive,
-            progress_callback=progress_callback if not ctx.quiet else None,
-        )
-    except (ValueError, FileNotFoundError) as e:
-        print_error(str(e))
-        raise SystemExit(1) from e
-
-    if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {
-                "success": summary.success,
-                "total": summary.total,
-                "succeeded": summary.succeeded,
-                "failed": summary.failed,
-                "errors": summary.errors[:10],
-            },
-            format=OutputFormat.JSON,
-        )
-    else:
-        if summary.success:
-            print_success(f"Uploaded {summary.succeeded} files via gradual-DICOM")
-        else:
-            print_error(
-                f"Uploaded {summary.succeeded}/{summary.total} files ({summary.failed} failed)"
-            )
-            for err in summary.errors[:5]:
-                click.echo(f"  - {err}", err=True)
-            if len(summary.errors) > 5:
-                click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
-
-    # Exit code must not depend on the output format: a failed upload has to
-    # return nonzero under -o json too, or automation reports success.
-    if not summary.success:
-        raise SystemExit(1)
-
-
-def _upload_single_archive(
-    ctx: Context,
-    archive_path: Path,
-    project: str,
-    subject: str,
-    session: str,
-    overwrite: str,
-    direct_archive: bool,
-    ignore_unparsable: bool,
-    zip_to_tar: bool,
-) -> None:
-    """Upload a single archive file."""
-    from xnatctl.core.output import create_progress
-
-    client = ctx.get_client()
-
-    # Only show progress for table output and not quiet
-    show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
-
-    if show_progress:
-        from xnatctl.core.output import create_progress
-
-        with create_progress() as progress:
-            task = progress.add_task(f"Uploading {archive_path.name}...", total=100)
-
-            _do_single_upload(
-                client,
-                archive_path,
-                project,
-                subject,
-                session,
-                overwrite,
-                direct_archive,
-                ignore_unparsable,
-                zip_to_tar,
-            )
-
-            progress.update(task, completed=100)
-    else:
-        _do_single_upload(
-            client,
-            archive_path,
-            project,
-            subject,
-            session,
-            overwrite,
-            direct_archive,
-            ignore_unparsable,
-            zip_to_tar,
-        )
-
-    if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {"success": True, "file": str(archive_path), "session": session},
-            format=OutputFormat.JSON,
-        )
-    else:
-        print_success(f"Uploaded {archive_path.name}")
-
-
-def _do_single_upload(
-    client: XNATClient,
-    archive_path: Path,
-    project: str,
-    subject: str,
-    session: str,
-    overwrite: str,
-    direct_archive: bool,
-    ignore_unparsable: bool,
-    zip_to_tar: bool,
-) -> None:
-    """Upload one archive through the services-layer uploader.
-
-    Deliberately not ``client.post`` wrapped in ``upload_with_retry``: that
-    stacked two retry ladders, and because ``_request`` raises typed errors on
-    4xx, ``upload_with_retry`` never saw a raw 400 response -- so the
-    transient-vs-permanent 400 discrimination the import service needs was dead
-    on this path.
-
-    Failures are re-raised as typed exceptions so ``@handle_errors`` keeps the
-    documented exit-code taxonomy (auth 3, network 4, permission 6).
-    """
-    import httpx
-
-    from xnatctl.core.client import RETRYABLE_STATUS_CODES
-    from xnatctl.core.exceptions import (
-        NetworkError,
-        PermissionDeniedError,
-        ResourceNotFoundError,
-        RetryExhaustedError,
-        SessionExpiredError,
-        UploadError,
-    )
-    from xnatctl.core.exceptions import TimeoutError as XNATTimeoutError
-    from xnatctl.services.uploads import (
-        UPLOAD_MAX_RETRIES,
-        SessionRefresher,
-        upload_single_archive,
-    )
-
-    refresher = SessionRefresher(
-        base_url=client.base_url,
-        verify_ssl=client.httpx_verify(),
-        token=client.session_token,
-        username=client.username,
-        password=client.password,
-        owner=client,
-    )
-
-    with _maybe_zip_to_tar(archive_path, zip_to_tar) as upload_path:
-        result = upload_single_archive(
-            base_url=client.base_url,
-            username=client.username,
-            password=client.password,
-            session_token=client.session_token,
-            verify_ssl=client.httpx_verify(),
-            timeout=DEFAULT_HTTP_TIMEOUT_SECONDS,
-            archive_path=upload_path,
-            project=project,
-            subject=subject,
-            session=session,
-            import_handler="DICOM-zip",
-            ignore_unparsable=ignore_unparsable,
-            overwrite=overwrite,
-            direct_archive=direct_archive,
-            session_refresher=refresher,
-        )
-
-    if result.success:
-        return
-    if result.status_code == 401:
-        raise SessionExpiredError(client.base_url)
-    if result.status_code == 403:
-        raise PermissionDeniedError(f"project {project}", "upload to", url=client.base_url)
-    if result.status_code == 404:
-        raise ResourceNotFoundError("Import destination", f"{project}/{subject}/{session}")
-    if result.status_code in RETRYABLE_STATUS_CODES:
-        # The core set (429/5xx), NOT the upload set: an exhausted transient
-        # 400 falls through to UploadError below, where the body -- which names
-        # the conflicting session -- survives in the message.
-        raise RetryExhaustedError(
-            f"upload {archive_path.name}",
-            UPLOAD_MAX_RETRIES + 1,
-            UploadError(result.error),
-        )
-    if isinstance(result.exception, httpx.TimeoutException):
-        raise XNATTimeoutError(
-            client.base_url,
-            DEFAULT_HTTP_TIMEOUT_SECONDS,
-            message=f"Upload of {archive_path.name} failed: {result.error}",
-        )
-    if isinstance(result.exception, httpx.TransportError):
-        raise NetworkError(client.base_url, cause=result.error)
-    raise UploadError(
-        f"Upload of {archive_path.name} failed: {result.error}",
-        file_path=str(archive_path),
-    )
-
-
-def _safe_mtime(date_time: tuple[int, ...]) -> float:
-    """Convert ZIP date_time tuple to timestamp safely.
-
-    Args:
-        date_time: 6-tuple (year, month, day, hour, minute, second)
-
-    Returns:
-        Unix timestamp, defaulting to 0 if conversion fails or date is invalid.
-    """
-    import time
-
-    try:
-        year = date_time[0]
-        # Validate year is in reasonable range (ZIP format supports 1980-2107)
-        if year < 1980 or year > 2107:
-            return 0.0
-        # mktime wants a full 9-tuple: the ZIP header carries 6 fields, and the
-        # trailing three (weekday, yearday, DST) are filled with 0 -- 0 for DST
-        # rather than -1 so the platform resolves it instead of guessing.
-        y, mo, d, h, mi, sec = date_time[:6]
-        return time.mktime((y, mo, d, h, mi, sec, 0, 0, 0))
-    except (ValueError, OverflowError, OSError):
-        # Invalid date - use epoch
-        return 0.0
-
-
-def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
-    """Convert ZIP archive to TAR format.
-
-    Args:
-        archive_path: Source ZIP file
-        tar_path: Destination TAR file
-
-    Raises:
-        zipfile.BadZipFile: If ZIP is corrupted
-        OSError: If file operations fail
-    """
-    import tarfile
-    import zipfile
-
-    try:
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            # Validate ZIP integrity first
-            bad_file = zf.testzip()
-            if bad_file:
-                raise zipfile.BadZipFile(f"Corrupted file in archive: {bad_file}")
-
-            with tarfile.open(tar_path, "w") as tf:
-                for info in zf.infolist():
-                    name = info.filename
-                    if info.is_dir():
-                        tarinfo = tarfile.TarInfo(name.rstrip("/") + "/")
-                        tarinfo.type = tarfile.DIRTYPE
-                        tarinfo.mtime = _safe_mtime(info.date_time)
-                        tarinfo.size = 0
-                        tf.addfile(tarinfo)
-                        continue
-
-                    tarinfo = tarfile.TarInfo(name)
-                    tarinfo.size = info.file_size
-                    tarinfo.mtime = _safe_mtime(info.date_time)
-                    with zf.open(info, "r") as src:
-                        tf.addfile(tarinfo, fileobj=src)
-    except zipfile.BadZipFile:
-        raise
-    except Exception as e:
-        raise OSError(f"Failed to convert ZIP to TAR: {e}") from e
-
-
-def _should_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> bool:
-    return zip_to_tar and archive_path.suffix.lower() == ".zip"
-
-
-def _maybe_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> AbstractContextManager[Path]:
-    """Yield the path to upload, converting ZIP to TAR when asked.
-
-    A context manager because the converted archive lives in a temporary
-    directory that must outlive the conversion but not the upload. Content type
-    is derived from the yielded path's name by the uploader.
-    """
-    import tempfile
-    from contextlib import contextmanager
-
-    @contextmanager
-    def _converter() -> Iterator[Path]:
-        if _should_zip_to_tar(archive_path, zip_to_tar):
-            with tempfile.TemporaryDirectory() as temp_dir:
-                tar_path = Path(temp_dir) / f"{archive_path.stem}.tar"
-                _zip_to_tar(archive_path, tar_path)
-                yield tar_path
-        else:
-            yield archive_path
-
-    return _converter()
-
-
-def _upload_directory_parallel(
-    ctx: Context,
-    source_dir: Path,
-    project: str,
-    subject: str,
-    session: str,
-    username: str | None,
-    password: str | None,
-    upload_workers: int,
-    archive_workers: int,
-    archive_format: str,
-    overwrite: str,
-    direct_archive: bool,
-    ignore_unparsable: bool,
-) -> None:
-    """Upload a directory of DICOM files using parallel batching."""
-    from xnatctl.core.config import get_credentials
-    from xnatctl.models.progress import UploadProgress
-    from xnatctl.services.uploads import UploadService
-
-    client = ctx.get_client()
-
-    if not client.session_token:
-        env_username, env_password = get_credentials()
-        username = username or env_username
-        password = password or env_password
-
-        if not username:
-            username = click.prompt("Username")
-        if not password:
-            password = click.prompt("Password", hide_input=True)
-
-    service = UploadService(client)
-    show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
-
-    if show_progress:
-        from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            transient=True,
-        ) as progress:
-            task_id = progress.add_task("Preparing...", total=None)
-
-            def progress_callback(p: UploadProgress) -> None:
-                """Update the Rich progress UI for parallel uploads."""
-                if p.total > 0:
-                    progress.update(task_id, total=p.total, completed=p.current)
-                progress.update(task_id, description=f"[{p.phase.value}] {p.message}")
-
-            summary = service.upload_dicom_parallel(
-                source_dir=source_dir,
-                project=project,
-                subject=subject,
-                session=session,
-                username=username,
-                password=password,
-                upload_workers=upload_workers,
-                archive_workers=archive_workers,
-                archive_format=archive_format,
-                overwrite=overwrite,
-                direct_archive=direct_archive,
-                ignore_unparsable=ignore_unparsable,
-                progress_callback=progress_callback,
-            )
-    else:
-        summary = service.upload_dicom_parallel(
-            source_dir=source_dir,
-            project=project,
-            subject=subject,
-            session=session,
-            username=username,
-            password=password,
-            upload_workers=upload_workers,
-            archive_workers=archive_workers,
-            archive_format=archive_format,
-            overwrite=overwrite,
-            direct_archive=direct_archive,
-            ignore_unparsable=ignore_unparsable,
-        )
-
-    # Output results
-    if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {
-                "success": summary.success,
-                "total_files": summary.total_files,
-                "total_size_mb": round(summary.total_size_mb, 2),
-                "duration_seconds": round(summary.duration, 2),
-                "batches_succeeded": summary.batches_succeeded,
-                "batches_failed": summary.batches_failed,
-                "errors": summary.errors,
-            },
-            format=OutputFormat.JSON,
-        )
-    else:
-        if summary.success:
-            print_success(
-                f"Uploaded {summary.total_files} files "
-                f"({summary.total_size_mb:.1f} MB) in {summary.duration:.1f}s"
-            )
-        else:
-            print_error(
-                f"Upload completed with errors: "
-                f"{summary.batches_failed}/{summary.batches_succeeded + summary.batches_failed} batches failed"
-            )
-            for error in summary.errors[:5]:
-                click.echo(f"  - {error}", err=True)
-            if len(summary.errors) > 5:
-                click.echo(f"  ... and {len(summary.errors) - 5} more errors", err=True)
-
-    # Format-independent failure exit: -o json must also return nonzero.
-    if not summary.success:
-        raise SystemExit(1)
-
-
-def _upload_dicom_store(
-    ctx: Context,
-    source_path: Path,
-    dicom_host: str | None,
-    dicom_port: int,
-    called_aet: str | None,
-    calling_aet: str,
-    dicom_workers: int,
-    tls: bool = False,
-    tls_ca_bundle: str | None = None,
-    tls_cert: str | None = None,
-    tls_key: str | None = None,
-) -> None:
-    """Upload via DICOM C-STORE protocol."""
-    if not dicom_host:
-        print_error("DICOM C-STORE requires --dicom-host or XNAT_DICOM_HOST environment variable")
-        raise SystemExit(1)
-
-    if not called_aet:
-        print_error(
-            "DICOM C-STORE requires --called-aet or XNAT_DICOM_CALLED_AET environment variable"
-        )
-        raise SystemExit(1)
-
-    if not source_path.is_dir():
-        print_error("DICOM C-STORE requires a directory of DICOM files, not an archive")
-        raise SystemExit(1)
-
-    try:
-        from xnatctl.services.uploads import UploadService
-    except ImportError as e:
-        print_error(
-            "DICOM C-STORE requires pydicom and pynetdicom. "
-            "Install with: pip install xnatctl[dicom]"
-        )
-        raise SystemExit(1) from e
-
-    if tls_key and not tls_cert:
-        raise click.UsageError("--tls-key requires --tls-cert")
-    if (tls_ca_bundle or tls_cert) and not tls:
-        raise click.UsageError("--tls-ca-bundle/--tls-cert/--tls-key have no effect without --tls")
-
-    if not ctx.quiet:
-        scheme = "TLS" if tls else "plaintext"
-        click.echo(
-            f"Sending DICOM files to {dicom_host}:{dicom_port} ({called_aet}) over {scheme}...",
-            err=True,
-        )
-        if not tls:
-            # Said once, plainly, on stderr. Sites that mean to do this are not
-            # helped by a warning; sites that did not know need to be told.
-            click.echo(
-                "  Note: DICOM C-STORE is unencrypted. Use --tls if the server supports it.",
-                err=True,
-            )
-
-    client = ctx.get_client()
-    service = UploadService(client)
-
-    summary = service.upload_dicom_store(
-        dicom_root=source_path,
-        host=dicom_host,
-        called_aet=called_aet,
-        port=dicom_port,
-        calling_aet=calling_aet,
-        workers=dicom_workers,
-        cleanup=True,
-        tls=tls,
-        tls_ca_bundle=tls_ca_bundle,
-        tls_cert=tls_cert,
-        tls_key=tls_key,
-    )
-
-    if ctx.output_format == OutputFormat.JSON:
-        print_output(
-            {
-                "success": summary.success,
-                "total_files": summary.total_files,
-                "sent": summary.sent,
-                "failed": summary.failed,
-            },
-            format=OutputFormat.JSON,
-        )
-    else:
-        if summary.success:
-            print_success(f"Sent {summary.sent}/{summary.total_files} DICOM files")
-        else:
-            print_error(
-                f"DICOM C-STORE completed with errors: "
-                f"{summary.failed}/{summary.total_files} files failed"
-            )
-            click.echo(f"Check logs in: {summary.log_dir}", err=True)
-
-    # Format-independent failure exit: -o json must also return nonzero.
-    if not summary.success:
-        raise SystemExit(1)
-
-
-@session.command("upload-dicom")
-@click.argument("input_path", type=click.Path(exists=True))
-@click.option(
-    "--host",
-    envvar="XNAT_DICOM_HOST",
-    required=True,
-    help="DICOM SCP host (env: XNAT_DICOM_HOST)",
-)
-@click.option(
-    "--called-aet",
-    envvar="XNAT_DICOM_CALLED_AET",
-    required=True,
-    help="Called AE Title (env: XNAT_DICOM_CALLED_AET)",
-)
-@click.option(
-    "--port",
-    type=int,
-    default=104,
-    show_default=True,
-    envvar="XNAT_DICOM_PORT",
-    help="DICOM SCP port (env: XNAT_DICOM_PORT)",
-)
-@click.option(
-    "--calling-aet",
-    default="XNATCTL",
-    show_default=True,
-    hidden=True,
-    envvar="XNAT_DICOM_CALLING_AET",
-    help="Calling AE Title (env: XNAT_DICOM_CALLING_AET)",
-)
-@click.option(
-    "--workers",
-    "-w",
-    type=int,
-    default=None,
-    show_default="4 (or profile)",
-    help="Parallel DICOM C-STORE associations",
-)
-@click.option(
-    "--tls",
-    is_flag=True,
-    envvar="XNAT_DICOM_TLS",
-    help="Encrypt the DICOM association (env: XNAT_DICOM_TLS)",
-)
-@click.option(
-    "--tls-ca-bundle",
-    type=click.Path(exists=True, dir_okay=False),
-    envvar="XNAT_DICOM_TLS_CA_BUNDLE",
-    help="PEM file of CAs to trust for --tls (default: system store)",
-)
-@click.option(
-    "--tls-cert",
-    type=click.Path(exists=True, dir_okay=False),
-    envvar="XNAT_DICOM_TLS_CERT",
-    help="Client certificate, for SCPs requiring mutual TLS",
-)
-@click.option(
-    "--tls-key",
-    type=click.Path(exists=True, dir_okay=False),
-    envvar="XNAT_DICOM_TLS_KEY",
-    help="Private key for --tls-cert",
-)
-@click.option("--dry-run", is_flag=True, help="Preview without sending")
-@global_options
-@handle_errors
-@require_auth
-def session_upload_dicom(
-    ctx: Context,
-    input_path: str,
-    host: str,
-    called_aet: str,
-    port: int,
-    calling_aet: str,
-    workers: int | None,
-    tls: bool,
-    tls_ca_bundle: str | None,
-    tls_cert: str | None,
-    tls_key: str | None,
-    dry_run: bool,
-) -> None:
-    """Upload DICOM files via C-STORE network protocol.
-
-    Requires pydicom and pynetdicom (install with: pip install xnatctl[dicom]).
-
-    \b
-    Example:
-        xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT
-        xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT --port 8104
-        xnatctl session upload-dicom ./dicoms --host xnat.example.org --called-aet XNAT -w 8
-    """
-    source_path = Path(input_path)
-
-    # Resolve workers from profile
-    if workers is None:
-        profile = ctx.config.get_profile(ctx.profile_name) if ctx.config else None
-        workers = profile.workers if (profile and profile.workers is not None) else 4
-
-    if dry_run:
-        click.echo("[DRY-RUN] Would send DICOM files via C-STORE:", err=True)
-        click.echo(f"  Source: {source_path}", err=True)
-        click.echo(f"  Host: {host}:{port}", err=True)
-        click.echo(f"  Called AET: {called_aet}", err=True)
-        click.echo(f"  Calling AET: {calling_aet}", err=True)
-        click.echo(f"  Workers: {workers}", err=True)
-        click.echo(f"  Transport: {'TLS' if tls else 'plaintext'}", err=True)
-        return
-
-    _upload_dicom_store(
-        ctx=ctx,
-        source_path=source_path,
-        dicom_host=host,
-        dicom_port=port,
-        called_aet=called_aet,
-        calling_aet=calling_aet,
-        dicom_workers=workers,
-        tls=tls,
-        tls_ca_bundle=tls_ca_bundle,
-        tls_cert=tls_cert,
-        tls_key=tls_key,
-    )
-
-
-def _extract_session_zips(session_dir: Path, cleanup: bool = True, quiet: bool = False) -> None:
-    """Extract all ZIP files in a session directory.
-
-    Args:
-        session_dir: Path to session directory containing ZIPs
-        cleanup: Remove ZIPs after successful extraction
-        quiet: Suppress progress output
-    """
-    import shutil
-    import zipfile
-
-    zip_files = list(session_dir.glob("*.zip"))
-    if not zip_files:
-        return
-
-    for zip_path in zip_files:
-        if not quiet:
-            click.echo(f"Extracting {zip_path.name}...", err=True)
-
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                for member in zf.namelist():
-                    if member.endswith("/"):
-                        continue
-
-                    member_path = Path(member)
-                    if any(part.startswith(".") for part in member_path.parts):
-                        continue
-
-                    parts = member_path.parts
-                    if len(parts) > 1:
-                        stripped_path = Path(*parts[1:])
-                    else:
-                        stripped_path = member_path
-
-                    target_path = session_dir / stripped_path
-                    # Guard against ZipSlip path traversal
-                    if not target_path.resolve().is_relative_to(session_dir.resolve()):
-                        continue
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    with zf.open(member) as source, open(target_path, "wb") as target:
-                        shutil.copyfileobj(source, target)
-
-            if cleanup:
-                zip_path.unlink()
-                if not quiet:
-                    click.echo(f"  Removed {zip_path.name}", err=True)
-        except zipfile.BadZipFile:
-            print_error(f"Invalid ZIP file: {zip_path.name}")
-
-
-# =============================================================================
-# Local Commands (for offline processing)
-# =============================================================================
 
 
 @click.group()
