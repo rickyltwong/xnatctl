@@ -3,8 +3,8 @@
 The quickstart and exception-handling code blocks are parsed straight out of
 README.md at test time -- not retyped here -- so a rename, signature change,
 or exception rename in the real API makes the README wrong *and* fails this
-test, rather than the two silently drifting apart. Same idiom as
-``test_check_claude_md_drift.py``: read the real doc, don't hand-copy it.
+test, rather than the two silently drifting apart. The idiom: read the real
+doc, don't hand-copy it.
 """
 
 from __future__ import annotations
