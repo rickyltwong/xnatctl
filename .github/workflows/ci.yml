@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the checked-out version to PyPI (recovery for a publish that failed after its tag was created; safe to repeat -- skip-existing)"
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -293,7 +299,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [auto-tag, build]
-    if: needs.auto-tag.outputs.created == 'true' && !(contains(needs.auto-tag.outputs.version, 'alpha') || contains(needs.auto-tag.outputs.version, 'beta') || contains(needs.auto-tag.outputs.version, 'rc'))
+    # Two ways in: the normal path (auto-tag just created a stable tag on a
+    # main push), or a manual ci.yml dispatch on main with publish=true -- the
+    # recovery path for a publish that failed after its tag already existed
+    # (auto-tag is skipped on dispatch, hence !cancelled() instead of the
+    # default all-needs-succeeded gate). Same workflow file either way, so
+    # PyPI's single trusted publisher covers both.
+    if: >-
+      !cancelled() && needs.build.result == 'success' &&
+      ((needs.auto-tag.outputs.created == 'true' && !(contains(needs.auto-tag.outputs.version, 'alpha') || contains(needs.auto-tag.outputs.version, 'beta') || contains(needs.auto-tag.outputs.version, 'rc')))
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish))
     permissions:
       id-token: write
     environment:
