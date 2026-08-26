@@ -79,7 +79,7 @@ class ScanPipeline:
         self.config = config
         self.scan_transfer = ScanTransfer(executor, filter_engine, config)
 
-    def transfer_subject(  # noqa: C901  # pre-existing; see pyproject
+    def transfer_subject(
         self,
         subject: DiscoveredEntity,
         sync_id: int,
@@ -99,39 +99,107 @@ class ScanPipeline:
         if progress_callback:
             progress_callback(f"Transferring subject {subject.local_label}...")
 
-        src_url = str(self.executor.source.base_url)
-        dst_url = str(self.executor.dest.base_url)
-        src_proj = self.config.source_project
+        if self._resolve_or_skip_conflicting_subject(subject, sync_id, dest_project, result):
+            return
 
-        remote_id = self.state_store.get_remote_id(
-            src_url, src_proj, dst_url, dest_project, subject.local_id
-        )
+        self._create_and_record_subject(subject, sync_id, dest_project)
 
-        if remote_id:
-            conflict = self.conflict_checker.check_subject(
-                remote_id, subject.local_label, dest_project
+        experiments = self._discover_filtered_experiments(subject)
+        if not experiments:
+            return
+
+        poller = ArchivePoller(self.executor, self.config.archive_poll_interval)
+        poller.start()
+        deferred: deque[DeferredExperiment] = deque()
+
+        try:
+            pipelining_disabled = self._dispatch_experiments(
+                experiments,
+                poller,
+                deferred,
+                subject,
+                sync_id,
+                dest_project,
+                result,
+                progress_callback,
             )
-            if conflict.has_conflict:
-                result.subjects_skipped += 1
-                self.state_store.record_entity(
-                    sync_id=sync_id,
-                    entity_type="subject",
-                    local_id=subject.local_id,
-                    local_label=subject.local_label,
-                    remote_id=remote_id,
-                    status=EntityStatus.CONFLICT,
-                    message=conflict.reason,
-                )
-                return
+            self._drain_remaining_after_dispatch(
+                poller, deferred, pipelining_disabled, result, progress_callback
+            )
+        finally:
+            poller.stop()
+            # Clean up any remaining temp directories
+            for ctx in deferred:
+                try:
+                    ctx.work_dir_handle.cleanup()
+                except Exception:  # noqa: BLE001  # best-effort cleanup: temp work_dir removal must not fail the transfer
+                    pass
 
+    def _resolve_or_skip_conflicting_subject(
+        self,
+        subject: DiscoveredEntity,
+        sync_id: int,
+        dest_project: str,
+        result: TransferResult,
+    ) -> bool:
+        """Check a previously mapped subject for label conflicts on the destination.
+
+        Args:
+            subject: Discovered subject entity.
+            sync_id: Current sync run ID.
+            dest_project: Destination project ID.
+            result: Mutable result to update.
+
+        Returns:
+            True if the subject conflicts and must be skipped.
+        """
+        remote_id = self.state_store.get_remote_id(
+            str(self.executor.source.base_url),
+            self.config.source_project,
+            str(self.executor.dest.base_url),
+            dest_project,
+            subject.local_id,
+        )
+        if not remote_id:
+            return False
+
+        conflict = self.conflict_checker.check_subject(remote_id, subject.local_label, dest_project)
+        if not conflict.has_conflict:
+            return False
+
+        result.subjects_skipped += 1
+        self.state_store.record_entity(
+            sync_id=sync_id,
+            entity_type="subject",
+            local_id=subject.local_id,
+            local_label=subject.local_label,
+            remote_id=remote_id,
+            status=EntityStatus.CONFLICT,
+            message=conflict.reason,
+        )
+        return True
+
+    def _create_and_record_subject(
+        self,
+        subject: DiscoveredEntity,
+        sync_id: int,
+        dest_project: str,
+    ) -> None:
+        """Create the subject on the destination and record its ID mapping.
+
+        Args:
+            subject: Discovered subject entity.
+            sync_id: Current sync run ID.
+            dest_project: Destination project ID.
+        """
         # Create subject and store ACTUAL remote ID from response
         remote_uri = self.executor.create_subject(dest_project, subject.local_label)
         actual_remote_id = remote_uri.split("/")[-1]
 
         self.state_store.save_id_mapping(
-            src_url,
-            src_proj,
-            dst_url,
+            str(self.executor.source.base_url),
+            self.config.source_project,
+            str(self.executor.dest.base_url),
             dest_project,
             subject.local_id,
             actual_remote_id,
@@ -147,90 +215,104 @@ class ScanPipeline:
             status=EntityStatus.SYNCED,
         )
 
+    def _discover_filtered_experiments(self, subject: DiscoveredEntity) -> list[DiscoveredEntity]:
+        """List the subject's experiments that pass the filter engine.
+
+        Args:
+            subject: Discovered subject entity.
+
+        Returns:
+            Experiments to transfer, in discovery order.
+        """
         all_experiments = self.discovery.discover_experiments(
-            src_proj,
+            self.config.source_project,
             subject.local_id,
             last_sync_time=None,
         )
-        experiments = [
-            e for e in all_experiments if self.filter_engine.should_include_experiment(e)
-        ]
+        return [e for e in all_experiments if self.filter_engine.should_include_experiment(e)]
 
-        if not experiments:
-            return
+    def _dispatch_experiments(
+        self,
+        experiments: list[DiscoveredEntity],
+        poller: ArchivePoller,
+        deferred: deque[DeferredExperiment],
+        subject: DiscoveredEntity,
+        sync_id: int,
+        dest_project: str,
+        result: TransferResult,
+        progress_callback: Callable[[str], None] | None,
+    ) -> bool:
+        """Upload each experiment's DICOM, pipelining archive waits via the poller.
 
-        poller = ArchivePoller(self.executor, self.config.archive_poll_interval)
-        poller.start()
-        deferred: deque[DeferredExperiment] = deque()
+        Args:
+            experiments: Filtered experiments to transfer.
+            poller: Background archive poller for this subject.
+            deferred: Queue of deferred experiments (mutated in place).
+            subject: Parent subject entity.
+            sync_id: Current sync run ID.
+            dest_project: Destination project ID.
+            result: Mutable result to update.
+            progress_callback: Optional progress callback.
+
+        Returns:
+            The final pipelining_disabled flag, needed by the post-loop drain.
+        """
         pipelining_disabled = False
+        for exp in experiments:
+            # Service prearchive actions from poller signals
+            if not pipelining_disabled:
+                service_prearchive_actions(self.executor, deferred)
 
-        try:
-            for exp in experiments:
-                # Service prearchive actions from poller signals
-                if not pipelining_disabled:
-                    service_prearchive_actions(self.executor, deferred)
+            # Drain ready experiments before next upload
+            drain_ready(
+                self.state_store, self._finalize_experiment, deferred, result, progress_callback
+            )
 
-                # Drain ready experiments before next upload
-                drain_ready(
-                    self.state_store, self._finalize_experiment, deferred, result, progress_callback
-                )
-
-                # Throttle: block if too many pending archives
-                pipelining_disabled = self._throttle_pending_archives(
-                    poller, deferred, pipelining_disabled, result, progress_callback
-                )
-
-                # Upload DICOM phase
-                try:
-                    ctx = self._upload_dicom_phase(
-                        exp, sync_id, dest_project, subject, result, progress_callback
-                    )
-                    if ctx is not None:
-                        if pipelining_disabled:
-                            # No poller: block on archive then finalize immediately
-                            self.executor.wait_for_archive(
-                                ctx.dest_project,
-                                ctx.subject.local_label,
-                                ctx.exp.local_label,
-                                ctx.dicom_scan_count,
-                                timeout=self.config.archive_wait_timeout,
-                                interval=self.config.archive_poll_interval,
-                            )
-                            self._finalize_experiment(ctx, result, progress_callback)
-                        else:
-                            poller.enqueue(ctx)
-                            deferred.append(ctx)
-                    else:
-                        # No DICOM: finalize immediately
-                        self._finalize_experiment_no_dicom(
-                            exp, sync_id, dest_project, subject, result, progress_callback
-                        )
-                except Exception as e:
-                    result.experiments_failed += 1
-                    result.success = False
-                    result.errors.append(f"Experiment {exp.local_label}: {e}")
-                    self.state_store.record_entity(
-                        sync_id=sync_id,
-                        entity_type="experiment",
-                        local_id=exp.local_id,
-                        local_label=exp.local_label,
-                        xsi_type=exp.xsi_type,
-                        parent_local_id=subject.local_id,
-                        status=EntityStatus.FAILED,
-                        message=str(e),
-                    )
-
-            self._drain_remaining_after_dispatch(
+            # Throttle: block if too many pending archives
+            pipelining_disabled = self._throttle_pending_archives(
                 poller, deferred, pipelining_disabled, result, progress_callback
             )
-        finally:
-            poller.stop()
-            # Clean up any remaining temp directories
-            for ctx in deferred:
-                try:
-                    ctx.work_dir_handle.cleanup()
-                except Exception:
-                    pass
+
+            # Upload DICOM phase
+            try:
+                ctx = self._upload_dicom_phase(
+                    exp, sync_id, dest_project, subject, result, progress_callback
+                )
+                if ctx is not None:
+                    if pipelining_disabled:
+                        # No poller: block on archive then finalize immediately
+                        self.executor.wait_for_archive(
+                            ctx.dest_project,
+                            ctx.subject.local_label,
+                            ctx.exp.local_label,
+                            ctx.dicom_scan_count,
+                            timeout=self.config.archive_wait_timeout,
+                            interval=self.config.archive_poll_interval,
+                        )
+                        self._finalize_experiment(ctx, result, progress_callback)
+                    else:
+                        poller.enqueue(ctx)
+                        deferred.append(ctx)
+                else:
+                    # No DICOM: finalize immediately
+                    self._finalize_experiment_no_dicom(
+                        exp, sync_id, dest_project, subject, result, progress_callback
+                    )
+            except Exception as e:  # noqa: BLE001  # per-experiment isolation: one experiment's failure must not abort the subject's dispatch loop
+                result.experiments_failed += 1
+                result.success = False
+                result.errors.append(f"Experiment {exp.local_label}: {e}")
+                self.state_store.record_entity(
+                    sync_id=sync_id,
+                    entity_type="experiment",
+                    local_id=exp.local_id,
+                    local_label=exp.local_label,
+                    xsi_type=exp.xsi_type,
+                    parent_local_id=subject.local_id,
+                    status=EntityStatus.FAILED,
+                    message=str(e),
+                )
+        return pipelining_disabled
 
     def _throttle_pending_archives(
         self,
@@ -374,19 +456,10 @@ class ScanPipeline:
                 work_dir_handle.cleanup()
                 return None
 
-            if not existing_id:
-                has_any_dicom = self.scan_transfer.scans_have_transferable_dicom(
-                    scans, exp, scan_resources_cache
-                )
-                if not has_any_dicom:
-                    self.executor.create_experiment(
-                        dest_project,
-                        subject.local_label,
-                        exp.local_label,
-                        exp.xsi_type or "xnat:imageSessionData",
-                    )
-                    work_dir_handle.cleanup()
-                    return None
+            if not existing_id and self._scans_have_no_dicom(scans, exp, scan_resources_cache):
+                self._create_experiment_shell(dest_project, subject, exp)
+                work_dir_handle.cleanup()
+                return None
 
             # Phase 1: Upload DICOM
             dicom_scan_count = self.scan_transfer.transfer_scans(
@@ -405,12 +478,7 @@ class ScanPipeline:
                 # All DICOM transfers failed or were skipped. Ensure experiment
                 # exists on dest so the no-DICOM finalize path can proceed.
                 if not existing_id:
-                    self.executor.create_experiment(
-                        dest_project,
-                        subject.local_label,
-                        exp.local_label,
-                        exp.xsi_type or "xnat:imageSessionData",
-                    )
+                    self._create_experiment_shell(dest_project, subject, exp)
                 work_dir_handle.cleanup()
                 return None
 
@@ -426,9 +494,50 @@ class ScanPipeline:
                 work_dir_handle=work_dir_handle,
                 archive_timeout_at=time.monotonic() + self.config.archive_wait_timeout,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001  # cleanup-then-reraise: temp dir must not leak on failure; error not swallowed
             work_dir_handle.cleanup()
             raise
+
+    def _scans_have_no_dicom(
+        self,
+        scans: list[dict[str, Any]],
+        exp: DiscoveredEntity,
+        scan_resources_cache: dict[str, list[dict[str, Any]]],
+    ) -> bool:
+        """Report whether none of the experiment's scans have transferable DICOM.
+
+        Args:
+            scans: Discovered scans for the experiment.
+            exp: Discovered experiment entity.
+            scan_resources_cache: Per-scan resource cache (populated as a side
+                effect and reused by later phases).
+
+        Returns:
+            True if no scan has transferable DICOM.
+        """
+        return not self.scan_transfer.scans_have_transferable_dicom(
+            scans, exp, scan_resources_cache
+        )
+
+    def _create_experiment_shell(
+        self,
+        dest_project: str,
+        subject: DiscoveredEntity,
+        exp: DiscoveredEntity,
+    ) -> None:
+        """Create an empty experiment on the destination for no-DICOM finalize paths.
+
+        Args:
+            dest_project: Destination project ID.
+            subject: Parent subject entity.
+            exp: Discovered experiment entity.
+        """
+        self.executor.create_experiment(
+            dest_project,
+            subject.local_label,
+            exp.local_label,
+            exp.xsi_type or "xnat:imageSessionData",
+        )
 
     def _finalize_experiment(
         self,
@@ -626,7 +735,7 @@ class ScanPipeline:
             )
             if progress_callback:
                 progress_callback(applied_message)
-        except Exception:
+        except Exception:  # noqa: BLE001  # documented non-fatal: XML metadata overlay failure is explicitly non-fatal (see docstring)
             logger.warning(failed_message, exp.local_label, exc_info=True)
 
     def _transfer_session_resources(
@@ -652,7 +761,7 @@ class ScanPipeline:
 
         try:
             resources = self.executor.discover_session_resources(exp.local_id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # per-experiment isolation: resource-discovery failure skips this experiment's resources only
             logger.warning(
                 "Failed to discover session resources for %s: %s",
                 exp.local_label,
@@ -683,7 +792,7 @@ class ScanPipeline:
                     work_dir=work_dir,
                 )
                 result.resources_synced += 1
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # per-resource isolation: one resource transfer failure must not abort the batch
                 result.resources_failed += 1
                 result.errors.append(f"Session resource {res_label} ({exp.local_label}): {e}")
 
@@ -713,7 +822,7 @@ class ScanPipeline:
 
         try:
             verification = self.verifier.verify_experiment(src_path, dst_path)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # fail-safe verification: a verifier crash counts as verification failure, not silent success
             logger.warning("Verification failed for %s: %s", exp.local_label, e)
             verification = None
 

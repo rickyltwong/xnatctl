@@ -95,6 +95,27 @@ class TestSessionDownloadJson:
         assert summary.scans == 3
         assert summary.files == 3
         assert all(item.status == "success" for item in summary.items)
+        assert summary.skipped_unsafe_entries == 0
+
+    def test_hostile_zip_entries_are_counted_and_do_not_fail_the_download(
+        self, tmp_path: Path
+    ) -> None:
+        """A symlink-typed member in the server's ZIP is skipped by the
+        extraction guard, not written -- and its count reaches `-o json`,
+        not just the warning log.
+        """
+        for url in _serve(failing_scan=None, hostile=True):
+            result = _download(url, tmp_path, "-o", "json")
+
+        assert result.exit_code == 0, result.stderr
+        payload = json.loads(result.stdout)
+        summary = TransferSummary.model_validate(payload)
+        assert summary.status == "success"
+        # One hostile member per scan (3 scans), the legitimate file in
+        # each still lands -- `files == 3` from the clean-download test
+        # above is unaffected by the extra skipped member.
+        assert summary.files == 3
+        assert summary.skipped_unsafe_entries == 3
 
 
 class TestSessionUploadJson:
@@ -290,6 +311,7 @@ class TestScanDownloadJson:
             total_size_mb=1.0,
             output_path=str(tmp_path / "XNAT_E00001"),
             session_id="XNAT_E00001",
+            skipped_unsafe_entries=2,
         )
 
         with (
@@ -318,6 +340,7 @@ class TestScanDownloadJson:
         summary = TransferSummary.model_validate(payload)
         assert summary.status == "success"
         assert summary.files == 5
+        assert summary.skipped_unsafe_entries == 2
 
 
 class TestResourceUploadDownloadJson:
@@ -501,8 +524,8 @@ class TestZeroFileUploadRegressions:
 class TestExceptionPathsStillEmitJson:
     """A runtime exception (not a returned failure summary) must still print
     exactly one JSON object to stdout in `-o json` mode before the command
-    exits nonzero -- previously these paths went straight to
-    @handle_errors and printed nothing on stdout at all.
+    exits nonzero -- a path that went straight to @handle_errors would
+    print nothing on stdout at all.
     """
 
     def test_resource_upload_exception_emits_a_failed_summary(self, tmp_path: Path) -> None:
@@ -805,8 +828,8 @@ class TestUploadDicomPreflightRejectionEmitsJson:
 
 class TestSessionResourceFailureVisibleWithoutVerify:
     """A session resource that fails to download must show up as a failed
-    item and flip the overall status -- previously this was swallowed to a
-    stderr warning with no bookkeeping at all unless --verify was also on.
+    item and flip the overall status -- not be swallowed to a stderr
+    warning with no bookkeeping unless --verify is also on.
     """
 
     def test_a_failed_session_resource_flips_status_without_verify(self, tmp_path: Path) -> None:
@@ -1223,8 +1246,9 @@ class TestSessionResourceListingHiccupDoesNotFalselyFail:
 
 class TestUploadDicomTlsPreflightEmitsJson:
     """The two TLS-flag combination checks raise `click.UsageError` directly
-    -- they used to bypass the preflight JSON helper entirely, since
-    UsageError isn't caught by the try/except around upload_dicom_store.
+    -- raised bare, they would bypass the preflight JSON helper entirely,
+    since UsageError isn't caught by the try/except around
+    upload_dicom_store.
     """
 
     def test_tls_key_without_cert_emits_json_before_usage_error(self, tmp_path: Path) -> None:

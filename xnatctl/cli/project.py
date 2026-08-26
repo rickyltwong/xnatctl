@@ -8,17 +8,24 @@ import click
 
 from xnatctl.cli.common import (
     Context,
+    apply_filter,
+    apply_sort_limit,
     confirm_destructive,
     confirm_destructive_when,
     create_dest_client,
     dest_profile_options,
     global_options,
     handle_errors,
+    list_options,
     parallel_options,
     require_auth,
+    resolve_columns,
     resolve_workers_from_context,
 )
+from xnatctl.core.exceptions import XNATCtlError
 from xnatctl.core.output import print_error, print_output, print_success
+from xnatctl.core.validation import validate_project_id
+from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.projects import ProjectService
 
 
@@ -29,10 +36,17 @@ def project() -> None:
 
 
 @project.command("list")
+@list_options
 @global_options
 @handle_errors
 @require_auth
-def project_list(ctx: Context) -> None:
+def project_list(
+    ctx: Context,
+    filter_expr: str | None,
+    limit: int | None,
+    sort_by: str | None,
+    columns: str | None,
+) -> None:
     """List accessible projects.
 
     \b
@@ -40,6 +54,7 @@ def project_list(ctx: Context) -> None:
         xnatctl project list
         xnatctl project list -o json
         xnatctl project list -q  # IDs only
+        xnatctl project list --filter 'name:Study*' --sort-by name --limit 10
     """
     service = ProjectService(ctx.get_client())
     results = service.list_rows("ID,name,pi_lastname,description")
@@ -56,10 +71,14 @@ def project_list(ctx: Context) -> None:
             }
         )
 
+    projects = apply_filter(projects, filter_expr)
+    projects = apply_sort_limit(projects, sort_by, limit)
+
+    default_columns = ["id", "name", "pi", "description"]
     print_output(
         projects,
         format=ctx.output_format,
-        columns=["id", "name", "pi", "description"],
+        columns=resolve_columns(default_columns, columns),
         column_labels={"id": "ID", "name": "Name", "pi": "PI", "description": "Description"},
         quiet=ctx.quiet,
         id_field="id",
@@ -78,8 +97,6 @@ def project_show(ctx: Context, project_id: str) -> None:
     Example:
         xnatctl project show MYPROJECT
     """
-    from xnatctl.core.validation import validate_project_id
-
     project_id = validate_project_id(project_id)
     service = ProjectService(ctx.get_client())
 
@@ -93,12 +110,12 @@ def project_show(ctx: Context, project_id: str) -> None:
     # Get counts
     try:
         subject_count: int | str = len(service.subject_rows(project_id))
-    except Exception:
+    except (XNATCtlError, ValueError):
         subject_count = "?"
 
     try:
         session_count: int | str = len(service.experiment_rows(project_id))
-    except Exception:
+    except (XNATCtlError, ValueError):
         session_count = "?"
 
     output = {
@@ -145,8 +162,6 @@ def project_create(
     Example:
         xnatctl project create NEWPROJ --name "New Project" --pi Smith
     """
-    from xnatctl.core.validation import validate_project_id
-
     project_id = validate_project_id(project_id)
     service = ProjectService(ctx.get_client())
 
@@ -193,8 +208,6 @@ def project_users(ctx: Context, project: str) -> None:
         xnatctl project users MYPROJ -o json
         xnatctl project users MYPROJ -q  # usernames only
     """
-    from xnatctl.core.validation import validate_project_id
-
     project = validate_project_id(project)
     service = ProjectService(ctx.get_client())
     rows = service.list_users(project)
@@ -245,8 +258,6 @@ def project_grant(ctx: Context, project: str, username: str, role: str, dry_run:
         xnatctl project grant MYPROJ jsmith --role member --yes
         xnatctl project grant MYPROJ jsmith --role owner --dry-run
     """
-    from xnatctl.core.validation import validate_project_id
-
     project = validate_project_id(project)
 
     if dry_run:
@@ -275,8 +286,6 @@ def project_revoke(ctx: Context, project: str, username: str, dry_run: bool) -> 
     Example:
         xnatctl project revoke MYPROJ jsmith --yes
     """
-    from xnatctl.core.validation import validate_project_id
-
     project = validate_project_id(project)
 
     if dry_run:
@@ -313,8 +322,6 @@ def project_access(ctx: Context, project: str, set_level: str | None, dry_run: b
         xnatctl project access MYPROJ --set protected --yes
         xnatctl project access MYPROJ --set private --dry-run
     """
-    from xnatctl.core.validation import validate_project_id
-
     project = validate_project_id(project)
     service = ProjectService(ctx.get_client())
 
@@ -366,8 +373,6 @@ def project_requests(ctx: Context, project: str) -> None:
         xnatctl project requests MYPROJ
         xnatctl project requests MYPROJ -o json
     """
-    from xnatctl.core.validation import validate_project_id
-
     project = validate_project_id(project)
     service = ProjectService(ctx.get_client())
 
@@ -426,9 +431,16 @@ def project_transfer(
         xnatctl project transfer -P SRC --dest-profile staging --dest-project DST
         xnatctl project transfer -P SRC --dest-profile staging --dest-project DST --dry-run
     """
+    # Deferred as a group: TransferOrchestrator alone pulls in the whole
+    # transfer subsystem (conflicts/discovery/executor/filter/scan_pipeline/
+    # verifier -- several thousand lines). cli/main.py loads this module
+    # unconditionally to register the `project` group, so a module-scope
+    # import here would make every `project list`/`show`/`create` invocation
+    # pay to parse the transfer pipeline too. CONFIG_DIR costs little on its
+    # own but is grouped with it for locality (same feature, same call
+    # sites -- see transfer-status/-history below).
     from xnatctl.core.config import CONFIG_DIR
     from xnatctl.core.state import TransferStateStore
-    from xnatctl.models.transfer import TransferConfig
     from xnatctl.services.transfer.orchestrator import TransferOrchestrator
 
     workers = resolve_workers_from_context(ctx, workers)
@@ -514,6 +526,7 @@ def project_transfer_status(ctx: Context, source_project: str) -> None:
     Example:
         xnatctl project transfer-status -P MYPROJECT
     """
+    # Deferred: see the comment on the transfer imports in project_transfer above.
     from xnatctl.core.config import CONFIG_DIR
     from xnatctl.core.state import TransferStateStore
 
@@ -565,6 +578,7 @@ def project_transfer_history(ctx: Context, source_project: str) -> None:
         xnatctl project transfer-history -P MYPROJECT
         xnatctl project transfer-history -P MYPROJECT -o json
     """
+    # Deferred: see the comment on the transfer imports in project_transfer above.
     from xnatctl.core.config import CONFIG_DIR
     from xnatctl.core.state import TransferStateStore
 
@@ -656,10 +670,10 @@ def project_transfer_check(
             {
                 "check": "Source connectivity",
                 "status": "OK",
-                "detail": src_info["version"],
+                "detail": src_info.version or "",
             }
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
         checks.append(
             {
                 "check": "Source connectivity",
@@ -674,10 +688,10 @@ def project_transfer_check(
             {
                 "check": "Source auth",
                 "status": "OK",
-                "detail": src_user["username"],
+                "detail": src_user.username,
             }
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
         checks.append({"check": "Source auth", "status": "FAIL", "detail": str(e)})
 
     try:
@@ -687,10 +701,10 @@ def project_transfer_check(
             {
                 "check": "Dest connectivity",
                 "status": "OK",
-                "detail": dst_info["version"],
+                "detail": dst_info.version or "",
             }
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
         checks.append(
             {
                 "check": "Dest connectivity",
@@ -705,10 +719,10 @@ def project_transfer_check(
             {
                 "check": "Dest auth",
                 "status": "OK",
-                "detail": dst_user["username"],
+                "detail": dst_user.username,
             }
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
         checks.append({"check": "Dest auth", "status": "FAIL", "detail": str(e)})
 
     dest_client.close()
@@ -743,8 +757,6 @@ def project_transfer_init(
         xnatctl project transfer-init -P SRC --dest-project DST
         xnatctl project transfer-init -P SRC --dest-project DST -f transfer.yaml
     """
-    from xnatctl.models.transfer import TransferConfig
-
     yaml_content = TransferConfig.scaffold(source_project, dest_project)
 
     if output_file:

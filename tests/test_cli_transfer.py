@@ -9,7 +9,13 @@ from click.testing import CliRunner
 from conftest import AuthenticatedCLI
 
 from xnatctl.cli.project import project
+from xnatctl.models.info import ServerInfo, UserInfo
 from xnatctl.services.transfer.orchestrator import TransferResult
+
+
+def _server_info() -> ServerInfo:
+    """A healthy ping result for transfer-check mocks."""
+    return ServerInfo(url="https://xnat.example.org", status="ok", version="1.8.5", latency_ms=5)
 
 
 @pytest.fixture
@@ -58,12 +64,12 @@ class TestTransferCheck:
         assert "transfer-check" in result.output.lower() or "pre-flight" in result.output.lower()
 
     def test_check_all_ok(self, authenticated_cli: AuthenticatedCLI) -> None:
-        authenticated_cli.client.ping.return_value = {"version": "1.8.5"}
-        authenticated_cli.client.whoami.return_value = {"username": "srcuser"}
+        authenticated_cli.client.ping.return_value = _server_info()
+        authenticated_cli.client.whoami.return_value = UserInfo(username="srcuser", enabled=True)
 
         dest_client = MagicMock()
-        dest_client.ping.return_value = {"version": "1.8.5"}
-        dest_client.whoami.return_value = {"username": "destuser"}
+        dest_client.ping.return_value = _server_info()
+        dest_client.whoami.return_value = UserInfo(username="destuser", enabled=True)
 
         with patch("xnatctl.cli.project.create_dest_client", return_value=dest_client):
             result = authenticated_cli.invoke(
@@ -88,7 +94,7 @@ class TestTransferCheck:
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
         authenticated_cli.client.ping.side_effect = RuntimeError("unreachable")
-        authenticated_cli.client.whoami.return_value = {"username": "srcuser"}
+        authenticated_cli.client.whoami.return_value = UserInfo(username="srcuser", enabled=True)
 
         dest_client = MagicMock()
         dest_client.authenticate.side_effect = RuntimeError("bad creds")

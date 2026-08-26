@@ -1031,7 +1031,7 @@ class TestCountDestScans:
 
 
 class TestWaitForArchive:
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_returns_immediately_when_scans_present(
         self,
         mock_sleep: MagicMock,
@@ -1051,7 +1051,7 @@ class TestWaitForArchive:
         assert actual == 5
         mock_sleep.assert_not_called()
 
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_archives_ready_entry_then_returns(
         self,
         mock_sleep: MagicMock,
@@ -1081,8 +1081,8 @@ class TestWaitForArchive:
         assert actual == 3
         dest_client.post.assert_called_once()  # archive_prearchive called
 
-    @patch("xnatctl.services.transfer.executor.time.monotonic")
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.monotonic")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_timeout_returns_partial_count(
         self,
         mock_sleep: MagicMock,
@@ -1119,7 +1119,7 @@ class TestWaitForArchive:
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5, timeout=10, interval=0.01)
         assert actual == 1
 
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_resolves_conflict_with_overwrite(
         self,
         mock_sleep: MagicMock,
@@ -1318,7 +1318,7 @@ class TestListPrearchiveEntries:
 
 
 class TestWaitForArchiveFolderName:
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_uses_folder_name_for_archive(
         self,
         mock_sleep: MagicMock,
@@ -1354,7 +1354,7 @@ class TestWaitForArchiveFolderName:
         call_args = dest_client.post.call_args
         assert call_args[1]["data"]["src"].endswith("/folder_name")
 
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_uses_folder_name_for_conflict_archive(
         self,
         mock_sleep: MagicMock,
@@ -1391,7 +1391,7 @@ class TestWaitForArchiveFolderName:
         assert call_args[1]["data"]["src"].endswith("/folder_name")
         assert call_args[1]["data"]["overwrite"] == "append"
 
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_falls_back_to_name_when_no_folder_name(
         self,
         mock_sleep: MagicMock,
@@ -1428,7 +1428,7 @@ class TestWaitForArchiveFolderName:
 
 
 class TestWaitForArchiveExceptionGuard:
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_archive_failure_is_raised(
         self,
         mock_sleep: MagicMock,
@@ -1446,7 +1446,7 @@ class TestWaitForArchiveExceptionGuard:
         with pytest.raises(RuntimeError, match="archive failed"):
             executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
 
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_poll_cycle_error_retries(
         self,
         mock_sleep: MagicMock,
@@ -1466,8 +1466,8 @@ class TestWaitForArchiveExceptionGuard:
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 1, timeout=60, interval=0.01)
         assert actual == 1
 
-    @patch("xnatctl.services.transfer.executor.time.monotonic")
-    @patch("xnatctl.services.transfer.executor.time.sleep")
+    @patch("xnatctl.services.transfer.executor_archive.time.monotonic")
+    @patch("xnatctl.services.transfer.executor_archive.time.sleep")
     def test_timeout_still_works_after_poll_errors(
         self,
         mock_sleep: MagicMock,

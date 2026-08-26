@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as DefusedET
 
 
-def rewrite_experiment_xml(  # noqa: C901  # pre-existing; see pyproject
+def rewrite_experiment_xml(
     xml_text: str,
     dest_experiment_id: str | None = None,
     dest_project: str | None = None,
@@ -48,6 +48,30 @@ def rewrite_experiment_xml(  # noqa: C901  # pre-existing; see pyproject
 
     root = DefusedET.fromstring(xml_text)
 
+    ns_map = _collect_namespace_map(root)
+    xnat_ns = ns_map.get("xnat", "")
+    xsi_ns = ns_map.get("xsi", "")
+
+    _strip_internal_elements(root, xnat_ns)
+    _strip_schema_location(root, xsi_ns)
+    _rewrite_identity_attributes(root, dest_experiment_id, dest_project)
+
+    # Register namespaces to avoid ns0/ns1 prefixes in output
+    for prefix, uri in ns_map.items():
+        ET.register_namespace(prefix, uri)
+
+    return ET.tostring(root, encoding="unicode", xml_declaration=True)
+
+
+def _collect_namespace_map(root: ET.Element) -> dict[str, str]:
+    """Map the xnat/xsi prefixes to the namespace URIs used in the document.
+
+    Args:
+        root: Parsed experiment XML root.
+
+    Returns:
+        prefix -> URI map, containing only the recognized prefixes.
+    """
     # Collect all namespace URIs used in the document (tags + attributes)
     ns_uris: set[str] = set()
     for elem in root.iter():
@@ -65,10 +89,16 @@ def rewrite_experiment_xml(  # noqa: C901  # pre-existing; see pyproject
             ns_map["xnat"] = uri
         elif "XMLSchema-instance" in uri:
             ns_map["xsi"] = uri
+    return ns_map
 
-    xnat_ns = ns_map.get("xnat", "")
-    xsi_ns = ns_map.get("xsi", "")
 
+def _strip_internal_elements(root: ET.Element, xnat_ns: str) -> None:
+    """Remove file/catalog and internal-reference elements in place.
+
+    Args:
+        root: Parsed experiment XML root.
+        xnat_ns: XNAT namespace URI ("" when absent).
+    """
     # Elements to remove (direct children or nested within scans)
     remove_local_names = {
         "file",
@@ -89,12 +119,32 @@ def rewrite_experiment_xml(  # noqa: C901  # pre-existing; see pyproject
     # Recursively remove targeted elements
     _remove_elements_recursive(root, remove_local_names, xnat_ns)
 
-    # Remove xsi:schemaLocation attribute
+
+def _strip_schema_location(root: ET.Element, xsi_ns: str) -> None:
+    """Remove the xsi:schemaLocation attribute in place.
+
+    Args:
+        root: Parsed experiment XML root.
+        xsi_ns: XMLSchema-instance namespace URI ("" when absent).
+    """
     if xsi_ns:
         schema_attr = f"{{{xsi_ns}}}schemaLocation"
         if schema_attr in root.attrib:
             del root.attrib[schema_attr]
 
+
+def _rewrite_identity_attributes(
+    root: ET.Element,
+    dest_experiment_id: str | None,
+    dest_project: str | None,
+) -> None:
+    """Rewrite ID/project and strip label on the root element, in place.
+
+    Args:
+        root: Parsed experiment XML root.
+        dest_experiment_id: Destination experiment accession ID.
+        dest_project: Destination project ID.
+    """
     # Rewrite root ID and project attributes
     if dest_experiment_id is not None and "ID" in root.attrib:
         root.attrib["ID"] = dest_experiment_id
@@ -105,12 +155,6 @@ def rewrite_experiment_xml(  # noqa: C901  # pre-existing; see pyproject
     # TODO: rewrite label instead of stripping when label transformation is supported
     if "label" in root.attrib:
         del root.attrib["label"]
-
-    # Register namespaces to avoid ns0/ns1 prefixes in output
-    for prefix, uri in ns_map.items():
-        ET.register_namespace(prefix, uri)
-
-    return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
 
 def _remove_elements_recursive(
