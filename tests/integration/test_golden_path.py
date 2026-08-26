@@ -147,15 +147,6 @@ class TestProjectLifecycle:
 
         assert integration_project in ids
 
-    def test_pagination_walks_the_project_list(
-        self, xnat_client: Any, integration_project: str
-    ) -> None:
-        """A page size of 1 forces the offset loop the unit tests only fake."""
-        seen = [row.get("ID") for row in xnat_client.paginate("/data/projects", page_size=1)]
-
-        assert integration_project in seen
-        assert len(seen) == len(set(seen)), "pagination returned duplicates"
-
     def test_a_subject_can_be_created_and_read_back(
         self, xnat_client: Any, integration_project: str
     ) -> None:
@@ -378,3 +369,41 @@ class TestPrearchive:
             return [e for e in entries if e.get("name") == session] or None
 
         assert _poll(find, timeout=600, what="the session to reach the prearchive")
+
+
+class TestContainerServicePlugin:
+    """Proves the Container Service plugin actually loaded, not just that its
+    jar landed on disk.
+
+    ``docker/integration/Dockerfile`` downloads a pinned Container Service
+    release into ``${XNAT_HOME}/plugins`` at build time and fails the build if
+    that download is missing or truncated -- but a jar sitting in the plugins
+    directory is not the same thing as XNAT having loaded it: a version
+    mismatch or a bad manifest fails silently at plugin-scan time, not at
+    build time. ``GET /xapi/plugins`` (``AdminService.list_plugins``, the same
+    call behind ``xnatctl admin plugins``) is what XNAT itself reports having
+    loaded, so it is the only honest check that the plugin is actually live in
+    the running server rather than merely present on disk.
+
+    Scope stops there deliberately. Actually launching a container needs a
+    reachable Docker daemon, and this compose file does not mount the host
+    Docker socket into xnat-web -- doing that would hand a test container
+    control of the host's Docker daemon, which is a privilege-escalation risk
+    out of proportion to what this tier needs. So this only proves "the
+    plugin is installed and its REST surface answers", not "containers can
+    actually run"; exercising real container launches needs a differently
+    configured (and more carefully secured) environment than this one.
+    """
+
+    def test_the_container_service_plugin_is_installed(self, xnat_client: Any) -> None:
+        from xnatctl.services.admin import AdminService
+
+        rows = AdminService(xnat_client).list_plugins()
+
+        matches = [
+            row
+            for row in rows
+            if "container" in str(row.get("id", "")).lower()
+            or "container" in str(row.get("name", "")).lower()
+        ]
+        assert matches, f"no Container Service plugin among installed plugins: {rows}"

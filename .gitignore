@@ -6,20 +6,21 @@ __pycache__/
 # C extensions
 *.so
 
-# Distribution / packaging
+# Distribution / packaging (root-level build artifacts only -- these names are
+# anchored so they cannot shadow real packages, e.g. xnatctl/services/downloads/)
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+/build/
+/develop-eggs/
+/dist/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -102,3 +103,6 @@ worktrees/
 
 # Internal decision records (never re-add)
 docs/adr/
+
+# Generated per-run TLS test fixture (docker-compose.integration.yml)
+docker/integration/tls-scp/certs/

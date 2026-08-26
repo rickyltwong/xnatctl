@@ -25,14 +25,12 @@ Client
 ------
 
 The ``XNATClient`` class is the primary HTTP client for all XNAT REST API operations.
-It provides automatic retry logic, session management, pagination support, and
-connection pooling.
+It provides automatic retry logic, session management, and connection pooling.
 
 **Key Features:**
 
 - Automatic retry with exponential backoff for transient errors (502, 503, 504)
 - Session-based authentication with token caching
-- Pagination support for large result sets
 - SSL verification control
 - Context manager support for automatic cleanup
 - Connection pooling via httpx
@@ -74,6 +72,49 @@ To target a server without a saved profile, construct the client directly:
    :members:
    :undoc-members:
    :special-members: __init__, __enter__, __exit__
+
+Async Client (Provisional)
+---------------------------
+
+``AsyncXNATClient`` is the async twin of ``XNATClient``, built over
+``httpx.AsyncClient``. It shares the same retry ladder, status->exception
+mapping, and typed exception hierarchy as the sync client -- ``except
+SessionExpiredError`` (or any other exception in :doc:`this page's hierarchy
+<core>`) works identically regardless of which client raised it.
+
+**Read path only.** There is no async ``post``/``put``/``delete``, and no
+async service accessors (``client.projects``, ``client.sessions``, ...
+have no async equivalent). Uploads and downloads stay on ``XNATClient``.
+Service accessors are out of scope because every service method is written
+against the sync client's blocking calls -- exposing them asynchronously
+would mean an async twin of each service, not a wrapper, and the read path
+this class covers is what the deferrable-operator use case actually needs.
+
+**Stability**: Provisional, not part of ``xnatctl.__all__`` -- see
+:doc:`../stability`. Import it from its submodule rather than the top-level
+package:
+
+.. code-block:: python
+
+   import asyncio
+   from xnatctl.core.async_client import AsyncXNATClient
+
+
+   async def main() -> None:
+       # from_profile is a coroutine: the config file, session cache, and
+       # (for a keyring-backed profile) the OS keychain are all read on a
+       # worker thread rather than blocking this event loop.
+       client = await AsyncXNATClient.from_profile("prod")
+       async with client:
+           projects = await client.get_json("/data/projects")
+
+
+   asyncio.run(main())
+
+.. autoclass:: xnatctl.core.async_client.AsyncXNATClient
+   :members:
+   :undoc-members:
+   :special-members: __aenter__, __aexit__
 
 Retry Policy
 ------------

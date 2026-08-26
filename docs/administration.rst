@@ -300,7 +300,7 @@ anything else XNAT's REST API exposes that xnatctl does not wrap yet.
 .. code-block:: console
 
    $ xnatctl admin plugins
-   $ xnatctl admin plugins show container-service
+   $ xnatctl admin plugins show containers  # plugin id, not "container-service"
 
 .. tip::
 

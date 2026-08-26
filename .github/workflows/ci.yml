@@ -80,6 +80,28 @@ jobs:
       - name: Run mypy
         run: uv run mypy xnatctl
 
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra docs
+
+      - name: Build docs (warnings are errors)
+        run: uv run sphinx-build -W --keep-going docs docs/_build/html
+
   test:
     timeout-minutes: 15
     strategy:
@@ -501,6 +523,7 @@ jobs:
       [
         lint,
         typecheck,
+        docs,
         test,
         build,
         auto-tag,

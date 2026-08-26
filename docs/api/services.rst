@@ -30,7 +30,7 @@ All services follow the service layer pattern:
 
 - Type-safe operations with Pydantic models, for the services that return them
 - Automatic retry and error handling
-- Consistent pagination and filtering
+- Consistent filtering and result limits
 - Clean separation of concerns
 
 **Common Usage Pattern:**
@@ -122,7 +122,7 @@ succeed.
 Base Service
 ------------
 
-Foundation class providing common HTTP method wrappers and pagination utilities.
+Foundation class providing common HTTP method wrappers.
 
 .. autoclass:: xnatctl.services.base.BaseService
    :members:
@@ -416,6 +416,23 @@ Parallel, atomic download operations.
 .. automodule:: xnatctl.services.downloads
    :members:
    :undoc-members:
+   :exclude-members: DownloadService
+
+.. autoclass:: xnatctl.services.downloads.DownloadService
+   :members:
+   :undoc-members:
+   :inherited-members: object
+
+.. note::
+
+   ``DownloadService`` composes its behaviour from private mixins, so its
+   methods are inherited rather than declared on the class itself, and
+   without ``:inherited-members:`` it renders with no methods at all. It
+   gets its own ``autoclass`` rather than riding the ``automodule`` above
+   because that option is module-wide: applied there it would also pull
+   ``count``/``index`` onto every ``NamedTuple`` the module exports. The
+   ``object`` argument stops the walk at ``object``, keeping the mixin and
+   ``BaseService`` methods while dropping the ones every class has.
 
 Uploads Service
 ---------------
@@ -508,7 +525,15 @@ Manage the XNAT prearchive staging area for reviewing uploads before archiving.
 **Operations:**
 
 ``PrearchiveService`` returns plain dicts, not typed models -- index with
-``session["name"]``, not attribute access.
+``session["name"]``, not attribute access. ``get_routing_code``/
+``set_routing_mode`` manage a project's prearchive-routing setting (manual
+review vs. auto-archive on upload); the three valid modes -- ``manual``
+(code 0), ``auto-archive`` (code 4), ``auto-archive-overwrite`` (code 5) --
+were read out of ``org.nrg.framework.constants.PrearchiveCode``'s static
+initializer via ``javap`` against a running XNAT 1.9.2.1 server. The server
+does not validate what gets written here -- verified live, any integer is
+accepted and stored silently -- so ``set_routing_mode`` only accepts the
+three mode names, not a raw code.
 
 .. code-block:: python
 
@@ -537,6 +562,10 @@ Manage the XNAT prearchive staging area for reviewing uploads before archiving.
        timestamp="20240101_120000",
        session_name="SESSION01"
    )
+
+   # Get or set a project's prearchive routing mode
+   code = service.get_routing_code("MYPROJECT")  # e.g. 4
+   service.set_routing_mode("MYPROJECT", "auto-archive")
 
 .. autoclass:: xnatctl.services.prearchive.PrearchiveService
    :members:
@@ -601,6 +630,289 @@ Administrative operations including catalog refresh, user management, and audit 
    )
 
 .. autoclass:: xnatctl.services.admin.AdminService
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Command Service
+----------------
+
+Inspect and manage XNAT Container Service command and wrapper
+registrations: list/show/create/update/delete commands, and
+enable/disable/configure wrappers. Every method returns plain
+``dict``/``list[dict]`` (never Pydantic models): Container Service JSON
+shapes are plugin-version-dependent, since the Container Service ships as a
+separate plugin JAR that versions independently of XNAT core. Verified live
+against XNAT 1.9.2.1 + Container Service 3.7.2. A command's wrappers are
+embedded under its ``xnat`` key -- there is no server-side wrapper-listing
+endpoint in this plugin version, so ``list_wrappers()`` derives the flat
+wrapper list client-side by walking every command's ``xnat`` array.
+``update_command()`` is a full replace (``POST /xapi/commands/{id}`` is the
+only route this plugin version offers -- there is no ``PUT``): omitting
+``xnat`` from the payload wipes every wrapper on the command. Both
+``update_command()`` and ``delete_command()`` check the command exists
+first (via ``get_command()``) rather than trust the server's response for a
+bad ID -- an unknown ID answers 500 (not 404) on update, and DELETE answers
+204 even for an ID that never existed.
+
+.. code-block:: python
+
+   from xnatctl.services.commands import CommandService
+
+   service = CommandService(client)
+
+   # List registered commands
+   commands = service.list_commands()
+
+   # List one command's wrappers (derived from its "xnat" array)
+   wrappers = service.list_wrappers(command_id=12)
+
+   # Resolve a wrapper by numeric ID or name (used by ContainerService.launch())
+   wrapper_id, wrapper = service.resolve_wrapper("dcm2niix-scan")
+
+   # Register, enable a wrapper, then delete
+   command_id = service.create_command({"name": "dcm2niix", "image": "xnat/dcm2niix:v1.2", ...})
+   service.enable_wrapper(command_id, wrapper_id, project="MYPROJECT")
+   service.delete_command(command_id)
+
+.. autoclass:: xnatctl.services.commands.CommandService
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Docker Admin Service
+---------------------
+
+Inspect and manage the XNAT Container Service's underlying docker daemon
+connection -- known images, configured hubs, the daemon connection itself,
+and pulling images. Returns plain ``dict``/``list[dict]``, for the same
+reason as ``CommandService``. ``images()``, ``get_server()``,
+``pull_image()``, and ``set_server()`` all raise a plain ``XNATCtlError``
+with an actionable hint when no Docker daemon is reachable from the XNAT
+server (a 500 with a raw Java exception body, verified live -- the single
+most likely real-world state for any of these calls). ``set_server()``
+reads the current configuration first and merges the new host into it,
+since ``POST /xapi/docker/server`` is (by analogy with the sibling
+``/xapi/commands/{id}`` route, which IS verified) presumed to be a full
+replace -- this could not be confirmed directly, since this project's
+integration stack has no Docker daemon to round-trip against.
+
+.. code-block:: python
+
+   from xnatctl.services.docker_admin import DockerAdminService
+
+   service = DockerAdminService(client)
+
+   images = service.images()
+   server = service.get_server()
+   service.pull_image("xnat/dcm2niix:v1.2")
+   service.set_server("unix:///var/run/docker.sock")
+
+.. autoclass:: xnatctl.services.docker_admin.DockerAdminService
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Container Service
+-------------------
+
+List, inspect, launch, and kill Container Service container runs (one per
+wrapper launch), and read their captured log output. Composes
+``CommandService`` by constructor injection (defaulting to a fresh
+instance) so ``launch()`` and ``resolve_wrapper()`` reuse its wrapper
+resolution without a circular import. Returns plain ``dict``/``list[dict]``,
+for the same reason as ``CommandService``. A container ID is a ``str``
+throughout -- the routes accept either the numeric database ID or the
+Docker container ID string. The container object's field names (``id``,
+``status``, ``status-time``, ``command-id``, ``wrapper-id``, ``project``,
+``user-id``, ``history``, ``workflow-id``, ...) and the launch response's
+field names (``status``, ``params``, ``command-id``, ``wrapper-id``,
+``workflow-id`` -- notably no ``container-id``) were read from the
+Container Service plugin's own ``@JsonProperty`` declarations, so they are
+the plugin's stated wire format rather than an inference. Note there is no
+``start-time``: a start time comes from the earliest ``history`` entry's
+``time-recorded``, falling back to the top-level ``status-time``. What is
+still unexercised is a *populated* container object end to end, including
+what ``launch()`` and a successful ``kill_container()`` look like against a
+real running container -- that needs a reachable Docker daemon, which this
+project's integration stack deliberately does not provide (mounting the
+host Docker socket into a test container is a privilege-escalation risk).
+``launch()`` itself, and the fact that the server does not validate the
+wrapper/project/inputs before queueing, were verified live; only the
+successful, daemon-backed launch path was not.
+
+.. code-block:: python
+
+   from xnatctl.services.containers import ContainerService
+
+   service = ContainerService(client)
+
+   containers = service.list(project="MYPROJECT", status="Running")
+   container = service.get("501")
+
+   # Logs are streamed, not buffered -- iterate and write bytes yourself.
+   with service.stream_logs("501", stream="stdout") as response:
+       for chunk in response.iter_bytes():
+           sys.stdout.buffer.write(chunk)
+
+   # Resolve a wrapper (numeric ID or name) and launch it in a project.
+   wrapper_id, wrapper = service.resolve_wrapper("dcm2niix-scan")
+   params = service.preflight_launch(
+       "MYPROJECT", wrapper, {}, experiment="XNAT_E00001"
+   )
+   result = service.launch("MYPROJECT", wrapper_id, params)
+
+   service.kill_container("501")
+
+.. autoclass:: xnatctl.services.containers.ContainerService
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Anonymize Service
+-------------------
+
+Read and write the site-wide and per-project DicomEdit anonymization
+scripts, and their enabled state. Returns plain ``str``/``bool``/``None`` --
+a script is DicomEdit text, not JSON, so there is no Pydantic model here.
+Verified live against XNAT 1.9.2.1. Two shapes are surprising enough to call
+out: the project-scoped routes answer a raw 500 (not 404) for a project that
+does not exist, so every project-scoped method checks existence first via
+``ProjectService.get``; and ``PUT .../enabled`` reads its actual value from
+an ``enable`` query parameter rather than its JSON body (the body's content
+is never read, but a JSON ``Content-Type`` is required or the route answers
+415). ``GET /xapi/anonymize/projects/{project}`` answers empty both when a
+project never had a script and when its script is merely disabled --
+``project_has_script()`` uses a different, older config-history route to
+tell those two states apart, which is what the enable/disable preflight
+actually checks.
+
+.. code-block:: python
+
+   from xnatctl.services.anon import AnonymizeService
+
+   service = AnonymizeService(client)
+
+   site_script = service.get_site_script()
+   service.set_site_script('version "6.1"\n(0010,0010) := subject')
+   service.set_site_enabled(False)
+
+   project_script = service.get_project_script("MYPROJECT")  # None if unset
+   service.set_project_script("MYPROJECT", 'version "6.1"\n(0010,0010) := "ANON"')
+   service.set_project_enabled("MYPROJECT", True)
+
+.. autoclass:: xnatctl.services.anon.AnonymizeService
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+DICOM SCP Service
+-------------------
+
+List, create, delete, and enable/disable XNAT's DICOM SCP receivers (the AE
+title/port listeners that accept incoming DICOM C-STORE traffic). Returns
+plain ``dict``/``list[dict]``, for the same reason as ``CommandService`` --
+``DicomSCPInstance`` JSON is a plugin-internal shape. Verified live against
+XNAT 1.9.2.1. ``PUT /xapi/dicomscp/{id}`` is a PARTIAL MERGE (the opposite
+of ``CommandService.update_command``'s full-replace ``POST
+/xapi/commands/{id}``): a body of just ``{"enabled": ...}`` leaves every
+other field untouched. The server does not validate ``port`` at all -- ``0``
+and a port already bound by another receiver are both accepted silently --
+so ``scp create`` validates it client-side first.
+
+.. code-block:: python
+
+   from xnatctl.services.scp import DicomScpService
+
+   service = DicomScpService(client)
+
+   receivers = service.list_scps()
+   identifier = service.resolve_identifier(None)  # defaults if exactly one is registered
+   created = service.create_scp("MYSCP", 8105, identifier)
+   service.set_enabled(created["id"], False)
+   service.delete_scp(created["id"])
+
+.. autoclass:: xnatctl.services.scp.DicomScpService
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Search Service
+-------------------
+
+List, show, run, and delete XNAT saved (stored) searches. Returns plain
+``str``/``list[dict]`` -- a saved search's definition is XML with no fixed
+schema, and its result rows have a dynamic, per-search column shape, so
+there is no stable Pydantic model for either. Verified live against XNAT
+1.9.2.1, including creating, running, and deleting one real saved search.
+``GET /data/search/saved/{id}`` (the definition/"show" route) has NO JSON
+representation at all -- ``?format=json`` 404s even for a real, existing
+search, so ``get_definition()`` always requests XML. The distinct "run" route,
+``GET /data/search/saved/{id}/results``, does support JSON and returns a
+dynamic ``ResultSet.Columns``/``Result`` shape driven entirely by the
+fields the search was built with. Delete is idempotent-succeeds: ``DELETE``
+answers 200 even for an unknown search id.
+
+.. code-block:: python
+
+   from xnatctl.services.search import SearchService
+
+   service = SearchService(client)
+
+   searches = service.list_searches()
+   definition_xml = service.get_definition("my_search")
+   rows = service.run("my_search")
+   service.delete("my_search")
+
+.. autoclass:: xnatctl.services.search.SearchService
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Event Service
+-------------------
+
+List, create, delete, and activate/deactivate XNAT Event Service
+subscriptions, plus the ``actions``/``event-types`` catalogs used to build
+one. Returns plain ``dict``/``list[dict]``/``int``, for the same reason as
+``CommandService`` -- subscription JSON is a core-XNAT-version-dependent
+shape. Verified live against XNAT 1.9.2.1. Single-subscription operations
+(create/show/delete/activate/deactivate) live under the *singular*
+``/xapi/events/subscription``; listing lives under the *plural*
+``/xapi/events/subscriptions`` (``GET`` only) -- a different noun, not a
+different verb on the same path. A successful create answers plain text
+(``"{name}:{id}"``), not JSON. The site-wide Event Service can be switched
+off entirely (``GET /xapi/events/prefs``); when it is, every read-only
+method here still works, but ``create_subscription`` fails with a 405
+("Event Service disabled.").
+
+.. code-block:: python
+
+   from xnatctl.services.events import EventService
+
+   service = EventService(client)
+
+   subscriptions = service.list_subscriptions()
+   actions = service.list_actions()          # valid action-key values
+   event_types = service.list_event_types()  # valid event-filter.event-type values
+
+   subscription_id = service.create_subscription({
+       "name": "log-new-projects",
+       "active": True,
+       "event-filter": {
+           "event-type": "org.nrg.xnat.eventservice.events.ProjectEvent",
+           "status": "CREATED",
+           "project-ids": [],
+       },
+       "act-as-event-user": True,
+       "action-key": actions[0]["action-key"],
+       "attributes": {},
+   })
+   service.deactivate_subscription(subscription_id)
+   service.activate_subscription(subscription_id)
+   service.delete_subscription(subscription_id)
+
+.. autoclass:: xnatctl.services.events.EventService
    :members:
    :undoc-members:
    :show-inheritance:

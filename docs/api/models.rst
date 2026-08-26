@@ -192,6 +192,36 @@ Represents a single file within a resource, as returned by
    :undoc-members:
    :show-inheritance:
 
+Client Introspection
+--------------------
+
+Typed results for :meth:`XNATClient.ping <xnatctl.core.client.XNATClient.ping>`
+and :meth:`XNATClient.whoami <xnatctl.core.client.XNATClient.whoami>`. Both are
+frozen snapshots rather than XNAT ResultSet rows.
+
+**Usage Example:**
+
+.. code-block:: python
+
+   import xnatctl
+
+   with xnatctl.XNATClient.from_profile("prod") as client:
+       info = client.ping()
+       print(f"{info.url}: {info.status} ({info.version}, {info.latency_ms}ms)")
+
+       me = client.whoami()
+       print(f"Logged in as {me.username} <{me.email}>")
+
+.. autoclass:: xnatctl.models.info.ServerInfo
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: xnatctl.models.info.UserInfo
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Progress Models
 ---------------
 

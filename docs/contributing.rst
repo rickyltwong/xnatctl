@@ -57,6 +57,20 @@ The test is whether the decision would surprise someone reading only the code.
 If it would, the reasoning belongs somewhere it will be found before it is
 "cleaned up".
 
+Non-Goals
+---------
+
+**Internationalization.** xnatctl is English-only by design and carries no
+gettext or locale infrastructure. Its audience is technical operators, and
+the choice keeps message text independent of the runtime's locale. Wording
+may still change between releases -- scripts should parse ``--output json``,
+``--quiet`` output, and exit codes, the surfaces the
+:doc:`stability policy <stability>` actually covers, never message text.
+Do not introduce
+translation machinery, locale-dependent formatting, or language-switching
+options in a contribution; a change to this stance is a design decision to
+raise with the maintainer first, not a patch.
+
 Development Setup
 -----------------
 
@@ -100,7 +114,7 @@ The tests are organized by layer:
   ``CliRunner``. These test argument parsing, output formatting, and error handling
   without making real HTTP requests.
 - ``tests/test_service_*.py`` -- Service layer unit tests that mock ``XNATClient``
-  to verify business logic, pagination, and error mapping in isolation.
+  to verify business logic and error mapping in isolation.
 - Other files cover the core client, configuration, authentication, validation, and
   upload/download helpers.
 
@@ -267,7 +281,7 @@ directly.
 
 **Service layer** (``xnatctl/services/``). Services encapsulate the XNAT REST API.
 Each service extends ``BaseService``, which provides ``_get``, ``_post``,
-``_paginate``, and ``_extract_results`` helpers. Services translate between Pydantic
+and ``_extract_results`` helpers. Services translate between Pydantic
 models and raw API responses. For example, ``ProjectService.list()`` calls
 ``_get("/data/projects")``, extracts the result set, and returns a list of
 ``Project`` model instances.
@@ -276,8 +290,8 @@ models and raw API responses. For example, ``ProjectService.list()`` calls
 logic (jittered exponential backoff on 429/500/502/503/504, honoring
 ``Retry-After``; transport failures such as a dropped connection are retried
 only for idempotent methods, since a retried POST could execute twice),
-automatic re-authentication on 401, pagination support, and session token
-management. The config module handles YAML-based profiles and environment
+automatic re-authentication on 401, and session token management. The
+config module handles YAML-based profiles and environment
 variable overrides. The output module uses Rich to render tables, JSON, and
 quiet (ID-only) formats; log output passes through a redaction filter that
 scrubs secret-shaped URL values.
@@ -288,9 +302,9 @@ like this:
 .. code-block:: python
 
    @project.command("list")
-   @global_options       # --profile, --output, --quiet, --verbose
-   @require_auth         # ensures authenticated client; re-auths on expiry
+   @global_options       # --profile, --output, --quiet, --verbose, --no-color
    @handle_errors        # catches XNATCtlError -> formatted error + sys.exit(1)
+   @require_auth         # ensures authenticated client; re-auths on expiry
    def project_list(ctx: Context) -> None:
        service = ProjectService(ctx.client)
        projects = service.list()
@@ -317,6 +331,9 @@ You can also use the service layer programmatically outside the CLI:
    # Or, hand-wired (what from_profile does for you): construct an
    # XNATClient with explicit credentials, call ``authenticate()``, and
    # pass it to any service class.
+
+For the full step-by-step recipe -- model, service, CLI decorators, tests,
+and docs -- see :doc:`adding-a-command`.
 
 
 Code Style
