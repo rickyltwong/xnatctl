@@ -88,7 +88,6 @@ from .deprecation import (
 from .deprecation import _flag_given as _flag_given
 from .deprecation import _make_alias_cb as _make_alias_cb
 from .deprecation import _make_forwarding_alias_cb as _make_forwarding_alias_cb
-from .deprecation import _make_noop_cb as _make_noop_cb
 from .errors import (
     AUDIT_ERROR_KEY,
     ExitCode,

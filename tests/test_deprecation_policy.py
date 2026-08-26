@@ -68,7 +68,7 @@ def _alias_callback_flags() -> set[str]:
     built fresh from each registry entry), not by picking the flag name back
     out of free text with a regex. A first-token regex assumed every
     registered key was itself the literal flag text with no internal
-    whitespace, which holds for a full long-flag rename (``--unzip``) but
+    whitespace, which holds for a full long-flag rename (``--file``) but
     not for a short-flag-only retirement scoped to one command (e.g. ``-f
     (api post/put)``, needed because ``-f`` means something different --
     and gets a different replacement -- in another command). Matching on the
@@ -161,20 +161,14 @@ class TestRegistryCoverage:
 
 class TestMessage:
     def test_a_replacement_is_named(self) -> None:
-        message = deprecation_message("--unzip")
+        message = deprecation_message("--file")
 
-        assert "--unzip is deprecated" in message
-        assert "use --extract instead" in message
+        assert "--file is deprecated" in message
+        assert "use --output-file instead" in message
 
     def test_the_removal_release_is_named(self) -> None:
         """A user reading one warning line should know how long they have."""
-        assert "will be removed in 0.5.0" in deprecation_message("--unzip")
-
-    def test_a_noop_flag_says_so_rather_than_naming_a_replacement(self) -> None:
-        message = deprecation_message("--cleanup")
-
-        assert "it has no effect" in message
-        assert "use  instead" not in message
+        assert "will be removed in 0.7.0" in deprecation_message("--file")
 
     def test_an_unregistered_flag_raises(self) -> None:
         """Caught at import time, since the factories build the message eagerly."""
@@ -192,44 +186,39 @@ class TestWarningsAreVisible:
 
     @staticmethod
     def _harness() -> click.Command:
-        from xnatctl.cli.common import _make_alias_cb, _make_forwarding_alias_cb, _make_noop_cb
+        from xnatctl.cli.common import _make_alias_cb, _make_forwarding_alias_cb
 
         @click.command()
-        @click.option("--extract/--no-extract", default=False)
-        @click.option("--mode", default=None)
+        @click.option("--follow", is_flag=True, default=False)
+        @click.option("--output-file", default=None)
         @click.option(
-            "--unzip",
+            "-f",
+            "legacy_follow_f",
             is_flag=True,
             hidden=True,
             expose_value=False,
-            callback=_make_alias_cb("--unzip", "extract", True),
+            callback=_make_alias_cb("-f (container logs)", "follow", True),
         )
         @click.option(
-            "--archive-format",
+            "--file",
+            "legacy_file_flag",
             hidden=True,
             expose_value=False,
-            callback=_make_forwarding_alias_cb("--archive-format", "mode"),
+            callback=_make_forwarding_alias_cb("--file", "output_file"),
         )
-        @click.option(
-            "--cleanup",
-            is_flag=True,
-            hidden=True,
-            expose_value=False,
-            callback=_make_noop_cb("--cleanup"),
-        )
-        def command(extract: bool, mode: str | None) -> None:
-            click.echo(f"extract={extract} mode={mode}")
+        def command(follow: bool, output_file: str | None) -> None:
+            click.echo(f"follow={follow} output_file={output_file}")
 
         return command
 
     def test_the_warning_is_printed(self) -> None:
-        result = CliRunner().invoke(self._harness(), ["--unzip"])
+        result = CliRunner().invoke(self._harness(), ["-f"])
 
-        assert deprecation_message("--unzip") in result.stderr
+        assert deprecation_message("-f (container logs)") in result.stderr
 
     def test_the_warning_lands_on_stderr_not_stdout(self) -> None:
         """Polluting stdout breaks a piped --output json or --quiet result."""
-        result = CliRunner().invoke(self._harness(), ["--unzip"])
+        result = CliRunner().invoke(self._harness(), ["-f"])
 
         assert "deprecated" not in result.stdout
 
@@ -241,22 +230,15 @@ class TestWarningsAreVisible:
 
     def test_an_alias_still_does_what_it_used_to(self) -> None:
         """A deprecation that also broke the flag would be a removal in disguise."""
-        result = CliRunner().invoke(self._harness(), ["--unzip"])
+        result = CliRunner().invoke(self._harness(), ["-f"])
 
-        assert "extract=True" in result.stdout
+        assert "follow=True" in result.stdout
 
     def test_a_forwarding_alias_carries_the_value(self) -> None:
-        result = CliRunner().invoke(self._harness(), ["--archive-format", "zip"])
+        result = CliRunner().invoke(self._harness(), ["--file", "out.zip"])
 
-        assert "mode=zip" in result.stdout
-        assert deprecation_message("--archive-format") in result.stderr
-
-    def test_a_noop_flag_warns_rather_than_being_accepted_in_silence(self) -> None:
-        """Silent acceptance reads as "still supported"."""
-        result = CliRunner().invoke(self._harness(), ["--cleanup"])
-
-        assert deprecation_message("--cleanup") in result.stderr
-        assert result.exit_code == 0
+        assert "output_file=out.zip" in result.stdout
+        assert deprecation_message("--file") in result.stderr
 
     def test_deprecated_flags_are_hidden_from_help(self) -> None:
         for path, param, flag in _deprecated_options():

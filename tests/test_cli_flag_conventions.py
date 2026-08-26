@@ -201,7 +201,8 @@ class TestExperimentShortFlag:
                         "TESTPROJ",
                         "-e",
                         "XNAT_E001",
-                        "--no-parallel",
+                        "--workers",
+                        "1",
                     ],
                 )
 
@@ -485,38 +486,9 @@ class TestScanShortFlag:
         assert "--scans" in result.output
 
 
-class TestForwardingAliasSatisfiesRequiredOption:
-    """A forwarding alias must actually satisfy the option it forwards into.
-
-    Regression test for a bug that shipped in 0.4.0: `--session` is a
-    deprecated alias for `--experiment`, documented as working until 0.5.0,
-    but `session upload --session SESS` died with "Missing option
-    '--experiment' / '-E'". Click enforces an option's own `required=True`
-    independently of whether another option's callback already forwarded a
-    value into `ctx.params`, so the alias fired, forwarded, warned -- and
-    then Click rejected the invocation anyway. Exactly the pre-deprecation
-    invocation the alias exists to keep working was the one that failed.
-    """
-
+class TestExperimentIsRequiredOnUploads:
     @pytest.mark.parametrize("command", ["upload", "upload-exam"])
-    def test_deprecated_alias_alone_satisfies_the_primary(
-        self, command: str, tmp_path: Path
-    ) -> None:
-        source = tmp_path / "dicom"
-        source.mkdir()
-        (source / "a.dcm").write_bytes(b"x")
-        harness = make_authenticated_cli()
-
-        result = harness.invoke(
-            ["session", command, str(source), "-P", "P", "-S", "S", "--session", "SESS"]
-        )
-
-        assert "Missing option" not in result.output
-        assert "deprecat" in result.output.lower()
-
-    @pytest.mark.parametrize("command", ["upload", "upload-exam"])
-    def test_omitting_both_spellings_still_errors(self, command: str, tmp_path: Path) -> None:
-        """Relaxing Click's `required=True` must not make the option optional."""
+    def test_omitting_experiment_is_a_usage_error(self, command: str, tmp_path: Path) -> None:
         source = tmp_path / "dicom"
         source.mkdir()
         (source / "a.dcm").write_bytes(b"x")

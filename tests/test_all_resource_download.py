@@ -203,54 +203,7 @@ class TestSessionDownloadResourceFlags:
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output
 
-    def test_include_resources_deprecation_warning(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-    ) -> None:
-        """--include-resources warns on stderr and maps to --session-resources.
-
-        A ``warnings.warn(DeprecationWarning)`` would be hidden by Python
-        by default -- invisible to the people who need to act on it.
-        """
-        ctx, mock_client = make_authenticated_context()
-        mock_client.get_json.return_value = {
-            "ResultSet": {
-                "Result": [
-                    {
-                        "ID": "XNAT_E00001",
-                        "project": "TESTPROJ",
-                        "subject_ID": "XNAT_S00001",
-                    }
-                ]
-            }
-        }
-
-        with authenticated_seams(ctx, mock_client):
-            result = runner.invoke(
-                cli,
-                [
-                    "session",
-                    "download",
-                    "-E",
-                    "XNAT_E00001",
-                    "-P",
-                    "TESTPROJ",
-                    "--out",
-                    str(tmp_path),
-                    "--include-resources",
-                    "--dry-run",
-                ],
-            )
-
-        assert result.exit_code == 0
-        assert "--include-resources is deprecated" in result.stderr
-        assert "will be removed in 0.5.0" in result.stderr
-        assert "use --session-resources instead" in result.stderr
-        # --include-resources maps to session_resources=True
-        assert "Session resources: True" in result.output
-
-    def test_help_shows_new_flags(self, runner: CliRunner) -> None:
+    def test_help_shows_resource_flags(self, runner: CliRunner) -> None:
         """Help text includes --resource, --exclude-resource, --session-resources."""
         result = runner.invoke(cli, ["session", "download", "--help"])
 
@@ -258,13 +211,6 @@ class TestSessionDownloadResourceFlags:
         assert "--resource" in result.output
         assert "--exclude-resource" in result.output
         assert "--session-resources" in result.output
-
-    def test_help_hides_include_resources(self, runner: CliRunner) -> None:
-        """Help text does not show deprecated --include-resources."""
-        result = runner.invoke(cli, ["session", "download", "--help"])
-
-        assert result.exit_code == 0
-        assert "--include-resources" not in result.output
 
     def test_resource_filter_forces_parallel_path(
         self,

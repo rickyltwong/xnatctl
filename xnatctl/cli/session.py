@@ -9,8 +9,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_alias_cb,
-    _make_noop_cb,
     default_project_from_context,
     global_options,
     handle_errors,
@@ -101,47 +99,10 @@ def session() -> None:
     "--session-resources", is_flag=True, hidden=True, help="Include session-level resources"
 )
 @click.option(
-    "--include-resources",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("--include-resources", "session_resources", True),
-    help="Deprecated: use --session-resources instead",
-)
-@click.option(
     "--extract/--no-extract", default=False, help="Extract ZIPs and remove archives after download"
 )
 @click.option(
     "--keep-zips", is_flag=True, hidden=True, help="With --extract, keep ZIP files after extraction"
-)
-@click.option(
-    "--unzip",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("--unzip", "extract", True),
-)
-@click.option(
-    "--no-unzip",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("--no-unzip", "extract", False),
-)
-@click.option(
-    "--cleanup",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_noop_cb("--cleanup"),
-    help="Deprecated: noop (cleanup is implicit with --extract)",
-)
-@click.option(
-    "--no-cleanup",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("--no-cleanup", "keep_zips", True),
 )
 @click.option(
     "--verify",

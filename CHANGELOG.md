@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 **Breaking**
 
+- The ten flags deprecated in 0.3.0 and scheduled for removal in 0.5.0 are
+  removed, as their warnings promised: `--unzip`/`--no-unzip` (use
+  `--extract`/`--no-extract`), `--cleanup` (no replacement; cleanup is
+  implicit with `--extract`), `--no-cleanup` (use `--extract --keep-zips`),
+  `--include-resources` (use `--session-resources`), `--no-parallel` (use
+  `--workers 1`), `--parallel` (no replacement; parallel is the default),
+  `--session` (use `--experiment`/`-E`), `--gradual` (use `--mode gradual`),
+  and `--archive-format` (use `--mode`). The flags deprecated in 0.5.0
+  (`-e`, `--file`, the two command-local `-f` uses, `-s`) still work and
+  remain scheduled for removal in 0.7.0.
 - Library only, CLI output is unchanged: `XNATClient.ping()` now returns a
   typed `ServerInfo` model and `XNATClient.whoami()` a typed `UserInfo`
   model instead of plain dicts, and `SessionService.get_scans()` /

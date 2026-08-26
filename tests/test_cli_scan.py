@@ -695,7 +695,8 @@ class TestScanDelete:
                     "--scans",
                     "1,2",
                     "-y",
-                    "--no-parallel",
+                    "--workers",
+                    "1",
                 ],
             )
 

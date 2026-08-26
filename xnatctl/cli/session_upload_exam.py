@@ -14,7 +14,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_forwarding_alias_cb,
     global_options,
     handle_errors,
     require_auth,
@@ -78,20 +77,8 @@ def _render_exam_upload_result(ctx: Context, result: ExamUploadResult) -> None:
 @click.option(
     "--experiment",
     "-E",
-    # NOT required=True, despite being required in practice: `--session` is a
-    # deprecated forwarding alias for this option, and Click enforces an
-    # option's own required-ness independently of whether another option's
-    # callback already forwarded a value into ctx.params. With required=True
-    # here, `--session SESS` alone -- exactly what a pre-deprecation script
-    # does -- died with "Missing option '--experiment'" while the alias was
-    # still documented as working. The check moved into the command body.
+    required=True,
     help="Session/experiment label",
-)
-@click.option(
-    "--session",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("--session", "experiment"),
 )
 @click.option(
     "--workers",
@@ -172,7 +159,7 @@ def session_upload_exam(
     exam_root: str,
     project: str | None,
     subject: str,
-    experiment: str | None,
+    experiment: str,
     workers: int | None,
     misc_label: str,
     skip_resources: bool,
@@ -191,10 +178,6 @@ def session_upload_exam(
       resources (label = directory name)
     - Top-level non-DICOM files are treated as misc attachments under --misc-label
     """
-    # See the --experiment option above: Click cannot enforce this, because
-    # the deprecated --session alias forwards into it via a callback.
-    if not experiment:
-        raise click.UsageError("Missing option '--experiment' / '-E'.")
     project = require_project_from_context(ctx, project)
     workers = resolve_workers_from_context(ctx, workers)
     direct_archive = resolve_direct_archive_from_context(ctx, direct_archive)

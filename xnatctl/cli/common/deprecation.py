@@ -15,7 +15,7 @@ class DeprecatedFlag(NamedTuple):
     """A CLI flag that still works but is scheduled for removal."""
 
     replacement: str
-    """What to use instead. Empty when the flag simply no longer does anything."""
+    """What to use instead."""
 
     removed_in: str
     """The release that deletes the flag."""
@@ -26,16 +26,6 @@ class DeprecatedFlag(NamedTuple):
 
 
 DEPRECATED_FLAGS: dict[str, DeprecatedFlag] = {
-    "--no-parallel": DeprecatedFlag("--workers 1", "0.5.0", "0.3.0"),
-    "--parallel": DeprecatedFlag("", "0.5.0", "0.3.0"),
-    "--unzip": DeprecatedFlag("--extract", "0.5.0", "0.3.0"),
-    "--no-unzip": DeprecatedFlag("--no-extract", "0.5.0", "0.3.0"),
-    "--cleanup": DeprecatedFlag("", "0.5.0", "0.3.0"),
-    "--no-cleanup": DeprecatedFlag("--extract --keep-zips", "0.5.0", "0.3.0"),
-    "--include-resources": DeprecatedFlag("--session-resources", "0.5.0", "0.3.0"),
-    "--session": DeprecatedFlag("--experiment", "0.5.0", "0.3.0"),
-    "--gradual": DeprecatedFlag("--mode gradual", "0.5.0", "0.3.0"),
-    "--archive-format": DeprecatedFlag("--mode", "0.5.0", "0.3.0"),
     "-e": DeprecatedFlag("-E", "0.7.0", "0.5.0"),
     "--file": DeprecatedFlag("--output-file", "0.7.0", "0.5.0"),
     "-f (api post/put)": DeprecatedFlag("--file", "0.7.0", "0.5.0"),
@@ -70,9 +60,9 @@ def deprecation_message(old_flag: str) -> str:
         KeyError: If the flag is not registered.
     """
     entry = DEPRECATED_FLAGS[old_flag]
-    guidance = f"use {entry.replacement} instead" if entry.replacement else "it has no effect"
     return (
-        f"Warning: {old_flag} is deprecated and will be removed in {entry.removed_in}; {guidance}"
+        f"Warning: {old_flag} is deprecated and will be removed in {entry.removed_in}; "
+        f"use {entry.replacement} instead"
     )
 
 
@@ -92,7 +82,7 @@ def _make_alias_cb(
     """Create a Click callback that warns on a deprecated flag and sets a fixed value.
 
     Args:
-        old_flag: The deprecated flag name (e.g., "--unzip"). Must be registered
+        old_flag: The deprecated flag name (e.g., "-e"). Must be registered
             in DEPRECATED_FLAGS; the lookup happens here, at import time, so an
             unregistered flag breaks the test suite instead of a user's command.
         target_param: The Click parameter name to set on ctx.params.
@@ -178,32 +168,10 @@ def _make_forwarding_alias_cb(
     return callback
 
 
-def _make_noop_cb(old_flag: str) -> Callable[[click.Context, click.Parameter, Any], Any]:
-    """Create a Click callback for a deprecated flag that no longer does anything.
-
-    Accepting the flag in silence looks like it still works. Warning says so.
-
-    Args:
-        old_flag: The deprecated flag name. Must be registered in DEPRECATED_FLAGS.
-
-    Returns:
-        A Click callback function.
-    """
-    message = deprecation_message(old_flag)
-
-    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
-        if _flag_given(ctx, param):
-            click.echo(message, err=True)
-        return value
-
-    return callback
-
-
 def parallel_options(f: F) -> F:
     """Add parallel execution options.
 
     Injects ``--workers`` (default resolved from profile or 4).
-    Hidden ``--no-parallel`` alias sets workers to 1 with a deprecation warning.
     """
 
     @click.option(
@@ -213,21 +181,6 @@ def parallel_options(f: F) -> F:
         default=None,
         show_default="4 (or profile)",
         help="Parallel workers (1 = sequential)",
-    )
-    @click.option(
-        "--no-parallel",
-        is_flag=True,
-        hidden=True,
-        expose_value=False,
-        callback=_make_alias_cb("--no-parallel", "workers", 1),
-    )
-    @click.option(
-        "--parallel",
-        is_flag=True,
-        hidden=True,
-        expose_value=False,
-        callback=_make_noop_cb("--parallel"),
-        help="Deprecated: parallel is the default",
     )
     @wraps(f)
     def wrapper(*args: Any, **kwargs: Any) -> Any:

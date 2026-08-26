@@ -105,8 +105,8 @@ or ``--quiet`` result:
 
 .. code-block:: console
 
-   $ xnatctl session download -E XNAT_E00001 --unzip --out ./data
-   Warning: --unzip is deprecated and will be removed in 0.5.0; use --extract instead
+   $ xnatctl resource download XNAT_E00001 DICOM --file ./dicom.zip
+   Warning: --file is deprecated and will be removed in 0.7.0; use --output-file instead
 
 The warning names the release that removes the flag, so you can tell from a
 single log line how long you have.
@@ -130,46 +130,6 @@ They still work; they are just no longer advertised.
 
 Currently deprecated
 --------------------
-
-All of the flags below are removed in **0.5.0**.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 40 30
-
-   * - Deprecated
-     - Use instead
-     - Commands
-   * - ``--unzip``
-     - ``--extract``
-     - ``session download``, ``scan download``
-   * - ``--no-unzip``
-     - ``--no-extract``
-     - ``session download``, ``scan download``
-   * - ``--no-cleanup``
-     - ``--extract --keep-zips``
-     - ``session download``, ``scan download``
-   * - ``--cleanup``
-     - nothing; cleanup is implicit with ``--extract``
-     - ``session download``, ``scan download``
-   * - ``--include-resources``
-     - ``--session-resources``
-     - ``session download``
-   * - ``--no-parallel``
-     - ``--workers 1``
-     - ``admin refresh-catalogs``, ``project transfer``, ``scan delete``
-   * - ``--parallel``
-     - nothing; parallel is the default
-     - ``admin refresh-catalogs``, ``project transfer``, ``scan delete``
-   * - ``--session``
-     - ``--experiment`` / ``-E``
-     - ``session upload``, ``session upload-exam``
-   * - ``--gradual``
-     - ``--mode gradual``
-     - ``session upload``
-   * - ``--archive-format``
-     - ``--mode``
-     - ``session upload``
 
 All of the flags below are removed in **0.7.0** -- deprecated to reconcile
 argument conventions across the CLI: a stray ``-e`` short flag that should

@@ -17,8 +17,6 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from xnatctl.cli.common import (
     Context,
-    _make_alias_cb,
-    _make_forwarding_alias_cb,
     global_options,
     handle_errors,
     read_password_stdin,
@@ -66,20 +64,8 @@ def _echo_error_overflow(errors: list[str], *, limit: int = 5) -> None:
 @click.option(
     "--experiment",
     "-E",
-    # NOT required=True, despite being required in practice: `--session` is a
-    # deprecated forwarding alias for this option, and Click enforces an
-    # option's own required-ness independently of whether another option's
-    # callback already forwarded a value into ctx.params. With required=True
-    # here, `--session SESS` alone -- exactly what a pre-deprecation script
-    # does -- died with "Missing option '--experiment'" while the alias was
-    # still documented as working. The check moved into the command body.
+    required=True,
     help="Session/experiment label",
-)
-@click.option(
-    "--session",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("--session", "experiment"),
 )
 @click.option("--username", "-u", hidden=True, help="XNAT username (REST upload)")
 @click.option(
@@ -104,20 +90,6 @@ def _echo_error_overflow(errors: list[str], *, limit: int = 5) -> None:
     type=click.Choice(["tar", "zip", "gradual"]),
     default=None,
     help="Upload mode (default: tar)",
-)
-@click.option(
-    "--gradual",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("--gradual", "mode", "gradual"),
-)
-@click.option(
-    "--archive-format",
-    type=click.Choice(["tar", "zip"]),
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("--archive-format", "mode"),
 )
 @click.option(
     "--zip-to-tar/--no-zip-to-tar",
@@ -159,7 +131,7 @@ def session_upload(
     input_path: str,
     project: str | None,
     subject: str,
-    experiment: str | None,
+    experiment: str,
     username: str | None,
     password_stdin: bool,
     mode: str | None,
@@ -184,10 +156,6 @@ def session_upload(
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --workers 16
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --mode gradual -w 40
     """
-    # See the --experiment option above: Click cannot enforce this, because
-    # the deprecated --session alias forwards into it via a callback.
-    if not experiment:
-        raise click.UsageError("Missing option '--experiment' / '-E'.")
     # A password value on argv is refused by the --password callback;
     # stdin is the only explicit per-command source. Downstream fallbacks
     # (XNAT_PASS, prompt) live in _upload_directory_parallel.

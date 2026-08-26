@@ -65,7 +65,7 @@ class TestAdminRefreshCatalogs:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["admin", "refresh-catalogs", "TESTPROJ", "--no-parallel"],
+                        ["admin", "refresh-catalogs", "TESTPROJ", "--workers", "1"],
                     )
 
         assert result.exit_code == 0
@@ -97,7 +97,8 @@ class TestAdminRefreshCatalogs:
                             "checksum",
                             "--option",
                             "delete",
-                            "--no-parallel",
+                            "--workers",
+                            "1",
                         ],
                     )
 
@@ -140,7 +141,8 @@ class TestAdminRefreshCatalogs:
                             "TESTPROJ",
                             "--limit",
                             "2",
-                            "--no-parallel",
+                            "--workers",
+                            "1",
                         ],
                     )
 
@@ -175,7 +177,8 @@ class TestAdminRefreshCatalogs:
                             "0",
                             "--option",
                             "delete",
-                            "--no-parallel",
+                            "--workers",
+                            "1",
                         ],
                     )
 
@@ -207,7 +210,8 @@ class TestAdminRefreshCatalogs:
                             "TESTPROJ",
                             "--output",
                             "json",
-                            "--no-parallel",
+                            "--workers",
+                            "1",
                         ],
                     )
 

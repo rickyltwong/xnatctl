@@ -12,9 +12,7 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_alias_cb,
     _make_forwarding_alias_cb,
-    _make_noop_cb,
     apply_filter,
     apply_sort_limit,
     batch_option,
@@ -620,35 +618,6 @@ def scan_delete(
 )
 @click.option(
     "--keep-zips", is_flag=True, hidden=True, help="With --extract, keep ZIP files after extraction"
-)
-@click.option(
-    "--unzip",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("--unzip", "extract", True),
-)
-@click.option(
-    "--no-unzip",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("--no-unzip", "extract", False),
-)
-@click.option(
-    "--cleanup",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_noop_cb("--cleanup"),
-    help="Deprecated: noop",
-)
-@click.option(
-    "--no-cleanup",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("--no-cleanup", "keep_zips", True),
 )
 @click.option(
     "--verify",

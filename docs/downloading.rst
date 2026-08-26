@@ -139,12 +139,6 @@ focused on imaging data.
 
    $ xnatctl session download -E XNAT_E00001 --out ./data --session-resources
 
-.. note::
-
-   ``--session-resources`` replaces the deprecated ``--include-resources`` flag.
-   The old flag still works, warns on stderr, and is removed in 0.5.0. See
-   :doc:`stability`.
-
 Extracting ZIPs automatically
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
