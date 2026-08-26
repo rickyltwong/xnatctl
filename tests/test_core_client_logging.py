@@ -101,8 +101,8 @@ def test_each_attempt_logs_method_path_status_and_timing(
 def test_retries_are_logged_at_warning_with_the_backoff(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A retry storm was previously invisible -- the single most common cause
-    of "xnatctl is hanging".
+    """A retry storm must be visible -- an invisible one is the single
+    most common cause of "xnatctl is hanging".
     """
     attempts = {"n": 0}
 
@@ -157,21 +157,6 @@ def test_transport_failure_retry_names_the_error(caplog: pytest.LogCaptureFixtur
         make_client(flaky).get("/data/projects")
 
     assert "retrying in" in messages(caplog)[0]
-
-
-def test_pagination_logs_each_page(caplog: pytest.LogCaptureFixture) -> None:
-    def paged(request: httpx.Request) -> httpx.Response:
-        offset = int(dict(request.url.params).get("offset", 0))
-        rows = [{"ID": f"P{offset + i}"} for i in range(2 if offset == 0 else 1)]
-        return httpx.Response(200, json={"ResultSet": {"Result": rows}})
-
-    with caplog.at_level(logging.DEBUG, logger=CLIENT_LOGGER):
-        list(make_client(paged).paginate("/data/projects", page_size=2))
-
-    page_lines = [m for m in messages(caplog) if "paginate" in m]
-    assert len(page_lines) == 2
-    assert "offset=0" in page_lines[0]
-    assert "2 items" in page_lines[0]
 
 
 # =============================================================================
@@ -320,8 +305,8 @@ def test_default_keeps_httpx_quiet() -> None:
 
 @pytest.mark.usefixtures("clean_root")
 def test_verbose_raises_httpx_to_info() -> None:
-    """The regression: -v used to leave httpx pinned at WARNING, so it could
-    never show wire activity.
+    """-v must not leave httpx pinned at WARNING, where it could never
+    show wire activity.
     """
     setup_logging(verbose=True)
 

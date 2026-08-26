@@ -31,6 +31,15 @@ logger = logging.getLogger(__name__)
 SESSION_CACHE_FILE = CONFIG_DIR / ".session"
 SESSION_EXPIRY_MINUTES = 15  # XNAT JSESSION expires after 15 minutes of inactivity by default
 
+# Session cache payload version. Unlike config.yaml, there is no migration
+# table: a cached token is disposable, so any mismatch (older, newer, wrong
+# type, or unparseable) just discards the cache and forces a fresh login --
+# simpler and just as safe as migrating a value that carries no user data. A
+# *missing* version is the one non-mismatch: it predates the field and is
+# treated as version 1, same as an explicit `"version": 1`, so an old cache
+# keeps loading (see CachedSession.from_dict).
+SESSION_CACHE_VERSION = 1
+
 
 # =============================================================================
 # Session Cache
@@ -82,6 +91,7 @@ class CachedSession:
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
+            "version": SESSION_CACHE_VERSION,
             "token": self.token,
             "url": self.url,
             "username": self.username,
@@ -92,7 +102,23 @@ class CachedSession:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CachedSession:
-        """Create from dictionary."""
+        """Create from dictionary.
+
+        A missing ``version`` key means the cache predates the field and is
+        version 1.
+
+        Raises:
+            ValueError: If the payload's version is not exactly the int
+                ``SESSION_CACHE_VERSION``. Callers (``AuthManager.load_session``)
+                treat this like any other unreadable cache: discard it and
+                fall through to a fresh login. The type check matters: JSON
+                ``true`` and ``1.0`` both equal ``1`` under ``==``, and a
+                cache is not meant to survive on a coincidence like that.
+        """
+        version = data.get("version", 1)
+        if type(version) is not int or version != SESSION_CACHE_VERSION:
+            raise ValueError(f"Unsupported session cache version: {version!r}")
+
         created_at = datetime.fromisoformat(data["created_at"])
         last_used = data.get("last_used_at")
         return cls(
@@ -104,7 +130,7 @@ class CachedSession:
                 datetime.fromisoformat(data["expires_at"]) if data.get("expires_at") else None
             ),
             # Caches written before this field existed fall back to creation
-            # time, which is exactly the old behaviour for that one read.
+            # time.
             last_used_at=datetime.fromisoformat(last_used) if last_used else created_at,
         )
 
@@ -278,13 +304,16 @@ class AuthManager:
         Returns:
             True if cache was cleared.
         """
-        if self.cache_file.exists():
-            try:
-                self.cache_file.unlink()
-                return True
-            except OSError:
-                pass
-        return False
+        try:
+            self.cache_file.unlink()
+            return True
+        except FileNotFoundError:
+            # Nothing cached, or another process cleared it first -- either
+            # way the goal state (no cache file) holds; not a warning.
+            return False
+        except OSError as e:
+            logger.warning("Could not clear cached session at %s: %s", self.cache_file, e)
+            return False
 
     def has_valid_session(self, url: str | None = None) -> bool:
         """Check if there's a valid cached session.

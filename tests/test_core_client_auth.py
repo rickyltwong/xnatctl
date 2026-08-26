@@ -9,6 +9,7 @@ import pytest
 
 from xnatctl.core.client import XNATClient
 from xnatctl.core.exceptions import (
+    NetworkError,
     PermissionDeniedError,
     ResourceNotFoundError,
     SessionExpiredError,
@@ -175,13 +176,129 @@ def test_whoami_uses_current_username_endpoint_and_preserves_username_hint(monke
 
     result = client.whoami()
 
-    assert result == {
+    # model_dump() is the shape the whoami dict always had -- pinned so the
+    # typed return keeps rendering identically downstream.
+    assert result.model_dump() == {
         "username": "Ricky_Wong",
         "firstname": "Ricky",
         "lastname": "Wong",
         "email": "ricky@example.org",
         "enabled": True,
     }
+
+
+def test_whoami_normalizes_explicit_null_name_and_email_fields(monkeypatch):
+    """XNAT sends explicit null firstName/lastName/email for service/API
+    accounts that never had a name set -- normal output, not malformed. The
+    real `enabled` value must survive, not get discarded/reinvented.
+    """
+    client = XNATClient(
+        base_url="https://example.org",
+        username="svc_account",
+        session_token="token",
+    )
+
+    def fake_get(path: str, **kwargs):
+        if path == "/xapi/users/username":
+            return _make_text_response(path, "svc_account")
+        raise AssertionError(f"unexpected path: {path}")
+
+    def fake_get_json(path: str, **kwargs):
+        if path == "/xapi/users/svc_account":
+            return {
+                "username": "svc_account",
+                "firstName": None,
+                "lastName": None,
+                "email": None,
+                "enabled": False,
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "get", fake_get)
+    monkeypatch.setattr(client, "get_json", fake_get_json)
+
+    result = client.whoami()
+
+    assert result.model_dump() == {
+        "username": "svc_account",
+        "firstname": "",
+        "lastname": "",
+        "email": "",
+        "enabled": False,
+    }
+
+
+def test_whoami_missing_payload_username_falls_back_without_losing_other_fields(monkeypatch):
+    """A payload with a missing/null `username` must not be discarded
+    wholesale: the already-resolved username fills in, and the payload's
+    real name fields still come through.
+    """
+    client = XNATClient(
+        base_url="https://example.org",
+        username="jdoe",
+        session_token="token",
+    )
+
+    def fake_get(path: str, **kwargs):
+        if path == "/xapi/users/username":
+            return _make_text_response(path, "jdoe")
+        raise AssertionError(f"unexpected path: {path}")
+
+    def fake_get_json(path: str, **kwargs):
+        if path == "/xapi/users/jdoe":
+            return {
+                "username": None,
+                "firstName": "Jane",
+                "lastName": "Doe",
+                "enabled": True,
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "get", fake_get)
+    monkeypatch.setattr(client, "get_json", fake_get_json)
+
+    result = client.whoami()
+
+    assert result.username == "jdoe"
+    assert result.firstname == "Jane"
+    assert result.enabled is True
+
+
+def test_whoami_defaults_enabled_to_false_for_a_genuinely_unusable_payload(monkeypatch):
+    """When `enabled` itself is unparseable (the one case the field
+    validators can't absorb), the fallback must pick a defensible default
+    rather than inventing `enabled=True` for an account nothing confirms is
+    active.
+    """
+    client = XNATClient(
+        base_url="https://example.org",
+        username="jdoe",
+        session_token="token",
+    )
+
+    def fake_get(path: str, **kwargs):
+        if path == "/xapi/users/username":
+            return _make_text_response(path, "jdoe")
+        raise AssertionError(f"unexpected path: {path}")
+
+    def fake_get_json(path: str, **kwargs):
+        if path == "/xapi/users/jdoe":
+            return {
+                "username": "jdoe",
+                "firstName": "Jane",
+                # Not bool-coercible -- forces ValidationError even after
+                # the name/email field validators absorb everything else.
+                "enabled": {"unexpected": "shape"},
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(client, "get", fake_get)
+    monkeypatch.setattr(client, "get_json", fake_get_json)
+
+    result = client.whoami()
+
+    assert result.username == "jdoe"
+    assert result.enabled is False
 
 
 def test_whoami_falls_back_to_username_hint_when_current_user_endpoints_unavailable(
@@ -194,14 +311,17 @@ def test_whoami_falls_back_to_username_hint_when_current_user_endpoints_unavaila
     )
 
     def fake_get(path: str, **kwargs):
-        raise RuntimeError("current-user endpoints unavailable")
+        # get()'s documented contract is that only XNATCtlError subtypes ever
+        # escape it -- a real "endpoints unavailable" failure looks like this,
+        # not a raw RuntimeError.
+        raise NetworkError("https://example.org", "connection refused")
 
     monkeypatch.setattr(client, "get", fake_get)
     monkeypatch.setattr(client, "get_json", MagicMock(side_effect=AssertionError("unused")))
 
     result = client.whoami()
 
-    assert result == {
+    assert result.model_dump() == {
         "username": "Ricky_Wong",
         "firstname": "",
         "lastname": "",

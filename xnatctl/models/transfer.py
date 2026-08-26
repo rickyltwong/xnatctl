@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 from pydantic import Field
 
+from xnatctl.core.exceptions import TransferConfigError
 from xnatctl.models.base import BaseModel
 
 
@@ -186,8 +187,6 @@ class TransferConfig(BaseModel):
         Raises:
             TransferConfigError: If the file is invalid.
         """
-        from xnatctl.core.exceptions import TransferConfigError
-
         try:
             with open(path) as f:
                 data = yaml.safe_load(f) or {}

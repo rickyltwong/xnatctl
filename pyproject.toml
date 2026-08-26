@@ -35,6 +35,7 @@ dependencies = [
     "pydicom>=2.4.0",
     "pynetdicom>=2.0.0",
     "keyring>=24",
+    "packaging>=23",
 ]
 
 [project.scripts]
@@ -47,11 +48,16 @@ dev = [
     "pytest-mock>=3.12.0",
     "pytest-timeout>=2.0",
     "pytest-xdist>=3.0",
+    # Required, not optional: the async client's tests carry a module-level
+    # asyncio marker, so without this plugin a `pip install -e '.[dev]'`
+    # checkout fails collection rather than skipping those tests.
+    "pytest-asyncio>=0.24",
     "ruff>=0.4.0",
     "mypy>=1.8.0",
     "pre-commit>=3.7.0",
     "types-PyYAML>=6.0.0",
     "types-defusedxml>=0.7",
+    "hypothesis>=6.0",
     # Generates throwaway certs for the DICOM TLS tests. Without it those
     # tests skip, which is how the DICOM tier went years without running.
     "cryptography>=42",
@@ -81,9 +87,11 @@ package = true
 [dependency-groups]
 dev = [
     "cryptography>=42",
+    "hypothesis>=6.0",
     "mypy>=1.8.0",
     "pre-commit>=3.7.0",
     "pytest>=9.0.0",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.12.0",
     "pytest-timeout>=2.0",
@@ -98,7 +106,7 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "RET", "C90", "D"]
+select = ["E", "F", "W", "I", "B", "BLE", "UP", "SIM", "RET", "C90", "D"]
 ignore = [
     "E501",
     # -- SIM ------------------------------------------------------------

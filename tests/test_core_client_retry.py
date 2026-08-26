@@ -10,7 +10,7 @@ warts they pinned have since been fixed and the assertions flipped:
 * Retry-After is honoured on 429/503 in both the delta-seconds and
   HTTP-date forms, bounded by a cap.
 
-Pagination, convenience methods and the public transport seam live in
+Convenience methods and the public transport seam live in
 ``tests/test_core_client_http.py``.
 
 All sleeps are monkeypatched away, so the suite stays wall-clock cheap.
@@ -91,9 +91,9 @@ def _status_sequence(*codes: int) -> Handler:
 def assert_jittered_backoff(sleeps: list[float], expected_attempts: int) -> None:
     """Assert full-jitter backoff: one sleep per retry, each within its window.
 
-    Jitter replaced the fixed ``2**(attempt+1)`` progression with
-    ``uniform(0, 2**(attempt+1))`` so parallel workers stop retrying in lockstep.
-    Exact values are therefore no longer assertable -- the ceiling is.
+    Backoff draws from ``uniform(0, 2**(attempt+1))`` so parallel workers
+    do not retry in lockstep. Exact values are therefore not assertable --
+    the ceiling is.
     """
     assert len(sleeps) == expected_attempts, f"expected {expected_attempts} sleeps, got {sleeps}"
     for i, slept in enumerate(sleeps):
@@ -140,7 +140,7 @@ def test_409_is_not_retried_and_raises_client_request_error(sleeps: list[float])
 
 
 def test_500_is_retried_then_typed_on_exhaustion(sleeps: list[float]) -> None:
-    """500 is in the retryable set (it used to be non-retryable)."""
+    """500 is in the retryable set."""
     client, calls = _client(_status_sequence(500, 500, 500, 500), max_retries=3)
 
     with pytest.raises(RetryExhaustedError) as exc:
@@ -200,10 +200,9 @@ def test_post_read_timeout_is_not_retried(sleeps: list[float]) -> None:
 
     client, calls = _client(handler, max_retries=2)
 
-    # Deliberately flipped from the old behaviour: a read-phase timeout on a
-    # non-idempotent POST is no
-    # longer retried, because the server has already seen the request and a
-    # retry could archive twice or launch a pipeline twice.
+    # A read-phase timeout on a non-idempotent POST is not retried: the
+    # server has already seen the request, and a retry could archive twice
+    # or launch a pipeline twice.
     with pytest.raises(XNATTimeoutError) as exc:
         client._request("POST", "/data/services/import")
 
@@ -239,7 +238,7 @@ def test_403_raises_permission_denied_immediately(sleeps: list[float]) -> None:
 #
 # httpx's transport errors are NOT all ConnectError/TimeoutException subclasses;
 # ReadError, WriteError, RemoteProtocolError and ProxyError sit beside them and
-# used to escape XNATClient raw, surfacing as "Unexpected error:" with no retry.
+# must not escape XNATClient raw, surfacing as "Unexpected error:" with no retry.
 # =============================================================================
 
 

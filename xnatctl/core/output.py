@@ -6,6 +6,8 @@ Provides consistent output in JSON, table, and quiet modes using Rich.
 from __future__ import annotations
 
 import json
+import os
+import re
 from collections.abc import Sequence
 from enum import Enum
 from typing import Any
@@ -21,8 +23,93 @@ from xnatctl.core.redact import redact_url_query
 # Console Instances
 # =============================================================================
 
-console = Console()
-err_console = Console(stderr=True)
+
+def no_color_requested() -> bool:
+    """Return True when NO_COLOR or CLICOLOR=0 asks for color to be disabled.
+
+    NO_COLOR (https://no-color.org): any non-empty value disables color, and
+    Rich's ``Console`` already honors it on its own when constructed without
+    an explicit ``no_color=``. CLICOLOR=0 is a second, equally common
+    convention Rich does not check. Exposed as a function (checked fresh, not
+    just baked into the console singletons at import time) so the CLI's
+    ``--no-color`` handling can react to it per invocation.
+    """
+    if os.environ.get("NO_COLOR", "") != "":
+        return True
+    return os.environ.get("CLICOLOR", "") == "0"
+
+
+def _make_console(*, stderr: bool = False) -> Console:
+    """Build a console with NO_COLOR/CLICOLOR=0 wired in explicitly.
+
+    Passing ``no_color=`` here (rather than leaving it to Rich's own env
+    detection) is what makes the starting state testable and gives
+    :func:`set_no_color` a value to flip later. ``_color_system`` is blanked
+    too when color is disabled from the start -- see :func:`set_no_color` for
+    why ``no_color`` alone is not enough to suppress every ANSI escape.
+    """
+    con = Console(stderr=stderr, no_color=no_color_requested())
+    if con.no_color:
+        _set_color_system(con, no_color=True)
+    return con
+
+
+def _set_color_system(con: Console, *, no_color: bool) -> None:
+    """Blank or re-detect a console's color system.
+
+    Private Rich API (``_color_system``/``_detect_color_system``), stable
+    across the pinned 13.x-15.x range; if a future Rich moves it, degrade to
+    ``no_color``-only suppression (colors gone, attribute escapes may leak)
+    rather than crashing at startup.
+    """
+    try:
+        con._color_system = None if no_color else con._detect_color_system()
+    except AttributeError:  # pragma: no cover - future-Rich fallback
+        pass
+
+
+console = _make_console()
+err_console = _make_console(stderr=True)
+
+
+def set_no_color(no_color: bool) -> None:
+    """Reconfigure the module-level consoles' ``no_color`` flag in place.
+
+    ``console``/``err_console`` are singletons imported by reference
+    throughout the CLI, so honoring ``--no-color`` (or a fresh NO_COLOR/
+    CLICOLOR=0 check at invocation time) means mutating the existing
+    instances rather than rebinding these module names to new ones.
+
+    Rich's own ``no_color`` only blanks the color component of a style --
+    bold/dim/underline (e.g. this module's table header style) still render
+    as ANSI escapes with ``no_color=True`` alone. Blanking ``_color_system``
+    too suppresses all of it, which is what NO_COLOR/CLICOLOR=0/--no-color
+    are for: a fully plain-text stream, not merely an uncolored one.
+    Re-enabling re-detects the color system from the live terminal rather
+    than caching the value from console construction.
+    """
+    for con in (console, err_console):
+        con.no_color = no_color
+        _set_color_system(con, no_color=no_color)
+
+
+# Module-level header toggle, mutated per invocation exactly like the
+# ``no_color`` state above: commands never pass it through print_output, the
+# CLI's --no-headers plumbing sets it once and every table/TSV render honors
+# it. JSON and quiet output have no header line, so the flag is meaningless
+# there and silently ignored (consistent with --columns).
+_no_headers = False
+
+
+def set_no_headers(no_headers: bool) -> None:
+    """Set whether table/TSV output suppresses its header line/row.
+
+    Called once per CLI invocation by the ``--no-headers`` plumbing (root
+    group and ``@global_options``), unconditionally, so repeated in-process
+    invocations never inherit a previous run's value.
+    """
+    global _no_headers
+    _no_headers = no_headers
 
 
 # =============================================================================
@@ -35,6 +122,7 @@ class OutputFormat(Enum):
 
     JSON = "json"
     TABLE = "table"
+    TSV = "tsv"
 
     @classmethod
     def from_string(cls, value: str) -> OutputFormat:
@@ -68,7 +156,7 @@ def print_table(
         err_console.print("[dim]No results[/dim]")
         return
 
-    table = Table(title=title, show_header=True, header_style="bold")
+    table = Table(title=title, show_header=not _no_headers, header_style="bold")
 
     # Add columns with optional custom labels
     labels = column_labels or {}
@@ -125,6 +213,99 @@ def print_key_value(
 
 
 # =============================================================================
+# TSV Output
+# =============================================================================
+
+
+# Every C0 control character (0x00-0x1f) plus DEL (0x7f), EXCEPT tab/LF/CR --
+# those three are handled first, by collapsing to a space rather than being
+# dropped outright, so a value that happened to contain a newline still reads
+# as prose. Everything else in this range (ESC included, for stray ANSI/CSI
+# sequences) is stripped entirely: a script piping ``-o tsv`` into a terminal
+# or a log file must never receive a raw control byte.
+_TSV_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _tsv_cell(value: Any) -> str:
+    """Render one value as a single, control-byte-free TSV field.
+
+    Scalars use the same tokens ``-o json`` would (``true``/``false`` for
+    booleans, empty for ``None``, compact JSON for nested lists/dicts), so a
+    script moving between the two formats greps for the same strings --
+    deliberately NOT the table's ``Yes``/``No`` presentation. Embedded tabs,
+    newlines, and carriage returns each collapse to a single space so one
+    record is always exactly one line with exactly one tab per field boundary.
+    Every other C0 control character and DEL (e.g. a stray ``\\x1b[31m`` ANSI
+    escape in upstream data) is stripped outright, not collapsed to a space --
+    see :data:`_TSV_CONTROL_RE`.
+    """
+    if value is None:
+        text = ""
+    elif isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (list, dict)):
+        text = json.dumps(value, default=str)
+    else:
+        text = str(value)
+    text = text.replace("\r\n", " ").replace("\t", " ").replace("\n", " ").replace("\r", " ")
+    return _TSV_CONTROL_RE.sub("", text)
+
+
+def print_tsv(rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> None:
+    """Print rows as tab-separated lines via plain ``print()``.
+
+    Never routed through Rich: no color, no ANSI escapes, no width-dependent
+    layout, even on a forced terminal -- the whole point of the format is
+    byte-stable ``awk``/``cut`` input. The header line holds the raw column
+    KEYS (not the table's display labels), because those are the names
+    ``--columns`` accepts and ``-o json`` emits. :func:`set_no_headers`
+    suppresses the header. Zero rows print the header alone (or nothing under
+    ``--no-headers``) with no stderr notice: an absent data line IS the
+    emptiness signal in this format.
+
+    Args:
+        rows: Row dicts to print.
+        columns: Column keys, in output order.
+    """
+    if not columns:
+        return
+    if not _no_headers:
+        print("\t".join(_tsv_cell(col) for col in columns))
+    for row in rows:
+        print("\t".join(_tsv_cell(row.get(col)) for col in columns))
+
+
+def _print_tsv_output(data: Any, columns: Sequence[str] | None) -> None:
+    """Dispatch arbitrary command data to :func:`print_tsv`.
+
+    Shape decisions (all deliberate; see also :func:`print_output`):
+
+    - A list without ``columns`` derives them from the union of row keys in
+      first-seen order. The table branch falls back to JSON here, but TSV
+      exists precisely to be line/field-parseable, so it must always emit
+      TSV rather than silently switching formats.
+    - A single dict prints one header plus one data row -- NOT key/value
+      lines -- so the shape ("line 1 = field names, one record per line")
+      is identical whether a command returns one record or many, and
+      ``cut -f2`` means the same thing either way.
+    - A list containing non-dict items, or bare scalar data, prints one
+      sanitized value per line with no header (there are no field names to
+      put in one).
+    """
+    if isinstance(data, list):
+        if all(isinstance(item, dict) for item in data):
+            cols = list(columns) if columns else list(dict.fromkeys(k for row in data for k in row))
+            print_tsv(data, cols)
+        else:
+            for item in data:
+                print(_tsv_cell(item))
+    elif isinstance(data, dict):
+        print_tsv([data], list(columns) if columns else list(data.keys()))
+    else:
+        print(_tsv_cell(data))
+
+
+# =============================================================================
 # JSON Output
 # =============================================================================
 
@@ -156,10 +337,17 @@ def print_output(
 ) -> None:
     """Print data in the specified format.
 
+    ``quiet`` wins over every format, TSV included -- the quiet check runs
+    before the format dispatch, exactly as it always has for JSON/table.
+    ``column_labels`` and ``title`` are table presentation only; TSV ignores
+    both (its header is the raw column keys -- see :func:`print_tsv`), and
+    the header row itself is suppressed via :func:`set_no_headers` for both
+    table and TSV. See :func:`_print_tsv_output` for the TSV shape decisions.
+
     Args:
         data: Data to print (dict, list, or scalar).
         format: Output format.
-        columns: Columns for table format.
+        columns: Columns for table/TSV format.
         column_labels: Labels for columns.
         title: Optional title.
         quiet: If True, only print IDs.
@@ -192,6 +380,10 @@ def print_output(
 
     if format == OutputFormat.JSON:
         print_json(data)
+        return
+
+    if format == OutputFormat.TSV:
+        _print_tsv_output(data, columns)
         return
 
     # Table format
@@ -275,8 +467,8 @@ def create_progress() -> Progress:
         TaskProgressColumn(),
         # Stderr, so `xnatctl session download ... > log` still shows a live
         # bar: Rich disables live display when its console is a non-tty, and
-        # with stdout redirected that used to kill the bar even though stderr
-        # was an interactive terminal.
+        # a stdout console loses the bar under redirection even though
+        # stderr is an interactive terminal.
         console=err_console,
     )
 

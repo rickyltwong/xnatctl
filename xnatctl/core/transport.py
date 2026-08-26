@@ -58,7 +58,7 @@ def _body_snippet(resp: httpx.Response) -> str:
     """Return a short, redacted snippet of a response body for error details."""
     try:
         return redact_url_query(resp.text[:_BODY_SNIPPET_CHARS])
-    except Exception:
+    except Exception:  # noqa: BLE001  # best-effort response-body read for an error-message snippet
         return ""
 
 
@@ -71,7 +71,7 @@ def _read_stream_body(resp: httpx.Response) -> None:
     """
     try:
         resp.read()
-    except Exception:
+    except Exception:  # noqa: BLE001  # a truncated error body must not eclipse the status it describes
         pass
 
 
@@ -247,6 +247,12 @@ def stream(
                 code,
                 attempt + 1,
                 client.max_retries + 1,
+                extra={
+                    "event": "http_request",
+                    "method": method_upper,
+                    "status": code,
+                    "attempt": attempt + 1,
+                },
             )
 
             can_reauth = (
@@ -360,6 +366,7 @@ def request(  # noqa: C901  # pre-existing; see pyproject
     headers: dict[str, str] | None = None,
     timeout: int | None = None,
     retry_non_idempotent: bool = False,
+    max_retries: int | None = None,
 ) -> httpx.Response:
     """Implementation behind :meth:`XNATClient._request`; see there for the public contract.
 
@@ -379,6 +386,13 @@ def request(  # noqa: C901  # pre-existing; see pyproject
             :data:`IDEMPOTENT_METHODS`. Opt in per call site, only where the
             operation is provably safe to repeat -- a retried POST can mean a
             double archive or a double pipeline launch.
+        max_retries: Per-call retry budget, overriding the client's. Pass 0 to
+            make a call single-shot. The ``timeout`` argument alone does not
+            bound how long a call can take: the ladder honours ``Retry-After``
+            up to 300s per attempt, so a short-timeout request against a
+            429/503-ing endpoint can still take many minutes. A call that
+            must be bounded in wall-clock -- a background probe whose whole
+            point is not to delay the real work -- needs both.
 
     Returns:
         HTTP response (2xx only; error statuses raise typed exceptions).
@@ -392,9 +406,10 @@ def request(  # noqa: C901  # pre-existing; see pyproject
         RequestTimeoutError: On a connect-phase timeout (fails fast, not retried),
             or on a read-phase timeout for a non-idempotent method.
         RetryExhaustedError: When retryable statuses or connect/read-timeout
-            failures exhaust ``max_retries``.
+            failures exhaust the retry budget.
     """
     http_client = client._get_client()
+    retry_budget = client.max_retries if max_retries is None else max_retries
 
     # Read/write ceiling for this call (int, also used in error messages).
     # Wrapped in a structured httpx.Timeout so a per-request override cannot
@@ -406,7 +421,7 @@ def request(  # noqa: C901  # pre-existing; see pyproject
     may_retry_after_send = method.upper() in IDEMPOTENT_METHODS or retry_non_idempotent
 
     attempt = 0
-    while attempt <= client.max_retries:
+    while attempt <= retry_budget:
         # Set the session cookie on the client instance rather than passing
         # ``cookies=`` per request (httpx 0.28 deprecates per-request
         # cookies). Refreshed each iteration so a mid-loop reauth is picked
@@ -435,14 +450,25 @@ def request(  # noqa: C901  # pre-existing; see pyproject
             # is what tells a user whether a slow command is stuck on one
             # request or grinding through retries. The full URL
             # goes through redaction -- query strings carry tokens.
+            # Rounded once, then reused for both the message and the typed
+            # field -- %d on the raw float would TRUNCATE (1.6ms -> "1ms")
+            # while the field rounded (-> 2), so the two disagreed.
+            duration_ms = round((time.monotonic() - started) * 1000)
             logger.debug(
                 "%s %s -> %d in %dms (attempt %d/%d)",
                 method.upper(),
                 redact_url_query(str(resp.request.url)),
                 resp.status_code,
-                (time.monotonic() - started) * 1000,
+                duration_ms,
                 attempt + 1,
-                client.max_retries + 1,
+                retry_budget + 1,
+                extra={
+                    "event": "http_request",
+                    "method": method.upper(),
+                    "status": resp.status_code,
+                    "attempt": attempt + 1,
+                    "duration_ms": duration_ms,
+                },
             )
 
             # Handle auth errors
@@ -490,14 +516,14 @@ def request(  # noqa: C901  # pre-existing; see pyproject
                     )
                     raise ambiguous
 
-                if attempt < client.max_retries:
+                if attempt < retry_budget:
                     # An explicit Retry-After is an instruction, so it is used
                     # verbatim; only our own backoff gets jitter.
                     retry_after = _retry_after_seconds(resp)
                     delay = retry_after if retry_after is not None else _backoff_delay(attempt)
                     # WARNING, not DEBUG: a retry storm is the single most
-                    # common cause of "xnatctl is hanging", and it used to
-                    # be completely invisible.
+                    # common cause of "xnatctl is hanging", and the user
+                    # needs to see it happening.
                     logger.warning(
                         "HTTP %d on %s %s; retrying in %.1fs%s (attempt %d/%d)",
                         resp.status_code,
@@ -506,12 +532,12 @@ def request(  # noqa: C901  # pre-existing; see pyproject
                         delay,
                         " per Retry-After" if retry_after is not None else "",
                         attempt + 1,
-                        client.max_retries + 1,
+                        retry_budget + 1,
                     )
                     time.sleep(delay)
                     attempt += 1
                     continue
-                raise RetryExhaustedError("request", client.max_retries + 1, last_error)
+                raise RetryExhaustedError("request", retry_budget + 1, last_error)
 
             # Non-retryable error status: surface a typed error, never a raw
             # httpx.HTTPStatusError (401/403/404 are already handled above).
@@ -564,7 +590,7 @@ def request(  # noqa: C901  # pre-existing; see pyproject
             raise
 
         # Retry with full-jitter backoff.
-        if attempt < client.max_retries:
+        if attempt < retry_budget:
             delay = _backoff_delay(attempt)
             logger.warning(
                 "%s on %s %s; retrying in %.1fs (attempt %d/%d)",
@@ -573,10 +599,10 @@ def request(  # noqa: C901  # pre-existing; see pyproject
                 path,
                 delay,
                 attempt + 1,
-                client.max_retries + 1,
+                retry_budget + 1,
             )
             time.sleep(delay)
 
         attempt += 1
 
-    raise RetryExhaustedError("request", client.max_retries + 1, last_error)
+    raise RetryExhaustedError("request", retry_budget + 1, last_error)

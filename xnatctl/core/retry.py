@@ -349,7 +349,7 @@ def retry_call(
     for attempt in range(max_attempts):
         try:
             return fn()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # generic retry infra parameterized by caller's retryable(); non-retryable exceptions re-raise immediately
             if not retryable(e):
                 raise
             last_exc = e
@@ -388,7 +388,7 @@ def _safe_body(resp: httpx.Response) -> str:
     """
     try:
         return resp.text
-    except Exception:
+    except Exception:  # noqa: BLE001  # best-effort response-body read; undecodable body must not mask the HTTP failure
         return ""
 
 
@@ -459,7 +459,7 @@ def upload_with_retry(  # noqa: C901  # pre-existing; see pyproject
                                     label,
                                     snippet[:200],
                                 )
-                        except Exception:
+                        except Exception:  # noqa: BLE001  # best-effort debug-only snippet logging; must not affect the retry ladder
                             pass
                 logger.warning(
                     "%s: HTTP %d on attempt %d/%d, retrying in %ds",

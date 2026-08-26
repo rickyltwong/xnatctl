@@ -16,7 +16,7 @@ models, and the full exception hierarchy as the supported public surface.
 
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 try:
     __version__ = version("xnatctl")
@@ -25,9 +25,6 @@ except PackageNotFoundError:  # source checkout without an installed distributio
 
 __author__ = "Ricky Wong"
 
-from xnatctl.core.client import XNATClient
-from xnatctl.core.config import Config, Profile
-from xnatctl.core.connect import build_client_from_profile
 from xnatctl.core.exceptions import (
     AuthenticationError,
     BatchOperationError,
@@ -64,18 +61,25 @@ from xnatctl.core.exceptions import (
     TransferConflictError,
     TransferError,
     TransferVerificationError,
+    UnsupportedServerVersionError,
+    UpgradeError,
     UploadError,
     ValidationError,
     XNATConnectionError,
     XNATCtlError,
 )
 
-# Service classes and resource/progress models are exported lazily (PEP 562):
-# importing them eagerly nearly doubled cold `import xnatctl` -- a cost every
-# CLI invocation pays -- for names most programs never touch. `from xnatctl
-# import ProjectService` still works; it just imports the submodule on first
-# use.
+# The client, config, service classes, and resource/progress models are
+# exported lazily (PEP 562): importing them eagerly nearly doubled cold
+# `import xnatctl` -- a cost every CLI invocation pays -- and pulls in
+# httpx/Rich/Click (via XNATClient) for names most programs never touch.
+# `from xnatctl import ProjectService` still works; it just imports the
+# submodule on first use.
 if TYPE_CHECKING:
+    from xnatctl.core.client import XNATClient
+    from xnatctl.core.config import Config, Profile
+    from xnatctl.core.connect import build_client_from_profile
+    from xnatctl.models.info import ServerInfo, UserInfo
     from xnatctl.models.progress import (
         DownloadProgress,
         DownloadSummary,
@@ -108,6 +112,10 @@ if TYPE_CHECKING:
     from xnatctl.services.upload import UploadService
 
 _LAZY_EXPORTS = {
+    "XNATClient": "xnatctl.core.client",
+    "Config": "xnatctl.core.config",
+    "Profile": "xnatctl.core.config",
+    "build_client_from_profile": "xnatctl.core.connect",
     "DownloadProgress": "xnatctl.models.progress",
     "DownloadSummary": "xnatctl.models.progress",
     "OperationPhase": "xnatctl.models.progress",
@@ -120,6 +128,8 @@ _LAZY_EXPORTS = {
     "UploadSummary": "xnatctl.models.progress",
     "VerificationReport": "xnatctl.models.progress",
     "Project": "xnatctl.models.project",
+    "ServerInfo": "xnatctl.models.info",
+    "UserInfo": "xnatctl.models.info",
     "Resource": "xnatctl.models.resource",
     "ResourceFile": "xnatctl.models.resource",
     "Scan": "xnatctl.models.scan",
@@ -140,7 +150,7 @@ _LAZY_EXPORTS = {
 }
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str) -> object:
     """Resolve the lazily-exported service and model names (PEP 562)."""
     module_path = _LAZY_EXPORTS.get(name)
     if module_path is None:
@@ -203,6 +213,7 @@ __all__ = [
     "Scan",
     "ScanService",
     "ServerError",
+    "ServerInfo",
     "ServerUnreachableError",
     "Session",
     "SessionExpiredError",
@@ -218,10 +229,13 @@ __all__ = [
     "TransferSummary",
     "TransferVerification",
     "TransferVerificationError",
+    "UnsupportedServerVersionError",
+    "UpgradeError",
     "UploadError",
     "UploadProgress",
     "UploadService",
     "UploadSummary",
+    "UserInfo",
     "ValidationError",
     "VerificationReport",
     "XNATClient",

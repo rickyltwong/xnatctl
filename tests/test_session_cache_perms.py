@@ -1,12 +1,12 @@
 """Permission and atomicity tests for the on-disk secrets.
 
 The session cache holds a live JSESSIONID and config.yaml can hold a plaintext
-profile password. Both used to be created with ``open(path, "w")``, which
-applies the process umask -- 0664 on this host -- with a follow-up ``chmod``
-that was wrapped in ``except OSError: pass``. These tests pin the three
-properties that replaced it: the file is 0600 whatever the umask, a rewrite
-tightens a file that is already too permissive, and a failing chmod is reported
-rather than swallowed.
+profile password. A plain ``open(path, "w")`` applies the process umask --
+0664 on this host -- and a follow-up ``chmod`` wrapped in ``except OSError:
+pass`` can fail silently. These tests pin the three properties that matter
+instead: the file is 0600 whatever the umask, a rewrite tightens a file that
+is already too permissive, and a failing chmod is reported rather than
+swallowed.
 """
 
 from __future__ import annotations
@@ -182,6 +182,29 @@ def test_failing_chmod_warns_instead_of_passing_silently(
         AuthManager(cache_file=cache).save_session("TOK", "https://x", "u")
 
     assert any("Could not restrict permissions" in r.message for r in caplog.records)
+
+
+def test_failing_unlink_warns_instead_of_passing_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """clear_session() had its own ``except OSError: pass`` -- separate from
+    the chmod one above, and on the deletion path rather than the write path.
+    A failed clear must be reported, not silently reported as if it worked.
+    """
+    cache = tmp_path / ".session"
+    manager = AuthManager(cache_file=cache)
+    manager.save_session("TOK", "https://x", "u")
+
+    def failing_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    with caplog.at_level(logging.WARNING, logger="xnatctl.core.auth"):
+        result = manager.clear_session()
+
+    assert result is False
+    assert any("Could not clear cached session" in r.message for r in caplog.records)
 
 
 # =============================================================================

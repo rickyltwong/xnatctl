@@ -19,6 +19,7 @@ from .hierarchy import (
     ScanRef,
     SubjectRef,
 )
+from .info import ServerInfo, UserInfo
 from .progress import (
     DownloadProgress,
     DownloadSummary,
@@ -57,6 +58,9 @@ __all__ = [
     "Scan",
     "Resource",
     "ResourceFile",
+    # Client introspection
+    "ServerInfo",
+    "UserInfo",
     # Progress
     "OperationPhase",
     "Progress",

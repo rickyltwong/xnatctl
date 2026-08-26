@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import stat
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +39,40 @@ class TestStateStoreInit:
         finally:
             s1.close()
             s2.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX permission bits don't mean anything on Windows (see SECURITY.md)",
+)
+class TestStateStorePermissions:
+    """The transfer database can hold subject/session labels and server URLs.
+
+    Same secrets-adjacent treatment as the session cache and audit log:
+    created 0600, not left at whatever the process umask would otherwise
+    apply.
+    """
+
+    def test_db_file_is_private(self, store: TransferStateStore) -> None:
+        mode = stat.S_IMODE(store.db_path.stat().st_mode)
+        assert mode == 0o600
+
+    def test_wal_and_shm_siblings_are_private(self, store: TransferStateStore) -> None:
+        for suffix in ("-wal", "-shm"):
+            sibling = store.db_path.with_name(store.db_path.name + suffix)
+            assert sibling.exists(), f"expected WAL mode to have created {sibling}"
+            assert stat.S_IMODE(sibling.stat().st_mode) == 0o600
+
+    def test_a_pre_existing_loose_db_is_tightened(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "transfer.db"
+        db_path.write_bytes(b"")
+        db_path.chmod(0o644)
+
+        store = TransferStateStore(db_path)
+        try:
+            assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+        finally:
+            store.close()
 
 
 class TestSyncHistory:

@@ -19,7 +19,7 @@ def test_build_httpx_timeout_short_connect_long_read() -> None:
     assert t.connect == DEFAULT_CONNECT_TIMEOUT_SECONDS
     assert t.read == DEFAULT_HTTP_TIMEOUT_SECONDS
     assert t.write == DEFAULT_HTTP_TIMEOUT_SECONDS
-    assert t.connect != t.read  # the whole point: they are no longer identical
+    assert t.connect != t.read  # the whole point: connect is decoupled from read
 
 
 def test_build_httpx_timeout_none_falls_back_to_default_read() -> None:
