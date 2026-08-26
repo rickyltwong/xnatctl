@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from xnatctl.models.transfer import (
-    AssessorFilter,
+    FilterConfig,
     FilterSyncType,
     ImagingSessionFilter,
     ResourceFilter,
@@ -114,18 +114,48 @@ class TestImagingSessionFilter:
         assert f.get_type_filter("xnat:mrSessionData") is None
 
 
-class TestAssessorFilter:
-    def test_defaults_to_all(self) -> None:
-        f = AssessorFilter()
-        assert f.sync_type == FilterSyncType.ALL
+class TestOutOfScopeFilterSectionsAreRejected:
+    """Filter keys for data the transfer never moves must fail loudly.
 
-    def test_should_include_type_include(self) -> None:
-        f = AssessorFilter(
-            sync_type=FilterSyncType.INCLUDE,
-            xsi_types=[XsiTypeFilter(xsi_type="fs:fsData")],
+    The base model's ``extra="ignore"`` would otherwise accept them in
+    silence, leaving a config that claims control over data that is not
+    transferred.
+    """
+
+    @pytest.mark.parametrize(
+        "section", ["project_resources", "subject_resources", "subject_assessors"]
+    )
+    def test_filterconfig_rejects_the_section(self, section: str) -> None:
+        with pytest.raises(ValueError, match=f"unsupported filtering section.*{section}"):
+            FilterConfig.model_validate({section: {"sync_type": "all"}})
+
+    def test_xsitypefilter_rejects_session_assessors(self) -> None:
+        with pytest.raises(ValueError, match="unsupported filtering section.*session_assessors"):
+            XsiTypeFilter.model_validate(
+                {"xsi_type": "xnat:mrSessionData", "session_assessors": {"sync_type": "all"}}
+            )
+
+    def test_from_yaml_names_the_offending_section(self, tmp_path: object) -> None:
+        from xnatctl.core.exceptions import TransferConfigError
+
+        path = tmp_path / "transfer.yaml"  # type: ignore[operator]
+        path.write_text(
+            yaml.dump(
+                {
+                    "source_project": "SRC",
+                    "dest_project": "DST",
+                    "filtering": {"subject_assessors": {"sync_type": "all"}},
+                }
+            )
         )
-        assert f.should_include_type("fs:fsData") is True
-        assert f.should_include_type("proc:genProcData") is False
+
+        with pytest.raises(TransferConfigError, match="subject_assessors"):
+            TransferConfig.from_yaml(path)
+
+    def test_an_unknown_key_is_still_ignored(self) -> None:
+        """Only the named out-of-scope keys are rejected; extra=ignore stands."""
+        config = FilterConfig.model_validate({"unrelated_future_key": 1})
+        assert config.imaging_sessions.sync_type == FilterSyncType.ALL
 
 
 class TestTransferConfig:
@@ -135,7 +165,6 @@ class TestTransferConfig:
             "dest_project": "DST",
             "max_failures": 3,
             "filtering": {
-                "project_resources": {"sync_type": "none"},
                 "imaging_sessions": {
                     "sync_type": "include",
                     "xsi_types": [
@@ -162,7 +191,6 @@ class TestTransferConfig:
         assert config.source_project == "SRC"
         assert config.dest_project == "DST"
         assert config.max_failures == 3
-        assert config.filtering.project_resources.sync_type == FilterSyncType.NONE
 
         sessions = config.filtering.imaging_sessions
         assert sessions.sync_type == FilterSyncType.INCLUDE
@@ -172,7 +200,7 @@ class TestTransferConfig:
     def test_default_config(self) -> None:
         config = TransferConfig(source_project="SRC", dest_project="DST")
         assert config.max_failures == 5
-        assert config.filtering.project_resources.sync_type == FilterSyncType.ALL
+        assert config.filtering.imaging_sessions.sync_type == FilterSyncType.ALL
 
     def test_scaffold_yaml(self) -> None:
         text = TransferConfig.scaffold("SRC", "DST")

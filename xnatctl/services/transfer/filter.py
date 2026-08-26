@@ -97,36 +97,3 @@ class FilterEngine:
             return False
 
         return type_filter.resources.should_include(resource_label)
-
-    def should_include_project_resource(self, resource_label: str) -> bool:
-        """Check if a project-level resource should be transferred.
-
-        Args:
-            resource_label: Resource label.
-
-        Returns:
-            True if the resource passes the filter.
-        """
-        return self.config.project_resources.should_include(resource_label)
-
-    def should_include_subject_resource(self, resource_label: str) -> bool:
-        """Check if a subject-level resource should be transferred.
-
-        Args:
-            resource_label: Resource label.
-
-        Returns:
-            True if the resource passes the filter.
-        """
-        return self.config.subject_resources.should_include(resource_label)
-
-    def should_include_assessor(self, xsi_type: str) -> bool:
-        """Check if a subject assessor should be transferred.
-
-        Args:
-            xsi_type: Assessor XSI type.
-
-        Returns:
-            True if the assessor passes the filter.
-        """
-        return self.config.subject_assessors.should_include_type(xsi_type)

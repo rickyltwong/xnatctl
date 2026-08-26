@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 **Breaking**
 
+- `project transfer` config: the `filtering` sections `project_resources`,
+  `subject_resources`, `subject_assessors`, and the per-xsi-type
+  `session_assessors` key are removed and now rejected with an error naming
+  the offending section. They never did anything: the transfer pipeline
+  moves experiments, scans, scan resources, and session resources only, and
+  those sections were accepted in silence while the corresponding data was
+  never transferred. If your config sets them, delete the sections -- the
+  transferred data is unchanged. `project transfer-init` no longer emits
+  them.
 - The ten flags deprecated in 0.3.0 and scheduled for removal in 0.5.0 are
   removed, as their warnings promised: `--unzip`/`--no-unzip` (use
   `--extract`/`--no-extract`), `--cleanup` (no replacement; cleanup is
