@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -56,7 +57,7 @@ class TestApiGetJsonFallback:
         """Plain text body under -o json -> stderr warning, stdout body, exit 0."""
         client = _mock_client()
         mock_resp = MagicMock()
-        mock_resp.json.side_effect = ValueError("Not JSON")
+        mock_resp.json.side_effect = json.JSONDecodeError("Not JSON", "plain text response", 0)
         mock_resp.text = "raw plain-text body"
         mock_resp.headers = {"content-type": "text/plain"}
         client.get.return_value = mock_resp
@@ -75,7 +76,7 @@ class TestApiGetJsonFallback:
         """Binary body under -o json -> raw bytes on stdout, no decode corruption."""
         client = _mock_client()
         mock_resp = MagicMock()
-        mock_resp.json.side_effect = ValueError("Not JSON")
+        mock_resp.json.side_effect = json.JSONDecodeError("Not JSON", "plain text response", 0)
         # 0x80-0xFF are invalid UTF-8 and would be lost in a text round-trip.
         binary_data = bytes(range(256))
         mock_resp.content = binary_data
@@ -107,7 +108,7 @@ class TestApiGetJsonFallback:
         """The fallback policy only fires under -o json; table format keeps prior behavior."""
         client = _mock_client()
         mock_resp = MagicMock()
-        mock_resp.json.side_effect = ValueError("Not JSON")
+        mock_resp.json.side_effect = json.JSONDecodeError("Not JSON", "plain text response", 0)
         mock_resp.text = "text body for table mode"
         mock_resp.headers = {"content-type": "text/plain"}
         client.get.return_value = mock_resp

@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Any
 
 import click
+import yaml
 
 from xnatctl.cli.common import Context, confirm_destructive, global_options, handle_errors
 from xnatctl.core.config import (
     CONFIG_FILE,
+    CURRENT_CONFIG_VERSION,
     KEYRING_SERVICE,
     PASSWORD_SOURCE_KEYRING,
     Config,
     keyring_key,
     load_keyring,
 )
-from xnatctl.core.exceptions import XNATCtlError
+from xnatctl.core.exceptions import ConfigurationError, InvalidURLError, XNATCtlError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -24,6 +27,7 @@ from xnatctl.core.output import (
     print_key_value,
     print_output,
     print_success,
+    print_warning,
 )
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.core.validation import validate_server_url
@@ -35,11 +39,56 @@ def config() -> None:
     pass
 
 
+def _warn_if_forcing_over_newer_version(path: Path) -> None:
+    """Best-effort notice before ``--force`` overwrites an existing config.
+
+    ``--force`` is the one mutating path that deliberately does NOT go
+    through :meth:`Config.ensure_saveable` -- it exists specifically to
+    recover from a config.yaml this build cannot even parse (see the
+    corrupt-file case ``config init --force`` is meant to fix), so it must
+    never itself refuse to run. This reads the raw file directly, without
+    ``Config.load()``, and only ever warns: a file that can't be read or
+    parsed here gets no warning, silently, exactly like any other file
+    ``--force`` is allowed to steamroll.
+    """
+    try:
+        with open(path) as f:
+            raw = yaml.safe_load(f) or {}
+        version = raw.get("version") if isinstance(raw, dict) else None
+    except (OSError, yaml.YAMLError):
+        return
+    # Accept a quoted integer the same way normal loading normalizes it
+    # ("2" means version 2); anything unreadable stays silent.
+    if isinstance(version, str):
+        try:
+            version = int(version)
+        except ValueError:
+            return
+    if (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version > CURRENT_CONFIG_VERSION
+    ):
+        print_warning(
+            f"{path} declares config version {version}, newer than this xnatctl "
+            f"understands ({CURRENT_CONFIG_VERSION}). --force will overwrite it anyway."
+        )
+
+
 @config.command("init")
 @click.option("--url", prompt="XNAT server URL", help="XNAT server URL")
 @click.option("--profile", default="default", help="Profile name")
 @click.option("--project", default=None, help="Default project ID")
-@click.option("--force", is_flag=True, help="Overwrite existing config")
+@click.option(
+    "--force",
+    is_flag=True,
+    help=(
+        "Overwrite the existing config -- even one this build cannot parse, or "
+        "declares a newer schema version than it understands (every other "
+        "mutating config command refuses in that case; --force is the explicit "
+        "override)"
+    ),
+)
 @click.option(
     "--login/--no-login",
     "login",
@@ -67,7 +116,7 @@ def config_init(
     # Validate URL
     try:
         url = validate_server_url(url)
-    except Exception as e:
+    except InvalidURLError as e:
         print_error(str(e))
         raise SystemExit(1) from e
 
@@ -78,6 +127,15 @@ def config_init(
             print_error(f"Profile '{profile}' already exists. Use --force to overwrite.")
             raise SystemExit(1)
     else:
+        # --force is the one mutating command that deliberately does NOT
+        # load-then-check like every other one (see Config.ensure_saveable):
+        # it exists to recover from a config.yaml this build cannot even
+        # parse, so it must not itself refuse on a version it CAN parse
+        # either -- that would make --force useless for exactly the file it
+        # is most needed for. Best-effort warn instead, so overwriting a
+        # config from a newer xnatctl is a choice made with eyes open.
+        if force and CONFIG_FILE.exists():
+            _warn_if_forcing_over_newer_version(CONFIG_FILE)
         cfg = Config()
 
     # Add profile
@@ -112,6 +170,9 @@ def config_init(
         click.echo("Run 'xnatctl auth login' when you are ready.", err=True)
         return
 
+    # Deferred: tests patch xnatctl.cli.auth.do_login/report_login to
+    # intercept the lookup; a module-scope import would bind the real
+    # functions before the patch runs (see tests/test_cli_config_cmd.py).
     from xnatctl.cli.auth import do_login, report_login
 
     ctx = Context()
@@ -142,11 +203,12 @@ def config_show(ctx: Context) -> None:
     fields in JSON mode) to that single profile. Unknown names exit non-zero
     and list the available profiles.
     """
-    try:
-        cfg = Config.load()
-    except Exception as e:
-        print_error(f"Failed to load config: {e}")
-        raise SystemExit(1) from e
+    # @global_options already loaded this into ctx.config -- a second
+    # Config.load() here would re-read the file and double any warning it
+    # logs (unknown keys, a too-new version) for no other effect, since the
+    # result is identical either way.
+    cfg = ctx.config
+    assert cfg is not None
 
     if not cfg.profiles:
         print_error("No configuration found. Run 'xnatctl config init' first.")
@@ -171,6 +233,30 @@ def config_show(ctx: Context) -> None:
         # Include full profile details in JSON
         data["profile_details"] = {name: cfg.profiles[name].to_dict() for name in profile_names}
         print_output(data, format=OutputFormat.JSON)
+    elif ctx.output_format == OutputFormat.TSV:
+        # A flat table of profiles is the TSV-native shape for this data --
+        # one row per profile, one field per column -- rather than the N
+        # separate Rich key-value blocks the table branch below prints.
+        # Routed through print_output like every other TSV render in the CLI.
+        print_output(data, format=OutputFormat.TSV)
+        profile_rows = [
+            {
+                "profile": name,
+                "default": name == cfg.default_profile,
+                "url": cfg.profiles[name].url,
+                "verify_ssl": cfg.profiles[name].verify_ssl,
+                "timeout": f"{cfg.profiles[name].timeout}s",
+                "default_project": cfg.profiles[name].default_project or "-",
+            }
+            for name in profile_names
+        ]
+        if profile_rows:
+            print()
+            print_output(
+                profile_rows,
+                format=OutputFormat.TSV,
+                columns=["profile", "default", "url", "verify_ssl", "timeout", "default_project"],
+            )
     else:
         print_key_value(data, title="Configuration")
 
@@ -202,7 +288,7 @@ def config_use_context(profile: str) -> None:
     """
     try:
         cfg = Config.load()
-    except Exception as e:
+    except ConfigurationError as e:
         print_error(f"Failed to load config: {e}")
         raise SystemExit(1) from e
 
@@ -222,7 +308,7 @@ def config_current_context() -> None:
     """Show the current active profile."""
     try:
         cfg = Config.load()
-    except Exception as e:
+    except ConfigurationError as e:
         print_error(f"Failed to load config: {e}")
         raise SystemExit(1) from e
 
@@ -269,7 +355,7 @@ def config_add_profile(
     """
     try:
         url = validate_server_url(url)
-    except Exception as e:
+    except InvalidURLError as e:
         print_error(str(e))
         raise SystemExit(1) from e
 
@@ -340,17 +426,29 @@ def config_set_password(name: str) -> None:
     """
     cfg = Config.load()
 
+    # Before any external side effect: writing to the OS keychain below
+    # cannot be undone by a failed save. If this config can't be saved back
+    # (e.g. it was loaded from a newer-than-understood version), refuse now
+    # -- not after the keychain already has a password config.yaml never
+    # ends up recording.
+    cfg.ensure_saveable()
+
     if not cfg.has_profile(name):
         print_error(f"Profile '{name}' not found.")
         raise SystemExit(1)
 
     keyring = load_keyring()
+    # Deferred for the same reason as load_keyring() itself (see its
+    # docstring): importing the keyring backend eagerly would cost every
+    # xnatctl invocation a backend probe almost no command needs.
+    from keyring import errors as keyring_errors
+
     profile = cfg.get_profile(name)
     password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
 
     try:
         keyring.set_password(KEYRING_SERVICE, keyring_key(name, profile.url), password)
-    except Exception as e:
+    except keyring_errors.KeyringError as e:
         print_error(f"Could not write to the OS keychain: {e}")
         raise SystemExit(1) from e
 

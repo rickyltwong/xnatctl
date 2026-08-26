@@ -33,14 +33,19 @@ def runner() -> CliRunner:
 
 
 def test_no_rendered_help_line_carries_two_invocations(runner) -> None:
-    """No rendered --help line may contain two `xnatctl ` command invocations."""
+    """No rendered --help line may contain two `xnatctl ` command invocations.
+
+    Exception: a line joining two invocations with a shell pipe (``|``) is a
+    deliberate one-line pipeline example (e.g. piping `-q` IDs into a
+    `--batch -` consumer), not a collapsed-paragraph rewrap bug.
+    """
     offenders: list[str] = []
     for path, _command in _all_commands():
         result = runner.invoke(cli, [*path[1:], "--help"])
         if result.exit_code != 0:
             continue
         for line in result.output.splitlines():
-            if line.count("xnatctl ") > 1:
+            if line.count("xnatctl ") > 1 and " | " not in line:
                 offenders.append(f"{' '.join(path)} :: {line.strip()}")
 
     assert not offenders, "Example blocks missing a \\b no-rewrap marker:\n" + "\n".join(offenders)

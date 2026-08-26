@@ -58,13 +58,25 @@ def _deprecated_options() -> list[tuple[CommandPath, click.Parameter, str]]:
 
 
 def _alias_callback_flags() -> set[str]:
-    """Flags wired to a deprecation callback, whatever their help text says.
+    """Registered flags whose exact canonical warning is actually wired up.
 
     Most deprecated aliases carry no help at all (they are hidden), so the
     help-text sweep above cannot see them. The callback closure can: the
     message it was built with names the flag.
+
+    This matches by the *whole* canonical message (``deprecation_message``
+    built fresh from each registry entry), not by picking the flag name back
+    out of free text with a regex. A first-token regex assumed every
+    registered key was itself the literal flag text with no internal
+    whitespace, which holds for a full long-flag rename (``--unzip``) but
+    not for a short-flag-only retirement scoped to one command (e.g. ``-f
+    (api post/put)``, needed because ``-f`` means something different --
+    and gets a different replacement -- in another command). Matching on the
+    full message avoids that assumption, and is strictly stronger: it also
+    catches a callback whose baked-in text has drifted from what the
+    registry would produce today.
     """
-    flags: set[str] = set()
+    wired_messages: set[str] = set()
     for _path, command in _walk(cli):
         for param in command.params:
             callback = getattr(param, "callback", None)
@@ -73,9 +85,9 @@ def _alias_callback_flags() -> set[str]:
                 continue
             for cell in closure:
                 value = cell.cell_contents
-                if isinstance(value, str) and value.startswith("Warning: --"):
-                    flags.add(value.split()[1])
-    return flags
+                if isinstance(value, str) and value.startswith("Warning: "):
+                    wired_messages.add(value)
+    return {flag for flag in DEPRECATED_FLAGS if deprecation_message(flag) in wired_messages}
 
 
 class TestRegistryCoverage:

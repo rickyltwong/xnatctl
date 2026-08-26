@@ -125,6 +125,28 @@ class TestConfigShow:
         assert result.exit_code == 0
         assert "xnat.example.org" in result.output
 
+    def test_config_show_tsv(self, runner: CliRunner) -> None:
+        """`-o tsv` emits a per-profile TSV table, not the Rich key-value view."""
+        cfg = _mock_config()
+
+        with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
+            result = runner.invoke(cli, ["config", "show", "-o", "tsv"])
+
+        assert result.exit_code == 0
+        assert "\x1b" not in result.output
+        assert "Configuration" not in result.output
+        blocks = result.output.strip("\n").split("\n\n")
+        assert len(blocks) == 2
+        top_lines = blocks[0].splitlines()
+        assert top_lines[0] == "config_file\tdefault_profile\toutput_format\tprofiles"
+        profile_lines = blocks[1].splitlines()
+        assert profile_lines[0] == "profile\tdefault\turl\tverify_ssl\ttimeout\tdefault_project"
+        rows = {line.split("\t")[0]: line.split("\t") for line in profile_lines[1:]}
+        assert rows["default"][1] == "true"
+        assert rows["default"][2] == "https://xnat.example.org"
+        assert rows["dev"][1] == "false"
+        assert rows["dev"][2] == "https://xnat-dev.example.org"
+
     def test_config_show_no_profiles(self, runner: CliRunner) -> None:
         cfg = Config()
 
@@ -421,9 +443,9 @@ class TestConfigSetPassword:
 class TestConfigInitGuidedLogin:
     """`config init` continues into a login.
 
-    Onboarding used to be two commands with a cliff between them: init wrote a
-    profile and stopped, and the natural next command failed with a
-    profile-not-found error that pointed nowhere.
+    Stopping after writing the profile would leave onboarding as two
+    commands with a cliff between them: the natural next command would fail
+    with a profile-not-found error that pointed nowhere.
     """
 
     def test_login_is_invoked_with_the_new_profile(self, runner: CliRunner, tmp_path: Path) -> None:

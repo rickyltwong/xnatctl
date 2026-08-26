@@ -98,6 +98,29 @@ def test_existing_world_readable_log_is_tightened(audit_log: Path) -> None:
     assert stat.S_IMODE(audit_log.stat().st_mode) == 0o600
 
 
+@pytest.mark.skipif(
+    not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
+)
+def test_rotated_generation_is_tightened_too(
+    audit_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rotation renames the old file, mode and all -- a legacy 0644 log must
+    not become a permanently world-readable audit.log.1 that nothing ever
+    revisits.
+    """
+    audit_log.parent.mkdir(parents=True, exist_ok=True)
+    audit_log.write_text("x" * 32)
+    os.chmod(audit_log, 0o644)
+    monkeypatch.setattr("xnatctl.core.logging.AUDIT_LOG_MAX_BYTES", 16)
+
+    AuditLogger().log_operation("subject.delete")
+
+    rotated = audit_log.with_name(audit_log.name + ".1")
+    assert rotated.exists()
+    assert stat.S_IMODE(rotated.stat().st_mode) == 0o600
+    assert stat.S_IMODE(audit_log.stat().st_mode) == 0o600
+
+
 def test_failure_is_recorded_with_the_error_class(audit_log: Path) -> None:
     AuditLogger().log_operation("subject.delete", success=False, error="PermissionDeniedError")
 
@@ -228,6 +251,32 @@ def test_failed_command_records_the_real_error_class(audit_log: Path) -> None:
     assert entry["error"] == "PermissionDeniedError"
 
 
+def test_single_scan_delete_records_the_real_error_class(audit_log: Path) -> None:
+    """The per-item isolation a multi-scan delete needs must not cost a
+    single-scan delete its typed error.
+
+    `scan delete` collects per-scan failures so one bad scan cannot abandon
+    the rest of the list. Applied to a list of one, that swallows the typed
+    exception before @handle_errors ever sees it -- and the audit record
+    then names SystemExit, which says nothing about what went wrong.
+    """
+    from xnatctl.core.exceptions import PermissionDeniedError
+
+    harness = make_authenticated_cli(default_project="PROJ")
+    harness.client.delete.side_effect = PermissionDeniedError(
+        resource="XNAT_E00001/scans/1", operation="delete", url="https://xnat.example.org"
+    )
+
+    result = harness.invoke(
+        ["scan", "delete", "-E", "XNAT_E00001", "--scans", "1", "-P", "PROJ", "--yes"]
+    )
+
+    assert result.exit_code != 0
+    (entry,) = records(audit_log)
+    assert entry["success"] is False
+    assert entry["error"] == "PermissionDeniedError"
+
+
 def test_declined_confirmation_is_not_audited(audit_log: Path) -> None:
     """Nothing was attempted, so recording it would bury real changes."""
     harness = make_authenticated_cli(default_project="PROJ")
@@ -240,7 +289,6 @@ def test_declined_confirmation_is_not_audited(audit_log: Path) -> None:
 
 def test_read_only_command_is_not_audited(audit_log: Path) -> None:
     harness = make_authenticated_cli(default_project="PROJ")
-    harness.client.paginate.return_value = iter([])
 
     harness.invoke(["subject", "list", "-P", "PROJ"])
 

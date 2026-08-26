@@ -1,7 +1,7 @@
 """Rendering tests for the status-message helpers.
 
-Square brackets in a message used to be parsed as Rich markup and silently
-dropped, so a hint like ``pip install 'pkg[extra]'`` reached the user as
+Square brackets in a message must not be parsed as Rich markup and silently
+dropped: a hint like ``pip install 'pkg[extra]'`` would reach the user as
 ``pip install 'pkg'`` -- the actionable half deleted.
 """
 

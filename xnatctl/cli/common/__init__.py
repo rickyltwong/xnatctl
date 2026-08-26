@@ -1,15 +1,29 @@
-"""Common CLI utilities, decorators, and helpers."""
+"""Common CLI utilities, decorators, and helpers.
+
+This is a package rather than a single module because it grew past the
+repo's 1000-line-per-file cap. Its public surface is unchanged: every name a
+CLI command imports from ``xnatctl.cli.common`` is re-exported here, from
+whichever submodule now defines it. The pieces that a handful of tests patch
+by dotted path (``xnatctl.cli.common.XNATClient``, ``...AuthManager``,
+``...Config``, ``...get_audit_logger``) are kept defined directly in this
+file rather than in a submodule -- a whole-object patch like
+``patch("xnatctl.cli.common.AuthManager", ...)`` only rebinds the name in
+*this* module's namespace, so code that resolves that name via a different
+module's globals (even one that re-exports the same object) would silently
+keep using the real thing. ``Context.get_client``, ``create_dest_client``,
+and the audit-write path all construct or reference one of those patched
+objects, so they stay here. Everything else (batch parsing, the deprecated
+flag table, list-control helpers, and error rendering) has no such
+constraint and lives in its own focused submodule.
+"""
 
 from __future__ import annotations
 
-import enum
-import json
 import logging
 import sys
-import traceback
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, NamedTuple, TypeVar
+from typing import Any, TypeVar
 
 import click
 
@@ -28,15 +42,124 @@ from xnatctl.core.exceptions import (
     XNATConnectionError,
     XNATCtlError,
 )
-from xnatctl.core.logging import debug_env_enabled, get_audit_logger, setup_logging
-from xnatctl.core.output import OutputFormat, print_error, print_hint, print_warning
+from xnatctl.core.logging import (
+    FILE_ONLY_ATTR,
+    debug_env_enabled,
+    get_audit_logger,
+    install_log_file,
+    setup_logging,
+)
+from xnatctl.core.output import (
+    OutputFormat,
+    no_color_requested,
+    print_error,
+    print_hint,
+    print_warning,
+    set_no_color,
+    set_no_headers,
+)
 from xnatctl.core.redact import SECRET_QUERY_KEYS, redact_url_query
 
-F = TypeVar("F", bound=Callable[..., Any])
+# The imports above are `xnatctl.cli.common`'s importable surface: the
+# project symbols (the exceptions, FILE_ONLY_ATTR, debug_env_enabled,
+# print_error, print_hint) are real API that callers and tests import from
+# here even though they are defined in submodules. Stdlib and typing names
+# (`enum`, `fnmatch`, `json`, `NamedTuple`, `Sequence`, `overload`,
+# `traceback`) are deliberately NOT part of that surface: nobody should
+# import `json` from a CLI helper module.
+#
+# Below, the `X as X` redundant-alias idiom marks private helpers that
+# nonetheless cross module boundaries -- the deprecated-flag callbacks are
+# shared by four command modules, and `_parse_batch_text`/`_flag_given` are
+# patched by dotted name in the tests. With an `__all__` present, mypy's
+# strict no-implicit-reexport treats anything not aliased this way as private
+# to the module, so a plain import would make every consumer's import an
+# error. The idiom says "deliberately re-exported" without promoting these
+# into the package's public surface; `services/downloads/__init__.py` uses the
+# same pattern for the same reason.
+from .batch import _parse_batch_text as _parse_batch_text
+from .batch import batch_option
+from .deprecation import (
+    DEPRECATED_FLAGS,
+    DeprecatedFlag,
+    deprecation_message,
+    parallel_options,
+)
+from .deprecation import _flag_given as _flag_given
+from .deprecation import _make_alias_cb as _make_alias_cb
+from .deprecation import _make_forwarding_alias_cb as _make_forwarding_alias_cb
+from .deprecation import _make_noop_cb as _make_noop_cb
+from .errors import (
+    AUDIT_ERROR_KEY,
+    ExitCode,
+    exit_code_for,
+    handle_errors,
+    render_cli_error,
+)
+from .listing import apply_filter, apply_sort_limit, list_options, resolve_columns
+from .validators import reject_blank_option_value, validate_local_path_option_cb
 
-# Click context key used to pass the real exception class from handle_errors
-# to the audit record, across the SystemExit that separates them.
-AUDIT_ERROR_KEY = "xnatctl.audit_error"
+__all__ = [
+    # This list is the package's public surface: names a CLI module (or a
+    # test) is meant to import from `xnatctl.cli.common`. Underscore-prefixed
+    # helpers (`_audit_details`, `_flag_given`, `_make_alias_cb`, etc.) are
+    # deliberately excluded -- they stay importable by dotted name for the
+    # handful of call sites and tests that use them, but they are private
+    # implementation detail, not the package's API.
+    "AUDIT_ERROR_KEY",
+    "AuthenticationError",
+    "Config",
+    "ConfigurationError",
+    "Context",
+    "DEPRECATED_FLAGS",
+    "DeprecatedFlag",
+    "ExitCode",
+    "FILE_ONLY_ATTR",
+    "InputValidationError",
+    "OperationCancelledError",
+    "OutputFormat",
+    "PermissionDeniedError",
+    "Profile",
+    "ProfileNotFoundError",
+    "ResourceNotFoundError",
+    "XNATClient",
+    "XNATConnectionError",
+    "XNATCtlError",
+    "apply_filter",
+    "apply_sort_limit",
+    "batch_option",
+    "confirm_destructive",
+    "confirm_destructive_when",
+    "create_dest_client",
+    "debug_env_enabled",
+    "default_project_from_context",
+    "dest_profile_options",
+    "deprecation_message",
+    "exit_code_for",
+    "get_credentials",
+    "get_profile",
+    "global_options",
+    "handle_errors",
+    "list_options",
+    "parallel_options",
+    "pass_context",
+    "print_error",
+    "print_hint",
+    "read_password_stdin",
+    "reject_argv_password",
+    "reject_blank_option_value",
+    "render_cli_error",
+    "require_auth",
+    "require_project_from_context",
+    "resolve_archive_mode_from_context",
+    "resolve_columns",
+    "resolve_direct_archive_from_context",
+    "resolve_overwrite_from_context",
+    "resolve_workers_from_context",
+    "validate_local_path_option_cb",
+]
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 # =============================================================================
@@ -63,6 +186,12 @@ class Context:
         self.root_output_format: OutputFormat | None = None
         self.root_quiet: bool = False
         self.root_verbose: bool = False
+        self.root_no_color: bool = False
+        self.no_color: bool = False
+        self.root_no_headers: bool = False
+        self.no_headers: bool = False
+        self.root_log_file: str | None = None
+        self.log_file: str | None = None
 
     def get_client(self) -> XNATClient:
         """Get or create authenticated client.
@@ -198,8 +327,9 @@ def resolve_archive_mode_from_context(ctx: Context, mode: str | None) -> str:
 def global_options(f: F) -> F:
     """Add global options to a command.
 
-    The four shared flags (``--profile``, ``--output``, ``--quiet``,
-    ``--verbose``) are also declared on the root ``cli`` group. When the
+    The shared flags (``--profile``, ``--output``, ``--quiet``,
+    ``--verbose``, ``--no-color``, ``--no-headers``) are also declared on the
+    root ``cli`` group. When the
     subcommand received Click's default value for one of these flags AND a
     root-group value is set on the shared :class:`Context`, the root-group
     value wins. Explicit subcommand-level values always beat inherited root
@@ -217,7 +347,7 @@ def global_options(f: F) -> F:
         "--output",
         "-o",
         "output_format",
-        type=click.Choice(["json", "table"]),
+        type=click.Choice(["json", "table", "tsv"]),
         default=None,
         help="Output format",
     )
@@ -235,6 +365,26 @@ def global_options(f: F) -> F:
         default=False,
         help="Enable verbose output",
     )
+    @click.option(
+        "--no-color",
+        is_flag=True,
+        default=False,
+        help="Disable colored output (also honors NO_COLOR/CLICOLOR=0 env vars)",
+    )
+    @click.option(
+        "--no-headers",
+        is_flag=True,
+        default=False,
+        help="Omit the header line/row from table and tsv output (ignored by json/quiet)",
+    )
+    @click.option(
+        "--log-file",
+        envvar="XNATCTL_LOG_FILE",
+        default=None,
+        type=click.Path(dir_okay=False),
+        help="Write this invocation's full-detail diagnostics to PATH as JSON "
+        "lines, regardless of --quiet/--verbose. Off by default.",
+    )
     @pass_context
     @wraps(f)
     def wrapper(
@@ -243,6 +393,9 @@ def global_options(f: F) -> F:
         output_format: str | None,
         quiet: bool,
         verbose: bool,
+        no_color: bool,
+        no_headers: bool,
+        log_file: str | None,
         *args: Any,
         **kwargs: Any,
     ) -> Any:
@@ -278,16 +431,81 @@ def global_options(f: F) -> F:
         effective_quiet = quiet if _was_explicit("quiet") else (quiet or ctx.root_quiet)
         effective_verbose = verbose if _was_explicit("verbose") else (verbose or ctx.root_verbose)
 
+        # No-color: subcommand explicit > root flag > NO_COLOR/CLICOLOR=0 env,
+        # checked fresh here (not just at console-construction time) so the
+        # env vars take effect for this invocation regardless of import order.
+        effective_no_color = (
+            no_color if _was_explicit("no_color") else (no_color or ctx.root_no_color)
+        ) or no_color_requested()
+
+        # No-headers: same boolean-flag rule as quiet/verbose/no-color --
+        # an explicit subcommand-level flip wins, otherwise inherit the root
+        # group's value.
+        effective_no_headers = (
+            no_headers if _was_explicit("no_headers") else (no_headers or ctx.root_no_headers)
+        )
+
+        # Log file: the root callback (cli/main.py) already resolved and
+        # activated the flag/env tiers for THIS invocation, unconditionally --
+        # that is what makes those two tiers work for commands that carry no
+        # @global_options at all. Two things are still this decorator's job:
+        #
+        # 1. A MORE SPECIFIC override: a --log-file given literally on the
+        #    command line for THIS subcommand, as opposed to one merely
+        #    re-resolved from the same env var the root callback already saw.
+        #    Checked as COMMANDLINE specifically, NOT via the ``_was_explicit``
+        #    helper above (which also treats ENVIRONMENT as "explicit"): with
+        #    XNATCTL_LOG_FILE set, Click resolves THIS subcommand's own
+        #    ``log_file`` parameter from the env var too, independently of
+        #    the root's -- so "explicit incl. env" would make a plain env var
+        #    look like a subcommand override and beat a genuine
+        #    ``xnatctl --log-file X <command>`` root flag, which must win.
+        if (
+            log_file
+            and click_ctx.get_parameter_source("log_file") == click.core.ParameterSource.COMMANDLINE
+        ):
+            ctx.log_file = log_file
+            install_log_file(log_file)
+        # else: leave whatever the root callback already resolved/installed
+        # (ctx.log_file was already set there) untouched.
+
         ctx.profile_name = effective_profile
         ctx.output_format = effective_format
         ctx.quiet = effective_quiet
         ctx.verbose = effective_verbose
+        ctx.no_color = effective_no_color
+        ctx.no_headers = effective_no_headers
 
         # Setup logging
         setup_logging(quiet=effective_quiet, verbose=effective_verbose)
+        set_no_color(effective_no_color)
+        set_no_headers(effective_no_headers)
 
         # Load config
         ctx.config = Config.load()
+
+        # 2. The config `log_file:` tier -- only reachable once ``ctx.config``
+        # exists, and only when NEITHER the flag nor the env var resolved
+        # anything above (a truthy ctx.log_file already wins). This is the
+        # one Config.load() call the whole feature needs for a decorated
+        # command: it is not a second load added for this feature, it is the
+        # load @global_options already makes for every command, reused. The
+        # root callback deliberately does not attempt this tier itself (see
+        # its own comment) -- an unconditional second Config.load() there
+        # would run before an eager argv-validation callback like
+        # `auth login --password`'s ever gets a chance to reject, and would
+        # warn twice on one broken config.yaml instead of once. getattr, not
+        # `ctx.config.log_file`: a few tests patch the ``Config.load`` seam
+        # with a bare stand-in object that carries none of Config's fields.
+        if not ctx.log_file:
+            config_log_file = getattr(ctx.config, "log_file", None)
+            # isinstance, not truthiness alone: a test replacing the
+            # Config.load seam with a MagicMock auto-creates a truthy Mock
+            # for .log_file, and installing that literally created a
+            # MagicMock/ directory tree in the working dir.
+            if isinstance(config_log_file, str) and config_log_file:
+                ctx.log_file = config_log_file
+                install_log_file(config_log_file)
 
         return f(ctx, *args, **kwargs)
 
@@ -372,7 +590,17 @@ _AUDIT_MASKED_PARAMS = frozenset({"value"})
 
 # Parameters that describe *how* a command ran rather than *what* it touched.
 _AUDIT_UNINTERESTING_PARAMS = frozenset(
-    {"yes", "dry_run", "output_format", "quiet", "verbose", "profile"}
+    {
+        "yes",
+        "dry_run",
+        "output_format",
+        "quiet",
+        "verbose",
+        "profile",
+        "no_color",
+        "no_headers",
+        "log_file",
+    }
 )
 
 
@@ -439,7 +667,7 @@ def _record_audit(
             dry_run=dry_run,
             details={**_audit_details(params), "confirmed": confirmed},
         )
-    except Exception as e:  # pragma: no cover - defensive
+    except Exception as e:  # noqa: BLE001 -- pragma: no cover - audit write must never break the command it records
         # Auditing must never be the reason a delete fails.
         logging.getLogger(__name__).warning("Could not record audit entry: %s", e)
 
@@ -547,373 +775,6 @@ def confirm_destructive_when(
         return wrapper  # type: ignore
 
     return decorator
-
-
-# =============================================================================
-# Batch Operations
-# =============================================================================
-
-
-def batch_option(f: F) -> F:
-    """Add --batch option for bulk operations."""
-
-    @click.option(
-        "--batch",
-        type=click.Path(exists=True),
-        help="File with IDs (one per line) or JSON array",
-    )
-    @wraps(f)
-    def wrapper(*args: Any, batch: str | None, **kwargs: Any) -> Any:
-        """Load batch IDs from file and inject into kwargs."""
-        if batch:
-            with open(batch) as file:
-                content = file.read().strip()
-                if content.startswith("["):
-                    kwargs["ids"] = json.loads(content)
-                else:
-                    kwargs["ids"] = [line.strip() for line in content.splitlines() if line.strip()]
-        return f(*args, **kwargs)
-
-    return wrapper  # type: ignore
-
-
-class DeprecatedFlag(NamedTuple):
-    """A CLI flag that still works but is scheduled for removal."""
-
-    replacement: str
-    """What to use instead. Empty when the flag simply no longer does anything."""
-
-    removed_in: str
-    """The release that deletes the flag."""
-
-    deprecated_in: str
-    """The release whose warning first named ``removed_in``. Anchors the
-    two-MINOR-release survival window the policy promises."""
-
-
-DEPRECATED_FLAGS: dict[str, DeprecatedFlag] = {
-    "--no-parallel": DeprecatedFlag("--workers 1", "0.5.0", "0.3.0"),
-    "--parallel": DeprecatedFlag("", "0.5.0", "0.3.0"),
-    "--unzip": DeprecatedFlag("--extract", "0.5.0", "0.3.0"),
-    "--no-unzip": DeprecatedFlag("--no-extract", "0.5.0", "0.3.0"),
-    "--cleanup": DeprecatedFlag("", "0.5.0", "0.3.0"),
-    "--no-cleanup": DeprecatedFlag("--extract --keep-zips", "0.5.0", "0.3.0"),
-    "--include-resources": DeprecatedFlag("--session-resources", "0.5.0", "0.3.0"),
-    "--session": DeprecatedFlag("--experiment", "0.5.0", "0.3.0"),
-    "--gradual": DeprecatedFlag("--mode gradual", "0.5.0", "0.3.0"),
-    "--archive-format": DeprecatedFlag("--mode", "0.5.0", "0.3.0"),
-}
-"""Every deprecated flag, what replaces it, and when it goes away.
-
-Registering a flag here is what dates the deprecation: the warning text names
-the removal release from this table, so nobody has to read the changelog to
-find out how long their script has. ``tests/test_deprecation_policy.py`` walks
-the whole command tree and fails on any deprecated option missing from it,
-which is what stops a flag being quietly retired without notice.
-
-The removal release is at least two MINOR releases out from the one that
-deprecated the flag (``deprecated_in``, recorded per entry so the window
-stays anchored there whatever releases ship in between) -- see
-``docs/stability.rst``.
-"""
-
-
-def deprecation_message(old_flag: str) -> str:
-    """Build the stderr warning for a deprecated flag.
-
-    Args:
-        old_flag: The deprecated flag name, as registered in DEPRECATED_FLAGS.
-
-    Returns:
-        The full warning line.
-
-    Raises:
-        KeyError: If the flag is not registered.
-    """
-    entry = DEPRECATED_FLAGS[old_flag]
-    guidance = f"use {entry.replacement} instead" if entry.replacement else "it has no effect"
-    return (
-        f"Warning: {old_flag} is deprecated and will be removed in {entry.removed_in}; {guidance}"
-    )
-
-
-def _flag_given(ctx: click.Context, param: click.Parameter) -> bool:
-    """Report whether the user actually typed this option."""
-    return bool(
-        param.name
-        and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
-    )
-
-
-def _make_alias_cb(
-    old_flag: str,
-    target_param: str,
-    target_value: Any,
-) -> Callable[[click.Context, click.Parameter, Any], Any]:
-    """Create a Click callback that warns on a deprecated flag and sets a fixed value.
-
-    Args:
-        old_flag: The deprecated flag name (e.g., "--unzip"). Must be registered
-            in DEPRECATED_FLAGS; the lookup happens here, at import time, so an
-            unregistered flag breaks the test suite instead of a user's command.
-        target_param: The Click parameter name to set on ctx.params.
-        target_value: The fixed value to set (NOT the raw flag value).
-
-    Returns:
-        A Click callback function.
-    """
-    message = deprecation_message(old_flag)
-
-    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
-        if _flag_given(ctx, param):
-            click.echo(message, err=True)
-            ctx.params[target_param] = target_value
-        return value
-
-    return callback
-
-
-def _make_forwarding_alias_cb(
-    old_flag: str,
-    target_param: str,
-) -> Callable[[click.Context, click.Parameter, Any], Any]:
-    """Create a Click callback that warns and forwards the user's raw value.
-
-    Unlike ``_make_alias_cb`` which sets a fixed value, this forwards whatever
-    the user provided (useful for value-taking options like ``--session LABEL``).
-
-    Args:
-        old_flag: The deprecated flag name. Must be registered in DEPRECATED_FLAGS.
-        target_param: The Click parameter name to set on ctx.params.
-
-    Returns:
-        A Click callback function.
-    """
-    message = deprecation_message(old_flag)
-
-    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
-        if value is not None and _flag_given(ctx, param):
-            click.echo(message, err=True)
-            ctx.params[target_param] = value
-        return value
-
-    return callback
-
-
-def _make_noop_cb(old_flag: str) -> Callable[[click.Context, click.Parameter, Any], Any]:
-    """Create a Click callback for a deprecated flag that no longer does anything.
-
-    Accepting the flag in silence looks like it still works. Warning says so.
-
-    Args:
-        old_flag: The deprecated flag name. Must be registered in DEPRECATED_FLAGS.
-
-    Returns:
-        A Click callback function.
-    """
-    message = deprecation_message(old_flag)
-
-    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
-        if _flag_given(ctx, param):
-            click.echo(message, err=True)
-        return value
-
-    return callback
-
-
-def validate_local_path_option_cb(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
-    """Eager Click callback: reject an option value unsafe as a local path.
-
-    Wire this as ``callback=validate_local_path_option_cb, is_eager=True`` on
-    any option (like ``--name``) whose value becomes a local file/directory
-    name. Eager callbacks run during argument parsing, in
-    :meth:`click.Command.parse_args` -- before ``@require_auth`` or any other
-    decorator wrapping the command body runs, since those only execute once
-    Click calls the underlying function. Without ``is_eager=True`` the
-    validation would still technically run before the command body, but
-    only after every other (non-eager) option's callback -- eager forces it
-    first, and more importantly decouples it from needing a valid session at
-    all: a malformed ``--name`` must fail the same way whether or not the
-    caller is authenticated.
-
-    ``None`` (the option was not given) passes through unchanged; the
-    command body is responsible for its own fallback validation in that case
-    (e.g. validating the session ID that will be used as the directory name
-    instead).
-    """
-    del ctx
-    if value is not None:
-        from xnatctl.core.validation import validate_local_path_component
-
-        option = (param.opts or [param.name])[0]
-        try:
-            validate_local_path_component(value, option)
-        except InputValidationError as e:
-            raise click.ClickException(str(e)) from e
-    return value
-
-
-def reject_blank_option_value(
-    ctx: click.Context, param: click.Parameter, value: str | None
-) -> str | None:
-    """Click callback: reject an explicitly empty/whitespace-only option value.
-
-    ``None`` (the option was not given) passes through unchanged -- only a
-    user-supplied blank string is rejected. This matters most on an option
-    that gates a ``confirm_destructive_when`` predicate written as
-    ``is not None`` (present means mutating) alongside a command body that
-    checks plain truthiness (``not value`` means absent): an empty string
-    satisfies the first and fails the second, so the confirmation
-    prompt/audit fires for what actually runs as a harmless read. Wiring
-    this callback removes the blank state before either check ever sees it.
-    """
-    del ctx, param
-    if value is not None and value.strip() == "":
-        raise click.BadParameter("cannot be empty or whitespace-only")
-    return value
-
-
-def parallel_options(f: F) -> F:
-    """Add parallel execution options.
-
-    Injects ``--workers`` (default resolved from profile or 4).
-    Hidden ``--no-parallel`` alias sets workers to 1 with a deprecation warning.
-    """
-
-    @click.option(
-        "--workers",
-        "-w",
-        type=int,
-        default=None,
-        show_default="4 (or profile)",
-        help="Parallel workers (1 = sequential)",
-    )
-    @click.option(
-        "--no-parallel",
-        is_flag=True,
-        hidden=True,
-        expose_value=False,
-        callback=_make_alias_cb("--no-parallel", "workers", 1),
-    )
-    @click.option(
-        "--parallel",
-        is_flag=True,
-        hidden=True,
-        expose_value=False,
-        callback=_make_noop_cb("--parallel"),
-        help="Deprecated: parallel is the default",
-    )
-    @wraps(f)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        """Pass through parallel options to the command."""
-        return f(*args, **kwargs)
-
-    return wrapper  # type: ignore
-
-
-# =============================================================================
-# Error Handling
-# =============================================================================
-
-
-def _debug_enabled() -> bool:
-    """Return True when tracebacks should be surfaced.
-
-    Two independent opt-ins: the ``--verbose`` flag (stashed on the shared
-    :class:`Context` as ``verbose``) and the ``XNATCTL_DEBUG`` env var (mirrors
-    ``gh``'s ``GH_DEBUG``, so a traceback is obtainable even for failures that
-    occur before ``--verbose`` is parsed). ``XNATCTL_DEBUG=0``/``false``/``off``
-    counts as OFF -- an explicit falsey value must not enable tracebacks.
-
-    The env var's spelling is parsed by :func:`debug_env_enabled` so this policy
-    and the logging tiers it turns on cannot drift apart.
-    """
-    if debug_env_enabled():
-        return True
-    click_ctx = click.get_current_context(silent=True)
-    ctx_obj = click_ctx.obj if click_ctx is not None else None
-    return bool(getattr(ctx_obj, "verbose", False))
-
-
-def render_cli_error(exc: BaseException) -> int:
-    """Render a redacted one-line error (+ optional traceback) and return its exit code.
-
-    Shared by :func:`handle_errors` and the ``main()`` last-resort guard so the
-    traceback-under-debug policy lives in exactly one place. ``main()`` needs it
-    too because setup-phase failures (config load / env parsing inside
-    ``global_options``) are raised OUTSIDE the ``handle_errors`` wrapper.
-
-    Must be called from within an ``except`` block: it relies on
-    ``traceback.format_exc()`` reflecting the exception currently being handled.
-    """
-    debug = _debug_enabled()
-
-    if isinstance(exc, XNATCtlError):
-        # Defensive: print_error already redacts, but we redact here too so
-        # future direct callers cannot bypass the invariant.
-        print_error(redact_url_query(str(exc)))
-        if exc.hint:
-            print_hint(exc.hint)
-        if debug and exc.details:
-            # The details dict used to be glued onto every message. It is real
-            # diagnostic data, so it stays -- just behind --verbose, where the
-            # reader asked for it.
-            detail_str = ", ".join(f"{k}={v}" for k, v in exc.details.items())
-            click.echo(redact_url_query(f"Details: {detail_str}"), err=True)
-    else:
-        print_error(redact_url_query(f"Unexpected error: {exc}"))
-
-    if debug:
-        # Redact the whole traceback: its final line echoes the exception
-        # message, which may carry a URL query string.
-        click.echo(redact_url_query(traceback.format_exc()), err=True)
-    elif not isinstance(exc, XNATCtlError):
-        # A clean XNATCtlError is already actionable; only the opaque
-        # "Unexpected error" line benefits from the verbose hint.
-        click.echo("Run with --verbose for a full traceback.", err=True)
-
-    return exit_code_for(exc)
-
-
-def handle_errors(f: F) -> F:
-    """Handle common errors and convert to CLI exceptions.
-
-    Under ``--verbose`` or ``XNATCTL_DEBUG=1`` a full (redacted) traceback is
-    printed to stderr before exiting; otherwise unexpected errors print a single
-    line plus a hint. Tracebacks are never shown by default.
-    """
-
-    @wraps(f)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        """Capture errors and exit with consistent messaging."""
-        try:
-            return f(*args, **kwargs)
-        except click.Abort:
-            # User declined a destructive-op confirmation (Ctrl+C / "n").
-            click.echo("Aborted!", err=True)
-            sys.exit(ExitCode.USER_CANCELLED)
-        except KeyboardInterrupt:
-            # Ctrl+C mid-operation. Caught here rather than left to Click,
-            # which converts it to Abort and exits 1 -- indistinguishable from
-            # a general error, despite the taxonomy defining a code for exactly
-            # this. Catching it inside the command body also keeps the exit
-            # code consistent with the confirmation-prompt Abort above.
-            #
-            # KeyboardInterrupt is not an Exception subclass, so the broad
-            # handler below would never have seen it.
-            click.echo("Cancelled.", err=True)
-            sys.exit(ExitCode.USER_CANCELLED)
-        except click.ClickException:
-            raise
-        except Exception as e:
-            # Stash the real class before collapsing to SystemExit, so the
-            # audit record names the actual failure.
-            click_ctx = click.get_current_context(silent=True)
-            if click_ctx is not None:
-                click_ctx.meta[AUDIT_ERROR_KEY] = type(e).__name__
-            sys.exit(render_cli_error(e))
-
-    return wrapper  # type: ignore
 
 
 # =============================================================================
@@ -1026,11 +887,12 @@ def create_dest_client(
         ConfigurationError: If no destination specified.
     """
     # Built like the source client in Context.get_client, and for the same
-    # reasons. It used to drop both of the settings below, which made the
-    # destination of a cross-server transfer strictly weaker than its source:
-    # a destination behind a private CA could not verify TLS at all (pushing
+    # reasons. Dropping either of the settings below makes the destination
+    # of a cross-server transfer strictly weaker than its source: a
+    # destination behind a private CA could not verify TLS at all (pushing
     # people towards verify_ssl: false), and the destination side of a
-    # multi-hour transfer never re-authenticated after its session expired.
+    # multi-hour transfer would never re-authenticate after its session
+    # expired.
     if dest_profile:
         config = ctx.config or Config.load()
         profile = config.get_profile(dest_profile)
@@ -1060,48 +922,3 @@ def create_dest_client(
             auto_reauth=True,
         )
     raise ConfigurationError("Destination not specified. Use --dest-profile or --dest-url.")
-
-
-# =============================================================================
-# Exit Codes
-# =============================================================================
-
-
-class ExitCode(enum.IntEnum):
-    """Documented, differentiated CLI exit codes.
-
-    Code 2 is intentionally skipped: Click reserves it for usage errors, so
-    reusing it would make "wrong flags" indistinguishable from an auth failure.
-    Codes only ever become MORE specific than the old blanket 1, so scripts that
-    test ``!= 0`` keep working.
-    """
-
-    SUCCESS = 0
-    GENERAL_ERROR = 1
-    # 2 is reserved for Click usage errors (do not assign it here).
-    AUTH_ERROR = 3
-    NETWORK_ERROR = 4
-    NOT_FOUND = 5
-    PERMISSION_ERROR = 6
-    USER_CANCELLED = 7
-
-
-def exit_code_for(exc: BaseException) -> int:
-    """Map an exception to its documented CLI exit code (see :class:`ExitCode`).
-
-    Order matters: ``PermissionDeniedError`` and ``SessionExpiredError`` subclass
-    ``AuthenticationError``, so the most specific classes are checked first.
-    """
-    if isinstance(exc, click.Abort | OperationCancelledError):
-        return ExitCode.USER_CANCELLED
-    if isinstance(exc, PermissionDeniedError):
-        return ExitCode.PERMISSION_ERROR
-    if isinstance(exc, AuthenticationError):  # incl. SessionExpiredError
-        return ExitCode.AUTH_ERROR
-    if isinstance(exc, ResourceNotFoundError):
-        return ExitCode.NOT_FOUND
-    if isinstance(exc, XNATConnectionError):
-        # NetworkError, RequestTimeoutError, RetryExhaustedError, ServerUnreachableError
-        return ExitCode.NETWORK_ERROR
-    # ClientRequestError/ServerError ("server said no") and everything else.
-    return ExitCode.GENERAL_ERROR

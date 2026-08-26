@@ -1,10 +1,10 @@
 """Stream discipline: stdout is for data, stderr for everything else.
 
-Success lines, progress bars, prompts, and dry-run previews used to go to
-stdout, with two visible consequences: piping `-o json` output interleaved
-status text with the JSON, and redirecting stdout (`... > log`) killed the
+Sending success lines, progress bars, prompts, or dry-run previews to
+stdout has two visible consequences: piping `-o json` output interleaves
+status text with the JSON, and redirecting stdout (`... > log`) kills the
 live progress bar entirely, because Rich disables live display when its
-console is not a tty -- even though stderr still was one.
+console is not a tty -- even though stderr still is one.
 """
 
 from __future__ import annotations
