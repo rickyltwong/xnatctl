@@ -394,7 +394,7 @@ def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
         )
 
         assert "No such option" not in result.output
-        # Wait-timeout no longer hard-aborts: the successful DICOM upload is kept
+        # Wait-timeout must not hard-abort: the successful DICOM upload is kept
         # and the unattached resources are reported with an actionable
         # --attach-only re-run command instead of being silently dropped.
         assert result.exit_code == 0

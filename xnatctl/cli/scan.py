@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import time
+from concurrent.futures import as_completed
 from pathlib import Path
 from typing import Any, Literal
 
@@ -11,18 +13,24 @@ import click
 from xnatctl.cli.common import (
     Context,
     _make_alias_cb,
+    _make_forwarding_alias_cb,
     _make_noop_cb,
+    apply_filter,
+    apply_sort_limit,
+    batch_option,
     confirm_destructive,
     default_project_from_context,
     global_options,
     handle_errors,
+    list_options,
     parallel_options,
     require_auth,
+    resolve_columns,
     resolve_workers_from_context,
     validate_local_path_option_cb,
 )
 from xnatctl.core.cancellation import cancellable_pool
-from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
+from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError, XNATCtlError
 from xnatctl.core.output import (
     OutputFormat,
     err_console,
@@ -31,7 +39,22 @@ from xnatctl.core.output import (
     print_output,
     print_success,
 )
+from xnatctl.core.validation import (
+    validate_local_path_component,
+    validate_scan_id,
+    validate_scan_ids_input,
+    validate_session_id,
+)
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
+from xnatctl.models.progress import (
+    DownloadProgress,
+    OperationPhase,
+    TransferItemResult,
+    TransferSummary,
+    TransferVerification,
+    VerificationReport,
+    transfer_status,
+)
 from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.resources import ResourceService
 from xnatctl.services.scans import ScanService
@@ -122,6 +145,66 @@ def _inspect_experiment(
     return canonical_ref, session_xsi
 
 
+def _run_scan_deletes(
+    scan_svc: ScanService,
+    experiment_ref: ExperimentRef,
+    scan_ids: list[str],
+    *,
+    workers: int,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Delete every scan in ``scan_ids``, returning (deleted, failed).
+
+    Per-scan failures are collected rather than raised so one bad scan
+    cannot abandon the rest of the list. That isolation applies only when
+    there IS a rest of the list: with a single scan the exception
+    propagates, because ``@handle_errors`` needs to see the typed error to
+    pick the right exit code (permission denied is not a generic failure)
+    and to record the real exception class in the audit trail.
+
+    Args:
+        scan_svc: Bound scan service.
+        experiment_ref: Parent experiment the scans hang off.
+        scan_ids: Scans to delete; must be non-empty.
+        workers: Parallel worker ceiling. A single scan, or ``workers <= 1``,
+            runs serially.
+
+    Returns:
+        ``(deleted_ids, [(scan_id, error_message), ...])``.
+    """
+    isolate_failures = len(scan_ids) > 1
+
+    def delete_scan(scan_id: str) -> tuple[str, bool, str]:
+        """Delete a scan and return status and error message."""
+        try:
+            resp = scan_svc.delete_scan_ref(ScanRef(experiment=experiment_ref, scan_id=scan_id))
+            return scan_id, resp.status_code in (200, 204), ""
+        except Exception as e:  # noqa: BLE001  # per-scan isolation across a multi-scan list
+            if not isolate_failures:
+                raise
+            return scan_id, False, str(e)
+
+    deleted: list[str] = []
+    failed: list[tuple[str, str]] = []
+
+    def record(outcome: tuple[str, bool, str]) -> None:
+        scan_id, success, error = outcome
+        if success:
+            deleted.append(scan_id)
+        else:
+            failed.append((scan_id, error))
+
+    if workers > 1 and len(scan_ids) > 1:
+        with cancellable_pool(min(workers, len(scan_ids))) as (executor, _token):
+            futures = [executor.submit(delete_scan, sid) for sid in scan_ids]
+            for future in as_completed(futures):
+                record(future.result())
+    else:
+        for scan_id in scan_ids:
+            record(delete_scan(scan_id))
+
+    return deleted, failed
+
+
 def _require_scan_addressable(ref: ExperimentRef) -> None:
     """Refuse to issue a scan request that XNAT would apply to the experiment.
 
@@ -199,10 +282,20 @@ def scan() -> None:
     "-S",
     help="Subject ID/label (narrows experiment lookup, requires -P)",
 )
+@list_options
 @global_options
 @handle_errors
 @require_auth
-def scan_list(ctx: Context, session_id: str, project: str | None, subject: str | None) -> None:
+def scan_list(
+    ctx: Context,
+    session_id: str,
+    project: str | None,
+    subject: str | None,
+    filter_expr: str | None,
+    limit: int | None,
+    sort_by: str | None,
+    columns: str | None,
+) -> None:
     """List scans in a session.
 
     \b
@@ -212,9 +305,8 @@ def scan_list(ctx: Context, session_id: str, project: str | None, subject: str |
         xnatctl scan list -E XNAT_E00001 -q  # IDs only
         xnatctl scan list -E SESSION_LABEL -P MYPROJ
         xnatctl scan list -P MYPROJ -S SUB001 -E SESSION_LABEL
+        xnatctl scan list -E XNAT_E00001 --filter 'quality:usable' --sort-by id
     """
-    from xnatctl.core.validation import validate_session_id
-
     session_id = validate_session_id(session_id)
     client = ctx.get_client()
     project = default_project_from_context(ctx) if project is None else project
@@ -239,10 +331,14 @@ def scan_list(ctx: Context, session_id: str, project: str | None, subject: str |
             }
         )
 
+    scans = apply_filter(scans, filter_expr)
+    scans = apply_sort_limit(scans, sort_by, limit)
+
+    default_columns = ["id", "type", "series_description", "quality", "frames"]
     print_output(
         scans,
         format=ctx.output_format,
-        columns=["id", "type", "series_description", "quality", "frames"],
+        columns=resolve_columns(default_columns, columns),
         column_labels={
             "id": "ID",
             "type": "Type",
@@ -289,8 +385,6 @@ def scan_show(
         xnatctl scan show -E SESSION_LABEL 1 -P MYPROJ
         xnatctl scan show -P MYPROJ -S SUB001 -E SESSION_LABEL 1
     """
-    from xnatctl.core.validation import validate_scan_id, validate_session_id
-
     session_id = validate_session_id(session_id)
     scan_id = validate_scan_id(scan_id)
     client = ctx.get_client()
@@ -309,7 +403,8 @@ def scan_show(
     # Get resources
     try:
         resources = ResourceService(client).list_rows(scan_ref)
-    except Exception:
+    except (XNATCtlError, ValueError) as exc:
+        click.echo(f"Warning: could not list resources: {exc}", err=True)
         resources = []
 
     output = {
@@ -328,6 +423,36 @@ def scan_show(
         quiet=ctx.quiet,
         id_field="id",
     )
+
+
+def _resolve_scan_ids(scans: tuple[str, ...], batch_ids: list[str] | None) -> list[str] | None:
+    """Resolve the scan IDs to delete from ``--scans`` or ``--batch``.
+
+    The two are mutually exclusive; ``--batch`` supplies explicit scan IDs
+    (no ``'*'`` wildcard). ``--scans`` is repeatable (``--scans 1 --scans
+    2``) and each occurrence also accepts a comma-separated list (``--scans
+    1,2,3``) or ``'*'`` for all -- the two forms combine freely.
+
+    Returns:
+        Explicit scan IDs, or ``None`` for "all scans" (``--scans '*'`` only).
+
+    Raises:
+        click.UsageError: Neither or both of ``--scans``/``--batch`` were given.
+    """
+    # `batch_ids is not None` is presence ("--batch was given"), not
+    # truthiness of the parsed list -- @batch_option already refuses an
+    # empty-but-given batch, but these checks stay presence-based rather
+    # than relying on that guarantee, so `--scans '*'` can never slip past
+    # mutual exclusion (and fall through to the wildcard) just because the
+    # batch happened to be empty.
+    scans_value = ",".join(scans) if scans else None
+    if scans_value and batch_ids is not None:
+        raise click.UsageError("provide --scans or --batch, not both")
+    if batch_ids is not None:
+        return [validate_scan_id(s) for s in batch_ids]
+    if scans_value:
+        return validate_scan_ids_input(scans_value)
+    raise click.UsageError("provide --scans or --batch")
 
 
 @scan.command("delete")
@@ -349,7 +474,25 @@ def scan_show(
     "-S",
     help="Subject ID/label (narrows experiment lookup, requires -P)",
 )
-@click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
+@click.option(
+    "--scans",
+    multiple=True,
+    required=False,
+    # Eager so it is processed before the deprecated -s alias, which merges
+    # into this option's value (see _make_forwarding_alias_cb).
+    is_eager=True,
+    help="Scan IDs: repeatable (--scans 1 --scans 2), comma-separated "
+    "(--scans 1,2,3), or '*' for all.",
+)
+@click.option(
+    "-s",
+    "legacy_scans_s",
+    multiple=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("-s", "scans"),
+)
+@batch_option
 @confirm_destructive("Delete these scans?")
 @parallel_options
 @global_options
@@ -360,7 +503,8 @@ def scan_delete(
     session_id: str,
     project: str | None,
     subject: str | None,
-    scans: str,
+    scans: tuple[str, ...],
+    batch_ids: list[str] | None,
     dry_run: bool,
     workers: int | None,
 ) -> None:
@@ -369,16 +513,14 @@ def scan_delete(
     \b
     Example:
         xnatctl scan delete -E XNAT_E00001 --scans 1,2,3
+        xnatctl scan delete -E XNAT_E00001 --scans 1 --scans 2 --scans 3
         xnatctl scan delete -E XNAT_E00001 --scans '*'  # Delete all
         xnatctl scan delete -E XNAT_E00001 --scans 1,2 --dry-run
         xnatctl scan delete -E SESSION_LABEL --scans 1,2,3 -P MYPROJ
+        xnatctl scan list -E XNAT_E00001 -q | xnatctl scan delete -E XNAT_E00001 --batch - --yes
     """
-    from concurrent.futures import as_completed
-
-    from xnatctl.core.validation import validate_scan_ids_input, validate_session_id
-
     session_id = validate_session_id(session_id)
-    scan_ids = validate_scan_ids_input(scans)
+    scan_ids = _resolve_scan_ids(scans, batch_ids)
     client = ctx.get_client()
     project = default_project_from_context(ctx) if project is None else project
     hierarchy = HierarchyService(client)
@@ -401,36 +543,12 @@ def scan_delete(
             click.echo(f"  - {sid}", err=True)
         return
 
-    workers = resolve_workers_from_context(ctx, workers)
-
-    deleted = []
-    failed = []
-    scan_svc = ScanService(client)
-
-    def delete_scan(scan_id: str) -> tuple[str, bool, str]:
-        """Delete a scan and return status and error message."""
-        try:
-            resp = scan_svc.delete_scan_ref(ScanRef(experiment=experiment_ref, scan_id=scan_id))
-            return scan_id, resp.status_code in (200, 204), ""
-        except Exception as e:
-            return scan_id, False, str(e)
-
-    if workers > 1 and len(scan_ids) > 1:
-        with cancellable_pool(min(workers, len(scan_ids))) as (executor, _token):
-            futures = {executor.submit(delete_scan, sid): sid for sid in scan_ids}
-            for future in as_completed(futures):
-                scan_id, success, error = future.result()
-                if success:
-                    deleted.append(scan_id)
-                else:
-                    failed.append((scan_id, error))
-    else:
-        for scan_id in scan_ids:
-            scan_id, success, error = delete_scan(scan_id)
-            if success:
-                deleted.append(scan_id)
-            else:
-                failed.append((scan_id, error))
+    deleted, failed = _run_scan_deletes(
+        ScanService(client),
+        experiment_ref,
+        scan_ids,
+        workers=resolve_workers_from_context(ctx, workers),
+    )
 
     if deleted:
         noun = "scan" if len(deleted) == 1 else "scans"
@@ -466,7 +584,23 @@ def scan_delete(
     "-S",
     help="Subject ID/label (narrows experiment lookup, requires -P)",
 )
-@click.option("--scans", "-s", required=True, help="Scan IDs (comma-separated or '*' for all)")
+@click.option(
+    "--scans",
+    multiple=True,
+    # Eager so it is processed before the deprecated -s alias, which merges
+    # into this option's value (see _make_forwarding_alias_cb).
+    is_eager=True,
+    help="Scan IDs: repeatable (--scans 1 --scans 2), comma-separated "
+    "(--scans 1,2,3), or '*' for all.",
+)
+@click.option(
+    "-s",
+    "legacy_scans_s",
+    multiple=True,
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("-s", "scans"),
+)
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
 @click.option(
     "--name",
@@ -533,7 +667,7 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     session_id: str,
     project: str | None,
     subject: str | None,
-    scans: str,
+    scans: tuple[str, ...],
     out: str,
     name: str | None,
     resource: tuple[str, ...],
@@ -556,32 +690,26 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
 
     \b
     Examples:
-        xnatctl scan download -E XNAT_E00001 -s 1
-        xnatctl scan download -E XNAT_E00001 -s 1 --out ./data
-        xnatctl scan download -P PROJECT -E SESSION_LABEL -s 1,2,3 --out ./data
-        xnatctl scan download -P PROJECT -E SESSION -s '*' --out ./data
-        xnatctl scan download -E XNAT_E00001 -s 1 --verify
+        xnatctl scan download -E XNAT_E00001 --scans 1
+        xnatctl scan download -E XNAT_E00001 --scans 1 --out ./data
+        xnatctl scan download -P PROJECT -E SESSION_LABEL --scans 1,2,3 --out ./data
+        xnatctl scan download -P PROJECT -E SESSION --scans '*' --out ./data
+        xnatctl scan download -E XNAT_E00001 --scans 1 --verify
     """
-    import dataclasses
-
-    from xnatctl.core.validation import validate_scan_ids_input, validate_session_id
-    from xnatctl.models.progress import (
-        DownloadProgress,
-        OperationPhase,
-        TransferItemResult,
-        TransferSummary,
-        TransferVerification,
-        VerificationReport,
-        transfer_status,
-    )
-    from xnatctl.services.downloads import DownloadService
+    # `--scans` is not required=True at the Click level: the deprecated
+    # `-s` alias forwards into this same param via a callback that runs
+    # after Click's own required-check would already have fired (Click
+    # checks each option's own parsed value, not ctx.params), so
+    # required=True here would reject a bare `-s`. Enforced by hand instead.
+    if not scans:
+        raise click.UsageError("Missing option '--scans'.")
 
     # Map extract/keep_zips to internal unzip/cleanup
     unzip = extract or keep_zips
     cleanup = extract and not keep_zips
 
     session_id = validate_session_id(session_id)
-    scan_ids_input = validate_scan_ids_input(scans)
+    scan_ids_input = validate_scan_ids_input(",".join(scans))
     output_dir = Path(out)
     client = ctx.get_client()
 
@@ -599,8 +727,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     # a reserved Windows device name) would otherwise reach the filesystem
     # unvalidated. Mirrors session download's own fallback.
     if name is None:
-        from xnatctl.core.validation import validate_local_path_component
-
         try:
             validate_local_path_component(session_id, "session_id (as the output directory name)")
         except InputValidationError as e:
@@ -648,6 +774,11 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
 
     session_output = output_dir / (name or session_id)
     session_output.mkdir(parents=True, exist_ok=True)
+    # Deferred: tests patch xnatctl.services.downloads.DownloadService to
+    # intercept the lookup; a module-scope import would bind the real class
+    # before the patch runs (see tests/test_cli_scan.py).
+    from xnatctl.services.downloads import DownloadService
+
     service = DownloadService(client)
 
     def progress_cb(progress: DownloadProgress) -> None:
@@ -655,8 +786,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
             pct = progress.bytes_received * 100 // progress.total_bytes
             mb = progress.bytes_received / (1024 * 1024)
             click.echo(f"\r  Downloading: {pct}% ({mb:.1f} MB)", nl=False, err=True)
-
-    from xnatctl.core.exceptions import ResourceNotFoundError
 
     download_start = time.time()
 
@@ -724,7 +853,7 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
                 local_root_wrapped=True,
                 zip_paths=verify_zip_paths,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # emits JSON failure summary before re-raising unchanged
             if ctx.output_format == OutputFormat.JSON:
                 TransferSummary(
                     operation="download",
@@ -739,6 +868,7 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
                     duration_seconds=round(time.time() - download_start, 3),
                     status="failed",
                     items=[TransferItemResult(id=spec_id, status="failed", error=str(exc))],
+                    skipped_unsafe_entries=summary.skipped_unsafe_entries,
                 ).emit()
             raise
         if not verification.success:
@@ -801,6 +931,7 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
             verification=TransferVerification.from_report(verification)
             if verification is not None
             else None,
+            skipped_unsafe_entries=summary.skipped_unsafe_entries,
         ).emit()
     else:
         if summary.success:

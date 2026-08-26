@@ -36,6 +36,7 @@ def service() -> UploadService:
     client.username = "admin"
     client.password = "hunter2"
     client.verify_ssl = True
+    client.server_version = None
     return UploadService(client)
 
 
@@ -368,6 +369,7 @@ def test_reusing_a_run_instance_does_not_leak_state_between_runs(
     client.username = "admin"
     client.password = "hunter2"
     client.verify_ssl = True
+    client.server_version = None
 
     run = GradualUploadRun(
         client=client,
@@ -397,3 +399,45 @@ def test_reusing_a_run_instance_does_not_leak_state_between_runs(
     # it for this second call, duration would be ~time.time() (billions of
     # seconds), not a fraction of a second.
     assert summary2.duration < 5, "the first run's start_time leaked into the second"
+
+
+# =============================================================================
+# Display-path fallbacks (paths outside display_root raise ValueError)
+# =============================================================================
+
+
+def _bare_run(tmp_path: Path) -> uploads.GradualUploadRun:
+    from xnatctl.services.upload.gradual import GradualUploadRun
+    from xnatctl.services.upload.gradual_client import GradualClientPool
+
+    client = MagicMock()
+    client.base_url = "https://xnat.example.org"
+    client.session_token = "TOKEN"
+    client.username = "admin"
+    client.password = "hunter2"
+    client.verify_ssl = True
+    client.server_version = None
+    return GradualUploadRun(
+        client=client,
+        pool=GradualClientPool(),
+        project="PROJ",
+        subject="SUB001",
+        session="SESS01",
+        direct_archive=True,
+        display_root=tmp_path / "root",
+        progress_callback=None,
+        start_time=0.0,
+    )
+
+
+def test_display_falls_back_to_name_for_paths_outside_the_root(tmp_path: Path) -> None:
+    """`relative_to` raises ValueError for a path outside display_root."""
+    run = _bare_run(tmp_path)
+    outside = tmp_path / "elsewhere" / "file.dcm"
+    assert run.display(outside) == "file.dcm"
+
+
+def test_scan_id_is_none_for_paths_outside_the_root(tmp_path: Path) -> None:
+    run = _bare_run(tmp_path)
+    outside = tmp_path / "elsewhere" / "scans" / "3" / "resources" / "DICOM" / "files" / "f.dcm"
+    assert run._scan_id_for(outside) is None

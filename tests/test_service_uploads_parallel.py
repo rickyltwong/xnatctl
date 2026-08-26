@@ -93,6 +93,7 @@ def service() -> UploadService:
     client.verify_ssl = True
     client.username = "admin"
     client.password = "hunter2"
+    client.server_version = None
     return UploadService(client)
 
 
@@ -449,3 +450,18 @@ def test_archives_are_cleaned_up_after_a_failure(service: UploadService, dicom_t
 
     for path in made:
         assert not path.exists(), f"leaked upload workspace on the failure path: {path}"
+
+
+def test_unscannable_source_dir_reports_failure_without_uploading(
+    service: UploadService, tmp_path: Path
+) -> None:
+    """collect_dicom_files raises ValueError for a non-directory source."""
+    with mock_uploads_http(ok) as seen:
+        summary = service.upload_dicom_parallel(
+            tmp_path / "does-not-exist", "PROJ", "SUB001", "SESS01", upload_workers=2
+        )
+
+    assert summary.success is False
+    assert summary.total == 0
+    assert summary.errors and "Failed to scan directory" in summary.errors[0]
+    assert seen == [], "no HTTP request may be made for an unscannable source"

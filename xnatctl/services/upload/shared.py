@@ -87,7 +87,7 @@ class SessionRefresher:
 
             if self._username:
                 AuthManager().save_session(token, self._base_url, self._username)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # best-effort cache write (see docstring): failing the upload over an uncached token would be absurd
             logger.debug("Could not update the session cache after refresh: %s", e)
 
     @property
@@ -133,7 +133,7 @@ class SessionRefresher:
                         logger.info("Session refreshed successfully")
                     else:
                         logger.error("Session refresh failed: HTTP %d", resp.status_code)
-            except Exception:
+            except Exception:  # noqa: BLE001  # best-effort reauth: failed refresh leaves token unchanged; per-item 401 handling takes over
                 logger.exception("Session refresh failed")
 
             return self._token

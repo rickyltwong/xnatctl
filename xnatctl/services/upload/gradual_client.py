@@ -57,7 +57,7 @@ class GradualClientPool:
             if client is not None:
                 try:
                     client.close()
-                except Exception:
+                except Exception:  # noqa: BLE001  # best-effort cleanup: closing a stale httpx client must not fail the operation
                     pass
 
             client = httpx.Client(
@@ -80,7 +80,7 @@ class GradualClientPool:
         try:
             self._local.client = None
             self._local.key = None
-        except Exception:
+        except Exception:  # noqa: BLE001  # best-effort cleanup: clearing thread-local client refs
             pass
 
         with self._registry_lock:
@@ -89,7 +89,7 @@ class GradualClientPool:
         for c in clients:
             try:
                 c.close()
-            except Exception:
+            except Exception:  # noqa: BLE001  # best-effort cleanup: closing pooled httpx clients must not fail teardown
                 pass
 
     @contextlib.contextmanager
@@ -195,19 +195,32 @@ def _upload_single_file_gradual(
         if 200 <= resp.status_code < 300:
             return name, True, ""
 
-        # Include a small snippet of server response for debugging (XNAT often returns
-        # useful details for 4xx/5xx in plain text or HTML).
-        snippet = ""
-        try:
-            snippet = resp.text.strip().replace("\n", " ")
-        except Exception:
-            snippet = ""
-        if snippet:
-            snippet = snippet[:200]
-
-        detail = f"HTTP {resp.status_code}"
-        if snippet:
-            detail = f"{detail}: {snippet}"
-        return name, False, detail
-    except Exception as e:
+        return name, False, _extract_error_detail(resp)
+    except Exception as e:  # noqa: BLE001  # per-file worker-pool isolation: any failure becomes a documented (name, False, msg) tuple
         return name, False, str(e)
+
+
+def _extract_error_detail(resp: httpx.Response) -> str:
+    """Build the failure detail for a non-2xx import response.
+
+    Includes a small snippet of the server response for debugging (XNAT often
+    returns useful details for 4xx/5xx in plain text or HTML).
+
+    Args:
+        resp: The non-2xx response.
+
+    Returns:
+        "HTTP <status>", with a body snippet appended when one is readable.
+    """
+    snippet = ""
+    try:
+        snippet = resp.text.strip().replace("\n", " ")
+    except Exception:  # noqa: BLE001  # best-effort debug-info extraction: must not crash the error-reporting path itself
+        snippet = ""
+    if snippet:
+        snippet = snippet[:200]
+
+    detail = f"HTTP {resp.status_code}"
+    if snippet:
+        detail = f"{detail}: {snippet}"
+    return detail

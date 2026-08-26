@@ -230,6 +230,7 @@ class TestWarmupCircuitBreaker:
         client.session_token = "TOK"
         client.username = "u"
         client.password = "p"
+        client.server_version = None
         return UploadService(client)
 
     def test_a_uniformly_rejected_warmup_aborts_before_the_parallel_phase(

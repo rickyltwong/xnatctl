@@ -3,6 +3,13 @@
 Sends files directly to a DICOM SCP over one or more C-STORE associations,
 bypassing the XNAT REST import service entirely. Independent of any XNAT
 client -- it only needs host/port/AE-title connection details.
+
+Every ``pynetdicom``/``pydicom`` import in this module is function-local by
+design, never module-scope: this module is imported unconditionally by
+``services.upload`` (``from . import dicom_store, ...``), which every REST
+upload path pulls in too, so a module-scope import would make pynetdicom's
+(non-trivial) import cost part of every upload, not just ``session
+upload-dicom``.
 """
 
 from __future__ import annotations
@@ -232,7 +239,7 @@ def _send_dicom_batch(
 
             try:
                 status = assoc.send_c_store(ds)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # per-file C-STORE isolation: pynetdicom/network failures are non-enumerable
                 failed += 1
                 log.write(f"Store error {file_path}: {type(e).__name__}: {e}\n")
                 continue
@@ -295,18 +302,7 @@ def upload_dicom_store(
         RuntimeError: If C-ECHO fails or no DICOM files found.
         UploadError: If TLS material is requested but cannot be loaded.
     """
-    tls_context = build_dicom_tls_context(tls_ca_bundle, tls_cert, tls_key) if tls else None
-    if tls_context is None:
-        # Informational, not alarming: plenty of sites run C-STORE on a
-        # segregated network on purpose. But it should be a decision
-        # someone made, not one they never knew they had.
-        logger.info(
-            "DICOM C-STORE to %s:%s is unencrypted; use --tls if the server supports it",
-            host,
-            port,
-        )
-    else:
-        logger.info("DICOM C-STORE to %s:%s is TLS-encrypted", host, port)
+    tls_context = _setup_tls_and_log(tls, tls_ca_bundle, tls_cert, tls_key, host, port)
 
     if not dicom_root.exists() or not dicom_root.is_dir():
         raise ValueError(f"dicom_root is not a directory: {dicom_root}")
@@ -315,21 +311,12 @@ def upload_dicom_store(
     log_dir = workspace / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    failed_total = 0
+    # Shared with _run_batches_in_parallel so the finally's cleanup condition
+    # sees partial failure tallies even if a batch worker raises mid-loop.
+    tally = _StoreTally()
 
     try:
-        logger.info(
-            "Pre-flight C-ECHO %s -> %s @ %s:%s",
-            calling_aet,
-            called_aet,
-            host,
-            port,
-        )
-        if not _c_echo(host, port, calling_aet, called_aet, tls_context):
-            raise RuntimeError(
-                f"C-ECHO failed - check host/port/AET settings "
-                f"(host={host}, port={port}, called_aet={called_aet})"
-            )
+        _preflight_c_echo(host, port, calling_aet, called_aet, tls_context)
 
         files = collect_dicom_files(dicom_root)
         if not files:
@@ -342,45 +329,154 @@ def upload_dicom_store(
             len(batches),
         )
 
-        sent_total = 0
-
-        with cancellable_pool(len(batches)) as (pool, _cstore_token):
-            futures = {
-                pool.submit(
-                    _send_dicom_batch,
-                    f"{i:03d}",
-                    batch,
-                    host,
-                    port,
-                    calling_aet,
-                    called_aet,
-                    log_dir,
-                    tls_context,
-                ): i
-                for i, batch in enumerate(batches)
-            }
-
-            for future in as_completed(futures):
-                batch_idx = futures[future]
-                sent, failed = future.result()
-                sent_total += sent
-                failed_total += failed
-                logger.info(
-                    "Batch %03d complete: %d sent, %d failed",
-                    batch_idx,
-                    sent,
-                    failed,
-                )
+        _run_batches_in_parallel(
+            batches, host, port, calling_aet, called_aet, log_dir, tls_context, tally
+        )
 
         return DICOMStoreSummary(
             total_files=len(files),
-            sent=sent_total,
-            failed=failed_total,
+            sent=tally.sent,
+            failed=tally.failed,
             log_dir=log_dir,
             workspace=workspace,
-            success=failed_total == 0,
+            success=tally.failed == 0,
         )
 
     finally:
-        if cleanup and failed_total == 0:
+        if cleanup and tally.failed == 0:
             shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _setup_tls_and_log(
+    tls: bool,
+    tls_ca_bundle: str | None,
+    tls_cert: str | None,
+    tls_key: str | None,
+    host: str,
+    port: int,
+) -> ssl.SSLContext | None:
+    """Build the TLS context if requested and log the encryption decision.
+
+    Args:
+        tls: Encrypt the associations.
+        tls_ca_bundle: PEM file of CAs to trust (default: system store).
+        tls_cert: Client certificate, for SCPs requiring mutual TLS.
+        tls_key: Its private key.
+        host: DICOM SCP host.
+        port: DICOM SCP port.
+
+    Returns:
+        The TLS context, or None for a cleartext association.
+
+    Raises:
+        UploadError: If TLS material is requested but cannot be loaded.
+    """
+    tls_context = build_dicom_tls_context(tls_ca_bundle, tls_cert, tls_key) if tls else None
+    if tls_context is None:
+        # Informational, not alarming: plenty of sites run C-STORE on a
+        # segregated network on purpose. But it should be a decision
+        # someone made, not one they never knew they had.
+        logger.info(
+            "DICOM C-STORE to %s:%s is unencrypted; use --tls if the server supports it",
+            host,
+            port,
+        )
+    else:
+        logger.info("DICOM C-STORE to %s:%s is TLS-encrypted", host, port)
+    return tls_context
+
+
+def _preflight_c_echo(
+    host: str,
+    port: int,
+    calling_aet: str,
+    called_aet: str,
+    tls_context: ssl.SSLContext | None,
+) -> None:
+    """Verify SCP connectivity with C-ECHO before any C-STORE starts.
+
+    Args:
+        host: DICOM SCP host.
+        port: DICOM SCP port.
+        calling_aet: Our AE title.
+        called_aet: Remote AE title.
+        tls_context: When given, the association is encrypted.
+
+    Raises:
+        RuntimeError: If the C-ECHO fails.
+    """
+    logger.info(
+        "Pre-flight C-ECHO %s -> %s @ %s:%s",
+        calling_aet,
+        called_aet,
+        host,
+        port,
+    )
+    if not _c_echo(host, port, calling_aet, called_aet, tls_context):
+        raise RuntimeError(
+            f"C-ECHO failed - check host/port/AET settings "
+            f"(host={host}, port={port}, called_aet={called_aet})"
+        )
+
+
+@dataclass
+class _StoreTally:
+    """Mutable sent/failed counters shared across the batch loop.
+
+    Mutated in place per completed batch so the caller's workspace-cleanup
+    condition sees partial tallies even when a batch worker raises.
+    """
+
+    sent: int = 0
+    failed: int = 0
+
+
+def _run_batches_in_parallel(
+    batches: list[list[Path]],
+    host: str,
+    port: int,
+    calling_aet: str,
+    called_aet: str,
+    log_dir: Path,
+    tls_context: ssl.SSLContext | None,
+    tally: _StoreTally,
+) -> None:
+    """Send every batch over its own parallel C-STORE association.
+
+    Args:
+        batches: Per-association file batches.
+        host: DICOM SCP host.
+        port: DICOM SCP port.
+        calling_aet: Our AE title.
+        called_aet: Remote AE title.
+        log_dir: Directory for batch log files.
+        tls_context: When given, associations are encrypted.
+        tally: Counters mutated in place per completed batch.
+    """
+    with cancellable_pool(len(batches)) as (pool, _cstore_token):
+        futures = {
+            pool.submit(
+                _send_dicom_batch,
+                f"{i:03d}",
+                batch,
+                host,
+                port,
+                calling_aet,
+                called_aet,
+                log_dir,
+                tls_context,
+            ): i
+            for i, batch in enumerate(batches)
+        }
+
+        for future in as_completed(futures):
+            batch_idx = futures[future]
+            sent, failed = future.result()
+            tally.sent += sent
+            tally.failed += failed
+            logger.info(
+                "Batch %03d complete: %d sent, %d failed",
+                batch_idx,
+                sent,
+                failed,
+            )

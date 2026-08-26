@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from conftest import authenticated_seams, make_authenticated_context
 
 from xnatctl.cli.main import cli
+from xnatctl.core.exceptions import ServerError
 from xnatctl.models.progress import DownloadSummary, VerificationReport
 
 
@@ -87,6 +88,50 @@ class TestScanList:
         assert result.exit_code == 0
         assert "T1w" in result.output
         assert "T2w" in result.output
+
+    def test_scan_list_filter_and_sort(self, runner: CliRunner) -> None:
+        """--filter and --sort-by narrow AND order the scan listing,
+        client-side.
+
+        Three "usable" scans survive the filter, deliberately out of ID
+        order (3, 4, 2): if --sort-by were ignored they would print in that
+        original relative order instead of sorted (2, 3, 4), so a bypassed
+        --sort-by is caught, not just a bypassed --filter. The unusable scan
+        is placed first so a bypassed --filter is caught too.
+        """
+        ctx, mock_client = make_authenticated_context()
+        mock_client.get_json.side_effect = [
+            _exp_metadata(),
+            _scan_results(
+                [
+                    {"ID": "1", "type": "T1w", "series_description": "", "quality": "unusable"},
+                    {"ID": "3", "type": "T3w", "series_description": "", "quality": "usable"},
+                    {"ID": "4", "type": "T4w", "series_description": "", "quality": "usable"},
+                    {"ID": "2", "type": "T2w", "series_description": "", "quality": "usable"},
+                ]
+            ),
+        ]
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "list",
+                    "-E",
+                    "XNAT_E00001",
+                    "--filter",
+                    "quality:usable",
+                    "--sort-by",
+                    "id",
+                    "-o",
+                    "json",
+                ],
+            )
+
+        assert result.exit_code == 0
+        rows = json.loads(result.output)
+        assert [r["id"] for r in rows] == ["2", "3", "4"]
 
     def test_scan_list_with_project(self, runner: CliRunner) -> None:
         """List scans with -P scopes to project endpoint."""
@@ -445,6 +490,41 @@ class TestScanShow:
             in scan_url
         )
 
+    def test_scan_show_resources_listing_failure_is_not_silent(self, runner: CliRunner) -> None:
+        """A resource-listing failure must be visible, not indistinguishable from "no resources".
+
+        A bare ``except Exception: resources = []`` around the resources
+        fetch would render a transient 500 identically -- silently -- to a
+        scan that genuinely has no resources.
+        """
+        ctx, mock_client = make_authenticated_context()
+
+        def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
+            if url.endswith("/resources"):
+                raise ServerError(500, "GET", url)
+            return {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "1",
+                            "type": "T1w",
+                            "series_description": "T1-weighted",
+                            "quality": "usable",
+                            "frames": "176",
+                            "note": "",
+                        }
+                    ]
+                }
+            }
+
+        mock_client.get_json.side_effect = _get_json_side
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "show", "-E", "XNAT_E00001", "1"])
+
+        assert result.exit_code == 0
+        assert "Warning: could not list resources" in result.output
+
     def test_scan_show_not_found(self, runner: CliRunner) -> None:
         """Non-existent scan prints error and exits 1."""
         ctx, mock_client = make_authenticated_context()
@@ -623,6 +703,164 @@ class TestScanDelete:
         assert "Deleted 1 scan" in result.output
 
 
+class TestScanDeleteBatch:
+    """Tests for `scan delete --batch`."""
+
+    def test_batch_stdin_deletes_each_scan(self, runner: CliRunner) -> None:
+        ctx, mock_client = make_authenticated_context()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_client.delete.return_value = mock_response
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "delete",
+                    "-E",
+                    "XNAT_E00001",
+                    "--batch",
+                    "-",
+                    "-y",
+                ],
+                input="1\n2\n",
+            )
+
+        assert result.exit_code == 0
+        assert mock_client.delete.call_count == 2
+
+    def test_batch_json_array_file(self, runner: CliRunner, tmp_path: Any) -> None:
+        batch_file = tmp_path / "scans.json"
+        batch_file.write_text('["1", "2"]')
+        ctx, mock_client = make_authenticated_context()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_client.delete.return_value = mock_response
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "delete",
+                    "-E",
+                    "XNAT_E00001",
+                    "--batch",
+                    str(batch_file),
+                    "-y",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert mock_client.delete.call_count == 2
+
+    def test_batch_dry_run_lists_scans_without_deleting(
+        self, runner: CliRunner, tmp_path: Any
+    ) -> None:
+        batch_file = tmp_path / "scans.txt"
+        batch_file.write_text("1\n2\n")
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "delete",
+                    "-E",
+                    "XNAT_E00001",
+                    "--batch",
+                    str(batch_file),
+                    "--dry-run",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert "DRY-RUN" in result.output
+        assert "2 scans" in result.output
+        mock_client.delete.assert_not_called()
+
+    def test_neither_scans_nor_batch_is_usage_error(self, runner: CliRunner) -> None:
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["scan", "delete", "-E", "XNAT_E00001", "-y"])
+
+        assert result.exit_code != 0
+        assert "provide --scans or --batch" in result.output
+
+    def test_both_scans_and_batch_is_usage_error(self, runner: CliRunner, tmp_path: Any) -> None:
+        batch_file = tmp_path / "scans.txt"
+        batch_file.write_text("2\n")
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "delete",
+                    "-E",
+                    "XNAT_E00001",
+                    "--scans",
+                    "1",
+                    "--batch",
+                    str(batch_file),
+                    "-y",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "not both" in result.output
+
+    def test_batch_dash_without_yes_or_dry_run_is_usage_error(self, runner: CliRunner) -> None:
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                ["scan", "delete", "-E", "XNAT_E00001", "--batch", "-"],
+                input="1\n",
+            )
+
+        assert result.exit_code != 0
+        assert "requires --yes or --dry-run" in result.output
+        mock_client.delete.assert_not_called()
+
+    def test_batch_empty_file_does_not_fall_through_to_wildcard(
+        self, runner: CliRunner, tmp_path: Any
+    ) -> None:
+        """An empty --batch file, given alongside --scans '*', must not read
+        as "no --batch given" and fall through to the wildcard, deleting
+        every scan in the session.
+        """
+        batch_file = tmp_path / "empty.txt"
+        batch_file.write_text("")
+        ctx, mock_client = make_authenticated_context()
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    "delete",
+                    "-E",
+                    "XNAT_E00001",
+                    "--scans",
+                    "*",
+                    "--batch",
+                    str(batch_file),
+                    "-y",
+                ],
+            )
+
+        assert result.exit_code != 0
+        mock_client.delete.assert_not_called()
+        # The wildcard must never even be resolved against the server.
+        mock_client.get_json.assert_not_called()
+
+
 # =============================================================================
 # Scan Download
 # =============================================================================
@@ -730,9 +968,10 @@ class TestScanDownload:
 
     def test_scan_download_name_empty_string_is_rejected(self, runner: CliRunner, tmp_path) -> None:
         """An explicit ``--name ""`` must fail validation, not silently fall
-        back to the session_id -- `if name:` used to skip validation
-        entirely for an empty string and let ``name or session_id`` pick
-        the fallback without ever reporting the caller's bad input.
+        back to the session_id -- a truthy `if name:` check would skip
+        validation entirely for an empty string and let ``name or
+        session_id`` pick the fallback without ever reporting the caller's
+        bad input.
         """
         ctx, mock_client = make_authenticated_context()
 

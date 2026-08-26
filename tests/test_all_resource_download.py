@@ -210,9 +210,8 @@ class TestSessionDownloadResourceFlags:
     ) -> None:
         """--include-resources warns on stderr and maps to --session-resources.
 
-        It used to warn through ``warnings.warn(DeprecationWarning)``, which
-        Python hides by default -- so the deprecation was invisible to the
-        people who needed to act on it.
+        A ``warnings.warn(DeprecationWarning)`` would be hidden by Python
+        by default -- invisible to the people who need to act on it.
         """
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {

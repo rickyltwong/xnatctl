@@ -67,9 +67,8 @@ def _all_scans_zip() -> bytes:
 def _session_resource_zip(label: str = SESSION_RESOURCE_LABEL) -> bytes:
     """The documented, real XNAT resource-ZIP shape: a session-label wrapper
     around the full ``resources/{label}/files/{name}`` path (see
-    ``services/transfer/executor.py::_strip_xnat_prefix``) -- not the bare
-    ``{label}/{name}`` shape this fixture previously (and incorrectly)
-    synthesized.
+    ``services/transfer/executor_resources.py::_strip_xnat_prefix``) -- not a bare
+    ``{label}/{name}`` shape.
     """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
@@ -467,10 +466,10 @@ class TestVerifySessionResources:
     def test_extract_defers_session_resource_zip_deletion_until_after_verify(
         self, tmp_path: Path
     ) -> None:
-        """BLOCKER regression: --extract used to flatten the session-resource
-        ZIP's content to session_dir root (losing the QC label) and delete
-        the ZIP before --verify ever got to read it, so a genuinely clean
-        download always false-failed. The ZIP must be read intact first.
+        """--extract must not flatten the session-resource ZIP's content to
+        session_dir root (losing the QC label) and delete the ZIP before
+        --verify ever gets to read it -- a genuinely clean download would
+        always false-fail. The ZIP must be read intact first.
         """
         for url in _serve(bad_digest_scan=None, session_resources=True):
             result = self._download_with_session_resources(url, tmp_path, "--extract")

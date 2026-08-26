@@ -15,18 +15,22 @@ from xnatctl.cli.common import (
     global_options,
     handle_errors,
     require_auth,
-    require_project_from_context,
     resolve_workers_from_context,
     validate_local_path_option_cb,
 )
-from xnatctl.core.exceptions import DownloadError, InputValidationError, ResourceNotFoundError
+from xnatctl.core.exceptions import (
+    DownloadError,
+    InputValidationError,
+    ResourceNotFoundError,
+)
 from xnatctl.core.output import (
     OutputFormat,
+    create_progress,
     print_error,
     print_json,
-    print_output,
     print_success,
 )
+from xnatctl.core.validation import validate_local_path_component, validate_path_writable
 from xnatctl.models.hierarchy import ExperimentRef
 from xnatctl.models.progress import (
     TransferItemResult,
@@ -50,194 +54,6 @@ def _echo_stderr(message: str) -> None:
 def session() -> None:
     """Manage XNAT sessions/experiments."""
     pass
-
-
-@session.command("list")
-@click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
-@click.option("--subject", "-S", help="Filter by subject")
-@click.option(
-    "--modality", type=click.Choice(["MR", "PET", "CT", "EEG"]), help="Filter by modality"
-)
-@global_options
-@handle_errors
-@require_auth
-def session_list(
-    ctx: Context,
-    project: str | None,
-    subject: str | None,
-    modality: str | None,
-) -> None:
-    """List sessions/experiments in a project.
-
-    \b
-    Example:
-        xnatctl session list --project MYPROJ
-        xnatctl session list -P MYPROJ --subject SUB001
-        xnatctl session list -P MYPROJ --modality MR
-    """
-    from xnatctl.core.validation import validate_project_id
-
-    project = validate_project_id(require_project_from_context(ctx, project))
-    sessions = SessionService(ctx.get_client()).list_sessions(
-        project, subject=subject, modality=modality
-    )
-
-    print_output(
-        sessions,
-        format=ctx.output_format,
-        columns=["id", "label", "subject", "date", "modality"],
-        column_labels={
-            "id": "ID",
-            "label": "Label",
-            "subject": "Subject",
-            "date": "Date",
-            "modality": "Modality",
-        },
-        quiet=ctx.quiet,
-        id_field="id",
-    )
-
-
-@session.command("show")
-@click.option(
-    "--experiment",
-    "-E",
-    "session_id",
-    required=True,
-    metavar="ID_OR_LABEL",
-    help="Experiment ID (accession #), or label when -P is provided",
-)
-@click.option(
-    "--project",
-    "-P",
-    help="Project ID (enables lookup by label; defaults to profile default_project)",
-)
-@global_options
-@handle_errors
-@require_auth
-def session_show(ctx: Context, session_id: str, project: str | None) -> None:
-    """Show session details including scans and resources.
-
-    \b
-    Example:
-        xnatctl session show -E XNAT_E00001
-        xnatctl session show -E SESSION_LABEL -P MYPROJ
-    """
-    from xnatctl.core.output import print_table
-    from xnatctl.core.validation import validate_session_id
-
-    session_id = validate_session_id(session_id)
-    client = ctx.get_client()
-    project = default_project_from_context(ctx) if project is None else project
-    hierarchy = HierarchyService(client)
-    session_ref = ExperimentRef(
-        experiment=session_id,
-        project_id=project,
-        experiment_is_label=project is not None,
-    )
-
-    try:
-        resolved = hierarchy.resolve_experiment(session_ref)
-    except ResourceNotFoundError:
-        print_error(f"Session not found: {session_id}")
-        raise SystemExit(1) from None
-
-    # Keep project scope (and subject scope if known) so nested calls respect
-    # project ACLs and match pre-refactor URLs.
-    nested_ref = ExperimentRef(
-        experiment=resolved.experiment_id,
-        project_id=resolved.project_id or project,
-        subject=resolved.subject_id or resolved.subject_label,
-    )
-
-    # Get scans — resolve xsiType so non-imaging sessions return results
-    try:
-        scan_params: dict[str, str] = {}
-        scan_xsi = hierarchy.resolve_scan_xsi_type(resolved.xsi_type)
-        if scan_xsi:
-            scan_params["xsiType"] = scan_xsi
-        scans_resp = hierarchy.get_experiment_json(nested_ref, "scans", params=scan_params)
-        scans = HierarchyService.extract_rows(scans_resp)
-    except Exception:
-        scans = []
-
-    # Get resources
-    try:
-        res_resp = hierarchy.get_experiment_json(nested_ref, "resources")
-        resources = HierarchyService.extract_rows(res_resp)
-    except Exception:
-        resources = []
-
-    if ctx.output_format == OutputFormat.JSON:
-        output = {
-            "id": resolved.experiment_id,
-            "label": resolved.experiment_label or "",
-            "subject": resolved.subject_label or resolved.subject_id or "",
-            "project": resolved.project_id or "",
-            "date": resolved.session_date or "",
-            "xsi_type": resolved.xsi_type or "",
-            "scans": scans,
-            "resources": resources,
-        }
-        print_output(output, format=OutputFormat.JSON)
-    else:
-        # Print session info
-        click.echo(f"\n[Session: {resolved.experiment_label or session_id}]")
-        click.echo(f"  ID:      {resolved.experiment_id}")
-        click.echo(f"  Subject: {resolved.subject_label or resolved.subject_id or ''}")
-        click.echo(f"  Project: {resolved.project_id or ''}")
-        click.echo(f"  Date:    {resolved.session_date or ''}")
-        click.echo(f"  Type:    {resolved.xsi_type or ''}")
-
-        # Print scans table
-        if scans:
-            click.echo(f"\n[Scans ({len(scans)})]")
-            scan_rows = []
-            for s in scans:
-                scan_rows.append(
-                    {
-                        "id": s.get("ID", ""),
-                        "type": s.get("type", ""),
-                        "series": s.get("series_description", ""),
-                        "quality": s.get("quality", ""),
-                        "frames": s.get("frames", ""),
-                    }
-                )
-            print_table(
-                scan_rows,
-                ["id", "type", "series", "quality", "frames"],
-                column_labels={
-                    "id": "ID",
-                    "type": "Type",
-                    "series": "Series",
-                    "quality": "Quality",
-                    "frames": "Frames",
-                },
-            )
-
-        # Print resources table
-        if resources:
-            click.echo(f"\n[Resources ({len(resources)})]")
-            res_rows = []
-            for r in resources:
-                res_rows.append(
-                    {
-                        "label": r.get("label", ""),
-                        "format": r.get("format", ""),
-                        "count": r.get("file_count", ""),
-                        "size": r.get("file_size", ""),
-                    }
-                )
-            print_table(
-                res_rows,
-                ["label", "format", "count", "size"],
-                column_labels={
-                    "label": "Label",
-                    "format": "Format",
-                    "count": "Files",
-                    "size": "Size",
-                },
-            )
 
 
 @session.command("download")
@@ -374,8 +190,6 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         xnatctl session download -E XNAT_E00001 --out ./data --dry-run
         xnatctl session download -E XNAT_E00001 --verify
     """
-    from xnatctl.core.validation import validate_local_path_component, validate_path_writable
-
     # Map extract/keep_zips to internal unzip/cleanup
     unzip = extract or keep_zips
     cleanup = extract and not keep_zips
@@ -481,8 +295,6 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     session_dir = out_path / (name or session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    from xnatctl.core.output import create_progress
-
     download_start = time.time()
 
     # Use parallel path when filtering is active (even with workers=1)
@@ -499,6 +311,22 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
     # `_emit_failed_summary` can always safely read it, no matter which of
     # this function's try/except blocks calls it.
     extra_items: list[TransferItemResult] = []
+    # Filenames `extract_session_zips` skipped as unsafe, accumulated across
+    # every call in this command (the deferred-resource-ZIP call included) --
+    # declared here for the same reason as `extra_items` above.
+    session_zip_skipped: list[str] = []
+
+    def _skipped_unsafe_entries() -> int:
+        """Total unsafe entries skipped so far, across both extraction paths.
+
+        The parallel engine's own count (per-scan `_extract_scan_zip` calls,
+        already summed into `outcome`) plus every `extract_session_zips` call
+        this command has made -- the sequential archive, and any session/scan
+        resource ZIPs, whichever engine is in play.
+        """
+        return (outcome.skipped_unsafe_entries if outcome is not None else 0) + len(
+            session_zip_skipped
+        )
 
     def _items_from_scan_ok() -> list[TransferItemResult]:
         return [
@@ -564,6 +392,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
             duration_seconds=round(time.time() - download_start, 3),
             status=transfer_status(succeeded=succeeded_count, failed=failed_count),
             items=failure_items,
+            skipped_unsafe_entries=_skipped_unsafe_entries(),
         ).emit()
 
     outcome: DownloadOutcome | None = None
@@ -602,7 +431,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 on_start=on_scan_start,
                 on_scan_result=on_scan_result,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # observe-then-reraise: emits failure summary, re-raises unchanged
             _emit_failed_summary(exc)
             raise
         if outcome.failed:
@@ -629,7 +458,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 )
 
                 progress.update(task, completed=100, description="Scans downloaded")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # observe-then-reraise: emits failure summary, re-raises unchanged
             _emit_failed_summary(exc)
             raise
         # The sequential path never enumerates individual scans (that's the
@@ -665,7 +494,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                     )
                     if row.get("label")
                 ]
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  # documented soft isolation -- result threaded through as listing_error, not swallowed (see comment above)
                 listing_error = str(exc)
         session_resource_error: str | None = None
         try:
@@ -685,13 +514,13 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 click.echo(
                     f"  Session resources downloaded ({len(session_resource_zips)})", err=True
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # warned to stderr and folded into JSON report (see comment above)
             session_resource_error = str(e)
             if not ctx.quiet:
                 click.echo(f"  Session resources: {e}", err=True)
-        # A resource that failed contributes a failed item -- previously
-        # this whole block was swallowed silently outside of --verify, so
-        # -o json could report "success" with a resource missing on disk.
+        # A resource that failed contributes a failed item -- swallowing
+        # the failure silently would let -o json report "success" with a
+        # resource missing on disk.
         succeeded_resource_labels = {label for label, _zip in session_resource_zips}
         for label in requested_resource_labels:
             if label in succeeded_resource_labels:
@@ -751,14 +580,16 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                     cleanup=cleanup,
                     on_message=None if ctx.quiet else _echo_stderr,
                     zip_paths=non_resource_zips,
+                    skipped_out=session_zip_skipped,
                 )
             else:
                 extract_session_zips(
                     session_dir,
                     cleanup=cleanup,
                     on_message=None if ctx.quiet else _echo_stderr,
+                    skipped_out=session_zip_skipped,
                 )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # observe-then-reraise across mixed OSError/zipfile/verification errors
         _emit_failed_summary(exc)
         raise
 
@@ -776,6 +607,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 duration_seconds=round(time.time() - download_start, 3),
                 status=transfer_status(succeeded=succeeded_count, failed=failed_count),
                 items=all_items,
+                skipped_unsafe_entries=_skipped_unsafe_entries(),
             ).emit()
             raise SystemExit(1)
         # Losing scans and exiting 0 is how a partial transfer gets mistaken
@@ -824,7 +656,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 local_root=verify_local_root,
                 zip_paths=verify_zip_paths,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # observe-then-reraise across mixed OSError/zipfile/verification errors
             _emit_failed_summary(exc)
             raise
         for path in verification.collisions:
@@ -856,8 +688,9 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                     cleanup=cleanup,
                     on_message=None if ctx.quiet else _echo_stderr,
                     zip_paths=resource_zip_paths,
+                    skipped_out=session_zip_skipped,
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # observe-then-reraise across mixed OSError/zipfile/verification errors
             _emit_failed_summary(exc)
             raise
 
@@ -880,6 +713,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
                 status="failed",
                 items=_current_items(),
                 verification=TransferVerification.from_report(verification),
+                skipped_unsafe_entries=_skipped_unsafe_entries(),
             ).emit()
             raise SystemExit(1)
         if verification.mismatched or verification.missing_local or verification.collisions:
@@ -932,6 +766,7 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
             verification=TransferVerification.from_report(verification)
             if verification is not None
             else None,
+            skipped_unsafe_entries=_skipped_unsafe_entries(),
         ).emit()
         # A session-resource failure surfaces here even though nothing else
         # went wrong: it's caught by `items`/`status` now, not just --verify.
@@ -947,107 +782,3 @@ def session_download(  # noqa: C901  # pre-existing; see pyproject
         )
     else:
         print_success(f"Downloaded session to: {session_dir}")
-
-
-@click.group()
-def local() -> None:
-    """Local file operations (no XNAT connection required)."""
-    pass
-
-
-@local.command("extract")
-@click.argument("input_dir", type=click.Path(exists=True, file_okay=False))
-@click.option("--cleanup/--no-cleanup", default=True, help="Remove ZIPs after extraction")
-@click.option("--recursive", "-r", is_flag=True, help="Process subdirectories")
-@click.option("--dry-run", is_flag=True, help="Preview what would be extracted")
-@handle_errors
-def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool) -> None:  # noqa: C901  # pre-existing; see pyproject
-    """Extract downloaded XNAT session ZIPs.
-
-    This command extracts ZIP files from previously downloaded sessions,
-    creating organized subdirectories. Use after downloading without --unzip,
-    or to re-process existing downloads.
-
-    \b
-    Example:
-        # Extract a single session directory
-        xnatctl local extract ./data/XNAT_E00001
-
-        # Extract all sessions, keeping ZIPs
-        xnatctl local extract ./data --recursive --no-cleanup
-
-        # Preview extraction
-        xnatctl local extract ./data --recursive --dry-run
-    """
-    import shutil
-    import zipfile
-
-    input_path = Path(input_dir)
-
-    # Find ZIP files
-    if recursive:
-        zip_files = list(input_path.rglob("*.zip"))
-    else:
-        zip_files = list(input_path.glob("*.zip"))
-
-    if not zip_files:
-        click.echo("No ZIP files found.", err=True)
-        return
-
-    click.echo(f"Found {len(zip_files)} ZIP file(s)", err=True)
-
-    if dry_run:
-        click.echo("\n[DRY-RUN] Would extract:", err=True)
-        for zip_file in zip_files:
-            extract_dir = zip_file.parent / zip_file.stem
-            click.echo(f"  {zip_file} -> {extract_dir}/", err=True)
-            if cleanup:
-                click.echo(f"    (would remove {zip_file.name})", err=True)
-        return
-
-    extracted = 0
-    failed = 0
-
-    for zip_path in zip_files:
-        click.echo(f"Extracting {zip_path.name}...", err=True)
-
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                for member in zf.infolist():
-                    if member.is_dir():
-                        continue
-
-                    member_path = Path(member.filename)
-                    if any(part.startswith(".") for part in member_path.parts):
-                        continue
-
-                    parts = member_path.parts
-                    if len(parts) < 2:
-                        continue
-
-                    stripped_path = Path(*parts[1:])
-                    output_path = zip_path.parent / stripped_path
-                    # Guard against ZipSlip path traversal
-                    if not output_path.resolve().is_relative_to(zip_path.parent.resolve()):
-                        continue
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    with zf.open(member) as source, open(output_path, "wb") as target:
-                        shutil.copyfileobj(source, target)
-
-            extracted += 1
-
-            if cleanup:
-                zip_path.unlink()
-                click.echo(f"  Removed {zip_path.name}", err=True)
-        except zipfile.BadZipFile:
-            print_error(f"Invalid ZIP file: {zip_path.name}")
-            failed += 1
-        except Exception as e:
-            print_error(f"Failed to extract {zip_path.name}: {e}")
-            failed += 1
-
-    if failed:
-        click.echo(f"\nExtracted: {extracted}, Failed: {failed}", err=True)
-    else:
-        print_success(f"Extracted {extracted} ZIP file(s)")

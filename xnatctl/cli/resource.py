@@ -9,12 +9,31 @@ import click
 
 from xnatctl.cli.common import (
     Context,
+    _make_forwarding_alias_cb,
+    apply_filter,
+    apply_sort_limit,
     default_project_from_context,
     global_options,
     handle_errors,
+    list_options,
     require_auth,
+    resolve_columns,
 )
-from xnatctl.core.output import OutputFormat, print_error, print_output, print_success
+from xnatctl.core.exceptions import ClientRequestError, XNATCtlError
+from xnatctl.core.output import (
+    OutputFormat,
+    create_progress,
+    print_error,
+    print_output,
+    print_success,
+)
+from xnatctl.core.validation import (
+    validate_project_id,
+    validate_resource_label,
+    validate_scan_id,
+    validate_session_id,
+    validate_subject_id,
+)
 from xnatctl.models.hierarchy import (
     ExperimentRef,
     HierarchyParentRef,
@@ -24,6 +43,7 @@ from xnatctl.models.hierarchy import (
     SubjectRef,
 )
 from xnatctl.models.progress import TransferItemResult, TransferSummary
+from xnatctl.services.admin import AdminService
 from xnatctl.services.downloads import stream_to_file
 from xnatctl.services.hierarchy import HierarchyService
 
@@ -99,6 +119,7 @@ def _validate_resource_list_scope(
 @click.option("--subject", "-S", help="List resources at subject scope (requires --project)")
 @click.option("--scan", help="Scope to specific scan")
 @click.argument("session_id", required=False, callback=_validate_resource_list_scope)
+@list_options
 @global_options
 @handle_errors
 @require_auth
@@ -108,6 +129,10 @@ def resource_list(
     project_id: str | None,
     subject: str | None,
     scan: str | None,
+    filter_expr: str | None,
+    limit: int | None,
+    sort_by: str | None,
+    columns: str | None,
 ) -> None:
     """List resources at project, subject, session, or scan level.
 
@@ -117,13 +142,11 @@ def resource_list(
         xnatctl resource list --project MYPROJ --subject SUB01
         xnatctl resource list XNAT_E00001
         xnatctl resource list XNAT_E00001 --scan 1
+        xnatctl resource list XNAT_E00001 --filter 'format:DICOM' --limit 5
     """
-    from xnatctl.core.validation import (
-        validate_project_id,
-        validate_scan_id,
-        validate_session_id,
-        validate_subject_id,
-    )
+    # Deferred: tests monkeypatch xnatctl.services.resources.ResourceService
+    # to intercept the lookup; a module-scope import would bind the real
+    # class before the patch runs (see tests/test_resource_upload.py).
     from xnatctl.services.resources import ResourceService
 
     client = ctx.get_client()
@@ -155,10 +178,14 @@ def resource_list(
             }
         )
 
+    resources = apply_filter(resources, filter_expr)
+    resources = apply_sort_limit(resources, sort_by, limit)
+
+    default_columns = ["label", "format", "file_count", "file_size", "content"]
     print_output(
         resources,
         format=ctx.output_format,
-        columns=["label", "format", "file_count", "file_size", "content"],
+        columns=resolve_columns(default_columns, columns),
         column_labels={
             "label": "Label",
             "format": "Format",
@@ -186,11 +213,8 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
         xnatctl resource show XNAT_E00001 DICOM
         xnatctl resource show XNAT_E00001 DICOM --scan 1
     """
-    from xnatctl.core.validation import (
-        validate_resource_label,
-        validate_scan_id,
-        validate_session_id,
-    )
+    # Deferred: see the comment on the ResourceService import in
+    # resource_list above (test-monkeypatch seam).
     from xnatctl.services.resources import ResourceService
 
     session_id = validate_session_id(session_id)
@@ -217,7 +241,8 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
     # Get files
     try:
         files = service.list_file_rows(resource_parent, resource_label)
-    except Exception:
+    except (XNATCtlError, ValueError) as exc:
+        click.echo(f"Warning: could not list files: {exc}", err=True)
         files = []
 
     output = {
@@ -291,14 +316,8 @@ def resource_upload(
         xnatctl resource upload -P MYPROJ TEMPLATEFLOW ./tpl_data
         xnatctl resource upload -P MYPROJ -S SUB01 QC ./qc.json
     """
-    from xnatctl.core.output import create_progress
-    from xnatctl.core.validation import (
-        validate_project_id,
-        validate_resource_label,
-        validate_scan_id,
-        validate_session_id,
-        validate_subject_id,
-    )
+    # Deferred: see the comment on the ResourceService import in
+    # resource_list above (test-monkeypatch seam).
     from xnatctl.services.resources import ResourceService
 
     # Only two positionals supplied -> they are RESOURCE_LABEL and PATH; the
@@ -347,8 +366,9 @@ def resource_upload(
             format=file_format,
             content=content,
         )
-    except Exception:
-        pass  # Resource may already exist
+    except ClientRequestError as exc:
+        if exc.status_code != 409:
+            raise
 
     try:
         with create_progress() as progress:
@@ -372,7 +392,7 @@ def resource_upload(
                     overwrite=False,
                 )
                 progress.update(task, completed=100)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # mixes filesystem/network errors; caught only to emit a JSON failure summary before re-raising as ClickException
         if ctx.output_format == OutputFormat.JSON:
             TransferSummary(
                 operation="upload",
@@ -423,8 +443,6 @@ def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
           /archive/projects/MYPROJ/subjects/SUBJ/experiments/EXP/scans/1/resources/DICOM \\
           --options append --options populateStats
     """
-    from xnatctl.services.admin import AdminService
-
     options_str = ",".join(options) if options else None
     resp = AdminService(ctx.get_client()).refresh_catalog(uri, options_str)
     if resp.status_code != 200:
@@ -443,7 +461,20 @@ def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
 @click.option("--subject", "-S", help="Download a subject-scope resource (requires --project)")
 @click.argument("session_id", required=False)
 @click.argument("resource_label", required=False)
-@click.option("--file", "-f", "out", required=True, type=click.Path(), help="Output file path")
+@click.option(
+    "--output-file",
+    "-f",
+    "out",
+    type=click.Path(),
+    help="Output file path",
+)
+@click.option(
+    "--file",
+    "legacy_file_flag",
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("--file", "out"),
+)
 @click.option("--scan", help="Download from scan resource (requires a session)")
 @global_options
 @handle_errors
@@ -454,26 +485,26 @@ def resource_download(
     subject: str | None,
     session_id: str | None,
     resource_label: str | None,
-    out: str,
+    out: str | None,
     scan: str | None,
 ) -> None:
     """Download a resource as ZIP from any hierarchy level.
 
     \b
     Example:
-        xnatctl resource download XNAT_E00001 BIDS --file ./bids.zip
+        xnatctl resource download XNAT_E00001 BIDS --output-file ./bids.zip
         xnatctl resource download XNAT_E00001 DICOM -f ./dicom.zip --scan 1
         xnatctl resource download -P MYPROJ TEMPLATEFLOW -f ./tf.zip
         xnatctl resource download -P MYPROJ -S SUB01 QC -f ./qc.zip
     """
-    from xnatctl.core.output import create_progress
-    from xnatctl.core.validation import (
-        validate_project_id,
-        validate_resource_label,
-        validate_scan_id,
-        validate_session_id,
-        validate_subject_id,
-    )
+    # `--output-file` is not required=True at the Click level: the
+    # deprecated `--file` alias forwards into this same param via a
+    # callback that runs after Click's own required-check would already
+    # have fired (Click checks each option's own parsed value, not
+    # ctx.params), so required=True here would reject a bare `--file`.
+    # Enforced by hand instead.
+    if not out:
+        raise click.UsageError("Missing option '--output-file' / '-f'.")
 
     # Only one positional supplied -> it is the RESOURCE_LABEL; the parent comes
     # from --project/--subject (project- or subject-scope resources).
@@ -517,7 +548,7 @@ def resource_download(
             )
 
             progress.update(task, completed=100)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # emits JSON failure summary before re-raising unchanged
         if ctx.output_format == OutputFormat.JSON:
             TransferSummary(
                 operation="download",

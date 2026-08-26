@@ -1,13 +1,12 @@
-"""GradualClientPool: the property module-level globals made untestable.
+"""GradualClientPool: per-operation client pooling, isolated and testable.
 
-The gradual-DICOM transport used to keep its thread-local httpx client, its
-registry, and its scope refcount as module globals (now
-``services/upload/gradual_client.py``).
-That made two concurrent gradual operations share teardown: whichever one
-finished first closed clients the other was still using. Moving the same
-mechanism into a ``GradualClientPool`` instance -- created per operation and
-passed down -- makes that failure mode structurally impossible, and testable:
-two pool instances below never observe each other.
+Module-global state for the gradual transport's thread-local httpx client,
+registry, and scope refcount would make two concurrent gradual operations
+share teardown: whichever one finished first would close clients the other
+was still using. Keeping the mechanism on a ``GradualClientPool`` instance
+-- created per operation and passed down -- makes that failure mode
+structurally impossible, and testable: two pool instances below never
+observe each other.
 """
 
 from __future__ import annotations
@@ -157,6 +156,7 @@ class TestDirectRunEntersItsOwnScope:
         client.session_token = "TOK"
         client.username = "u"
         client.password = "p"
+        client.server_version = None
 
         pool = GradualClientPool()
         created_clients: list[object] = []

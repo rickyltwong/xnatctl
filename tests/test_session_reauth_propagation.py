@@ -244,13 +244,12 @@ class TestRefreshPropagation:
 
 
 class TestTheBatchPathAlsoReauthenticates:
-    """A 401 mid-upload used to kill the batch.
+    """A 401 mid-upload must not kill the batch.
 
-    Only the gradual path re-authenticated; ``upload_single_archive`` returned
-    "Authentication failed: invalid or expired session" even with credentials
-    in hand. XNAT evicts sessions when an account exceeds its concurrent-session
-    limit -- routine when several workers share a service account -- so a long
-    parallel upload failed batch by batch against a healthy server.
+    XNAT evicts sessions when an account exceeds its concurrent-session
+    limit -- routine when several workers share a service account -- so a
+    long parallel upload that gave up on 401 would fail batch by batch
+    against a healthy server even with credentials in hand.
     """
 
     @staticmethod
@@ -290,7 +289,7 @@ class TestTheBatchPathAlsoReauthenticates:
         monkeypatch.setattr(uploads.httpx, "Client", FakeClient)
 
         result = uploads.upload_single_archive(
-            base_url="https://xnat.example.org",
+            xnat_client=MagicMock(server_version=None, base_url="https://xnat.example.org"),
             username="u",
             password="p",
             session_token="STALE",

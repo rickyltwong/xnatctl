@@ -35,6 +35,7 @@ def test_upload_dicom_gradual_files_uses_explicit_list(
     client.username = "user"
     client.password = "pass"
     client.verify_ssl = True
+    client.server_version = None
 
     service = UploadService(client)
     summary = service.upload_dicom_gradual_files(
@@ -71,6 +72,7 @@ def test_upload_dicom_gradual_files_rejects_duplicate_paths(
     client.username = "user"
     client.password = "pass"
     client.verify_ssl = True
+    client.server_version = None
 
     service = UploadService(client)
 
@@ -110,6 +112,7 @@ def test_upload_dicom_gradual_files_ignores_non_dicom_entries(
     client.username = "user"
     client.password = "pass"
     client.verify_ssl = True
+    client.server_version = None
 
     service = UploadService(client)
     summary = service.upload_dicom_gradual_files(
@@ -153,6 +156,7 @@ def test_upload_dicom_gradual_directory_filters_to_dicom_like_files(
     client.username = "user"
     client.password = "pass"
     client.verify_ssl = True
+    client.server_version = None
 
     service = UploadService(client)
     summary = service.upload_dicom_gradual(
@@ -198,6 +202,7 @@ def test_upload_dicom_gradual_zip_filters_to_dicom_like_files(
     client.username = "user"
     client.password = "pass"
     client.verify_ssl = True
+    client.server_version = None
 
     service = UploadService(client)
     summary = service.upload_dicom_gradual(
@@ -237,6 +242,7 @@ def test_upload_dicom_gradual_returns_no_dicom_files_for_non_dicom_directory(
     client.username = "user"
     client.password = "pass"
     client.verify_ssl = True
+    client.server_version = None
 
     service = UploadService(client)
     summary = service.upload_dicom_gradual(
@@ -250,3 +256,54 @@ def test_upload_dicom_gradual_returns_no_dicom_files_for_non_dicom_directory(
     assert summary.success is False
     assert summary.total == 0
     assert summary.errors == ["No DICOM files found"]
+
+
+def test_display_root_falls_back_to_first_parent_when_commonpath_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ValueError from os.path.commonpath must not abort the upload.
+
+    With the fallback root (`files[0].parent`), the first file displays as its
+    bare name and the second (outside that root) falls back to its name too.
+    """
+    d1 = tmp_path / "a"
+    d2 = tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+    f1 = d1 / "x.dcm"
+    f2 = d2 / "y.dcm"
+    f1.write_text("x")
+    f2.write_text("y")
+
+    displays: list[str] = []
+
+    def fake_upload_one(**kwargs):
+        displays.append(kwargs["display_path"])
+        return (kwargs["display_path"], True, "")
+
+    monkeypatch.setattr(uploads, "_upload_single_file_gradual", fake_upload_one)
+
+    def boom(_paths: object) -> str:
+        raise ValueError("Can't mix absolute and relative paths")
+
+    monkeypatch.setattr("os.path.commonpath", boom)
+
+    client = MagicMock()
+    client.base_url = "https://example.org"
+    client.session_token = "token"
+    client.username = "user"
+    client.password = "pass"
+    client.verify_ssl = True
+    client.server_version = None
+
+    service = UploadService(client)
+    summary = service.upload_dicom_gradual_files(
+        files=[f1, f2],
+        project="PROJ",
+        subject="SUBJ",
+        session="SESS",
+        workers=1,
+    )
+
+    assert summary.success is True
+    assert sorted(displays) == ["x.dcm", "y.dcm"]
