@@ -22,8 +22,8 @@ def _add_filter_param(params: dict[str, Any], key: str, value: str | None) -> No
     whitespace-only STRING is a different thing -- these filters go into
     query-param values (httpx encodes them safely, so there's no path/route
     injection risk the way an unquoted URL segment would carry), but
-    ``value=""`` used to fall through the old truthy check the same way
-    ``None`` did, silently widening an audit query to every project/user/
+    a truthy check would let ``value=""`` fall through the same way
+    ``None`` does, silently widening an audit query to every project/user/
     action instead of failing on the caller's mistake.
 
     Raises:
@@ -98,7 +98,7 @@ class AdminService(BaseService):
 
                 self._put(path, params=params)
                 return (exp_id, True, "")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # per-item batch isolation: one failure must not abort the batch
                 return (exp_id, False, str(e))
 
         if parallel and total > 1:
@@ -172,7 +172,7 @@ class AdminService(BaseService):
                 )
                 self._put(path)
                 results["added"].append(group)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # per-item batch isolation: one failure must not abort the batch
                 results["failed"].append(group)
                 results["errors"].append({"group": group, "error": str(e)})
 
@@ -219,7 +219,7 @@ class AdminService(BaseService):
                     )
                     self._delete(path)
                     results["removed"].append(group)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # per-item batch isolation: one failure must not abort the batch
                 results["failed"].append(group)
                 results["errors"].append({"group": group, "error": str(e)})
 
@@ -411,13 +411,25 @@ class AdminService(BaseService):
 
     def get_xapi_audit(
         self,
-        limit: int,
+        limit: int | None,
         project: str | None = None,
         username: str | None = None,
         action: str | None = None,
     ) -> Any:
-        """GET ``/xapi/audit`` with the CLI's filters and return raw JSON."""
-        params: dict[str, Any] = {"limit": limit}
+        """GET ``/xapi/audit`` with the CLI's filters and return raw JSON.
+
+        Args:
+            limit: Max results requested from the server. ``None`` omits the
+                param entirely -- the caller wants the full result set (e.g.
+                to filter/sort client-side over more than the usual small
+                default window), not "0 results".
+            project: Filter by project ID.
+            username: Filter by XNAT username.
+            action: Filter by audit action type.
+        """
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
         _add_filter_param(params, "project", project)
         _add_filter_param(params, "user", username)
         _add_filter_param(params, "action", action)

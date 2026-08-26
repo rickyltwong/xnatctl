@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -75,28 +74,6 @@ class BaseService:
         """
         self.client.delete(path, **kwargs)
         return True
-
-    def _paginate(
-        self,
-        path: str,
-        page_size: int = 100,
-        result_key: str = "ResultSet.Result",
-    ) -> Iterator[dict[str, Any]]:
-        """Iterate over paginated results.
-
-        Args:
-            path: API endpoint path
-            page_size: Results per page
-            result_key: Dot-notation key to extract results
-
-        Yields:
-            Individual result items
-        """
-        yield from self.client.paginate(
-            path,
-            page_size=page_size,
-            result_key=result_key,
-        )
 
     def _extract_results(
         self,

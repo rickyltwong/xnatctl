@@ -8,12 +8,33 @@ from typing import Any
 
 from xnatctl.core.exceptions import (
     OperationError,
+    PermissionDeniedError,
     ResourceExistsError,
     ResourceNotFoundError,
+    XNATCtlError,
 )
+from xnatctl.core.validation import quote_path_segment
 from xnatctl.core.validation import quote_prearchive_segment as _quote_path_segment
 
 from .base import BaseService
+
+# The three meaningful project prearchive-routing codes, read out of
+# ``org.nrg.framework.constants.PrearchiveCode``'s static initializer in the
+# running server's ``framework-1.9.2.jar`` via ``javap -p -c`` (ordinal 0/1/2
+# -> code 0/4/5). The server itself does NOT validate what gets written to
+# ``PUT /data/projects/{id}/prearchive_code/{value}`` -- verified live,
+# ``.../3`` and ``.../9`` both answer 200 and are stored verbatim -- so this
+# mapping (and rejecting anything outside it, via the CLI's ``click.Choice``)
+# is the only thing standing between a typo and a project silently left in an
+# undefined routing state.
+PREARCHIVE_MODE_TO_CODE: dict[str, int] = {
+    "manual": 0,
+    "auto-archive": 4,
+    "auto-archive-overwrite": 5,
+}
+PREARCHIVE_CODE_TO_MODE: dict[int, str] = {
+    code: mode for mode, code in PREARCHIVE_MODE_TO_CODE.items()
+}
 
 # XNAT's prearchive services answer HTTP 200 with an error-shaped body rather
 # than a 4xx, so the status code alone cannot be trusted.
@@ -122,9 +143,10 @@ class PrearchiveService(BaseService):
             data = self._get(path, params=params)
         except ResourceNotFoundError as e:
             # Re-scope the client's typed 404 to name the prearchive session.
-            # This used to be `if "404" in str(e)`, which also fired on any
-            # unrelated error whose text merely contained "404" -- a session
-            # labelled SUB404, for instance.
+            # Matching the typed exception, not the text: a string match
+            # like `if "404" in str(e)` would also fire on any unrelated
+            # error whose text merely contains "404" -- a session labelled
+            # SUB404, for instance.
             raise ResourceNotFoundError(
                 "prearchive session",
                 f"{project}/{timestamp}/{session_name}",
@@ -175,7 +197,7 @@ class PrearchiveService(BaseService):
                 raise ValueError("Cannot archive to a specific experiment label without a subject")
 
         # `is not None`, not truthy: an explicitly-supplied `subject=""`
-        # used to skip this branch entirely (treated the same as "not
+        # would skip a truthy check entirely (treated the same as "not
         # provided"), silently falling back to XNAT's DICOM-derived subject
         # instead of raising on the caller's empty value -- a different
         # archive destination than either the caller or "no override" meant.
@@ -351,3 +373,79 @@ class PrearchiveService(BaseService):
 
         data = self._get(path, params=params)
         return self._extract_results(data)
+
+    def get_routing_code(self, project: str) -> int:
+        """Return a project's raw prearchive-routing code.
+
+        Verified live against XNAT 1.9.2.1: ``GET
+        /data/projects/{project}/prearchive_code`` answers 200 with a BARE
+        INTEGER as the response text (e.g. ``4``) -- NOT JSON. A fresh
+        project defaults to 4 (AutoArchive).
+
+        Args:
+            project: Project ID.
+
+        Returns:
+            The raw code as currently stored server-side. May be a value
+            outside the three meaningful codes in :data:`PREARCHIVE_CODE_TO_MODE`
+            -- the server accepts and stores any integer here without
+            validation (see :meth:`set_routing_mode`) -- so callers must be
+            prepared for an unrecognized code, not assume one of the three.
+
+        Raises:
+            XNATCtlError: If the response body is not parseable as an integer.
+        """
+        path = f"/data/projects/{quote_path_segment(project)}/prearchive_code"
+        text = self.client.get(path).text.strip()
+        try:
+            return int(text)
+        except ValueError as exc:
+            raise XNATCtlError(
+                f"Unexpected response from GET {path}: expected a bare integer, got {text!r}."
+            ) from exc
+
+    def set_routing_mode(self, project: str, mode: str) -> None:
+        """Set a project's prearchive-routing mode.
+
+        Verified live against XNAT 1.9.2.1: ``PUT
+        /data/projects/{project}/prearchive_code/{code}`` answers 200 and the
+        value reads back unchanged on a subsequent GET.
+
+        Args:
+            project: Project ID.
+            mode: One of the keys in :data:`PREARCHIVE_MODE_TO_CODE`
+                (``"manual"``, ``"auto-archive"``, ``"auto-archive-overwrite"``).
+                The CLI restricts ``--set`` to these via ``click.Choice``
+                before this is ever called; this method trusts its caller
+                and does not re-validate.
+
+        Raises:
+            KeyError: If ``mode`` is not one of the three valid mode names.
+            XNATCtlError: If the server refuses a NON-MANUAL mode change with
+                HTTP 403. xnat-web's ``ProjectResource.java`` refuses any
+                NON-ZERO prearchive_code when the site property
+                ``project.allow-auto-archive`` is disabled, for every user
+                including admins -- this is site policy, not a permissions
+                problem, so the client's generic ``PermissionDeniedError`` is
+                re-raised here with that explanation instead.
+            PermissionDeniedError: If the server refuses ``mode="manual"``
+                (prearchive_code 0) with HTTP 403. That site property only
+                governs non-zero codes, so a 403 here is an ordinary
+                authorization failure -- rewriting it as the site-policy
+                message would send the caller to the wrong setting.
+        """
+        code = PREARCHIVE_MODE_TO_CODE[mode]
+        path = f"/data/projects/{quote_path_segment(project)}/prearchive_code/{code}"
+        try:
+            self.client.put(path)
+        except PermissionDeniedError as exc:
+            if code == 0:
+                raise
+            raise XNATCtlError(
+                f"XNAT refused to set project {project!r} to prearchive mode "
+                f"{mode!r} (HTTP 403). This is site policy, not a permissions "
+                "problem: the site property 'project.allow-auto-archive' is "
+                "disabled, which blocks any non-manual prearchive_code for "
+                "every user, including admins. Ask a site admin to enable it, "
+                "or use --set manual instead."
+            ) from exc

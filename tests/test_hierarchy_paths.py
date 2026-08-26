@@ -195,7 +195,7 @@ class TestJoinApiPath:
             join_api_path("data", "projects", "..")
 
     def test_leading_slash_on_a_part_is_rejected_not_silently_stripped(self) -> None:
-        """A leading slash used to canonicalize away (``/TARGET`` -> ``TARGET``)
+        """A leading slash must not canonicalize away (``/TARGET`` -> ``TARGET``)
         -- a different resource for what was actually invalid input. No
         static literal in this module carries a slash, so a leading/trailing
         slash here is always a bug.
@@ -208,7 +208,7 @@ class TestJoinApiPath:
             join_api_path("data", "projects", "TARGET/")
 
     def test_slash_only_part_is_rejected_not_reduced_to_a_double_slash(self) -> None:
-        """A bare "/" part used to strip to "" -- a double-slash route."""
+        """A bare "/" part must not strip to "" -- a double-slash route."""
         with pytest.raises(InputValidationError):
             join_api_path("data", "/", "TARGET")
 
@@ -465,9 +465,8 @@ class TestValidateLocalPathComponent:
             validate_local_path_component(bad, "resource_label")
 
     def test_two_distinct_hostile_values_cannot_alias_onto_the_same_destination(self) -> None:
-        """The aliasing bug this replaces: "../../1" and "1" used to both
-        reduce to "1". Now the first one simply fails instead of colliding
-        with the second.
+        """Hostile "../../1" and clean "1" must not both reduce to "1": the
+        first one simply fails instead of colliding with the second.
         """
         assert validate_local_path_component("1", "scan_id") == "1"
         with pytest.raises(PathValidationError):
@@ -579,7 +578,7 @@ class TestExtractScanZipLabelSafety:
         scan_base = session_dir / "scans" / "1"
         zip_path = self._flat_zip(tmp_path)
 
-        extracted, renamed = _extract_scan_zip(zip_path, scan_base, resource_label="DICOM")
+        extracted, renamed, _ = _extract_scan_zip(zip_path, scan_base, resource_label="DICOM")
 
         assert extracted == 1
         assert renamed == 0
@@ -681,7 +680,9 @@ class TestScanBatchDelimiter:
             captured["path"] = path
             raise RuntimeError("stop before any real streaming")
 
-        with patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream):
+        with patch(
+            "xnatctl.services.downloads.resource_scan.stream_to_file", side_effect=fake_stream
+        ):
             summary = service.download_scans(
                 session_id="E1",
                 scan_ids=["1", "2"],
@@ -705,7 +706,9 @@ class TestScanBatchDelimiter:
             captured["path"] = path
             raise RuntimeError("stop before any real streaming")
 
-        with patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream):
+        with patch(
+            "xnatctl.services.downloads.resource_scan.stream_to_file", side_effect=fake_stream
+        ):
             summary = service.download_scans(
                 session_id="E1",
                 scan_ids=["1", "a/b"],
@@ -892,7 +895,7 @@ class TestEmptyStringDoesNotWidenScope:
     def test_build_verification_manifest_rejects_an_empty_resource_filter(
         self, tmp_path: Path
     ) -> None:
-        """resource_filter="" used to widen verification to every resource on the scan."""
+        """resource_filter="" must not widen verification to every resource on the scan."""
         client = MagicMock()
         service = DownloadService(client)
         service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
@@ -911,8 +914,7 @@ class TestResourceServiceEmptyScanIdWidening:
     This is the destructive edition of the empty-string-widening bug:
     ResourceService.delete() defaults remove_files=True, so a caller who
     meant to delete one scan's resource and passed an accidentally-empty
-    scan_id would previously have deleted the whole SESSION's resource
-    instead.
+    scan_id would delete the whole SESSION's resource instead.
     """
 
     def test_delete_with_empty_scan_id_raises_before_any_http_call(self) -> None:
@@ -956,11 +958,12 @@ class TestResourceServiceEmptyScanIdWidening:
 
 
 class TestServicesEmptyStringPathRoutingWidening:
-    """A sweep of services/ sites where "" used to silently widen scope.
+    """A sweep of services/ sites where "" must not silently widen scope.
 
-    Each fixed function toggles between two DIFFERENT REST routes based on
-    whether an optional identifier was supplied; "" used to take the same
-    branch as omitted (None), landing on the wider/unscoped route.
+    Each function toggles between two DIFFERENT REST routes based on
+    whether an optional identifier was supplied; a truthy check would send
+    "" down the same branch as omitted (None), landing on the
+    wider/unscoped route.
     """
 
     def test_session_service_get_rejects_empty_project(self) -> None:
@@ -1067,7 +1070,7 @@ class TestTransferLocalPathJoins:
         executor = TransferExecutor(source, dest)
 
         with patch(
-            "xnatctl.services.transfer.executor.stream_to_file",
+            "xnatctl.services.transfer.executor_resources.stream_to_file",
             return_value=MagicMock(bytes_written=0),
         ):
             with patch.object(executor, "validate_zip", return_value=True):
@@ -1390,7 +1393,7 @@ class TestExtractScanZipCasefoldCollision:
         )
         scan_base = tmp_path / "scan_dir"
 
-        extracted, renamed = _extract_scan_zip(zip_path, scan_base)
+        extracted, renamed, _ = _extract_scan_zip(zip_path, scan_base)
 
         assert extracted == 2
         assert renamed == 0
@@ -1423,7 +1426,7 @@ class TestExtractScanZipCasefoldCollision:
         )
         scan_base = tmp_path / "scan_dir"
 
-        extracted, renamed = _extract_scan_zip(zip_path, scan_base)
+        extracted, renamed, _ = _extract_scan_zip(zip_path, scan_base)
 
         assert extracted == 2
         assert (scan_base / "resources" / "DICOM" / "files" / "a.dcm").exists()
@@ -1515,7 +1518,7 @@ class TestScanTransferCaseCollision:
 
 
 class TestDiscoveryLastSyncTimeEmptyStringWidening:
-    """An empty last_sync_time used to silently trigger a full resync."""
+    """An empty last_sync_time must not silently trigger a full resync."""
 
     def test_discover_subjects_rejects_empty_last_sync_time(self) -> None:
         client = MagicMock()
@@ -1585,7 +1588,9 @@ class TestSymlinkedRootEscape:
                 zf.writestr("a.dcm", "x")
             return MagicMock(bytes_written=1)
 
-        with patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream):
+        with patch(
+            "xnatctl.services.downloads.resource_scan.stream_to_file", side_effect=fake_stream
+        ):
             with pytest.raises(PathValidationError):
                 service.download_resource(
                     session_id="E1",
@@ -1620,7 +1625,7 @@ class TestSymlinkedRootEscape:
                 "xnatctl.services.downloads.SessionService.scan_rows",
                 return_value=[{"ID": "1"}],
             ),
-            patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream),
+            patch("xnatctl.services.downloads.session.stream_to_file", side_effect=fake_stream),
         ):
             outcome = service.download_session_fast(
                 session_project="P",
@@ -1691,7 +1696,7 @@ class TestMoreEmptyStringWideningStragglers:
     """The remaining named truthiness stragglers, plus the `limit` sweep."""
 
     def test_sessions_list_rejects_subject_without_project(self) -> None:
-        """Subject given but project None used to silently IGNORE subject
+        """Subject given but project None must not silently IGNORE subject
         and issue a site-wide query -- XNAT subject labels aren't globally
         unique without a project to scope them.
         """
@@ -1709,9 +1714,9 @@ class TestMoreEmptyStringWideningStragglers:
         client.get.assert_not_called()
 
     def test_download_service_resolve_rejects_empty_project(self) -> None:
-        """project="" used to be treated as omitted during resolution,
-        silently using session_id AS an accession ID rather than resolving
-        a label through the (rejected) empty project.
+        """project="" must not be treated as omitted during resolution --
+        that would silently use session_id AS an accession ID rather than
+        resolving a label through the (rejected) empty project.
         """
         client = MagicMock()
         service = DownloadService(client)
@@ -1816,7 +1821,7 @@ class TestZipExtractExclusionBeforeValidation:
         )
         scan_base = tmp_path / "scan_dir"
 
-        extracted, renamed = _extract_scan_zip(
+        extracted, renamed, _ = _extract_scan_zip(
             zip_path, scan_base, exclude_resources=frozenset({"QA?1"})
         )
 
@@ -1840,7 +1845,7 @@ class TestZipExtractExclusionBeforeValidation:
         )
         scan_base = tmp_path / "scan_dir"
 
-        extracted, renamed = _extract_scan_zip(
+        extracted, renamed, _ = _extract_scan_zip(
             zip_path, scan_base, exclude_resources=frozenset({"dicom"})
         )
 
@@ -1875,7 +1880,7 @@ class TestZipExtractExclusionBeforeValidation:
         )
         scan_base = tmp_path / "scan_dir"
 
-        extracted, _ = _extract_scan_zip(zip_path, scan_base, resource_label=None)
+        extracted, _, _ = _extract_scan_zip(zip_path, scan_base, resource_label=None)
 
         assert extracted == 1
         assert (scan_base / "resources" / "DICOM" / "files" / "a.dcm").exists()

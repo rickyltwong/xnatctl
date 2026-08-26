@@ -216,7 +216,7 @@ class PipelineService(BaseService):
         experiment_id: str | None = None,
         project: str | None = None,
         status: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> builtins.list[dict[str, Any]]:
         """List pipeline jobs.
 
@@ -224,7 +224,9 @@ class PipelineService(BaseService):
             experiment_id: Filter by experiment
             project: Filter by project
             status: Filter by status
-            limit: Maximum results
+            limit: Maximum results requested from the server. ``None`` omits
+                the param entirely (the caller wants the full result set),
+                not "0 results".
 
         Returns:
             List of job dicts
@@ -240,7 +242,9 @@ class PipelineService(BaseService):
         else:
             path = "/data/pipelines/jobs"
 
-        params: dict[str, Any] = {"format": "json", "limit": limit}
+        params: dict[str, Any] = {"format": "json"}
+        if limit is not None:
+            params["limit"] = limit
         # `is not None`, not truthy: `status=""` is a caller mistake, not
         # "no status filter" -- it must not silently widen to every status.
         if status is not None:

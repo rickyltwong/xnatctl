@@ -5,11 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
 from conftest import make_response
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import ClientRequestError, ResourceNotFoundError
 from xnatctl.models.resource import Resource, ResourceFile
 from xnatctl.services.resources import ResourceService
 
@@ -199,11 +198,14 @@ class TestResourceCreate:
     def test_create_existing_resource_409(
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
-        """Create returns existing resource on 409 Conflict."""
-        resp_409 = httpx.Response(status_code=409, request=httpx.Request("PUT", "http://x"))
-        mock_client.put.side_effect = httpx.HTTPStatusError(
-            "409 Conflict", request=resp_409.request, response=resp_409
-        )
+        """Create returns existing resource on 409 Conflict.
+
+        ``XNATClient.put()`` never lets a raw ``httpx.HTTPStatusError``
+        escape -- it always translates a non-2xx response to a typed
+        ``ClientRequestError`` first, so that's what the service must
+        catch (and what the mock here must raise) for the 409 path.
+        """
+        mock_client.put.side_effect = ClientRequestError(409, "PUT", "/some/path")
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.create("E001", "DICOM")
@@ -215,12 +217,9 @@ class TestResourceCreate:
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
         """Create raises on non-409 HTTP errors."""
-        resp_500 = httpx.Response(status_code=500, request=httpx.Request("PUT", "http://x"))
-        mock_client.put.side_effect = httpx.HTTPStatusError(
-            "500 Internal Server Error", request=resp_500.request, response=resp_500
-        )
+        mock_client.put.side_effect = ClientRequestError(400, "PUT", "/some/path")
 
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(ClientRequestError):
             service.create("E001", "DICOM")
 
 

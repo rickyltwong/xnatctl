@@ -4,7 +4,12 @@ Click command bodies resolve options, call a service, and format output. The
 REST paths and calls live in the service layer. Two files are the sanctioned
 exceptions:
 
-- ``cli/common.py`` builds the one :class:`XNATClient` every command shares.
+- ``cli/common/__init__.py`` builds the one :class:`XNATClient` every command
+  shares. ``cli/common`` is a package (split out once ``common.py`` passed
+  the repo's 1000-line cap): only its ``__init__.py`` constructs or touches
+  the client -- the other submodules under ``cli/common/`` are ordinary CLI
+  modules as far as this guard is concerned, and are held to the same rule
+  as ``project.py``/``session.py``/etc.
 - ``cli/api.py`` is the deliberate raw-HTTP escape hatch (``api get/post/...``).
 
 ``cli/auth.py`` also constructs clients -- short-lived probe clients for
@@ -28,10 +33,10 @@ import pytest
 CLI_DIR = Path(__file__).resolve().parent.parent / "xnatctl" / "cli"
 
 # May import xnatctl.core.client at runtime (they construct the client).
-IMPORT_ALLOWLIST = {"common.py", "api.py", "auth.py"}
+IMPORT_ALLOWLIST = {"common/__init__.py", "api.py", "auth.py"}
 
 # May call the client's raw-HTTP methods directly.
-CALL_ALLOWLIST = {"common.py", "api.py"}
+CALL_ALLOWLIST = {"common/__init__.py", "api.py"}
 
 # The client's raw-HTTP surface. Calling any of these on a client (or on
 # anything that looks like one) from a CLI module is the layering violation
@@ -44,7 +49,21 @@ _DISTINCTIVE_METHODS = frozenset({"get_json"})
 
 
 def _cli_files() -> list[Path]:
-    return sorted(p for p in CLI_DIR.glob("*.py") if p.name != "__init__.py")
+    """Every CLI module, recursing into subpackages like ``cli/common/``.
+
+    The package's own top-level ``cli/__init__.py`` is excluded (it is a
+    trivial ``from xnatctl.cli.main import cli`` re-export, same as before
+    this recursed); a subpackage's ``__init__.py`` (e.g.
+    ``cli/common/__init__.py``) is NOT excluded -- it is real code and is
+    exactly the file the layering guard most needs to see.
+    """
+    top_level_init = CLI_DIR / "__init__.py"
+    return sorted(p for p in CLI_DIR.rglob("*.py") if p != top_level_init)
+
+
+def _rel_name(path: Path) -> str:
+    """Path relative to ``CLI_DIR``, as used by the allowlists (e.g. ``common/__init__.py``)."""
+    return path.relative_to(CLI_DIR).as_posix()
 
 
 # -----------------------------------------------------------------------------
@@ -103,10 +122,10 @@ def _imports_core_client(node: ast.AST) -> bool:
     return False
 
 
-@pytest.mark.parametrize("path", _cli_files(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _cli_files(), ids=_rel_name)
 def test_cli_module_does_not_import_client_at_runtime(path: Path) -> None:
     """No CLI module imports ``xnatctl.core.client`` at runtime, bar the allowlist."""
-    if path.name in IMPORT_ALLOWLIST:
+    if _rel_name(path) in IMPORT_ALLOWLIST:
         return
 
     tree = ast.parse(path.read_text())
@@ -120,7 +139,7 @@ def test_cli_module_does_not_import_client_at_runtime(path: Path) -> None:
         and node not in type_only
     ]
     assert not offenders, (
-        f"{path.name} imports xnatctl.core.client at runtime "
+        f"{_rel_name(path)} imports xnatctl.core.client at runtime "
         f"(line {offenders[0].lineno}). Route the work through a service, or move "
         "the import under `if TYPE_CHECKING:` if it is only a type annotation."
     )
@@ -191,10 +210,10 @@ def _raw_http_calls(tree: ast.Module) -> list[ast.Call]:
     return offenders
 
 
-@pytest.mark.parametrize("path", _cli_files(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _cli_files(), ids=_rel_name)
 def test_cli_module_makes_no_raw_http_calls(path: Path) -> None:
     """No CLI module calls the client's raw-HTTP methods, bar the allowlist."""
-    if path.name in CALL_ALLOWLIST:
+    if _rel_name(path) in CALL_ALLOWLIST:
         return
 
     offenders = _raw_http_calls(ast.parse(path.read_text()))
@@ -204,7 +223,7 @@ def test_cli_module_makes_no_raw_http_calls(path: Path) -> None:
         if isinstance(node.func, ast.Attribute)
     ]
     assert not offenders, (
-        f"{path.name} calls the HTTP client directly ({'; '.join(lines)}). "
+        f"{_rel_name(path)} calls the HTTP client directly ({'; '.join(lines)}). "
         "Add or extend a service method that owns this REST call instead."
     )
 
@@ -216,7 +235,7 @@ def test_cli_module_makes_no_raw_http_calls(path: Path) -> None:
 
 def test_guard_allowlists_reference_real_files() -> None:
     """A renamed/removed allowlisted file must break the guard loudly, not silently."""
-    names = {p.name for p in _cli_files()}
+    names = {_rel_name(p) for p in _cli_files()}
     assert names >= IMPORT_ALLOWLIST
     assert names >= CALL_ALLOWLIST
 

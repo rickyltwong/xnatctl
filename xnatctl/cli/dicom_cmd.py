@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import click
@@ -46,6 +49,10 @@ def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom validate /path/to/dicom
         xnatctl dicom validate /path/to/dicom -r
     """
+    # Deferred: cli/main.py always loads this module to register `dicom`, so
+    # a module-scope `import pydicom` would make pydicom's data-dictionary
+    # build cost part of every xnatctl invocation, not just the `dicom`
+    # subcommands (same reasoning at every `import pydicom` in this file).
     import pydicom
 
     path_obj = Path(path)
@@ -131,7 +138,7 @@ def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
                     "warnings": [],
                 }
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # per-file isolation in batch validate loop
             invalid_count += 1
             results.append(
                 {
@@ -188,6 +195,7 @@ def dicom_inspect(
         xnatctl dicom inspect /path/to/file.dcm
         xnatctl dicom inspect /path/to/file.dcm --tag PatientID --tag Modality
     """
+    # Deferred: see the comment on the `import pydicom` in dicom_validate above.
     import pydicom
 
     file_path = Path(file)
@@ -197,7 +205,7 @@ def dicom_inspect(
     except pydicom.errors.InvalidDicomError as e:
         print_error(f"Not a valid DICOM file: {file}")
         raise SystemExit(1) from e
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # pydicom.dcmread parse-failure surface isn't a fixed enumerable set
         print_error(f"Error reading file: {e}")
         raise SystemExit(1) from e
 
@@ -271,6 +279,7 @@ def dicom_list_tags(
     Example:
         xnatctl dicom list-tags /path/to/file.dcm
     """
+    # Deferred: see the comment on the `import pydicom` in dicom_validate above.
     import pydicom
 
     file_path = Path(file)
@@ -280,7 +289,7 @@ def dicom_list_tags(
     except pydicom.errors.InvalidDicomError as e:
         print_error(f"Not a valid DICOM file: {file}")
         raise SystemExit(1) from e
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # pydicom.dcmread parse-failure surface isn't a fixed enumerable set
         print_error(f"Error reading file: {e}")
         raise SystemExit(1) from e
 
@@ -334,6 +343,7 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom anonymize input.dcm output.dcm --patient-id ANON001
         xnatctl dicom anonymize /input/dir /output/dir -r --remove-private
     """
+    # Deferred: see the comment on the `import pydicom` in dicom_validate above.
     import pydicom
 
     input_obj = Path(input_path)
@@ -396,7 +406,7 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
 
         except pydicom.errors.InvalidDicomError:
             skipped += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # per-file isolation in batch anonymize loop
             click.echo(f"Error processing {in_file}: {e}", err=True)
             skipped += 1
 
@@ -483,10 +493,7 @@ def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom modify ./dicoms -r -t PatientID=ANON -t StudyDescription=Demo
         xnatctl dicom modify ./dicoms -r -t PatientID=ANON --backup --dry-run
     """
-    import os
-    import shutil
-    import tempfile
-
+    # Deferred: see the comment on the `import pydicom` in dicom_validate above.
     import pydicom
     from pydicom.datadict import tag_for_keyword
 

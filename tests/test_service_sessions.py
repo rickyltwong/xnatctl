@@ -7,7 +7,14 @@ from unittest.mock import MagicMock
 import pytest
 from conftest import make_response
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import (
+    ClientRequestError,
+    InputValidationError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+)
+from xnatctl.models.resource import Resource
+from xnatctl.models.scan import Scan
 from xnatctl.models.session import Session
 from xnatctl.services.sessions import SessionService
 
@@ -78,6 +85,17 @@ class TestSessionList:
 
         params = mock_client.get.call_args[1]["params"]
         assert params["xsiType"] == "xnat:mrSessionData"
+
+    def test_list_with_modality_oct_resolves_to_opt_xsitype(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """OCT is a user-facing alias for XNAT's real `optSessionData` type."""
+        mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
+
+        service.list(modality="OCT")
+
+        params = mock_client.get.call_args[1]["params"]
+        assert params["xsiType"] == "xnat:optSessionData"
 
     def test_list_with_limit(self, service: SessionService, mock_client: MagicMock) -> None:
         """Limit truncates results."""
@@ -233,29 +251,86 @@ class TestSessionGetScans:
     """Tests for SessionService.get_scans."""
 
     def test_get_scans(self, service: SessionService, mock_client: MagicMock) -> None:
-        """get_scans returns raw dicts."""
-        rows = [{"ID": "1", "type": "T1w"}]
+        """get_scans returns typed Scan models with parent references set."""
+        rows = [{"ID": "1", "type": "T1w", "series_description": "t1_mprage"}]
         mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.get_scans("XNAT_E00001")
 
         assert len(result) == 1
-        assert result[0]["type"] == "T1w"
+        assert isinstance(result[0], Scan)
+        assert result[0].id == "1"
+        assert result[0].type == "T1w"
+        assert result[0].series_description == "t1_mprage"
+        assert result[0].session_id == "XNAT_E00001"
+
+    def test_get_scans_accepts_bare_array_response(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """An older XNAT answering with a bare top-level JSON array must not
+        be read as zero scans -- see ``HierarchyService.extract_rows``.
+        """
+        rows = [{"ID": "1", "type": "T1w", "series_description": "t1_mprage"}]
+        mock_client.get.return_value = make_response(rows)
+
+        result = service.get_scans("XNAT_E00001")
+
+        assert len(result) == 1
+        assert isinstance(result[0], Scan)
+        assert result[0].id == "1"
 
 
 class TestSessionGetResources:
     """Tests for SessionService.get_resources."""
 
     def test_get_resources(self, service: SessionService, mock_client: MagicMock) -> None:
-        """get_resources returns raw dicts."""
-        rows = [{"label": "DICOM", "file_count": 200}]
+        """get_resources returns typed Resource models from realistic rows.
+
+        Resource listing rows carry ``xnat_abstractresource_id`` rather than
+        ``ID``; the normalization must absorb that instead of dropping rows.
+        """
+        rows = [
+            {
+                "xnat_abstractresource_id": "42",
+                "label": "DICOM",
+                "file_count": "200",
+                "file_size": "1048576",
+                "format": "DICOM",
+            }
+        ]
         mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
         result = service.get_resources("XNAT_E00001", project="PROJ01")
 
         assert len(result) == 1
+        assert isinstance(result[0], Resource)
+        assert result[0].label == "DICOM"
+        assert result[0].file_count == 200
+        assert result[0].file_size == 1048576
+        assert result[0].session_id == "XNAT_E00001"
         call_path = mock_client.get.call_args[0][0]
         assert "/data/projects/PROJ01/experiments/XNAT_E00001/resources" in call_path
+
+    def test_get_resources_accepts_bare_array_response(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """A bare top-level JSON array must not be read as zero resources."""
+        rows = [
+            {
+                "xnat_abstractresource_id": "42",
+                "label": "DICOM",
+                "file_count": "200",
+                "file_size": "1048576",
+                "format": "DICOM",
+            }
+        ]
+        mock_client.get.return_value = make_response(rows)
+
+        result = service.get_resources("XNAT_E00001", project="PROJ01")
+
+        assert len(result) == 1
+        assert isinstance(result[0], Resource)
+        assert result[0].label == "DICOM"
 
 
 class TestSessionSetField:
@@ -429,6 +504,149 @@ class TestListSessions:
 
         assert [r["id"] for r in rows] == ["XNAT_E1"]
 
+    def test_modality_filter_supports_arbitrary_modalities(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Not just MR/PET/CT/EEG -- any `xnat:{modality}SessionData` xsiType.
+
+        A modality filter keyed on a fixed 4-entry marker table would give
+        a modality outside it (US, XA, CR, MG, ...) no marker to match, and
+        would silently pass EVERY row through instead of
+        narrowing to none or the matching ones. `xnat:usSessionData` is a
+        real XNAT xsiType (confirmed against the xnat-web schema), not a
+        fictitious one.
+        """
+        mock_client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    *self.ROWS["ResultSet"]["Result"],
+                    {
+                        "ID": "XNAT_E4",
+                        "label": "US001",
+                        "subject_label": "SUB4",
+                        "date": "2026-01-04",
+                        "xsiType": "xnat:usSessionData",
+                    },
+                ]
+            }
+        }
+
+        rows = service.list_sessions("PROJ01", modality="US")
+
+        assert [r["id"] for r in rows] == ["XNAT_E4"]
+
+    def test_modality_filter_is_case_insensitive(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = self.ROWS
+
+        rows = service.list_sessions("PROJ01", modality="mr")
+
+        assert [r["id"] for r in rows] == ["XNAT_E1"]
+
+    def test_modality_oct_matches_the_real_opt_sessiondata_xsitype(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """XNAT archives OCT (Optical Coherence Tomography) sessions as
+        `xnat:optSessionData` -- OPT is DICOM's own modality code for
+        Ophthalmic Tomography, confirmed against the xnat-web schema
+        (`xnat_optSessionData.js`) and this project's own 0.2.11 fix for the
+        same xsiType. `--modality OCT` (what users actually say) must match
+        it, not the fictitious `xnat:octSessionData`.
+        """
+        mock_client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    *self.ROWS["ResultSet"]["Result"],
+                    {
+                        "ID": "XNAT_E5",
+                        "label": "OCT001",
+                        "subject_label": "SUB5",
+                        "date": "2026-01-05",
+                        "xsiType": "xnat:optSessionData",
+                    },
+                ]
+            }
+        }
+
+        rows = service.list_sessions("PROJ01", modality="OCT")
+
+        assert [r["id"] for r in rows] == ["XNAT_E5"]
+
+    def test_modality_opt_also_matches_the_same_sessiondata(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """The XNAT-native spelling works too, not just the OCT alias."""
+        mock_client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    {
+                        "ID": "XNAT_E5",
+                        "label": "OCT001",
+                        "subject_label": "SUB5",
+                        "date": "2026-01-05",
+                        "xsiType": "xnat:optSessionData",
+                    },
+                ]
+            }
+        }
+
+        rows = service.list_sessions("PROJ01", modality="OPT")
+
+        assert [r["id"] for r in rows] == ["XNAT_E5"]
+
+    def test_modality_pet_excludes_petmr_sessions(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """PETMR is its own xsiType (`xnat:petmrSessionData`), confirmed
+        against the xnat-web schema -- `--modality PET` must not also match
+        combined PET/MR sessions.
+        """
+        mock_client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    *self.ROWS["ResultSet"]["Result"],
+                    {
+                        "ID": "XNAT_E6",
+                        "label": "PETMR001",
+                        "subject_label": "SUB6",
+                        "date": "2026-01-06",
+                        "xsiType": "xnat:petmrSessionData",
+                    },
+                ]
+            }
+        }
+
+        rows = service.list_sessions("PROJ01", modality="PET")
+
+        assert [r["id"] for r in rows] == ["XNAT_E2"]  # the plain PET row from self.ROWS
+
+    def test_modality_classification_rejects_trailing_newline(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Regression: `^...$` combined with `.match()` accepts a trailing
+        newline, because `$` also matches just before a final `\\n`. A
+        malformed/embedded-newline `xsiType` must classify as unknown ("?"),
+        not silently pick up whatever modality preceded the newline.
+        """
+        mock_client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    {
+                        "ID": "XNAT_E7",
+                        "label": "BAD001",
+                        "subject_label": "SUB7",
+                        "date": "2026-01-07",
+                        "xsiType": "xnat:mrSessionData\n",
+                    },
+                ]
+            }
+        }
+
+        rows = service.list_sessions("PROJ01")
+
+        assert rows[0]["modality"] == "?"
+
     def test_subject_filter_is_forwarded_as_subject_label(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
@@ -440,3 +658,235 @@ class TestListSessions:
             "/data/projects/PROJ01/experiments",
             params={"columns": "ID,label,subject_label,date,xsiType", "subject_label": "SUB1"},
         )
+
+
+class TestSessionShareConflictAndUnshare:
+    """Tests for SessionService.share (409 case) / unshare / list_shares."""
+
+    def test_share_conflict_raises_resource_exists(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """A 409 (already shared) is translated to a clear typed error."""
+        mock_client.put.side_effect = ClientRequestError(
+            409, "PUT", "/data/experiments/XNAT_E00001/projects/PROJ02", "Already assigned"
+        )
+
+        with pytest.raises(ResourceExistsError, match="XNAT_E00001 -> PROJ02"):
+            service.share("XNAT_E00001", "PROJ02")
+
+    def test_share_other_client_error_propagates(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.put.side_effect = ClientRequestError(
+            400, "PUT", "/data/experiments/XNAT_E00001/projects/PROJ02", "bad request"
+        )
+
+        with pytest.raises(ClientRequestError):
+            service.share("XNAT_E00001", "PROJ02")
+
+    def test_unshare_deletes_experiment_projects_path(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.delete.return_value = make_response("", status_code=200)
+
+        resp = service.unshare("XNAT_E00001", "PROJ02", primary_project="PROJ01")
+
+        assert resp.status_code == 200
+        mock_client.delete.assert_called_once_with("/data/experiments/XNAT_E00001/projects/PROJ02")
+
+    def test_unshare_refuses_the_primary_project(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Unsharing FROM the primary project is a delete, not an unshare.
+
+        Verified against XNAT 1.9.2.1: DELETE /data/experiments/{id}/projects/{primary}
+        answers 200 and the session is 404 afterwards -- the server destroys
+        it and its data, and the response is indistinguishable from removing
+        an ordinary share. A mistyped --from would silently delete the
+        session while reporting success, so the request must never be sent.
+        """
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_E00001", "PROJ01", primary_project="PROJ01")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_primary_check_ignores_case(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Refusing a little too much beats deleting a session on a case slip."""
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_E00001", "proj01", primary_project="PROJ01")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_refuses_empty_primary_project(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_E00001", "PROJ01", primary_project="")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_refuses_whitespace_only_primary_project(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_E00001", "PROJ01", primary_project="   ")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_primary_check_ignores_target_padding(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Padded input must not slip past the equality check as a distinct project."""
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_E00001", " PROJ01 ", primary_project="PROJ01")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_primary_check_ignores_primary_padding(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_E00001", "PROJ01", primary_project=" PROJ01 ")
+
+        mock_client.delete.assert_not_called()
+
+    def test_list_shares_returns_result_rows(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    {"label": "SESS01", "ID": "PROJ01"},
+                    {"label": "XNAT_E00001", "ID": "PROJ02"},
+                ]
+            }
+        }
+
+        rows = service.list_shares("XNAT_E00001")
+
+        assert rows == [
+            {"label": "SESS01", "ID": "PROJ01"},
+            {"label": "XNAT_E00001", "ID": "PROJ02"},
+        ]
+        mock_client.get_json.assert_called_once_with("/data/experiments/XNAT_E00001/projects")
+
+
+class TestSessionVars:
+    """Tests for SessionService.list_vars/set_vars."""
+
+    def _fields_document(self, fields: list[tuple[str, str]]) -> dict:
+        """Build a minimal format=json document with a fields/field child."""
+        return {
+            "items": [
+                {
+                    "data_fields": {
+                        "ID": "XNAT_E00001",
+                        "label": "SESS01",
+                        "subject_ID": "XNAT_S00001",
+                    },
+                    "meta": {"xsi:type": "xnat:mrSessionData"},
+                    "children": [
+                        {
+                            "field": "fields/field",
+                            "items": [
+                                {"data_fields": {"name": name, "field": value}, "children": []}
+                                for name, value in fields
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+    def test_list_vars_flat_path(self, service: SessionService, mock_client: MagicMock) -> None:
+        mock_client.get_json.return_value = self._fields_document(
+            [("studytag", "phase1"), ("cohort", "A")]
+        )
+
+        rows = service.list_vars("XNAT_E00001")
+
+        assert rows == [
+            {"name": "studytag", "value": "phase1"},
+            {"name": "cohort", "value": "A"},
+        ]
+        mock_client.get_json.assert_called_once_with(
+            "/data/experiments/XNAT_E00001", params={"format": "json"}
+        )
+
+    def test_list_vars_no_fields_child_returns_empty(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = {
+            "items": [{"data_fields": {"ID": "XNAT_E00001"}, "meta": {}, "children": []}]
+        }
+
+        assert service.list_vars("XNAT_E00001") == []
+
+    def test_list_vars_null_field_value_stays_empty_not_the_word_none(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """A null ``field``/``name`` must render as "" -- not the string "None"."""
+        mock_client.get_json.return_value = {
+            "items": [
+                {
+                    "data_fields": {"ID": "XNAT_E00001"},
+                    "meta": {},
+                    "children": [
+                        {
+                            "field": "fields/field",
+                            "items": [{"data_fields": {"name": "studytag", "field": None}}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        rows = service.list_vars("XNAT_E00001")
+
+        assert rows == [{"name": "studytag", "value": ""}]
+        assert "None" not in rows[0]["value"]
+
+    def test_set_vars_requires_subject_scoped_path_and_xsi_prefix(
+        self, service: SessionService, mock_client: MagicMock
+    ) -> None:
+        """Verified live: the flat experiment route silently no-ops for field writes."""
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+
+        service.set_vars(
+            project="PROJ01",
+            subject="XNAT_S00001",
+            experiment_id="XNAT_E00001",
+            xsi_type="xnat:mrSessionData",
+            fields={"studytag": "phase1", "cohort": "A"},
+        )
+
+        mock_client.put.assert_called_once_with(
+            "/data/projects/PROJ01/subjects/XNAT_S00001/experiments/XNAT_E00001",
+            params={
+                "xsiType": "xnat:mrSessionData",
+                "xnat:mrSessionData/fields/field[name=studytag]/field": "phase1",
+                "xnat:mrSessionData/fields/field[name=cohort]/field": "A",
+            },
+        )
+
+    # "trailing\n" is the non-obvious one: Python's `$` matches just
+    # BEFORE a final newline, so a `^...$` regex checked with `.match()`
+    # accepts it and the newline lands inside the XNAT query key.
+    @pytest.mark.parametrize(
+        "bad_name",
+        ["", "has space", "has]bracket", "has=equals", "a/b", "trailing\n", "crlf\r\n"],
+    )
+    def test_set_vars_rejects_unsafe_field_names(
+        self, service: SessionService, mock_client: MagicMock, bad_name: str
+    ) -> None:
+        with pytest.raises(InputValidationError):
+            service.set_vars(
+                project="PROJ01",
+                subject="XNAT_S00001",
+                experiment_id="XNAT_E00001",
+                xsi_type="xnat:mrSessionData",
+                fields={bad_name: "value"},
+            )
+        mock_client.put.assert_not_called()

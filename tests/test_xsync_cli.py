@@ -315,6 +315,60 @@ class TestXsyncSubcommandsRoundTrip:
         assert "PROJ_A" in result.stdout
         assert "PROJ_B" in result.stdout
 
+    def test_list_filter_to_zero_matches_prints_no_results_not_everything(
+        self, runner: CliRunner
+    ) -> None:
+        """A --filter that matches nothing must yield an empty table, not
+        fall back to reprinting the server's full raw payload.
+        """
+        client = _mock_client_for_refresh()
+        result = _patched_invoke(runner, client, ["xsync", "list", "--filter", "id:NOPE"])
+
+        assert result.exit_code == 0, result.stderr
+        assert "PROJ_A" not in result.stdout
+        assert "PROJ_B" not in result.stdout
+        assert "PROJ_C" not in result.stdout
+        assert "No results" in result.stderr
+
+    def test_list_filter_to_zero_matches_json_prints_empty_array(self, runner: CliRunner) -> None:
+        """Same, but for -o json: the raw payload must not leak through
+        just because the filter left nothing.
+        """
+        client = _mock_client_for_refresh()
+        result = _patched_invoke(
+            runner, client, ["xsync", "list", "--filter", "id:NOPE", "-o", "json"]
+        )
+
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout) == []
+
+    def test_list_columns_affects_table_only_not_json(self, runner: CliRunner) -> None:
+        """--columns narrows table output; -o json always carries every field."""
+        client = _mock_client_for_refresh()
+
+        table_result = _patched_invoke(runner, client, ["xsync", "list", "--columns", "id"])
+        assert table_result.exit_code == 0, table_result.stderr
+        assert "Id" in table_result.stdout or "id" in table_result.stdout.lower()
+        assert "remote.example.org" not in table_result.stdout
+
+        json_result = _patched_invoke(
+            runner, client, ["xsync", "list", "--columns", "id", "-o", "json"]
+        )
+        assert json_result.exit_code == 0, json_result.stderr
+        rows = json.loads(json_result.stdout)
+        assert all("host" in row for row in rows), "--columns must not narrow JSON output"
+
+    def test_list_negative_limit_is_rejected(self, runner: CliRunner) -> None:
+        """--limit takes a non-negative count; a negative value has slice
+        semantics (-1 == "all but the last") that would silently do the
+        wrong thing rather than raise.
+        """
+        client = _mock_client_for_refresh()
+        result = _patched_invoke(runner, client, ["xsync", "list", "--limit=-1"])
+
+        assert result.exit_code == 2
+        assert "is not in the range" in result.output or "Invalid value" in result.output
+
     def test_progress_streams_text(self, runner: CliRunner) -> None:
         client = MagicMock()
         client.is_authenticated = True

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -340,6 +341,141 @@ class TestAdminAudit:
                     result = runner.invoke(cli, ["admin", "audit"])
 
         assert result.exit_code != 0
+
+    def test_audit_bad_filter_is_not_swallowed_as_unavailable(self, runner: CliRunner) -> None:
+        """A malformed --filter must raise its own usage error -- not get
+        caught by the broad ``except Exception`` around the network call
+        and misreported as "Audit log not available".
+        """
+        client = _mock_client()
+        client.get_json.return_value = [
+            {
+                "timestamp": "2024-01-15T10:00:00",
+                "user": "admin",
+                "action": "create",
+                "resource": "/data/projects/PROJ1",
+                "project": "PROJ1",
+            },
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "audit", "--filter", "no-colon-here"])
+
+        assert result.exit_code != 0
+        assert "Audit log not available" not in result.output
+        assert "field:glob" in result.output
+
+    @staticmethod
+    def _entry(timestamp: str, action: str) -> dict[str, str]:
+        return {
+            "timestamp": timestamp,
+            "user": "admin" if action == "DELETE" else "u",
+            "action": action,
+            "resource": "",
+            "project": "",
+        }
+
+    def test_audit_filter_sort_limit_sees_beyond_the_server_window(self, runner: CliRunner) -> None:
+        """--filter must not be composed AFTER a small server-side --limit,
+        and the full filter -> sort -> limit pipeline must run in that
+        order end-to-end.
+
+        Regression: fetching the server's small default/explicit --limit
+        window FIRST and filtering it SECOND silently drops any match
+        outside that window. Five matches are scattered beyond a small
+        server window, in an order that requires --sort-by to reorder, and
+        --limit (3) is smaller than the number of matches (5) -- so a
+        composition bug (wrong fetch window, missing filter, or missing
+        sort) each produce a different, wrong, ordered id list.
+        """
+        client = _mock_client()
+
+        def fake_get_json(path: str, params: dict | None = None):
+            params = params or {}
+            if "limit" in params:
+                # The server-truncated window never contains a match.
+                return [self._entry(f"o{i}", "Running") for i in range(params["limit"])]
+            return [
+                self._entry("t03", "DELETE"),
+                *(self._entry(f"o{i}", "Running") for i in range(30)),
+                self._entry("t01", "DELETE"),
+                *(self._entry(f"o{i}", "Running") for i in range(30, 60)),
+                self._entry("t05", "DELETE"),
+                *(self._entry(f"o{i}", "Running") for i in range(60, 90)),
+                self._entry("t02", "DELETE"),
+                *(self._entry(f"o{i}", "Running") for i in range(90, 120)),
+                self._entry("t04", "DELETE"),
+                *(self._entry(f"o{i}", "Running") for i in range(120, 150)),
+            ]
+
+        client.get_json.side_effect = fake_get_json
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "audit",
+                            "--filter",
+                            "action:DELETE",
+                            "--sort-by",
+                            "timestamp",
+                            "--limit",
+                            "3",
+                            "-o",
+                            "json",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        # A disabled-TLS warning (verify_ssl=False in _mock_config) shares
+        # stdout with the JSON in CliRunner's merged output; skip past it.
+        rows = json.loads(result.output[result.output.index("[") :])
+        assert [r["timestamp"] for r in rows] == ["t01", "t02", "t03"]
+
+    def test_audit_sort_only_still_fetches_unbounded(self, runner: CliRunner) -> None:
+        """--sort-by ALONE (no --filter) must also bypass the server window.
+
+        The truncated (numeric-limit) fetch here returns an entirely
+        different timestamp namespace ("o...") than the full set
+        ("001".."150"), so sorting the wrong (truncated) page would never
+        produce the true smallest ones -- this only passes if --sort-by
+        alone (no --filter) still triggers an unbounded fetch.
+        """
+        client = _mock_client()
+
+        def fake_get_json(path: str, params: dict | None = None):
+            params = params or {}
+            if "limit" in params:
+                return [self._entry(f"o{i}", "Running") for i in range(params["limit"])]
+            return [self._entry(f"{i:03d}", "Running") for i in range(150, 0, -1)]
+
+        client.get_json.side_effect = fake_get_json
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "admin",
+                            "audit",
+                            "--sort-by",
+                            "timestamp",
+                            "--limit",
+                            "3",
+                            "-o",
+                            "json",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        rows = json.loads(result.output[result.output.index("[") :])
+        assert [r["timestamp"] for r in rows] == ["001", "002", "003"]
 
 
 class TestAdminUserList:
