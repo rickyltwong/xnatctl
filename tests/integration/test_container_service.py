@@ -26,19 +26,20 @@ from typing import Any
 import pytest
 
 from xnatctl.core.exceptions import (
+    AuthenticationError,
     ClientRequestError,
+    PermissionDeniedError,
     ResourceNotFoundError,
     ServerError,
     SessionExpiredError,
     XNATConnectionError,
-    XNATCtlError,
 )
 from xnatctl.services.commands import CommandService
 from xnatctl.services.containers import ContainerService
 
 # 300, not this tier's usual 120: pytest-timeout charges a test's setup to
 # the test itself, and the first test in this module pays for the
-# ``container_service_ready`` readiness poll (bounded at 240s below), which
+# ``container_service_ready`` readiness poll (bounded at 210s below), which
 # would otherwise be killed at 120s with its diagnostic unreported.
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
@@ -66,59 +67,144 @@ PROBE_COMMAND = {
 
 #: How long a just-booted Container Service gets to start answering its
 #: routes before the module fails with the last response as evidence.
-_CS_READY_TIMEOUT_S = 240
+#: 210 rather than the module timeout's 300: together with the
+#: iteration-budget gate on the loop it guarantees the poll, the last
+#: iteration, and the teardown logout all land before pytest-timeout's axe,
+#: so the diagnostic pytest.fail is never lost to SIGALRM.
+_CS_READY_TIMEOUT_S = 210
+
+#: Worst case of one poll iteration: login + absence GET + DELETE + (on a
+#: 401) invalidate_session's logout at ~25s each (10s connect + 15s read on
+#: the probe client) plus the 5s sleep.
+_CS_ITERATION_BUDGET_S = 105
+
+#: Command id the readiness probe DELETEs. Deleting a nonexistent command
+#: answers success (verified live), so this is side-effect-free as long as
+#: the id stays unused -- command ids auto-increment from 1, and the
+#: fixture proves the id is absent before the first DELETE.
+_CS_PROBE_SENTINEL_ID = 999_999_999
 
 
 @pytest.fixture(scope="module", autouse=True)
-def container_service_ready(xnat_client: Any) -> None:
-    """Wait out the window where a freshly booted plugin rejects everything.
+def container_service_ready(
+    xnat_server: str, credentials: tuple[str, str], xnat_client: Any
+) -> Iterator[None]:
+    """Give the shared client a session the Container Service accepts mutations from.
 
-    On the CI runner both 2026-08-27 cold boots answered 401 to every
-    ``/xapi/commands`` call for the whole span of this module while every
-    core route worked fine with the same session -- the plugin's REST layer
-    comes up after the core webapp, and ``--wait`` only waits for the core.
-    Poll until the route answers rather than starting the tests inside that
-    window, through the same session-authenticated client the tests use (a
-    basic-auth probe could come up before session auth does); on timeout,
-    fail with what the server actually said.
+    On the CI runner, three 2026-08-27 cold boots answered 401 to every
+    POST/DELETE on ``/xapi/commands`` for the whole span of this module
+    while GETs on the same route and every core route worked fine with the
+    same session. A GET probe therefore proves nothing (the third run's
+    did exactly that: passed instantly, tests still 401'd) -- the probe
+    has to be the admin-gated mutating path itself. ``DELETE`` of a
+    nonexistent command id is that path with no side effect: verified live,
+    the Container Service answers success for an unknown id.
+
+    The 401s look like per-session authority staleness: a session logged in
+    at boot-second-zero, before first-boot role wiring settles, never
+    carries the authority the plugin's mutating routes demand. So the
+    staleness belongs to the *session*, not the server -- which is why this
+    probes on its own short-timeout client (no iteration can outlive the
+    loop: the shared client's 300s timeout could) and, once the probe's
+    session passes, transplants that proven session onto the shared client
+    the tests use. The shared client's own possibly-stale session is
+    abandoned, not retired -- one orphan on a throwaway stack beats an
+    unbounded logout call here.
     """
-    deadline = time.monotonic() + _CS_READY_TIMEOUT_S
-    last = "no attempt made"
-    while time.monotonic() < deadline:
-        try:
-            xnat_client.get("/xapi/commands", timeout=15, max_retries=0)
-        except SessionExpiredError as exc:
-            # The failure CI actually showed. Route-scoped plugin lag is
-            # worth waiting out; a session an auth-required *core* route
-            # also rejects is dead for real, and waiting on it would only
-            # bury that. (buildInfo won't do here -- it answers anonymous
-            # requests, so it proves nothing about the session.)
-            last = f"{type(exc).__name__}: {exc}"
+    from xnatctl.core.client import XNATClient
+
+    user, password = credentials
+    probe = XNATClient(base_url=xnat_server, username=user, password=password, timeout=15)
+    transplanted = False
+    try:
+        deadline = time.monotonic() + _CS_READY_TIMEOUT_S
+        last = "no attempt made"
+        absence_proven = False
+        # Enter an iteration only when its worst case (login + GET + DELETE
+        # at ~25s each: 10s connect + 15s read, plus the 5s sleep) still
+        # fits the budget -- otherwise a final iteration starting at
+        # deadline-epsilon overruns the module's pytest-timeout and the
+        # diagnostic below is lost to SIGALRM.
+        while time.monotonic() + _CS_ITERATION_BUDGET_S < deadline:
             try:
-                xnat_client.get("/xapi/users/username", timeout=15, max_retries=0)
-            except SessionExpiredError as core_exc:
-                pytest.fail(
-                    "the session is rejected by core routes too, not just by the "
-                    f"Container Service -- giving up rather than polling: {core_exc}"
-                )
-            except XNATCtlError:
-                # A transient core-route hiccup is inconclusive, not proof
-                # either way -- keep polling on the CS route's own budget.
-                pass
-        except (XNATConnectionError, ServerError) as exc:
-            # Transport failures (NetworkError/RequestTimeoutError/
-            # RetryExhaustedError are all XNATConnectionError) and 5xx are
-            # what a still-warming server emits; anything else (403, 404 =
-            # plugin missing, other 4xx) is permanent and propagates out of
-            # the fixture immediately.
-            last = f"{type(exc).__name__}: {exc}"
-        else:
-            return
-        time.sleep(5)
-    pytest.fail(
-        f"Container Service routes did not come up within {_CS_READY_TIMEOUT_S}s; "
-        f"last failure from GET /xapi/commands: {last}"
-    )
+                if not probe.session_token:
+                    probe.authenticate()
+                # Before the first DELETE, *prove* the sentinel is absent --
+                # a collision would delete a real command, so nothing weaker
+                # than a definitive 404 unlocks the DELETE phase. Inconclusive
+                # answers land in the handlers below and retry.
+                if not absence_proven:
+                    try:
+                        probe.get(f"/xapi/commands/{_CS_PROBE_SENTINEL_ID}", max_retries=0)
+                    except ResourceNotFoundError:
+                        absence_proven = True
+                    else:
+                        pytest.fail(
+                            f"command id {_CS_PROBE_SENTINEL_ID} unexpectedly exists on "
+                            "this server; refusing to use it as the readiness probe's "
+                            "DELETE target"
+                        )
+                probe.delete(f"/xapi/commands/{_CS_PROBE_SENTINEL_ID}", max_retries=0)
+            except SessionExpiredError as exc:
+                # Ordered before AuthenticationError, its base class.
+                last = f"{type(exc).__name__}: {exc}"
+                # Retire the rejected session server-side; the cleared token
+                # makes the next iteration log in afresh.
+                probe.invalidate_session()
+            except PermissionDeniedError:
+                # A 403 is a real authorization verdict, not warmup -- and
+                # also an AuthenticationError subclass, so it must be
+                # re-raised here or the next branch would poll on it.
+                raise
+            except AuthenticationError as exc:
+                # authenticate() maps every non-200 login response here, so
+                # only the definitive bad-credentials signature (a 200 with
+                # XNAT's login page) fails fast; login 5xx/429 keep polling.
+                if "Invalid credentials" in str(exc):
+                    pytest.fail(f"login rejected -- a credential problem, not warmup: {exc}")
+                last = f"login failed: {exc}"
+            except (XNATConnectionError, ServerError) as exc:
+                # Transport failures (NetworkError/RequestTimeoutError/
+                # RetryExhaustedError are all XNATConnectionError) and 5xx
+                # are what a still-warming server emits; anything else
+                # (404 = plugin missing, other 4xx) is permanent and
+                # propagates out of the fixture immediately.
+                last = f"{type(exc).__name__}: {exc}"
+            else:
+                # A falsy token here means the DELETE succeeded on the
+                # basic-auth fallback (contrived: a 200 login with an empty
+                # body). Transplanting "" would silently flip the whole
+                # run's shared client to per-request basic auth -- the
+                # session-churn pattern that exhausts shared servers -- so
+                # fail loudly instead.
+                if not probe.session_token:
+                    pytest.fail(
+                        "login answered 200 with an empty session token; "
+                        "refusing to transplant it onto the shared client"
+                    )
+                # Drop the shared client's httpx client (and with it the
+                # cookie jar holding the old host-scoped JSESSIONID -- a
+                # plain token assignment would send BOTH cookies and let
+                # Tomcat keep picking the stale session); the next request
+                # rebuilds it and sets the transplanted token.
+                xnat_client.close()
+                xnat_client.session_token = probe.session_token
+                transplanted = True
+                break
+            time.sleep(5)
+        if not transplanted:
+            pytest.fail(
+                f"the Container Service did not accept mutations within "
+                f"{_CS_READY_TIMEOUT_S}s; last failure from DELETE "
+                f"/xapi/commands/{_CS_PROBE_SENTINEL_ID}: {last}"
+            )
+        yield
+    finally:
+        # The probe's session lives on in the shared client when it was
+        # transplanted; only an unused one gets retired with the probe.
+        if not transplanted:
+            probe.invalidate_session()
+        probe.close()
 
 
 @pytest.fixture
