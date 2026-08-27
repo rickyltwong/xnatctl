@@ -19,16 +19,28 @@ project-existence preflight, and kill/logs against a nonexistent container.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
-from xnatctl.core.exceptions import ClientRequestError, ResourceNotFoundError
+from xnatctl.core.exceptions import (
+    ClientRequestError,
+    ResourceNotFoundError,
+    ServerError,
+    SessionExpiredError,
+    XNATConnectionError,
+    XNATCtlError,
+)
 from xnatctl.services.commands import CommandService
 from xnatctl.services.containers import ContainerService
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
+# 300, not this tier's usual 120: pytest-timeout charges a test's setup to
+# the test itself, and the first test in this module pays for the
+# ``container_service_ready`` readiness poll (bounded at 240s below), which
+# would otherwise be killed at 120s with its diagnostic unreported.
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 #: A minimal but complete command.json, confirmed live against this stack to
 #: register (201, body is the bare new numeric ID) and to produce a wrapper
@@ -50,6 +62,63 @@ PROBE_COMMAND = {
         }
     ],
 }
+
+
+#: How long a just-booted Container Service gets to start answering its
+#: routes before the module fails with the last response as evidence.
+_CS_READY_TIMEOUT_S = 240
+
+
+@pytest.fixture(scope="module", autouse=True)
+def container_service_ready(xnat_client: Any) -> None:
+    """Wait out the window where a freshly booted plugin rejects everything.
+
+    On the CI runner both 2026-08-27 cold boots answered 401 to every
+    ``/xapi/commands`` call for the whole span of this module while every
+    core route worked fine with the same session -- the plugin's REST layer
+    comes up after the core webapp, and ``--wait`` only waits for the core.
+    Poll until the route answers rather than starting the tests inside that
+    window, through the same session-authenticated client the tests use (a
+    basic-auth probe could come up before session auth does); on timeout,
+    fail with what the server actually said.
+    """
+    deadline = time.monotonic() + _CS_READY_TIMEOUT_S
+    last = "no attempt made"
+    while time.monotonic() < deadline:
+        try:
+            xnat_client.get("/xapi/commands", timeout=15, max_retries=0)
+        except SessionExpiredError as exc:
+            # The failure CI actually showed. Route-scoped plugin lag is
+            # worth waiting out; a session an auth-required *core* route
+            # also rejects is dead for real, and waiting on it would only
+            # bury that. (buildInfo won't do here -- it answers anonymous
+            # requests, so it proves nothing about the session.)
+            last = f"{type(exc).__name__}: {exc}"
+            try:
+                xnat_client.get("/xapi/users/username", timeout=15, max_retries=0)
+            except SessionExpiredError as core_exc:
+                pytest.fail(
+                    "the session is rejected by core routes too, not just by the "
+                    f"Container Service -- giving up rather than polling: {core_exc}"
+                )
+            except XNATCtlError:
+                # A transient core-route hiccup is inconclusive, not proof
+                # either way -- keep polling on the CS route's own budget.
+                pass
+        except (XNATConnectionError, ServerError) as exc:
+            # Transport failures (NetworkError/RequestTimeoutError/
+            # RetryExhaustedError are all XNATConnectionError) and 5xx are
+            # what a still-warming server emits; anything else (403, 404 =
+            # plugin missing, other 4xx) is permanent and propagates out of
+            # the fixture immediately.
+            last = f"{type(exc).__name__}: {exc}"
+        else:
+            return
+        time.sleep(5)
+    pytest.fail(
+        f"Container Service routes did not come up within {_CS_READY_TIMEOUT_S}s; "
+        f"last failure from GET /xapi/commands: {last}"
+    )
 
 
 @pytest.fixture

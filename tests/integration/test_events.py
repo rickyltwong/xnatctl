@@ -8,9 +8,12 @@ against an unknown id. This file is what keeps that verification from going
 stale.
 
 The Event Service can be switched off site-wide (``GET /xapi/events/prefs``
--> ``{"enabled": false}`` on a fresh install) -- listing/reading still works
-either way, but creating a subscription 405s with "Event Service disabled."
-when it is off. This module owns no CLI-facing command for that toggle (see
+-> ``{"enabled": false}`` on a fresh install), and *when* it went off
+matters: toggled off at runtime only subscription creation is gated (405
+"Event Service disabled."), but on a server booted with it off -- the CI
+stack's fresh install -- subscription listing answers 200 with an empty
+body and single-subscription reads 405 too; only ``actions``/``events``
+work either way. This module owns no CLI-facing command for that toggle (see
 ``xnatctl.services.events`` module docstring), so the ``event_service_enabled``
 fixture below talks to the raw client directly to guarantee subscription
 creation works for the tests that need it, and restores whatever state it
@@ -60,9 +63,11 @@ def _probe_payload(name: str) -> dict[str, Any]:
 def event_service_enabled(xnat_client: Any) -> Iterator[None]:
     """Ensure the site-wide Event Service is on for this module, restore after.
 
-    Subscription creation 405s with "Event Service disabled." when this
-    site-wide preference is off (verified live) -- read-only tests do not
-    need it, but every creating test does.
+    Every creating test needs it (creation 405s with "Event Service
+    disabled." when the preference is off, verified live), and so do
+    subscription listing/reads on a server *booted* with it off -- see the
+    module docstring. Only the ``actions``/``events`` catalogs work without
+    it.
     """
     was_enabled = bool(xnat_client.get_json(_PREFS_PATH).get("enabled", False))
     if not was_enabled:
@@ -90,9 +95,22 @@ def probe_subscription(xnat_client: Any, event_service_enabled: None) -> Iterato
 
 
 class TestListActionsAndTypes:
-    """Read-only endpoints -- unaffected by the site-wide enabled toggle."""
+    """Read-only endpoints.
 
-    def test_list_subscriptions_returns_a_bare_array(self, xnat_client: Any) -> None:
+    Subscription listing and reads fail on a server *booted* with the
+    site-wide toggle off (the CI stack's fresh install: listing answers 200
+    with an empty body, reads 405 "Event Service disabled."), so those two
+    tests take ``event_service_enabled`` like the mutating half does. The
+    ``actions``/``events`` catalogs answer normally either way -- that was
+    verified by hand against a cold booted-disabled stack (2026-08-27); the
+    tests here exercise them with the service enabled whenever the module
+    fixture has already fired, so they no longer re-verify the disabled
+    half.
+    """
+
+    def test_list_subscriptions_returns_a_bare_array(
+        self, xnat_client: Any, event_service_enabled: None
+    ) -> None:
         service = EventService(xnat_client)
 
         result = service.list_subscriptions()
@@ -113,7 +131,9 @@ class TestListActionsAndTypes:
 
         assert any(t.get("type") == "org.nrg.xnat.eventservice.events.ProjectEvent" for t in types_)
 
-    def test_get_unknown_subscription_raises_not_found(self, xnat_client: Any) -> None:
+    def test_get_unknown_subscription_raises_not_found(
+        self, xnat_client: Any, event_service_enabled: None
+    ) -> None:
         service = EventService(xnat_client)
 
         with pytest.raises(ResourceNotFoundError):
@@ -140,7 +160,9 @@ class TestCreateAndDelete:
         with pytest.raises(ResourceNotFoundError):
             service.get_subscription(subscription_id)
 
-    def test_delete_unknown_subscription_raises_not_found(self, xnat_client: Any) -> None:
+    def test_delete_unknown_subscription_raises_not_found(
+        self, xnat_client: Any, event_service_enabled: None
+    ) -> None:
         """Verifies the real DELETE contract: a clean 404, unlike
         CommandService.delete_command's idempotent-succeeds DELETE.
         """
@@ -165,13 +187,17 @@ class TestActivateDeactivate:
         service.activate_subscription(subscription_id)
         assert service.get_subscription(subscription_id)["active"] is True
 
-    def test_activate_unknown_subscription_raises_not_found(self, xnat_client: Any) -> None:
+    def test_activate_unknown_subscription_raises_not_found(
+        self, xnat_client: Any, event_service_enabled: None
+    ) -> None:
         service = EventService(xnat_client)
 
         with pytest.raises(ResourceNotFoundError):
             service.activate_subscription(999_999_999)
 
-    def test_deactivate_unknown_subscription_raises_not_found(self, xnat_client: Any) -> None:
+    def test_deactivate_unknown_subscription_raises_not_found(
+        self, xnat_client: Any, event_service_enabled: None
+    ) -> None:
         service = EventService(xnat_client)
 
         with pytest.raises(ResourceNotFoundError):

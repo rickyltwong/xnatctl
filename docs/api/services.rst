@@ -882,9 +882,12 @@ shape. Verified live against XNAT 1.9.2.1. Single-subscription operations
 ``/xapi/events/subscriptions`` (``GET`` only) -- a different noun, not a
 different verb on the same path. A successful create answers plain text
 (``"{name}:{id}"``), not JSON. The site-wide Event Service can be switched
-off entirely (``GET /xapi/events/prefs``); when it is, every read-only
-method here still works, but ``create_subscription`` fails with a 405
-("Event Service disabled.").
+off entirely (``GET /xapi/events/prefs``), and *when* matters: toggled off
+at runtime only ``create_subscription`` fails (405, "Event Service
+disabled."), but on a server *booted* with it off -- every fresh install --
+subscription listing and reads fail too (listing answers 200 with an empty
+body, reads 405); only the ``actions``/``event-types`` catalogs work either
+way. See the ``xnatctl.services.events`` module docstring.
 
 .. code-block:: python
 

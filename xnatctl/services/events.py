@@ -24,12 +24,17 @@ simply does not parse into the server's ``SubscriptionCreator`` model.
 
 **The site can have the Event Service switched off entirely**
 (``GET /xapi/events/prefs`` -> ``{"enabled": false}``; a fresh 1.9.2.1
-install ships this way). ``list``/``show``/``actions``/``events`` all still
-answer normally when it is off -- only ``POST .../subscription`` (create)
-is gated, answering 405 with the plain-text body ``"Event Service
-disabled."`` (verified live both ways: the same payload that 405s while
-disabled succeeds once ``PUT /xapi/events/prefs {"enabled": true}`` is
-sent). Toggling that site-wide flag is deliberately not exposed by this
+install ships this way), and *when* it was switched off matters. Toggled
+off at runtime, only ``POST .../subscription`` (create) is gated, answering
+405 with the plain-text body ``"Event Service disabled."`` (verified live
+both ways: the same payload that 405s while disabled succeeds once
+``PUT /xapi/events/prefs {"enabled": true}`` is sent). But on a server
+*booted* with the flag off -- every fresh install -- the subscription
+subsystem never starts at all: listing answers 200 with an *empty body*
+(not ``[]``), and ``GET .../subscription/{id}`` answers the same 405, so
+``list_subscriptions``/``get_subscription`` fail against an out-of-the-box
+server until the flag is enabled. ``actions``/``events`` answer normally
+either way. Toggling that site-wide flag is deliberately not exposed by this
 module or the ``event`` command group -- it is a distinct REST resource
 from ``/xapi/siteConfig`` (not one of the properties ``admin site-config``
 reads/writes), and whether an ``admin``-level toggle command is worth adding
@@ -113,10 +118,12 @@ class EventService(BaseService):
     def list_subscriptions(self) -> list[dict[str, Any]]:
         """List all event subscriptions.
 
-        Verified live: ``GET /xapi/events/subscriptions`` returns a bare
-        JSON array, whether or not the Event Service is enabled site-wide
-        (see the module docstring) and whether or not any subscriptions
-        exist (an empty site answers ``[]``, not an empty body).
+        Verified live: with the Event Service enabled, ``GET
+        /xapi/events/subscriptions`` returns a bare JSON array whether or
+        not any subscriptions exist (an empty site answers ``[]``, not an
+        empty body). A server *booted* with the service disabled answers
+        200 with an empty body instead, which fails JSON decoding here --
+        see the module docstring.
 
         Returns:
             List of subscription dicts. Verified key set: ``id``, ``name``,
@@ -133,9 +140,12 @@ class EventService(BaseService):
     def get_subscription(self, subscription_id: int) -> dict[str, Any]:
         """Get one subscription's full definition.
 
-        Verified live: ``GET /xapi/events/subscription/{id}`` -> 200 with
-        the same key set as :meth:`list_subscriptions`'s rows, or a clean
-        404 ("Could not find entity with ID {id}") for an unknown id.
+        Verified live: with the Event Service enabled, ``GET
+        /xapi/events/subscription/{id}`` -> 200 with the same key set as
+        :meth:`list_subscriptions`'s rows, or a clean 404 ("Could not find
+        entity with ID {id}") for an unknown id. A server booted with the
+        service disabled answers 405 ("Event Service disabled.") for any id
+        -- see the module docstring.
 
         Args:
             subscription_id: Numeric subscription ID.
