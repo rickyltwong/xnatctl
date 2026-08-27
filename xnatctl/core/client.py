@@ -583,14 +583,20 @@ class XNATClient:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
+        max_retries: int | None = None,
     ) -> httpx.Response:
-        """DELETE request."""
+        """DELETE request.
+
+        ``max_retries`` overrides the client's retry budget for this call
+        alone; pass 0 to make it single-shot. See :meth:`_request`.
+        """
         return self._request(
             "DELETE",
             path,
             params=params,
             headers=headers,
             timeout=timeout,
+            max_retries=max_retries,
         )
 
     # =========================================================================
