@@ -92,18 +92,86 @@ class TestPlanLabelNormalization:
         assert plan["renames"] == []
         assert plan["skipped"] == []
 
-    def test_target_collides_with_another_experiments_current_label(self, fake_client) -> None:
+    def test_target_held_by_a_non_renaming_experiment_is_refused(self, fake_client) -> None:
         fake_client.get_json.return_value = [
             _row("E1", "OLD1", date="2024-01-01"),
+            # Holds E1's computed target but is itself skipped (unknown
+            # modality), so the label never frees up.
+            _row("E2", "SUB01_01_SE01_MR", xsi_type="xnat:imagesessiondata"),
+        ]
+        service = SessionLabelService(fake_client)
+
+        plan = service.plan_label_normalization("PROJ")
+
+        by_id_skip = {s["id"]: s["reason"] for s in plan["skipped"]}
+        assert "target label exists" in by_id_skip["E1"]
+        assert plan["renames"] == []
+
+    def test_target_vacated_by_an_earlier_planned_rename_is_allowed(self, fake_client) -> None:
+        """A collision with a label this run renames away resolves, vacator first.
+
+        Treating every current label as permanently occupied would skip E1
+        here and leave the subject half-normalized until a second run.
+        """
+        fake_client.get_json.return_value = [
+            _row("E1", "OLD1", date="2024-01-01"),
+            # Currently holds E1's target, but its own rename (visit 2)
+            # vacates it.
             _row("E2", "SUB01_01_SE01_MR", date="2024-02-01"),
         ]
         service = SessionLabelService(fake_client)
 
         plan = service.plan_label_normalization("PROJ")
 
-        # E1's computed target (SUB01_01_SE01_MR) is E2's current label.
-        by_id_skip = {s["id"]: s["reason"] for s in plan["skipped"]}
-        assert "target label exists" in by_id_skip["E1"]
+        assert plan["skipped"] == []
+        assert [(r["id"], r["new_label"]) for r in plan["renames"]] == [
+            ("E2", "SUB01_02_SE01_MR"),  # vacates SUB01_01_SE01_MR first
+            ("E1", "SUB01_01_SE01_MR"),
+        ]
+
+    def test_a_rename_cycle_is_refused(self, fake_client) -> None:
+        """Two experiments swapping labels have no safe order without a temp name."""
+        fake_client.get_json.return_value = [
+            _row("E1", "SUB01_02_SE01_MR", date="2024-01-01"),  # target: .._01_SE01_MR
+            _row("E2", "SUB01_01_SE01_MR", date="2024-02-01"),  # target: .._02_SE01_MR
+        ]
+        service = SessionLabelService(fake_client)
+
+        plan = service.plan_label_normalization("PROJ")
+
+        assert plan["renames"] == []
+        reasons = {s["id"]: s["reason"] for s in plan["skipped"]}
+        assert "target label exists" in reasons["E1"]
+        assert "target label exists" in reasons["E2"]
+
+    def test_row_missing_experiment_id_is_skipped_not_planned(self, fake_client) -> None:
+        """An un-addressable row must not survive into a plan dry-run shows as valid."""
+        fake_client.get_json.return_value = [_row("", "OLD1")]
+        service = SessionLabelService(fake_client)
+
+        plan = service.plan_label_normalization("PROJ")
+
+        assert plan["renames"] == []
+        assert plan["skipped"] == [{"id": "", "label": "OLD1", "reason": "missing experiment ID"}]
+
+    def test_row_missing_subject_label_is_reported_not_dropped(self, fake_client) -> None:
+        fake_client.get_json.return_value = [_row("E1", "OLD1", subject="")]
+        service = SessionLabelService(fake_client)
+
+        plan = service.plan_label_normalization("PROJ")
+
+        assert plan["renames"] == []
+        assert plan["skipped"] == [
+            {"id": "E1", "label": "OLD1", "reason": "row missing subject_label"}
+        ]
+
+    def test_bare_array_of_non_objects_raises(self, fake_client) -> None:
+        """A 200 whose body is ["plugin disabled"] is malformed, not zero results."""
+        fake_client.get_json.return_value = ["plugin disabled"]
+        service = SessionLabelService(fake_client)
+
+        with pytest.raises(XNATCtlError, match="non-object"):
+            service.plan_label_normalization("PROJ")
 
     def test_unknown_modality_is_skipped(self, fake_client) -> None:
         fake_client.get_json.return_value = [

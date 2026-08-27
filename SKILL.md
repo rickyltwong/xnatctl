@@ -114,7 +114,7 @@ xnatctl session upload ./dicoms -P NEURO -S SUB001 -E SESS001 --workers 4
 xnatctl session upload ./archive.tar -P NEURO -S SUB001 -E SESS001
 
 # Gradual per-file upload (parallel)
-xnatctl session upload ./dicoms -P NEURO -S SUB001 -E SESS001 --gradual --workers 16
+xnatctl session upload ./dicoms -P NEURO -S SUB001 -E SESS001 --mode gradual --workers 16
 
 # Upload exam root (DICOM + resources)
 # Directory structure: top-level dirs become resources, DICOMs found recursively
@@ -201,7 +201,7 @@ xnatctl pipeline cancel JOB_ID --yes
 
 ```bash
 # Refresh catalogs with parallel workers
-xnatctl admin refresh-catalogs MYPROJ -O checksum -O populateStats --parallel --workers 8
+xnatctl admin refresh-catalogs MYPROJ -O checksum -O populateStats --workers 8
 
 # Add user to project groups
 xnatctl admin user add jsmith Owners --projects MYPROJ
@@ -282,4 +282,4 @@ profiles:
 
 Destructive commands include `--yes/-y` (skip confirmation) and `--dry-run` (preview only). **Always use `--dry-run` first** for delete/rename operations.
 
-Parallel commands include `--parallel/--no-parallel` and `--workers N`.
+Parallel commands take `--workers N` (1 = sequential).

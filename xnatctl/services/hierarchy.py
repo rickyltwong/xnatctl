@@ -353,6 +353,14 @@ class HierarchyService(BaseService):
                 f"Unexpected response while {what}: no 'ResultSet' field in a "
                 f"200 response. Got keys: {sorted(data.keys())!r}."
             )
+        if isinstance(data, list) and any(not isinstance(row, dict) for row in data):
+            # The lenient extractor drops non-dict entries; here that would
+            # turn a bare-array error body (e.g. ["plugin disabled"]) into
+            # zero rows -- the exact "0 results for a server that never
+            # answered the question" this method exists to refuse.
+            raise XNATCtlError(
+                f"Unexpected response while {what}: top-level array contains non-object entries."
+            )
         return HierarchyService.extract_rows(data)
 
     @staticmethod

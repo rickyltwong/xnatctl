@@ -28,7 +28,7 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
     """Extract downloaded XNAT session ZIPs.
 
     This command extracts ZIP files from previously downloaded sessions,
-    creating organized subdirectories. Use after downloading without --unzip,
+    creating organized subdirectories. Use after downloading without --extract,
     or to re-process existing downloads.
 
     \b

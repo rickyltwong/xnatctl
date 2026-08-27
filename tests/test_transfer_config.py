@@ -152,6 +152,13 @@ class TestOutOfScopeFilterSectionsAreRejected:
         with pytest.raises(TransferConfigError, match="subject_assessors"):
             TransferConfig.from_yaml(path)
 
+    def test_a_non_dict_mapping_is_rejected_too(self) -> None:
+        """Pydantic accepts arbitrary Mappings; the guard must too."""
+        from collections import UserDict
+
+        with pytest.raises(ValueError, match="unsupported filtering section.*project_resources"):
+            FilterConfig.model_validate(UserDict({"project_resources": {"sync_type": "all"}}))
+
     def test_an_unknown_key_is_still_ignored(self) -> None:
         """Only the named out-of-scope keys are rejected; extra=ignore stands."""
         config = FilterConfig.model_validate({"unrelated_future_key": 1})

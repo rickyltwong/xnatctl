@@ -57,12 +57,33 @@ def _deprecated_options() -> list[tuple[CommandPath, click.Parameter, str]]:
     return found
 
 
-def _alias_callback_flags() -> set[str]:
-    """Registered flags whose exact canonical warning is actually wired up.
+def _wired_alias_params() -> list[tuple[CommandPath, click.Parameter, str]]:
+    """Every option whose callback closure carries a baked deprecation warning.
 
     Most deprecated aliases carry no help at all (they are hidden), so the
     help-text sweep above cannot see them. The callback closure can: the
-    message it was built with names the flag.
+    message it was built with names the flag. Detection is by the closure's
+    literal ``Warning: `` string, NOT by consulting the registry -- built
+    the other way around (iterating the registry and looking for its
+    messages), an alias wired with an unregistered flag or hand-baked text
+    would simply be invisible to the checks it is supposed to fail.
+    """
+    found: list[tuple[CommandPath, click.Parameter, str]] = []
+    for path, command in _walk(cli):
+        for param in command.params:
+            callback = getattr(param, "callback", None)
+            closure = getattr(callback, "__closure__", None)
+            if not closure:
+                continue
+            for cell in closure:
+                value = cell.cell_contents
+                if isinstance(value, str) and value.startswith("Warning: "):
+                    found.append((path, param, value))
+    return found
+
+
+def _alias_callback_flags() -> set[str]:
+    """Registered flags whose exact canonical warning is actually wired up.
 
     This matches by the *whole* canonical message (``deprecation_message``
     built fresh from each registry entry), not by picking the flag name back
@@ -76,17 +97,7 @@ def _alias_callback_flags() -> set[str]:
     catches a callback whose baked-in text has drifted from what the
     registry would produce today.
     """
-    wired_messages: set[str] = set()
-    for _path, command in _walk(cli):
-        for param in command.params:
-            callback = getattr(param, "callback", None)
-            closure = getattr(callback, "__closure__", None)
-            if not closure:
-                continue
-            for cell in closure:
-                value = cell.cell_contents
-                if isinstance(value, str) and value.startswith("Warning: "):
-                    wired_messages.add(value)
+    wired_messages = {message for _path, _param, message in _wired_alias_params()}
     return {flag for flag in DEPRECATED_FLAGS if deprecation_message(flag) in wired_messages}
 
 
@@ -105,10 +116,29 @@ class TestRegistryCoverage:
             "removal release."
         )
 
-    def test_every_alias_callback_flag_is_registered(self) -> None:
-        unregistered = _alias_callback_flags() - set(DEPRECATED_FLAGS)
+    def test_every_wired_warning_matches_a_registry_entry(self) -> None:
+        """A baked warning that no registry entry would produce today is drift.
 
-        assert not unregistered, sorted(unregistered)
+        Covers both an alias wired around the registry entirely (hand-baked
+        text) and one whose text was built from the registry once but no
+        longer matches it. Comparing wired -> registry, not the reverse:
+        the reverse is a subset of the registry by construction and can
+        never fail.
+        """
+        canonical = {deprecation_message(flag) for flag in DEPRECATED_FLAGS}
+        stray = {msg for _path, _param, msg in _wired_alias_params() if msg not in canonical}
+
+        assert not stray, sorted(stray)
+
+    def test_alias_detection_sees_the_current_aliases(self) -> None:
+        """The closure sweep must keep finding the aliases that exist.
+
+        If a refactor changed how alias callbacks bake their message, every
+        check built on ``_wired_alias_params`` would silently pass on an
+        empty list; pin the current alias count so that failure mode is
+        loud instead.
+        """
+        assert len(_wired_alias_params()) >= len(DEPRECATED_FLAGS)
 
     def test_the_registry_has_no_dead_entries(self) -> None:
         """A flag deleted from the CLI should not linger in the table."""
@@ -241,7 +271,17 @@ class TestWarningsAreVisible:
         assert deprecation_message("--file") in result.stderr
 
     def test_deprecated_flags_are_hidden_from_help(self) -> None:
+        """Both detection paths: help-marked options AND hidden alias callbacks.
+
+        The alias sweep is what gives this test teeth at HEAD -- the
+        surviving aliases carry no help text, so ``_deprecated_options()``
+        alone would iterate zero times and the test would assert nothing.
+        """
         for path, param, flag in _deprecated_options():
             assert getattr(param, "hidden", False), (
                 f"{flag} on '{' '.join(path)}' is deprecated but still advertised in --help"
+            )
+        for path, param, _message in _wired_alias_params():
+            assert getattr(param, "hidden", False), (
+                f"deprecated alias {param.opts} on '{' '.join(path)}' is advertised in --help"
             )

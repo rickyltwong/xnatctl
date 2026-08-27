@@ -6,6 +6,7 @@ mirroring XSync's JSON configuration structure.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,12 @@ over data that never transfers)."""
 
 
 def _reject_out_of_scope_keys(data: Any, keys: tuple[str, ...]) -> Any:
-    """Raise if ``data`` (a pre-validation dict) carries any of ``keys``."""
-    if isinstance(data, dict):
+    """Raise if ``data`` (a pre-validation mapping) carries any of ``keys``.
+
+    Checks any ``Mapping``, not just ``dict`` -- pydantic accepts arbitrary
+    mappings, and a ``UserDict``-shaped config must not slip past the guard.
+    """
+    if isinstance(data, Mapping):
         present = [k for k in keys if k in data]
         if present:
             raise ValueError(

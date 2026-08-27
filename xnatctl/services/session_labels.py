@@ -162,7 +162,9 @@ class SessionLabelService(BaseService):
 
             - ``"renames"``: list of ``{"id", "subject", "old_label",
               "new_label"}`` rows to apply -- already filtered of no-ops,
-              existing-label collisions, and same-target collisions.
+              genuine label collisions, and same-target collisions, and
+              ordered so a rename that vacates a label runs before the
+              rename that takes it.
             - ``"skipped"``: list of ``{"id", "label", "reason"}`` rows
               explaining why an experiment was left alone.
         """
@@ -179,9 +181,20 @@ class SessionLabelService(BaseService):
         )
 
         by_subject: dict[str, list[dict[str, Any]]] = {}
+        skipped: list[dict[str, Any]] = []
         for row in rows:
             subject_label = row.get("subject_label")
             if not isinstance(subject_label, str) or not subject_label:
+                # A row without the requested subject_label column is a
+                # malformed answer for THIS query, not a filter miss --
+                # dropping it silently would understate the plan.
+                skipped.append(
+                    {
+                        "id": str(row.get("ID", "")),
+                        "label": str(row.get("label", "")),
+                        "reason": "row missing subject_label",
+                    }
+                )
                 continue
             if wanted and subject_label not in wanted:
                 continue
@@ -190,7 +203,6 @@ class SessionLabelService(BaseService):
             by_subject.setdefault(subject_label, []).append(row)
 
         renames: list[dict[str, Any]] = []
-        skipped: list[dict[str, Any]] = []
 
         for subject_label in sorted(by_subject):
             self._plan_subject(
@@ -221,6 +233,12 @@ class SessionLabelService(BaseService):
             exp_label = str(exp.get("label", ""))
             modality = _modality_from_xsi(exp.get("xsiType", ""))
 
+            if not exp_id:
+                # Without an ID the rename PUT cannot be addressed; letting
+                # the row into the plan would show a preview that execution
+                # then fails on.
+                skipped.append({"id": "", "label": exp_label, "reason": "missing experiment ID"})
+                continue
             if not modality:
                 skipped.append(
                     {"id": exp_id, "label": exp_label, "reason": "unknown modality from xsiType"}
@@ -261,6 +279,7 @@ class SessionLabelService(BaseService):
             )
 
         seen_targets: dict[str, str] = {}
+        tentative: list[dict[str, Any]] = []
         for modality in sorted(by_modality_date):
             by_date = by_modality_date[modality]
             for visit_idx, session_date in enumerate(sorted(by_date), start=1):
@@ -268,11 +287,11 @@ class SessionLabelService(BaseService):
                     subject_label,
                     by_date[session_date],
                     visit_idx=visit_idx,
-                    existing_labels=existing_labels,
                     seen_targets=seen_targets,
-                    renames=renames,
+                    tentative=tentative,
                     skipped=skipped,
                 )
+        renames.extend(self._resolve_collisions(tentative, existing_labels, skipped))
 
     def _plan_visit(
         self,
@@ -280,9 +299,8 @@ class SessionLabelService(BaseService):
         group: list[dict[str, Any]],
         *,
         visit_idx: int,
-        existing_labels: set[str],
         seen_targets: dict[str, str],
-        renames: list[dict[str, Any]],
+        tentative: list[dict[str, Any]],
         skipped: list[dict[str, Any]],
     ) -> None:
         """Assign SESSION order within one (modality, date) group and plan renames."""
@@ -320,12 +338,6 @@ class SessionLabelService(BaseService):
                 )
                 continue
 
-            if target in existing_labels and target != g["label"]:
-                skipped.append(
-                    {"id": g["id"], "label": g["label"], "reason": f"target label exists: {target}"}
-                )
-                continue
-
             # Defensive: given the enumeration above (visit_idx unique per
             # modality/date, session_idx unique per position within a
             # date's group), two experiments computing the same target
@@ -346,7 +358,7 @@ class SessionLabelService(BaseService):
                 continue
 
             seen_targets[target] = g["id"]
-            renames.append(
+            tentative.append(
                 {
                     "id": g["id"],
                     "subject": subject_label,
@@ -355,10 +367,72 @@ class SessionLabelService(BaseService):
                 }
             )
 
+    @staticmethod
+    def _resolve_collisions(
+        tentative: list[dict[str, Any]],
+        existing_labels: set[str],
+        skipped: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Order one subject's renames so vacated labels free up before reuse.
+
+        A target equal to another experiment's *current* label is allowed
+        when that experiment is itself renamed away in this plan: the
+        vacating rename is placed earlier in the returned list, and
+        ``apply_label_normalization`` executes in list order. A target held
+        by an experiment with no planned rename is a genuine collision and
+        is refused. A rename cycle (A -> B while B -> A) has no safe order
+        without a temporary label, so every member is refused.
+
+        Args:
+            tentative: This subject's validated candidate renames.
+            existing_labels: Current labels of ALL this subject's
+                experiments (planned or not).
+            skipped: Running skip list to append refusals onto.
+
+        Returns:
+            The renames that survive, in a safe execution order.
+        """
+        by_old = {item["old_label"]: item for item in tentative if item["old_label"]}
+        ordered: list[dict[str, Any]] = []
+        state: dict[str, bool] = {}
+
+        def resolve(item: dict[str, Any], stack: frozenset[str]) -> bool:
+            exp_id = str(item["id"])
+            if exp_id in state:
+                return state[exp_id]
+            target = item["new_label"]
+            blocker = by_old.get(target) if target in existing_labels else None
+            if blocker is not None and str(blocker["id"]) == exp_id:
+                blocker = None
+
+            reason: str | None = None
+            if target in existing_labels and blocker is None:
+                reason = f"target label exists: {target}"
+            elif blocker is not None:
+                if str(blocker["id"]) in stack:
+                    reason = f"target label exists: {target} (rename cycle)"
+                elif not resolve(blocker, stack | {exp_id}):
+                    reason = f"target label exists: {target}"
+
+            if reason is not None:
+                state[exp_id] = False
+                skipped.append({"id": exp_id, "label": item["old_label"], "reason": reason})
+                return False
+            state[exp_id] = True
+            ordered.append(item)
+            return True
+
+        for item in tentative:
+            resolve(item, frozenset())
+        return ordered
+
     def apply_label_normalization(self, plan: dict[str, Any]) -> dict[str, Any]:
         """Execute a rename plan produced by :meth:`plan_label_normalization`.
 
-        Renames are applied one experiment at a time; a failure on one does
+        Renames are applied one experiment at a time IN PLAN ORDER -- the
+        plan places a label-vacating rename before the rename that reuses
+        that label, so reordering would reintroduce the collision the
+        planner resolved. A failure on one does
         not stop the rest -- it is collected in ``"failed"`` instead, the
         same per-item isolation the ported script used. A session expiry
         aborts the whole run rather than being counted as a per-item

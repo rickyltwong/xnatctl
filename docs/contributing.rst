@@ -311,8 +311,7 @@ like this:
        ctx.output(projects)
 
 Destructive commands add ``@confirm_destructive`` (for ``--yes`` / ``--dry-run``
-flags), and batch commands add ``@parallel_options`` (for ``--parallel`` /
-``--workers``).
+flags), and batch commands add ``@parallel_options`` (for ``--workers``).
 
 **Pydantic models** (``xnatctl/models/``) define the schema for each XNAT resource
 type. Models use ``populate_by_name=True`` to accept XNAT API field aliases (e.g.,
