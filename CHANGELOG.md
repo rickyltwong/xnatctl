@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.5.1 - 2026-08-27
+
+**Fixes**
+
+- Event Service documentation now states the real fresh-install behaviour,
+  verified live: a server *booted* with the Event Service preference off
+  fails subscription listing (200 with an empty body) and reads (405), not
+  just creation -- only a runtime toggle-off gates creation alone. The
+  `EventService` docstrings and the API reference were claiming reads work
+  regardless.
+- The integration tier survives a cold-booted XNAT: the two Event Service
+  read tests enable the service first, and the Container Service tests wait
+  out (and re-login past) the fresh-boot window in which a
+  boot-second-zero session is refused by the plugin's admin-gated routes.
+  The nightly integration workflow is green again.
+- `XNATClient.delete` accepts the same per-call `max_retries` override
+  `get` already had (pass 0 for a single-shot request).
+
 ## 0.5.0 - 2026-08-27
 
 **Breaking**
