@@ -60,6 +60,36 @@ services:
       retries: 60
       start_period: 240s
 
+  # Independent of the XNAT stack above -- it backs
+  # tests/integration/test_dicom_tls.py, which only needs a TLS-capable
+  # DICOM peer to associate against, not an XNAT session. Bring it up alone
+  # with `up -d --wait dicom-tls-scp` if that is all a given run needs.
+  #
+  # Bind-mounted, unlike everything else in this file: the cert directory is
+  # not root-owned litter the way XNAT's archive is, because entrypoint.sh
+  # chmods it wide open specifically so a non-root host user (i.e. whoever
+  # is running pytest) can read the generated CA cert and delete it again.
+  dicom-tls-scp:
+    build:
+      context: ./docker/integration/tls-scp
+    ports:
+      - "127.0.0.1:11112:11112"
+    volumes:
+      - ./docker/integration/tls-scp/certs:/certs
+    healthcheck:
+      # Proves the listener is actually bound, not just that the cert file
+      # exists: `test -f ca.pem` can pass while python3/pynetdicom is still
+      # importing, which let `--wait` return green before anything was
+      # listening -- and the test would then SKIP (SCP unreachable), not
+      # fail, so a broken container looked like a passing CI run. A real TCP
+      # connect from inside the container is a cheap, honest bind proof; a
+      # full TLS handshake isn't needed for that.
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 11112), timeout=2).close()"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
 volumes:
   db:
   archive:

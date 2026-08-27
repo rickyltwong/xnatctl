@@ -230,15 +230,15 @@ file. Generate a starter config with ``project transfer-init``, then customize i
    verify_after_transfer: true
    scan_workers: 4
    filtering:
-     project_resources:
-       sync_type: all
-     subject_resources:
-       sync_type: all
-     subject_assessors:
-       sync_type: all
      imaging_sessions:
        sync_type: all
        xsi_types: []
+
+.. note::
+
+   Transfer moves experiments, scans, scan resources, and session resources.
+   Project-level resources, subject-level resources, and subject assessors are
+   not transferred, and the config refuses filter sections for them.
 
 Configuration fields
 ~~~~~~~~~~~~~~~~~~~~

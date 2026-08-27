@@ -222,6 +222,7 @@ class DownloadSummary(OperationResult):
     output_path: str = ""
     session_id: str = ""
     verification: VerificationReport | None = None
+    skipped_unsafe_entries: int = 0
 
     @property
     def throughput_mbps(self) -> float:
@@ -319,6 +320,7 @@ class TransferSummary(BaseModel):
     status: Literal["success", "partial", "failed"]
     items: list[TransferItemResult] = PydanticField(default_factory=list)
     verification: TransferVerification | None = None
+    skipped_unsafe_entries: int = 0
 
     def emit(self) -> None:
         """Print this summary as the command's single `-o json` stdout object.
@@ -327,6 +329,11 @@ class TransferSummary(BaseModel):
         use, so the print mechanics (indentation, `default=str`, ...) live in
         exactly one place.
         """
+        # Deferred: core.output imports Rich. TransferSummary is part of the
+        # public library surface (xnatctl.__all__) and gets pulled in by a
+        # plain data-model consumer that never calls emit() -- a
+        # module-scope import here would make Rich a transitive dependency
+        # of just holding a TransferSummary.
         from xnatctl.core.output import print_json
 
         print_json(self.model_dump(mode="json"))

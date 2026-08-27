@@ -208,7 +208,7 @@ class TestApiGet:
     def test_api_get_non_json_response(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_resp = MagicMock()
-        mock_resp.json.side_effect = ValueError("Not JSON")
+        mock_resp.json.side_effect = json.JSONDecodeError("Not JSON", "plain text response", 0)
         mock_resp.text = "plain text response"
         mock_resp.headers = {"content-type": "text/plain"}
         client.get.return_value = mock_resp
@@ -227,7 +227,7 @@ class TestApiGet:
         mock_resp = MagicMock()
         # Bytes 0x80-0xFF are invalid in UTF-8 and would be corrupted by text decoding
         binary_data = bytes(range(256))
-        mock_resp.json.side_effect = ValueError("Not JSON")
+        mock_resp.json.side_effect = json.JSONDecodeError("Not JSON", "plain text response", 0)
         mock_resp.content = binary_data
         mock_resp.headers = {"content-type": "application/octet-stream"}
         client.get.return_value = mock_resp
@@ -251,7 +251,7 @@ class TestApiGet:
         """
         client = _mock_client()
         mock_resp = MagicMock()
-        mock_resp.json.side_effect = ValueError("Not JSON")
+        mock_resp.json.side_effect = json.JSONDecodeError("Not JSON", "plain text response", 0)
         mock_resp.text = "plain text"
         mock_resp.headers = {"content-type": "text/plain"}
         client.get.return_value = mock_resp
@@ -1310,8 +1310,14 @@ class TestApiParamsHelpWarning:
         """Every ``api {verb} --help`` documents the secret-leak warning."""
         result = runner.invoke(cli, ["api", verb, "--help"])
         assert result.exit_code == 0
+        # Collapse whitespace before matching: Click wraps help prose to the
+        # width left over after the option column, so a token can straddle a
+        # line break -- which is exactly what happened when a longer global
+        # flag widened that column. The warning's presence is the contract;
+        # where the wrap lands is not.
+        rendered = " ".join(result.output.split())
         for token in _PARAMS_WARNING_TOKENS:
-            assert token in result.output, f"missing warning token {token!r} in --help for {verb}"
+            assert token in rendered, f"missing warning token {token!r} in --help for {verb}"
         # Points users at the safer body-passing options.
         assert "-d" in result.output
         assert "-f" in result.output

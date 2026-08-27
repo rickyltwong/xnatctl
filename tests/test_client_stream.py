@@ -206,7 +206,7 @@ def test_parallel_401s_trigger_exactly_one_reauth() -> None:
         try:
             with client.stream("GET", "/data/projects") as resp:
                 assert resp.status_code == 200
-        except Exception as e:  # pragma: no cover - only on failure
+        except Exception as e:  # noqa: BLE001 -- pragma: no cover - test scaffolding, capture any thread failure
             errors.append(e)
 
     threads = [threading.Thread(target=worker) for _ in range(2)]
@@ -243,7 +243,7 @@ def test_concurrent_streams_keep_their_own_auth() -> None:
             for _ in range(10):
                 with client.stream("GET", "/data/projects") as resp:
                     assert resp.status_code == 200
-        except Exception as e:  # pragma: no cover - only on failure
+        except Exception as e:  # noqa: BLE001 -- pragma: no cover - test scaffolding, capture any thread failure
             errors.append(e)
 
     threads = [threading.Thread(target=worker) for _ in range(2)]

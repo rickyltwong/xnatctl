@@ -9,6 +9,7 @@ and ``extract_session_zips`` (the sequential session-download extractor).
 from __future__ import annotations
 
 import io
+import os
 import zipfile
 from pathlib import Path
 
@@ -33,17 +34,18 @@ def build_zip(entries: dict[str, bytes]) -> bytes:
 
 def test_parent_traversal_member_cannot_escape_the_extraction_root(tmp_path: Path) -> None:
     """A malicious archive must not write outside the directory the user
-    asked for. Today's policy is to skip such members silently.
+    asked for. The skipped member is reported back, not dropped silently.
     """
     archive = tmp_path / "evil.zip"
     archive.write_bytes(build_zip({"../../escaped.txt": b"pwned", "safe.txt": b"fine"}))
     extract_dir = tmp_path / "out" / "nested"
 
-    _safe_extract_zip(archive, extract_dir)
+    skipped = _safe_extract_zip(archive, extract_dir)
 
     assert (extract_dir / "safe.txt").read_bytes() == b"fine"
     assert not (tmp_path / "escaped.txt").exists()
     assert not (tmp_path / "out" / "escaped.txt").exists()
+    assert skipped == ["../../escaped.txt"]
 
 
 def test_absolute_path_member_cannot_escape_the_extraction_root(tmp_path: Path) -> None:
@@ -58,10 +60,11 @@ def test_absolute_path_member_cannot_escape_the_extraction_root(tmp_path: Path) 
     archive.write_bytes(payload.getvalue())
     extract_dir = tmp_path / "out"
 
-    _safe_extract_zip(archive, extract_dir)
+    skipped = _safe_extract_zip(archive, extract_dir)
 
     assert (extract_dir / "safe.txt").exists()
     assert not Path("/tmp/xnatctl_escaped.txt").exists()
+    assert skipped == ["/tmp/xnatctl_escaped.txt"]
 
 
 def test_a_hostile_member_does_not_abort_the_whole_extraction(tmp_path: Path) -> None:
@@ -70,10 +73,33 @@ def test_a_hostile_member_does_not_abort_the_whole_extraction(tmp_path: Path) ->
     archive.write_bytes(build_zip({"../evil.txt": b"pwned", "a.txt": b"one", "sub/b.txt": b"two"}))
     extract_dir = tmp_path / "out"
 
-    _safe_extract_zip(archive, extract_dir)
+    skipped = _safe_extract_zip(archive, extract_dir)
 
     assert (extract_dir / "a.txt").read_bytes() == b"one"
     assert (extract_dir / "sub" / "b.txt").read_bytes() == b"two"
+    assert skipped == ["../evil.txt"]
+
+
+def test_symlink_typed_member_is_reported_as_skipped(tmp_path: Path) -> None:
+    """A symlink-typed member's content is its target path, not real file
+    content -- surprising output, so it is skipped and reported like a
+    traversal attempt rather than written silently.
+    """
+    archive = tmp_path / "symlink.zip"
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as zf:
+        info = zipfile.ZipInfo("link.txt")
+        info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+        zf.writestr(info, "../../etc/passwd")
+        zf.writestr("safe.txt", b"fine")
+    archive.write_bytes(payload.getvalue())
+    extract_dir = tmp_path / "out"
+
+    skipped = _safe_extract_zip(archive, extract_dir)
+
+    assert (extract_dir / "safe.txt").read_bytes() == b"fine"
+    assert not (extract_dir / "link.txt").exists()
+    assert skipped == ["link.txt"]
 
 
 def test_directory_entries_are_skipped_without_error(tmp_path: Path) -> None:
@@ -127,7 +153,7 @@ class TestExtractScanZip:
                 b"nifti data",
             )
 
-        extracted, renamed = _extract_scan_zip(zip_path, scan_base)
+        extracted, renamed, _ = _extract_scan_zip(zip_path, scan_base)
 
         assert extracted == 3
         assert renamed == 0
@@ -146,7 +172,7 @@ class TestExtractScanZip:
                 b"dicom data",
             )
 
-        extracted, renamed = _extract_scan_zip(
+        extracted, renamed, _ = _extract_scan_zip(
             zip_path,
             scan_base,
             resource_label="DICOM",
@@ -174,7 +200,7 @@ class TestExtractScanZip:
                 b"nifti",
             )
 
-        extracted, _ = _extract_scan_zip(
+        extracted, _, _ = _extract_scan_zip(
             zip_path,
             scan_base,
             exclude_resources=frozenset({"SNAPSHOTS"}),
@@ -204,7 +230,7 @@ class TestExtractScanZip:
                 b"nii",
             )
 
-        extracted, _ = _extract_scan_zip(
+        extracted, _, _ = _extract_scan_zip(
             zip_path,
             scan_base,
             exclude_resources=frozenset({"SNAPSHOTS", "NII"}),
@@ -228,7 +254,7 @@ class TestExtractScanZip:
                 b"macos",
             )
 
-        extracted, _ = _extract_scan_zip(zip_path, scan_base)
+        extracted, _, _ = _extract_scan_zip(zip_path, scan_base)
 
         assert extracted == 1
         assert not (scan_base / "resources" / "DICOM" / "files" / ".DS_Store").exists()
@@ -249,7 +275,7 @@ class TestExtractScanZip:
                 b"new data",
             )
 
-        extracted, renamed = _extract_scan_zip(zip_path, scan_base)
+        extracted, renamed, _ = _extract_scan_zip(zip_path, scan_base)
 
         assert extracted == 1
         assert renamed == 1
@@ -257,7 +283,14 @@ class TestExtractScanZip:
         assert (target / "img__dup1.dcm").read_bytes() == b"new data"
 
     def test_path_traversal_blocked(self, tmp_path: Path) -> None:
-        """Path traversal attempts are silently skipped."""
+        """A literal ``../../evil.txt`` never reaches the containment check
+        here: every ``..`` part starts with ``.``, so the hidden-file filter
+        earlier in the loop (checked against the full raw member path)
+        catches it first. That filter's ``continue`` is pre-existing,
+        intentional filtering (see test_skips_hidden_files), not the
+        "unsafe" skip this test is about -- so it does not appear in
+        ``skipped``. Still nothing escapes scan_base either way.
+        """
         zip_path = tmp_path / "scan.zip"
         scan_base = tmp_path / "scans" / "1"
 
@@ -271,12 +304,68 @@ class TestExtractScanZip:
                 b"good",
             )
 
-        extracted, _ = _extract_scan_zip(zip_path, scan_base)
+        extracted, _, skipped = _extract_scan_zip(zip_path, scan_base)
 
         # Only the safe file should be extracted
         assert extracted == 1
         assert (scan_base / "resources" / "DICOM" / "files" / "good.dcm").exists()
         assert not (tmp_path / "evil.txt").exists()
+        assert skipped == []
+
+    def test_containment_check_blocks_a_planted_symlink(self, tmp_path: Path) -> None:
+        """The containment check's real target: a directory component that
+        is a planted symlink out of scan_base -- unlike a literal ``..``
+        (see test_path_traversal_blocked above), nothing in this member name
+        starts with ``.``, so it reaches the containment check itself.
+        Skipped and reported.
+        """
+        zip_path = tmp_path / "scan.zip"
+        scan_base = tmp_path / "scans" / "1"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        files_dir = scan_base / "resources" / "DICOM" / "files"
+        files_dir.mkdir(parents=True)
+        (files_dir / "linked").symlink_to(outside, target_is_directory=True)
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr(
+                "XNAT_E00001/scans/1/resources/DICOM/files/linked/evil.txt",
+                b"evil",
+            )
+            zf.writestr(
+                "XNAT_E00001/scans/1/resources/DICOM/files/good.dcm",
+                b"good",
+            )
+
+        extracted, _, skipped = _extract_scan_zip(zip_path, scan_base)
+
+        assert extracted == 1
+        assert (scan_base / "resources" / "DICOM" / "files" / "good.dcm").exists()
+        assert not (outside / "evil.txt").exists()
+        assert skipped == ["XNAT_E00001/scans/1/resources/DICOM/files/linked/evil.txt"]
+
+    def test_symlink_typed_member_is_reported_as_skipped(self, tmp_path: Path) -> None:
+        """A symlink-typed member's content is a target path, not real file
+        content -- skipped and reported the same way a traversal attempt is.
+        """
+        zip_path = tmp_path / "scan.zip"
+        scan_base = tmp_path / "scans" / "1"
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            info = zipfile.ZipInfo("XNAT_E00001/scans/1/resources/DICOM/files/link.dcm")
+            info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+            zf.writestr(info, "../../../etc/passwd")
+            zf.writestr(
+                "XNAT_E00001/scans/1/resources/DICOM/files/good.dcm",
+                b"good",
+            )
+
+        extracted, _, skipped = _extract_scan_zip(zip_path, scan_base)
+
+        assert extracted == 1
+        assert (scan_base / "resources" / "DICOM" / "files" / "good.dcm").exists()
+        assert not (scan_base / "resources" / "DICOM" / "files" / "link.dcm").exists()
+        assert skipped == ["XNAT_E00001/scans/1/resources/DICOM/files/link.dcm"]
 
     def test_unknown_label_uses_fallback(self, tmp_path: Path) -> None:
         """Files without detectable resource label use UNKNOWN."""
@@ -287,7 +376,7 @@ class TestExtractScanZip:
             # No resources/ or files/ in path
             zf.writestr("some/random/path/data.dat", b"data")
 
-        extracted, _ = _extract_scan_zip(zip_path, scan_base)
+        extracted, _, _ = _extract_scan_zip(zip_path, scan_base)
 
         assert extracted == 1
         assert (
@@ -302,7 +391,7 @@ class TestExtractScanZip:
         with zipfile.ZipFile(zip_path, "w"):
             pass
 
-        extracted, renamed = _extract_scan_zip(zip_path, scan_base)
+        extracted, renamed, _ = _extract_scan_zip(zip_path, scan_base)
 
         assert extracted == 0
         assert renamed == 0
@@ -320,7 +409,7 @@ class TestExtractScanZip:
                 b"data",
             )
 
-        extracted, _ = _extract_scan_zip(zip_path, scan_base)
+        extracted, _, _ = _extract_scan_zip(zip_path, scan_base)
         assert extracted == 1
 
     def test_preserves_binary_content(self, tmp_path: Path) -> None:
@@ -339,6 +428,66 @@ class TestExtractScanZip:
 
         result = scan_base / "resources" / "DICOM" / "files" / "binary.dcm"
         assert result.read_bytes() == binary_content
+
+    def test_scan_base_created_before_it_is_resolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test for a Windows-only order-dependence bug.
+
+        Calling ``scan_base.resolve()`` once at function entry would run
+        before the shared ``scans/`` parent directory necessarily exists
+        on disk (multiple scans extract concurrently
+        into sibling directories under that one parent). On Windows,
+        ``Path.resolve()`` can only canonicalize (correct case, expand any
+        8.3 short name, follow a substituted drive/junction) the deepest
+        ALREADY-EXISTING ancestor of a path -- a not-yet-existing tail is
+        appended as literal, unresolved text
+        (``ntpath._getfinalpathname_nonstrict``). If a *different* worker's
+        ``mkdir`` created that shared parent between the early
+        ``resolved_scan_base`` call and a later per-member ``dest.resolve()``
+        call, the two calls could canonicalize different amounts of the same
+        path and disagree at the byte level -- failing the containment check
+        (``dest.is_relative_to(resolved_scan_base)``) on a perfectly safe
+        file, and silently dropping it.
+
+        This reproduces that asymmetry deterministically -- mangling the
+        ``scans`` path segment only while it does not yet exist on disk
+        (mirroring ``ntpath``'s literal-tail behavior), and simulating a
+        concurrent sibling-scan worker's ``mkdir`` finishing immediately
+        after that observation -- without needing an actual Windows
+        filesystem or a real thread race. It fails on the pre-fix code
+        (``scan_base.resolve()`` called before ``scan_base.mkdir()``) and
+        passes once the root is created before it is resolved.
+        """
+        session_dir = tmp_path / "session"
+        scans_dir = session_dir / "scans"
+        scan_base = scans_dir / "1"
+        zip_path = tmp_path / "scan.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("XNAT_E00001/scans/1/resources/DICOM/files/0001.dcm", b"real data")
+
+        def fake_resolve(self: Path, strict: bool = False) -> Path:
+            normalized = Path(os.path.abspath(str(self)))
+            if scans_dir.exists():
+                return normalized
+            # `scans/` does not exist for real yet: reproduce ntpath's
+            # literal, un-canonicalized tail for that segment, then simulate
+            # a concurrent sibling-scan worker's mkdir completing right
+            # after this observation -- exactly the race that made the two
+            # `.resolve()` calls in `_extract_scan_zip` disagree.
+            mangled = Path(*("SCANS~1" if part == "scans" else part for part in normalized.parts))
+            scans_dir.mkdir(parents=True, exist_ok=True)
+            return mangled
+
+        monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+        extracted, _, skipped = _extract_scan_zip(zip_path, scan_base)
+
+        assert extracted == 1, f"real member wrongly skipped: {skipped}"
+        assert skipped == []
+        assert (scan_base / "resources" / "DICOM" / "files" / "0001.dcm").read_bytes() == (
+            b"real data"
+        )
 
 
 # =============================================================================
@@ -363,6 +512,78 @@ def test_extract_strips_session_label(tmp_path: Path) -> None:
     expected_file = session_dir / "scans" / "1" / "resources" / "DICOM" / "files" / "test.dcm"
     assert expected_file.exists()
     assert expected_file.read_bytes() == b"test content"
+
+
+def test_extract_traversal_via_planted_symlink_is_skipped_and_reported(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The containment check's real target: a directory component that is a
+    planted symlink out of session_dir.
+
+    A literal ``..`` in a member name never reaches this check at all here --
+    every part of ``..`` starts with ``.``, so it is caught by the
+    hidden-file filter above it first (pre-existing behavior, unchanged by
+    this guard). A pre-existing symlink on disk is what a corrupted or
+    malicious extraction directory would actually use to escape, and it is
+    what this check exists to catch: skipped, returned to the caller, and
+    logged -- never a bare, silent ``continue``.
+    """
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (session_dir / "linked").symlink_to(outside, target_is_directory=True)
+
+    zip_path = session_dir / "scans.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("SESSION01/linked/evil.txt", b"pwned")
+        zf.writestr("SESSION01/scans/1/good.dcm", b"good")
+
+    with caplog.at_level("WARNING"):
+        skipped = extract_session_zips(session_dir, cleanup=False)
+
+    assert (session_dir / "scans" / "1" / "good.dcm").exists()
+    assert not (outside / "evil.txt").exists()
+    assert skipped == ["SESSION01/linked/evil.txt"]
+    assert "Skipped 1 unsafe ZIP entries" in caplog.text
+
+
+def test_extract_symlink_typed_member_is_skipped_and_reported(tmp_path: Path) -> None:
+    """A symlink-typed member's content is a target path, not real file
+    content -- skipped and counted like a traversal attempt.
+    """
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+
+    zip_path = session_dir / "scans.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        info = zipfile.ZipInfo("SESSION01/scans/1/link.dcm")
+        info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+        zf.writestr(info, "../../../etc/passwd")
+        zf.writestr("SESSION01/scans/1/good.dcm", b"good")
+
+    skipped = extract_session_zips(session_dir, cleanup=False)
+
+    assert (session_dir / "scans" / "1" / "good.dcm").exists()
+    assert not (session_dir / "scans" / "1" / "link.dcm").exists()
+    assert skipped == ["SESSION01/scans/1/link.dcm"]
+
+
+def test_extract_no_unsafe_entries_returns_empty_list_and_does_not_log(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+
+    zip_path = session_dir / "scans.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("SESSION01/scans/1/good.dcm", b"good")
+
+    with caplog.at_level("WARNING"):
+        skipped = extract_session_zips(session_dir, cleanup=False)
+
+    assert skipped == []
+    assert caplog.text == ""
 
 
 def test_extract_cleanup_removes_zip(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ testing; each transport module also exposes them directly.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from xnatctl.models.progress import UploadProgress, UploadSummary
@@ -30,6 +30,11 @@ from .dicom_store import (
 )
 from .gradual import GradualUploadRun
 from .gradual_client import GradualClientPool
+from .rest_archive import (
+    ArchiveUploadResult,
+    upload_archive_or_raise,
+    upload_single_archive,
+)
 from .rest_batch import (
     DEFAULT_ARCHIVE_FORMAT,
     DEFAULT_ARCHIVE_WORKERS,
@@ -37,9 +42,6 @@ from .rest_batch import (
     DEFAULT_IMPORT_HANDLER,
     DEFAULT_OVERWRITE,
     DEFAULT_TIMEOUT,
-    ArchiveUploadResult,
-    upload_archive_or_raise,
-    upload_single_archive,
 )
 from .shared import (
     DEFAULT_UPLOAD_WORKERS,
@@ -240,20 +242,3 @@ class UploadService(BaseService):
             overwrite=overwrite,
             progress_callback=progress_callback,
         )
-
-    def _split_into_batches(
-        self,
-        files: list[Path],
-        batch_size: int,
-    ) -> Iterator[list[Path]]:
-        """Split files into batches.
-
-        Args:
-            files: List of file paths.
-            batch_size: Maximum files per batch.
-
-        Yields:
-            Lists of files for each batch.
-        """
-        for i in range(0, len(files), batch_size):
-            yield files[i : i + batch_size]

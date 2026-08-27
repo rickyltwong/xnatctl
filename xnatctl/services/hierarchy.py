@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from xnatctl.core.exceptions import InvalidIdentifierError, ResourceNotFoundError
+from xnatctl.core.exceptions import InvalidIdentifierError, ResourceNotFoundError, XNATCtlError
 from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.hierarchy import (
     ExperimentRef,
@@ -25,7 +25,11 @@ from xnatctl.models.subject import Subject
 from .base import BaseService
 
 # Accession-ID-shaped tokens such as ``XNAT_E00001`` or ``CLM01_E12``.
-_ACCESSION_ID_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9]*_E\d+$")
+# Applied with `fullmatch` at both call sites below, not `match`:
+# Python's `$` also matches just BEFORE a final newline, so
+# `"XNAT_E00001\n"` matches a `^...$` pattern under `.match()` and
+# would be routed as a clean accession ID.
+_ACCESSION_ID_PATTERN = re.compile(r"[A-Z][A-Za-z0-9]*_E\d+")
 
 
 def join_api_path(*parts: str | None) -> str:
@@ -48,10 +52,10 @@ def join_api_path(*parts: str | None) -> str:
     "projects", "scans", ...), and every caller-supplied value either goes
     through a ref (which already rejects ``/`` outright) or is quoted here.
     So a leading/trailing ``/`` at this point is never legitimate content to
-    silently reinterpret; it used to be quietly stripped (``"/TARGET"`` ->
-    ``"TARGET"``, a different resource for what was actually invalid input,
-    and a bare ``"/"`` collapsing to an empty segment -- a double-slash
-    route), and is now rejected instead.
+    silently reinterpret; quietly stripping it would turn ``"/TARGET"`` into
+    ``"TARGET"`` (a different resource for what was actually invalid input)
+    and collapse a bare ``"/"`` to an empty segment (a double-slash route),
+    so it is rejected instead.
 
     Raises:
         InvalidIdentifierError: If a supplied (non-``None``) part is empty,
@@ -204,7 +208,7 @@ class HierarchyService(BaseService):
         """
         if not ref.project_id or ref.subject:
             return ref
-        if ref.experiment_is_label and not _ACCESSION_ID_PATTERN.match(ref.experiment):
+        if ref.experiment_is_label and not _ACCESSION_ID_PATTERN.fullmatch(ref.experiment):
             return ref
         return ExperimentRef(experiment=ref.experiment)
 
@@ -312,12 +316,175 @@ class HierarchyService(BaseService):
         return ResultSetEnvelope.model_validate(data).rows
 
     @staticmethod
+    def extract_rows_strict(
+        data: dict[str, Any] | list[dict[str, Any]], what: str
+    ) -> list[dict[str, Any]]:
+        """Extract collection rows, raising on a body that isn't the envelope.
+
+        :meth:`extract_rows` validates through ``ResultSetEnvelope``, whose
+        ``result_set``/``results`` fields both carry ``default_factory`` --
+        so a 200 response with no ``ResultSet`` key at all (a plugin error
+        body like ``{"message": "plugin disabled"}``, say) validates to zero
+        rows, indistinguishable from a query that legitimately matched
+        nothing. Reporting "0 results" for a server that never answered the
+        question is the failure mode this avoids.
+
+        Only an absent envelope raises. A genuinely empty result set
+        (``{"ResultSet": {"Result": []}}``) still returns ``[]``, as does a
+        present ``ResultSet`` with no ``Result`` inside it, and a bare
+        top-level array is passed through unchanged.
+
+        Most callers still use the lenient :meth:`extract_rows`; migrating
+        one is a matter of passing a description of the request here.
+
+        Args:
+            data: The raw JSON body.
+            what: Short description of the request, for the error message.
+
+        Returns:
+            The extracted rows.
+
+        Raises:
+            XNATCtlError: If ``data`` is a dict with no top-level
+                ``ResultSet`` key.
+        """
+        if isinstance(data, dict) and "ResultSet" not in data:
+            raise XNATCtlError(
+                f"Unexpected response while {what}: no 'ResultSet' field in a "
+                f"200 response. Got keys: {sorted(data.keys())!r}."
+            )
+        if isinstance(data, list) and any(not isinstance(row, dict) for row in data):
+            # The lenient extractor drops non-dict entries; here that would
+            # turn a bare-array error body (e.g. ["plugin disabled"]) into
+            # zero rows -- the exact "0 results for a server that never
+            # answered the question" this method exists to refuse.
+            raise XNATCtlError(
+                f"Unexpected response while {what}: top-level array contains non-object entries."
+            )
+        return HierarchyService.extract_rows(data)
+
+    @staticmethod
     def extract_first_item(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
-        """Extract the first `items[]` record's data fields and meta."""
+        """Extract the first `items[]` record's data fields and meta.
+
+        Unlike :meth:`extract_item_children`, a missing top-level ``items``
+        key here is not treated as malformed: callers of this method (e.g.
+        ``SubjectService.get``/``SessionService.get``) always follow a
+        ``None`` result with an :meth:`extract_rows` fallback for a
+        ResultSet-shaped response, so an ``items``-less document is still a
+        recognized shape at this call site, just the other one.
+        """
         item = ItemsEnvelope.model_validate(data).first_item
         if item is None:
             return None
         return item.data_fields, item.meta
+
+    @staticmethod
+    def extract_item_children(data: dict[str, Any], child_field: str) -> list[dict[str, Any]]:
+        """Extract the ``data_fields`` of every child item under one ``children[]`` entry.
+
+        A detailed (``format=json``) XNAT document nests related records under
+        ``items[0].children``, each keyed by a ``field`` name -- e.g.
+        ``"fields/field"`` for a subject/experiment's custom variables, or
+        ``"sharing/share"`` for the projects it is shared into. This is the
+        one place that walks that shape, used by custom-variable read (see
+        ``SubjectService.list_vars``/``SessionService.list_vars``).
+
+        Args:
+            data: The raw ``format=json`` document.
+            child_field: The ``children[].field`` value to match (e.g.
+                ``"fields/field"``).
+
+        Returns:
+            The ``data_fields`` dict of each item under the matching child,
+            in document order. Empty if there is no first item, or no child
+            with that field name, or that child's ``items`` is absent/null
+            (all legitimately mean "no records here").
+
+        Raises:
+            XNATCtlError: If the top-level ``items`` key is absent or not a
+                list, if ``items[0]`` is present but is not an object with a
+                ``data_fields`` key, or if a matching child's ``items`` is
+                present but not a list, or a list entry is not an object
+                with a ``data_fields`` object. A plugin or schema regression
+                here must not be reported as "no custom variables" -- see
+                ``commands.py``'s ``wrappers_of`` for the same rule.
+        """
+        # Unlike ``extract_first_item``, every caller of THIS method (the
+        # subject/session custom-variable readers) always requests a
+        # detailed format=json document and has no ResultSet-shaped
+        # fallback to fall through to -- so an absent top-level ``items``
+        # key here is not "genuinely empty", it is a body this client does
+        # not recognize (e.g. a plugin error like
+        # ``{"message": "plugin disabled"}``). ``ItemsEnvelope``'s
+        # ``default_factory=list`` would otherwise let that validate
+        # silently to zero rows, reported as "no custom variables" for a
+        # request that never actually returned the expected shape.
+        # ``{"items": []}`` is unaffected -- that is the genuinely-empty
+        # case and stays a normal empty read.
+        if "items" not in data:
+            raise XNATCtlError(
+                "Unexpected response: no top-level 'items' field in a detailed "
+                f"(format=json) document. Got keys: {sorted(data.keys())!r}."
+            )
+        raw_items = data["items"]
+        if not isinstance(raw_items, list):
+            raise XNATCtlError(
+                "Unexpected response: top-level 'items' is not a list in a detailed "
+                f"(format=json) document. Got {type(raw_items).__name__} ({raw_items!r})."
+            )
+        # ``ItemRecord``'s fields all carry ``default_factory``, so a
+        # present-but-empty entry like ``{}`` would otherwise validate
+        # silently into an item with no data_fields/children/meta --
+        # indistinguishable from a legitimately empty one. Checked against
+        # the raw dict, before Pydantic coerces it, for the same reason:
+        # coercion is also where a non-object entry would surface as a raw
+        # ``pydantic.ValidationError`` instead of this method's own typed
+        # one.
+        if raw_items:
+            first_raw = raw_items[0]
+            if not isinstance(first_raw, dict) or "data_fields" not in first_raw:
+                raise XNATCtlError(
+                    "Unexpected entry at items[0] in a detailed (format=json) document: "
+                    f"expected an object with a 'data_fields' key, got {first_raw!r}."
+                )
+        item = ItemsEnvelope.model_validate(data).first_item
+        if item is None:
+            return []
+        for child in item.children:
+            if not isinstance(child, dict) or child.get("field") != child_field:
+                continue
+            child_items = child.get("items")
+            if child_items is None:
+                return []
+            if not isinstance(child_items, list):
+                raise XNATCtlError(
+                    f"Unexpected 'items' under children[].field={child_field!r}: "
+                    f"expected a list or null, got {type(child_items).__name__} "
+                    f"({child_items!r})."
+                )
+            rows: list[dict[str, Any]] = []
+            for index, it in enumerate(child_items):
+                if not isinstance(it, dict) or not isinstance(it.get("data_fields"), dict):
+                    raise XNATCtlError(
+                        f"Unexpected entry at children[].field={child_field!r}.items[{index}]: "
+                        f"expected an object with a 'data_fields' object, got {it!r}."
+                    )
+                rows.append(it["data_fields"])
+            return rows
+        return []
+
+    @staticmethod
+    def stringify_field(value: Any) -> str:
+        """Coerce a raw custom-variable field value to display text.
+
+        ``None`` -- whether the source key was absent or explicitly present
+        as ``null`` -- renders as ``""``, never as the literal text
+        ``"None"`` a bare ``str(None)`` would produce. A genuinely-absent
+        value staying absent is fine; a null value silently becoming the
+        three-character string ``"None"`` is not.
+        """
+        return "" if value is None else str(value)
 
     @staticmethod
     def resolve_scan_xsi_type(session_xsi_type: str | None) -> str | None:
@@ -440,7 +607,7 @@ class HierarchyService(BaseService):
                 )
                 return self.resolve_experiment(canonical_ref)
 
-        if _ACCESSION_ID_PATTERN.match(ref.experiment):
+        if _ACCESSION_ID_PATTERN.fullmatch(ref.experiment):
             try:
                 data = self.client.get_json(join_api_path("data", "experiments", ref.experiment))
             except ResourceNotFoundError:

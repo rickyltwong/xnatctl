@@ -6,14 +6,42 @@ mirroring XSync's JSON configuration structure.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from xnatctl.core.exceptions import TransferConfigError
 from xnatctl.models.base import BaseModel
+
+TRANSFER_SCOPE = "experiments, scans, scan resources, and session resources"
+"""What ``project transfer`` moves. Filter sections outside this scope are
+rejected rather than accepted-and-ignored (the base model's ``extra="ignore"``
+would otherwise swallow them in silence, leaving the config claiming control
+over data that never transfers)."""
+
+
+def _reject_out_of_scope_keys(data: Any, keys: tuple[str, ...]) -> Any:
+    """Raise if ``data`` (a pre-validation mapping) carries any of ``keys``.
+
+    Checks any ``Mapping``, not just ``dict`` -- pydantic accepts arbitrary
+    mappings, and a ``UserDict``-shaped config must not slip past the guard.
+    The mapping is first materialized to a plain dict and that SAME dict is
+    both checked and returned for validation, so a subclass with lying
+    ``__contains__`` cannot show the guard one key set and pydantic another.
+    """
+    if isinstance(data, Mapping):
+        data = dict(data)
+        present = [k for k in keys if k in data]
+        if present:
+            raise ValueError(
+                f"unsupported filtering section(s) {', '.join(repr(k) for k in present)}: "
+                f"transfer moves {TRANSFER_SCOPE} only -- remove the section(s)"
+            )
+    return data
 
 
 class FilterSyncType(str, Enum):
@@ -80,7 +108,12 @@ class XsiTypeFilter(BaseModel):
     scan_types: ScanTypeFilter = Field(default_factory=ScanTypeFilter)
     scan_resources: ResourceFilter = Field(default_factory=ResourceFilter)
     resources: ResourceFilter = Field(default_factory=ResourceFilter)
-    session_assessors: ResourceFilter = Field(default_factory=ResourceFilter)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_out_of_scope(cls, data: Any) -> Any:
+        """Refuse filter keys for data classes the transfer never moves."""
+        return _reject_out_of_scope_keys(data, ("session_assessors",))
 
 
 class ImagingSessionFilter(BaseModel):
@@ -122,38 +155,18 @@ class ImagingSessionFilter(BaseModel):
         return xsi_type not in type_names
 
 
-class AssessorFilter(BaseModel):
-    """Filter for subject assessors."""
-
-    sync_type: FilterSyncType = FilterSyncType.ALL
-    xsi_types: list[XsiTypeFilter] = Field(default_factory=list)
-
-    def should_include_type(self, xsi_type: str) -> bool:
-        """Check if an assessor xsiType passes this filter.
-
-        Args:
-            xsi_type: XSI type to check.
-
-        Returns:
-            True if the type should be included.
-        """
-        if self.sync_type == FilterSyncType.ALL:
-            return True
-        if self.sync_type == FilterSyncType.NONE:
-            return False
-        type_names = [t.xsi_type for t in self.xsi_types]
-        if self.sync_type == FilterSyncType.INCLUDE:
-            return xsi_type in type_names
-        return xsi_type not in type_names
-
-
 class FilterConfig(BaseModel):
-    """Top-level filter configuration mirroring XSync's hierarchy."""
+    """Top-level filter configuration."""
 
-    project_resources: ResourceFilter = Field(default_factory=ResourceFilter)
-    subject_resources: ResourceFilter = Field(default_factory=ResourceFilter)
-    subject_assessors: AssessorFilter = Field(default_factory=AssessorFilter)
     imaging_sessions: ImagingSessionFilter = Field(default_factory=ImagingSessionFilter)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_out_of_scope(cls, data: Any) -> Any:
+        """Refuse filter sections for data classes the transfer never moves."""
+        return _reject_out_of_scope_keys(
+            data, ("project_resources", "subject_resources", "subject_assessors")
+        )
 
 
 class TransferConfig(BaseModel):
@@ -186,8 +199,6 @@ class TransferConfig(BaseModel):
         Raises:
             TransferConfigError: If the file is invalid.
         """
-        from xnatctl.core.exceptions import TransferConfigError
-
         try:
             with open(path) as f:
                 data = yaml.safe_load(f) or {}
@@ -224,9 +235,6 @@ class TransferConfig(BaseModel):
             "archive_wait_timeout": 10800.0,
             "archive_poll_interval": 5.0,
             "filtering": {
-                "project_resources": {"sync_type": "all"},
-                "subject_resources": {"sync_type": "all"},
-                "subject_assessors": {"sync_type": "all"},
                 "imaging_sessions": {
                     "sync_type": "all",
                     "xsi_types": [],

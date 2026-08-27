@@ -27,13 +27,17 @@ import click
 
 from xnatctl.cli.common import (
     Context,
+    apply_filter,
+    apply_sort_limit,
     confirm_destructive,
     global_options,
     handle_errors,
+    list_options,
     read_password_stdin,
     reject_argv_password,
     require_auth,
     require_project_from_context,
+    resolve_columns,
 )
 from xnatctl.core.output import (
     OutputFormat,
@@ -73,9 +77,11 @@ def xsync() -> None:
 
         xnatctl xsync sync -P PROJ
 
-        xnatctl xsync refresh-credentials -P PROJ \\
+        xnatctl xsync refresh-credentials -P PROJ --yes \\
             --remote-url https://remote.example.org \\
             --remote-user alice --remote-pass-stdin
+        # --yes matters when piping the password: without it the
+        # confirmation prompt consumes the piped line first.
     """
 
 
@@ -85,33 +91,61 @@ def xsync() -> None:
 
 
 @xsync.command("list")
+@list_options
 @global_options
 @handle_errors
 @require_auth
-def xsync_list(ctx: Context) -> None:
-    """List XSync-bound projects on the local XNAT."""
+def xsync_list(
+    ctx: Context,
+    filter_expr: str | None,
+    limit: int | None,
+    sort_by: str | None,
+    columns: str | None,
+) -> None:
+    """List XSync-bound projects on the local XNAT.
+
+    \b
+    Filtering/sorting/limit apply to the row shape XNAT returns, which
+    varies by deployment -- run without --columns first to see the
+    available fields. --columns affects table output only (matching every
+    other list command); JSON output always carries every field.
+    """
     client = ctx.get_client()
     service = XsyncService(client)
     data = service.list_projects()
 
+    raw_rows = _coerce_rows(data)
+    rows = apply_filter(raw_rows, filter_expr)
+    rows = apply_sort_limit(rows, sort_by, limit)
+    # --columns is a table-rendering concern only -- it never narrows what
+    # JSON prints, so it does not count as a "control was used" reason to
+    # switch away from the server's raw payload below.
+    filtering_or_limiting_used = bool(filter_expr or limit is not None or sort_by)
+
     if ctx.quiet:
-        # Try to extract project IDs from a handful of plausible shapes.
-        rows = _coerce_rows(data)
         for row in rows:
             click.echo(_extract_project_id(row))
         return
 
     if ctx.output_format == OutputFormat.JSON:
+        print_json(rows if filtering_or_limiting_used else data)
+        return
+
+    if not raw_rows:
+        # Nothing could even be coerced into rows -- there is no known
+        # column shape to render, so show the server's raw payload instead
+        # of a useless empty table. Distinct from filtering/limiting having
+        # narrowed a non-empty `raw_rows` down to zero: that case falls
+        # through to print_output below, which reports "No results" rather
+        # than silently reprinting everything.
         print_json(data)
         return
 
-    rows = _coerce_rows(data)
-    if not rows:
-        print_json(data)
-        return
-
-    columns = list(rows[0].keys())
-    print_output(rows, format=ctx.output_format, columns=columns)
+    # Validated against the union of keys across every row, not just the
+    # first -- rows can carry different keys across a varying deployment
+    # schema.
+    default_columns = list(dict.fromkeys(key for row in raw_rows for key in row))
+    print_output(rows, format=ctx.output_format, columns=resolve_columns(default_columns, columns))
 
 
 @xsync.command("setup")
@@ -427,15 +461,17 @@ def xsync_refresh_credentials(
     """Rotate the XSync remote credentials for a project (or every bound project).
 
     The three-step flow (remoteREST -> credentials/save -> credentials/check)
-    runs entirely inside this command; operators no longer need to script
-    against raw curl.
+    runs entirely inside this command, with no need to script against raw
+    curl.
 
     \b
     Examples:
 
-        xnatctl xsync refresh-credentials -P PROJ \\
+        xnatctl xsync refresh-credentials -P PROJ --yes \\
             --remote-url https://remote.example.org \\
-            --remote-user alice --remote-pass-stdin \\
+            --remote-user alice --remote-pass-stdin
+        # --yes matters when piping the password: without it the
+        # confirmation prompt consumes the piped line first. \\
             --local-project PROJ --remote-project PROJ_REMOTE
 
         # Rotate every bound project sharing the same remote URL.
@@ -485,7 +521,7 @@ def xsync_refresh_credentials(
                 remote_project=effective_remote,
                 sync_new_only=sync_new_only,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # per-project isolation while refreshing credentials across --all-bound projects
             # Stringify but do not echo the secret. ``handle_errors`` already
             # routes through :func:`redact_url_query`; we keep one local
             # safeguard so even bypass paths cannot leak the password.

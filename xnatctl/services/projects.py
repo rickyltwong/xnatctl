@@ -78,11 +78,13 @@ class ProjectService(BaseService):
 
         if accessible:
             params["accessible"] = "true"
+        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+            params["limit"] = str(limit)
 
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+        if limit is not None:  # belt-and-braces: some XNAT endpoints ignore `limit`
             results = results[:limit]
 
         return [Project(**r) for r in results]

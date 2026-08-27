@@ -174,7 +174,7 @@ class TestCancellablePool:
 
 
 class TestUploadRetryLadderIsCancellable:
-    """The retry backoff is where an interrupt used to hang.
+    """The retry backoff is where an interrupt would hang.
 
     The ladder is 2+4+8+16+32s. Without a cancellable wait, a Ctrl+C during a
     failing upload waits out the remaining rungs per in-flight batch.
@@ -262,7 +262,10 @@ class TestBatchWorkerHonoursCancellation:
         Reporting it as a failure would tell the user their data was refused
         when in fact they stopped it themselves.
         """
-        from xnatctl.services.upload.rest_batch import _create_and_upload_batch
+        from xnatctl.services.upload.rest_batch import (
+            _BatchUploadConfig,
+            _create_and_upload_batch,
+        )
 
         token = CancellationToken()
         token.cancel()
@@ -276,20 +279,22 @@ class TestBatchWorkerHonoursCancellation:
             archive_path=tmp_path / "batch.zip",
             source_path=source,
             archive_format="zip",
-            base_url="https://x",
-            username="u",
-            password="p",
-            session_token=None,
-            verify_ssl=True,
-            timeout=30,
             batch_id=7,
-            project="P",
-            subject="S",
-            session="E",
-            import_handler="DICOM-zip",
-            ignore_unparsable=True,
-            overwrite="none",
-            direct_archive=False,
+            config=_BatchUploadConfig(
+                client=MagicMock(server_version=None, base_url="https://x"),
+                username="u",
+                password="p",
+                session_token=None,
+                verify_ssl=True,
+                timeout=30,
+                project="P",
+                subject="S",
+                session="E",
+                import_handler="DICOM-zip",
+                ignore_unparsable=True,
+                overwrite="none",
+                direct_archive=False,
+            ),
             cancel_token=token,
         )
 
@@ -320,6 +325,7 @@ def _service() -> Any:
     client.verify_ssl = True
     client.username = None
     client.password = None
+    client.server_version = None
     return UploadService(client)
 
 

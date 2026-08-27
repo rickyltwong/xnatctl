@@ -10,8 +10,10 @@ from conftest import make_response
 
 from xnatctl.core.exceptions import (
     OperationError,
+    PermissionDeniedError,
     ResourceExistsError,
     ResourceNotFoundError,
+    XNATCtlError,
 )
 from xnatctl.services.prearchive import PrearchiveService
 
@@ -286,7 +288,7 @@ class TestPrearchiveGetScans:
 # Response inspection
 #
 # XNAT's prearchive services answer HTTP 200 with an error-shaped body instead
-# of a 4xx, so these verbs used to return {"success": True} regardless.
+# of a 4xx, so these verbs must inspect the body, not trust the status code.
 # =============================================================================
 
 
@@ -423,3 +425,77 @@ class TestGetNotFoundScoping:
             service.get("PROJ01", "20240115_120000", "SUB404")
 
         assert exc.value is boom, "must propagate unchanged, not become a 404"
+
+
+class TestGetRoutingCode:
+    """Tests for PrearchiveService.get_routing_code.
+
+    Verified live against XNAT 1.9.2.1: the response body is a bare
+    integer as text, not JSON.
+    """
+
+    def test_get_routing_code_parses_bare_integer_text(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get.return_value = make_response(text="4", content_type="text/plain")
+
+        result = service.get_routing_code("PROJ01")
+
+        assert result == 4
+        mock_client.get.assert_called_once_with("/data/projects/PROJ01/prearchive_code")
+
+    def test_get_routing_code_unparseable_body_raises(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get.return_value = make_response(text="not-a-number", content_type="text/plain")
+
+        with pytest.raises(XNATCtlError, match="expected a bare integer"):
+            service.get_routing_code("PROJ01")
+
+
+class TestSetRoutingMode:
+    """Tests for PrearchiveService.set_routing_mode.
+
+    Codes verified live against XNAT 1.9.2.1: manual=0, auto-archive=4,
+    auto-archive-overwrite=5, read out of
+    `org.nrg.framework.constants.PrearchiveCode`'s static initializer.
+    """
+
+    @pytest.mark.parametrize(
+        ("mode", "code"),
+        [("manual", 0), ("auto-archive", 4), ("auto-archive-overwrite", 5)],
+    )
+    def test_set_routing_mode_maps_to_correct_code(
+        self, service: PrearchiveService, mock_client: MagicMock, mode: str, code: int
+    ) -> None:
+        mock_client.put.return_value = make_response(text="", content_type="text/plain")
+
+        service.set_routing_mode("PROJ01", mode)
+
+        mock_client.put.assert_called_once_with(f"/data/projects/PROJ01/prearchive_code/{code}")
+
+    def test_set_routing_mode_403_reraised_as_site_policy(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        """A 403 here means `project.allow-auto-archive` is disabled site-wide,
+        not that the caller lacks permission -- the re-raised error must say so.
+        """
+        mock_client.put.side_effect = PermissionDeniedError("prearchive_code", "set")
+
+        with pytest.raises(XNATCtlError, match="site policy"):
+            service.set_routing_mode("PROJ01", "auto-archive")
+
+    def test_set_routing_mode_403_on_manual_not_rewritten_as_site_policy(
+        self, service: PrearchiveService, mock_client: MagicMock
+    ) -> None:
+        """`mode="manual"` is prearchive_code 0, which `project.allow-auto-archive`
+        does NOT govern -- that site property only blocks NON-ZERO codes, per
+        this method's own docstring. A 403 here means the caller genuinely
+        lacks permission on the project, so it must surface as the ordinary
+        `PermissionDeniedError`, not get misreported as the site policy (which
+        would send the caller to the wrong admin setting).
+        """
+        mock_client.put.side_effect = PermissionDeniedError("prearchive_code", "set")
+
+        with pytest.raises(PermissionDeniedError):
+            service.set_routing_mode("PROJ01", "manual")

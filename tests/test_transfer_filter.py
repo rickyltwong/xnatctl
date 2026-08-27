@@ -19,7 +19,6 @@ from xnatctl.services.transfer.filter import FilterEngine
 @pytest.fixture
 def engine() -> FilterEngine:
     config = FilterConfig(
-        project_resources=ResourceFilter(sync_type=FilterSyncType.NONE),
         imaging_sessions=ImagingSessionFilter(
             sync_type=FilterSyncType.INCLUDE,
             xsi_types=[
@@ -76,9 +75,6 @@ class TestFilterResources:
         assert engine.should_include_scan_resource("xnat:mrSessionData", "DICOM") is True
         assert engine.should_include_scan_resource("xnat:mrSessionData", "SNAP") is False
 
-    def test_project_resources_none(self, engine: FilterEngine) -> None:
-        assert engine.should_include_project_resource("anything") is False
-
 
 class TestFilterSessionResources:
     def test_includes_when_all(self) -> None:
@@ -132,5 +128,4 @@ class TestFilterAllConfig:
         )
         assert engine.should_include_experiment(exp) is True
         assert engine.should_include_scan("xnat:mrSessionData", "T1w") is True
-        assert engine.should_include_project_resource("any") is True
         assert engine.should_include_session_resource("xnat:mrSessionData", "any") is True

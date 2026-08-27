@@ -8,15 +8,41 @@ from typing import Any
 
 import httpx
 
-from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
+from xnatctl.core.exceptions import (
+    InputValidationError,
+    ResourceNotFoundError,
+)
 from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.subject import Subject
 
-from .base import BaseService
 from .hierarchy import HierarchyService
+from .subjects_sharing import _SubjectSharingMixin
+
+#: Custom-variable names are embedded literally inside an XNAT xpath-style
+#: query key (``xnat:subjectData/fields/field[name=X]/field``). httpx encodes
+#: whatever characters we put in *transport-safe*, but a name containing `]`,
+#: `=`, or `/` would still change the *meaning* the server parses back out of
+#: it once decoded -- e.g. a value ending `]/field=evil` could close the
+#: bracket expression early and append a second one. Restricted to a plain
+#: identifier shape rather than relying on the server to reject the rest.
+# Matched with `fullmatch`, not `match`: Python's `$` also matches just
+# BEFORE a final newline, so a `^...$` + `.match()` pair accepts
+# "field\n" and embeds the newline in the XNAT query key.
+_FIELD_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]+")
 
 
-class SubjectService(BaseService):
+def _validate_field_name(name: str) -> str:
+    """Reject a custom-variable name that could break the field[] expression."""
+    if not name or not _FIELD_NAME_RE.fullmatch(name):
+        raise InputValidationError(
+            "custom variable name must be a non-empty string of letters, digits, '.', '_' or '-'",
+            field="name",
+            value=name,
+        )
+    return name
+
+
+class SubjectService(_SubjectSharingMixin):
     """Service for XNAT subject operations."""
 
     def list(
@@ -45,11 +71,13 @@ class SubjectService(BaseService):
         params: dict[str, Any] = {"format": "json"}
         if columns:
             params["columns"] = ",".join(columns)
+        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+            params["limit"] = str(limit)
 
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+        if limit is not None:  # belt-and-braces: some XNAT endpoints ignore `limit`
             results = results[:limit]
 
         return [Subject(**r) for r in results]
@@ -160,7 +188,10 @@ class SubjectService(BaseService):
         if not force and project:
             try:
                 sessions = self.get_sessions(subject_id, project=project)
-            except Exception:
+            except ResourceNotFoundError:
+                # Subject/project genuinely gone -- no sessions is a valid
+                # inference. Any other failure (network, auth, ...) must
+                # propagate: this check fails closed, not open.
                 sessions = []
             if sessions:
                 raise RuntimeError(
@@ -263,7 +294,7 @@ class SubjectService(BaseService):
                         "reason": "not found",
                     }
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # per-item batch isolation in rename_batch/rename_pattern
                 results["errors"].append(
                     {
                         "label": old_label,
@@ -348,7 +379,7 @@ class SubjectService(BaseService):
                                         "to": new_label,
                                     }
                                 )
-                            except Exception as e:
+                            except Exception as e:  # noqa: BLE001  # per-item batch isolation in rename_batch/rename_pattern
                                 results["errors"].append(
                                     {
                                         "label": old_label,
@@ -388,7 +419,7 @@ class SubjectService(BaseService):
                                 "to": new_label,
                             }
                         )
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001  # per-item batch isolation in rename_batch/rename_pattern
                         results["errors"].append(
                             {
                                 "label": old_label,
@@ -602,3 +633,109 @@ class SubjectService(BaseService):
             f"/data/projects/{quote_path_segment(project)}/subjects/{quote_path_segment(label)}",
             params={"label": new_label},
         )
+
+    # -------------------------------------------------------------------------
+    # Custom variables (the "xnat-varput" surface)
+    #
+    # Verified live: a subject's custom fields are read from the
+    # ``fields/field`` children of its ``format=json`` document, and written
+    # via PUT query keys shaped
+    # ``xnat:subjectData/fields/field[name=X]/field=value`` -- multiple keys
+    # in one PUT set multiple variables atomically. These are open-ended,
+    # project-defined fields (no fixed schema XNAT reports), so both methods
+    # here work in plain dicts rather than a typed model, per the data-flow
+    # rule in AGENTS.md.
+    # -------------------------------------------------------------------------
+
+    def list_vars(
+        self, subject_id: str, project: str | None = None
+    ) -> builtins.list[dict[str, str]]:
+        """List a subject's custom variables.
+
+        Args:
+            subject_id: Subject ID or label (project required for a label).
+            project: Project ID (required when ``subject_id`` is a label).
+
+        Returns:
+            One dict per variable, each shaped ``{"name": ..., "value": ...}``.
+        """
+        if project is not None:  # not truthy -- see get() above
+            path = (
+                f"/data/projects/{quote_path_segment(project)}"
+                f"/subjects/{quote_path_segment(subject_id)}"
+            )
+        else:
+            path = f"/data/subjects/{quote_path_segment(subject_id)}"
+
+        try:
+            data = self._get(path, params={"format": "json"})
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("subject", subject_id) from e
+        children = HierarchyService.extract_item_children(data, "fields/field")
+        return [
+            {
+                "name": HierarchyService.stringify_field(c.get("name")),
+                "value": HierarchyService.stringify_field(c.get("field")),
+            }
+            for c in children
+        ]
+
+    def set_vars(
+        self,
+        subject_id: str,
+        fields: dict[str, str],
+        project: str | None = None,
+    ) -> httpx.Response:
+        """Set one or more custom variables on a subject in a single request.
+
+        Each name is validated against a plain-identifier shape before
+        building the request -- see :func:`_validate_field_name`.
+
+        Args:
+            subject_id: Subject ID or label (project required for a label).
+            fields: Mapping of variable name -> value; creates a variable
+                that doesn't exist yet, overwrites one that does.
+            project: Project ID (required when ``subject_id`` is a label).
+
+        Returns:
+            The raw PUT response.
+
+        Raises:
+            InputValidationError: A field name is empty or contains a
+                character (``[``, ``]``, ``=``, ``/``, ...) outside the
+                allowed identifier shape.
+            ResourceNotFoundError: ``subject_id`` does not exist.
+        """
+        if project is not None:  # not truthy -- see get() above
+            path = (
+                f"/data/projects/{quote_path_segment(project)}"
+                f"/subjects/{quote_path_segment(subject_id)}"
+            )
+        else:
+            path = f"/data/subjects/{quote_path_segment(subject_id)}"
+
+        params = {
+            f"xnat:subjectData/fields/field[name={_validate_field_name(name)}]/field": value
+            for name, value in fields.items()
+        }
+
+        # Existence preflight. This PUT is the same create-or-update route
+        # `create()` uses (a subject-scoped PUT with no body), and verified
+        # live against XNAT 1.9.2.1, a nonexistent subject_id answers 201,
+        # not 404 -- the PUT silently creates an empty subject instead of
+        # failing. `get()` already 404s cleanly, so call it first to reject
+        # a typo'd subject_id before any write is attempted.
+        #
+        # This narrows the window rather than closing it: a subject deleted
+        # between this GET and the PUT below is still recreated empty, and
+        # no client-side check can prevent that, because the write itself
+        # carries no "must exist" semantics for the server to enforce. The
+        # `except ResourceNotFoundError` below is NOT a guard against that
+        # race -- the race ends in a 201, not a 404. It stays for the
+        # project-scoped path, where a missing *project* does 404.
+        self.get(subject_id, project=project)
+
+        try:
+            return self.client.put(path, params=params)
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("subject", subject_id) from e

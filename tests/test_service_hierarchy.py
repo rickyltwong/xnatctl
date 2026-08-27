@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import ResourceNotFoundError, XNATCtlError
 from xnatctl.models.hierarchy import ExperimentRef, ProjectRef, ResourceRef, ScanRef, SubjectRef
 from xnatctl.services.hierarchy import HierarchyService
 
@@ -447,3 +447,123 @@ class TestGetExperimentJson:
         mock_client.get_json.return_value = payload
 
         assert service.get_experiment_json(ExperimentRef(experiment="EXP01")) is payload
+
+
+class TestExtractItemChildren:
+    """Tests for HierarchyService.extract_item_children.
+
+    A missing/null ``items`` on a matching child, or no matching child at
+    all, legitimately means "no records" and stays empty. Anything else
+    unrecognized -- ``items`` present but not a list, or a list entry that
+    isn't an object with a ``data_fields`` object -- must raise rather than
+    quietly becoming ``[]``, the same rule ``commands.py``'s ``wrappers_of``
+    applies to the ``xnat`` key.
+    """
+
+    def _document(self, children: list[dict]) -> dict:
+        return {"items": [{"data_fields": {}, "meta": {}, "children": children}]}
+
+    def test_no_matching_child_returns_empty(self) -> None:
+        data = self._document([{"field": "other/field", "items": []}])
+
+        assert HierarchyService.extract_item_children(data, "fields/field") == []
+
+    def test_no_first_item_returns_empty(self) -> None:
+        assert HierarchyService.extract_item_children({"items": []}, "fields/field") == []
+
+    def test_missing_items_key_returns_empty(self) -> None:
+        """``items`` entirely absent on a matching child means "no records"."""
+        data = self._document([{"field": "fields/field"}])
+
+        assert HierarchyService.extract_item_children(data, "fields/field") == []
+
+    def test_null_items_returns_empty(self) -> None:
+        data = self._document([{"field": "fields/field", "items": None}])
+
+        assert HierarchyService.extract_item_children(data, "fields/field") == []
+
+    def test_normal_items_extracted(self) -> None:
+        data = self._document(
+            [
+                {
+                    "field": "fields/field",
+                    "items": [{"data_fields": {"name": "a", "field": "1"}}],
+                }
+            ]
+        )
+
+        assert HierarchyService.extract_item_children(data, "fields/field") == [
+            {"name": "a", "field": "1"}
+        ]
+
+    def test_non_list_items_raises(self) -> None:
+        """``items`` present but not a list is a shape this client does not understand."""
+        data = self._document([{"field": "fields/field", "items": "not-a-list"}])
+
+        with pytest.raises(XNATCtlError):
+            HierarchyService.extract_item_children(data, "fields/field")
+
+    def test_non_dict_entry_raises(self) -> None:
+        data = self._document([{"field": "fields/field", "items": ["not-a-dict"]}])
+
+        with pytest.raises(XNATCtlError):
+            HierarchyService.extract_item_children(data, "fields/field")
+
+    def test_entry_missing_data_fields_raises(self) -> None:
+        data = self._document([{"field": "fields/field", "items": [{"no": "data_fields"}]}])
+
+        with pytest.raises(XNATCtlError):
+            HierarchyService.extract_item_children(data, "fields/field")
+
+    def test_entry_data_fields_not_dict_raises(self) -> None:
+        data = self._document([{"field": "fields/field", "items": [{"data_fields": "not-a-dict"}]}])
+
+        with pytest.raises(XNATCtlError):
+            HierarchyService.extract_item_children(data, "fields/field")
+
+    def test_missing_top_level_items_key_raises(self) -> None:
+        """A document with no recognized envelope key at all is malformed, not empty.
+
+        e.g. a plugin error body like ``{"message": "plugin disabled"}`` --
+        reading this as "no custom variables" would hide that the request
+        never actually got the expected detailed response shape.
+        """
+        with pytest.raises(XNATCtlError):
+            HierarchyService.extract_item_children({"message": "plugin disabled"}, "fields/field")
+
+    def test_empty_top_level_items_list_stays_genuinely_empty(self) -> None:
+        """A top-level ``items: []`` is a normal empty read, not malformed."""
+        assert HierarchyService.extract_item_children({"items": []}, "fields/field") == []
+
+    def test_malformed_top_level_entry_raises(self) -> None:
+        """``{"items": [{}]}`` must not read as a legitimately-empty result.
+
+        ``ItemRecord``'s fields all default, so a present-but-empty top-level
+        entry would otherwise validate silently into zero rows and get
+        reported as "no variables" for a response that never actually had
+        the expected shape.
+        """
+        with pytest.raises(XNATCtlError):
+            HierarchyService.extract_item_children({"items": [{}]}, "fields/field")
+
+    def test_non_dict_top_level_entry_raises(self) -> None:
+        """A non-object ``items[0]`` must surface the typed error, not a raw Pydantic one."""
+        with pytest.raises(XNATCtlError):
+            HierarchyService.extract_item_children({"items": ["not-a-dict"]}, "fields/field")
+
+    def test_non_list_top_level_items_raises(self) -> None:
+        data = {"items": "not-a-list"}
+
+        with pytest.raises(XNATCtlError):
+            HierarchyService.extract_item_children(data, "fields/field")
+
+
+class TestStringifyField:
+    """Tests for HierarchyService.stringify_field."""
+
+    def test_none_becomes_empty_string_not_the_word_none(self) -> None:
+        assert HierarchyService.stringify_field(None) == ""
+
+    def test_non_none_value_stringified(self) -> None:
+        assert HierarchyService.stringify_field(42) == "42"
+        assert HierarchyService.stringify_field("value") == "value"

@@ -16,6 +16,7 @@ import click
 
 from xnatctl.cli.common import (
     Context,
+    _make_forwarding_alias_cb,
     global_options,
     handle_errors,
     require_auth,
@@ -26,7 +27,7 @@ _PARAMS_HELP = (
     "Query parameters as key=value (can repeat). "
     "Values appear in the URL query string and may be logged by the XNAT "
     "server's access log. Do not use for secrets; pass credentials via "
-    "-d / -f JSON body instead."
+    "-d / --file JSON body instead."
 )
 
 _STDIN_SENTINEL = "-"
@@ -65,27 +66,27 @@ def _read_body(
     data: str | None,
     file_path: str | None,
 ) -> tuple[bytes | str | None, object, bytes | None, str | None]:
-    """Resolve the request body from ``-d``, ``-f``, or stdin.
+    """Resolve the request body from ``-d``, ``--file``, or stdin.
 
     Handles three input shapes:
 
     * ``-d <string>``: env-vars are expanded, then the JSON-or-raw decision
       tree is applied. JSON-decodable input becomes ``json_body``; anything
       else becomes the raw string ``body``.
-    * ``-f <path>``: file contents are read as bytes. UTF-8 decoded input
+    * ``--file <path>``: file contents are read as bytes. UTF-8 decoded input
       passes through the same JSON-or-raw branch. Non-UTF-8 bytes are sent
       as raw bytes (binary-safe). Env-var expansion is NOT applied to file
       contents.
-    * ``-d -`` or ``-f -``: stdin is read once as bytes and follows the
-      same UTF-8 / JSON-or-raw branch as ``-f``. Env-var expansion is NOT
-      applied to stdin bytes. Specifying both ``-d -`` and ``-f -`` is a
+    * ``-d -`` or ``--file -``: stdin is read once as bytes and follows the
+      same UTF-8 / JSON-or-raw branch as ``--file``. Env-var expansion is NOT
+      applied to stdin bytes. Specifying both ``-d -`` and ``--file -`` is a
       usage error.
 
     Args:
         data: Value of the ``-d`` / ``--data`` option (may be the literal
             ``-`` sentinel for stdin).
-        file_path: Value of the ``-f`` / ``--file`` option (may be the
-            literal ``-`` sentinel for stdin).
+        file_path: Value of the ``--file`` option (may be the literal ``-``
+            sentinel for stdin; ``-f`` is a deprecated alias).
 
     Returns:
         ``(body, json_body, raw_bytes, decoded_text)``. ``body`` /
@@ -302,7 +303,7 @@ def _maybe_add_inbody(path: str, params: tuple[str, ...], *, has_body: bool) -> 
     Args:
         path: The request path (query string, if any, is ignored).
         params: The ``--params`` tuple as given by the user.
-        has_body: Whether a request body was resolved from ``-d``/``-f``.
+        has_body: Whether a request body was resolved from ``-d``/``--file``.
 
     Returns:
         The (possibly extended) params tuple.
@@ -382,7 +383,7 @@ def api_get(
 
     try:
         data = resp.json()
-    except Exception:
+    except (json_module.JSONDecodeError, UnicodeDecodeError):
         # Non-JSON body. Under ``-o json`` we warn once on stderr and
         # passthrough the raw body to stdout (text-decoded when possible,
         # raw bytes otherwise). Exit code stays 0 because the HTTP call
@@ -438,9 +439,15 @@ def api_get(
 )
 @click.option(
     "--file",
-    "-f",
     "file_path",
     help="Read body from file. Use '-' to read from stdin.",
+)
+@click.option(
+    "-f",
+    "legacy_file_short",
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("-f (api post/put)", "file_path"),
 )
 @click.option(
     "--content-type",
@@ -450,7 +457,7 @@ def api_get(
     help=(
         "Override request Content-Type (e.g. text/plain for XNAT XSync "
         "endpoints that return 415 on application/json). Auto-detected "
-        "from file extension when -f is used (.json, .txt, .xml; other "
+        "from file extension when --file is used (.json, .txt, .xml; other "
         "extensions or non-UTF-8 content fall back to "
         "application/octet-stream)."
     ),
@@ -469,9 +476,10 @@ def api_post(
     """POST request to any XNAT endpoint.
 
     Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
-    ``--file/-f``: payloads that are not valid UTF-8 are sent as raw bytes
-    without text decoding. Pass ``-d -`` or ``-f -`` to read the body from
-    stdin (keeps secrets out of argv and shell history).
+    ``--file`` (``-f`` is a deprecated alias): payloads that are not valid
+    UTF-8 are sent as raw bytes without text decoding. Pass ``-d -`` or
+    ``--file -`` to read the body from stdin (keeps secrets out of argv and
+    shell history).
 
     Use ``--content-type/-t`` to send a non-JSON body.  This is required for
     XNAT XSync endpoints (e.g. ``/xapi/xsync/credentials/...``) which
@@ -530,7 +538,7 @@ def api_post(
     try:
         result = resp.json()
         print_json(result)
-    except Exception:
+    except (json_module.JSONDecodeError, UnicodeDecodeError):
         if resp.text:
             click.echo(resp.text)
 
@@ -552,9 +560,15 @@ def api_post(
 )
 @click.option(
     "--file",
-    "-f",
     "file_path",
     help="Read body from file. Use '-' to read from stdin.",
+)
+@click.option(
+    "-f",
+    "legacy_file_short",
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("-f (api post/put)", "file_path"),
 )
 @click.option(
     "--content-type",
@@ -564,7 +578,7 @@ def api_post(
     help=(
         "Override request Content-Type (e.g. text/plain for XNAT XSync "
         "endpoints that return 415 on application/json). Auto-detected "
-        "from file extension when -f is used (.json, .txt, .xml; other "
+        "from file extension when --file is used (.json, .txt, .xml; other "
         "extensions or non-UTF-8 content fall back to "
         "application/octet-stream)."
     ),
@@ -583,9 +597,10 @@ def api_put(
     """PUT request to any XNAT endpoint.
 
     Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
-    ``--file/-f``: payloads that are not valid UTF-8 are sent as raw bytes
-    without text decoding. Pass ``-d -`` or ``-f -`` to read the body from
-    stdin (keeps secrets out of argv and shell history).
+    ``--file`` (``-f`` is a deprecated alias): payloads that are not valid
+    UTF-8 are sent as raw bytes without text decoding. Pass ``-d -`` or
+    ``--file -`` to read the body from stdin (keeps secrets out of argv and
+    shell history).
 
     Use ``--content-type/-t`` to send a non-JSON body.  This is required
     for XNAT XSync endpoints (e.g.
@@ -605,9 +620,9 @@ def api_put(
 
         echo '{"description": "x"}' | xnatctl api put /data/projects/MYPROJ -d -
 
-        xnatctl api put /data/projects/PROJ/resources/BIDS/files/params.json -f params.json
+        xnatctl api put /data/projects/PROJ/resources/BIDS/files/params.json --file params.json
 
-        xnatctl api put /data/projects/PROJ -f project.xml
+        xnatctl api put /data/projects/PROJ --file project.xml
 
         xnatctl api put /xapi/xsync/credentials/save/projects/PROJ \\
             -f ./creds.txt -t text/plain
@@ -653,7 +668,7 @@ def api_put(
     try:
         result = resp.json()
         print_json(result)
-    except Exception:
+    except (json_module.JSONDecodeError, UnicodeDecodeError):
         if resp.text:
             click.echo(resp.text)
 
@@ -703,5 +718,5 @@ def api_delete(
         try:
             result = resp.json()
             print_json(result)
-        except Exception:
+        except (json_module.JSONDecodeError, UnicodeDecodeError):
             click.echo(resp.text)

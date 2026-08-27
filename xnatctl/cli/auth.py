@@ -1,11 +1,10 @@
 """Authentication commands for xnatctl.
 
 These commands sit on the same decorator stack as every other command
-(``@global_options`` + ``@handle_errors``). They used to declare their own
-``-p``/``-o`` -- with the output choices in the opposite order, and no ``-q``
-or ``-v`` at all -- and hand-roll ``print_error`` + ``SystemExit``. That last
-part meant the actionable hints attached to the exceptions never
-rendered here, because nothing on this path went through ``render_cli_error``.
+(``@global_options`` + ``@handle_errors``) rather than declaring their own
+options or hand-rolling error output: failures on this path go through
+``render_cli_error``, so the actionable hints attached to the exceptions
+render here like everywhere else.
 
 ``auth login`` legitimately skips ``@require_auth``: it is what establishes the
 session that decorator requires.
@@ -24,11 +23,16 @@ from xnatctl.cli.common import (
 )
 from xnatctl.core.client import XNATClient
 from xnatctl.core.config import Config, Profile
-from xnatctl.core.exceptions import ConfigurationError
+from xnatctl.core.exceptions import (
+    AuthenticationError,
+    ConfigurationError,
+    PermissionDeniedError,
+    SessionExpiredError,
+)
 from xnatctl.core.output import (
     OutputFormat,
     print_json,
-    print_key_value,
+    print_output,
     print_success,
     print_warning,
 )
@@ -98,9 +102,9 @@ def do_login(
         actual_user = user
         try:
             user_info = client.whoami()
-            if user_info.get("username"):
-                actual_user = user_info["username"]
-        except Exception:
+            if user_info.username:
+                actual_user = user_info.username
+        except (AuthenticationError, SessionExpiredError, PermissionDeniedError):
             pass
 
         session = auth_mgr.save_session(token=token, url=profile.url, username=actual_user)
@@ -251,13 +255,15 @@ def auth_status(ctx: Context) -> None:
             }
         )
 
-    if ctx.output_format == OutputFormat.JSON:
-        print_json(status)
-    else:
-        print_key_value(
-            status,
-            title=f"Auth Status: {ctx.profile_name or config.default_profile}",
-        )
+    # Routed through print_output (not a hand-rolled json/print_key_value
+    # fork) so `-o tsv` gets real tab-separated output instead of falling
+    # through to the Rich key-value rendering; table/json stay unchanged
+    # since print_output dispatches those exactly as the old fork did.
+    print_output(
+        status,
+        format=ctx.output_format,
+        title=f"Auth Status: {ctx.profile_name or config.default_profile}",
+    )
 
 
 @auth.command("test")
@@ -315,14 +321,16 @@ def auth_test(ctx: Context) -> None:
         user_info = client.whoami()
 
         if ctx.output_format == OutputFormat.JSON:
-            print_json({"status": "authenticated", "url": profile.url, **user_info})
+            # model_dump() spreads to the exact keys the whoami dict carried,
+            # keeping this JSON shape byte-identical.
+            print_json({"status": "authenticated", "url": profile.url, **user_info.model_dump()})
         else:
             print_success("Authentication successful")
-            click.echo(f"User: {user_info.get('username', 'unknown')}")
-            name = f"{user_info.get('firstname', '')} {user_info.get('lastname', '')}".strip()
+            click.echo(f"User: {user_info.username}")
+            name = f"{user_info.firstname} {user_info.lastname}".strip()
             if name:
                 click.echo(f"Name: {name}")
-            if user_info.get("email"):
-                click.echo(f"Email: {user_info['email']}")
+            if user_info.email:
+                click.echo(f"Email: {user_info.email}")
     finally:
         client.close()

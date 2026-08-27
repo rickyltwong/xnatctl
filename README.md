@@ -197,6 +197,17 @@ uv run ruff check xnatctl tests scripts  # lint
 uv run mypy xnatctl                      # type check
 ```
 
+## Support policy
+
+- **Python**: 3.11-3.13, tracking CI. A version is dropped within one MINOR
+  release of its CPython end-of-life.
+- **XNAT**: 1.8.x and later. See the
+  [XNAT Compatibility guide](https://xnatctl.readthedocs.io/en/latest/xnat-compatibility.html)
+  for what is actually tested versus expected to work.
+- **Releases**: cut on demand by the maintainer, no fixed cadence. This is a
+  single-maintainer project; plan around that when depending on it.
+- **Security reports**: see [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT

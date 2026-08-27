@@ -1,9 +1,9 @@
 """Temp-file lifecycle tests for UploadService.upload_resource.
 
 A directory source is zipped to a NamedTemporaryFile(delete=False) before
-upload. That zip used to leak on every exit path: a 50 GB resource directory
-left a 50 GB zip behind on each call, and `session upload-exam` calls this once
-per resource directory in the exam.
+upload. That zip must be removed on every exit path: a leak leaves a 50 GB
+zip behind for a 50 GB resource directory on each call, and `session
+upload-exam` calls this once per resource directory in the exam.
 """
 
 from __future__ import annotations
@@ -106,9 +106,8 @@ def test_temp_zip_removed_when_setup_fails_before_the_request(
 ) -> None:
     """Cleanup must cover the setup work between zipping and the request too.
 
-    That window (stat, progress reporting, param building) used to sit outside
-    the try block, so a failure there leaked the zip even after the finally
-    was added.
+    That window (stat, progress reporting, param building) must sit inside
+    the try block, or a failure there leaks the zip despite the finally.
     """
 
     def exploding_callback(progress: object) -> None:

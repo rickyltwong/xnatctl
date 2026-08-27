@@ -152,7 +152,7 @@ class TransferOrchestrator:
         # Single batch query: all subject IDs on dest
         try:
             dest_subject_ids = self.executor.list_dest_subjects(dst_proj)
-        except Exception:
+        except Exception:  # noqa: BLE001  # best-effort reconciliation: failed dest-subject query skips reconciliation, doesn't block sync
             logger.warning("Failed to query dest subjects for reconciliation", exc_info=True)
             return []
 
@@ -218,7 +218,7 @@ class TransferOrchestrator:
 
         try:
             dest_exp_ids = self.executor.list_dest_experiments(dst_proj)
-        except Exception:
+        except Exception:  # noqa: BLE001  # best-effort reconciliation: failed dest-experiment query skips reconciliation, doesn't block sync
             logger.warning("Failed to query dest experiments for reconciliation", exc_info=True)
             return []
 
@@ -319,7 +319,7 @@ class TransferOrchestrator:
                 subject, sync_id, dst_proj, result, progress_callback
             )
             result.subjects_synced += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # per-subject transfer isolation: one subject's failure must not abort the sync run
             result.subjects_failed += 1
             result.success = False
             result.errors.append(f"Subject {subject.local_label}: {e}")
@@ -403,7 +403,7 @@ class TransferOrchestrator:
                 subjects_skipped=result.subjects_skipped,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # top-level pipeline boundary: guarantees state_store.end_sync() runs even on unexpected failure
             result.success = False
             result.errors.append(str(e))
             self.state_store.end_sync(sync_id, SyncStatus.FAILED)

@@ -17,7 +17,7 @@ from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.progress import UploadSummary
 from xnatctl.services.import_service import archive_destination_params
 from xnatctl.services.upload.archives import _safe_mtime, _zip_to_tar
-from xnatctl.services.upload.rest_batch import upload_archive_or_raise
+from xnatctl.services.upload.rest_archive import upload_archive_or_raise
 
 
 class _FakeAuthClient:
@@ -42,6 +42,9 @@ class _FakeXNATClient:
     password = "p"
     session_token = "TOKEN"
     verify_ssl = True
+    # Unknown: these tests exercise these direct_archive=True paths on a
+    # server whose version was never probed, so the gate must fail open.
+    server_version = None
 
     def httpx_verify(self) -> bool:
         return True
@@ -56,7 +59,7 @@ def _wire(monkeypatch, responses):
     ``httpx.Client`` was constructed with. The last response repeats once the
     list is consumed.
     """
-    import xnatctl.services.upload.rest_batch as uploads
+    import xnatctl.services.upload.rest_archive as uploads
 
     posts: list[dict] = []
     clients: list[dict] = []
@@ -166,11 +169,10 @@ def test_upload_archive_or_raise_prearchive_sets_dest(tmp_path, monkeypatch) -> 
 def test_upload_archive_or_raise_retries_a_transient_400(tmp_path, monkeypatch) -> None:
     """A transient import 400 must be retried, not fatal on first sight.
 
-    The regression this pins: ``upload_archive_or_raise`` used to wrap
-    ``XNATClient.post`` -- whose ``_request`` raises a typed error on 400 --
-    in ``upload_with_retry``, so the transient-vs-permanent 400 discrimination
-    never saw a raw response and one concurrent-modification 400 killed the
-    upload immediately.
+    Wrapping ``XNATClient.post`` -- whose ``_request`` raises a typed
+    error on 400 -- in ``upload_with_retry`` would mean the
+    transient-vs-permanent 400 discrimination never sees a raw response, so
+    one concurrent-modification 400 would kill the upload immediately.
     """
     monkeypatch.setattr(CancellationToken, "sleep", lambda self, seconds: False)
     archive_path = tmp_path / "sample.zip"
@@ -281,7 +283,7 @@ class TestSingleUploadKeepsTheExitCodeTaxonomy:
     def test_a_connect_timeout_raises_timeout(self, tmp_path, monkeypatch) -> None:
         archive_path = tmp_path / "sample.zip"
         archive_path.write_bytes(b"zip-data")
-        import xnatctl.services.upload.rest_batch as uploads
+        import xnatctl.services.upload.rest_archive as uploads
 
         class TimingOutClient:
             def __init__(self, *a, **kw) -> None:

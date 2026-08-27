@@ -220,7 +220,7 @@ def test_main_guard_renders_xnatctl_error_without_traceback(monkeypatch, capsys)
 
 
 def test_main_guard_renders_unexpected_error_with_hint(monkeypatch, capsys) -> None:
-    """A non-XNATCtlError escaping setup (e.g. bad XNAT_TIMEOUT) is no longer raw."""
+    """A non-XNATCtlError escaping setup (e.g. bad XNAT_TIMEOUT) is rendered, not raw."""
     monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
     code = _run_main_raising(ValueError("bad XNAT_TIMEOUT"))
     captured = capsys.readouterr()

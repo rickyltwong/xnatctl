@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest a feature or improvement for xnatctl
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: What are you trying to do?
+      description: Describe the use case -- why you need this, not just what it should look like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What command, flag, or behavior would solve this? (Optional -- a clear use case is enough.)
+    validations:
+      required: false

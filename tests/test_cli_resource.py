@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from conftest import config_seam, core_config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
+from xnatctl.core.exceptions import ServerError
 
 
 @pytest.fixture
@@ -74,6 +76,74 @@ class TestResourceList:
                     result = runner.invoke(cli, ["resource", "list", "XNAT_E00001"])
 
         assert result.exit_code == 0
+
+    def test_resource_list_filter_and_limit(self, runner: CliRunner) -> None:
+        """--filter and --limit narrow the resource listing, client-side.
+
+        Non-matching NIFTI is placed FIRST: if --filter were ignored, a bare
+        --limit 2 would return [NIFTI, DICOM_A] and this test would still
+        pass by accident. Three matching rows behind a --limit 2 (instead of
+        one row and no --limit) is what actually exercises --limit too.
+        """
+        client = _mock_client()
+        client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    {
+                        "label": "NIFTI",
+                        "format": "NIFTI",
+                        "file_count": "5",
+                        "file_size": "20000000",
+                        "content": "PROCESSED",
+                    },
+                    {
+                        "label": "DICOM_A",
+                        "format": "DICOM",
+                        "file_count": "100",
+                        "file_size": "50000000",
+                        "content": "RAW",
+                    },
+                    {
+                        "label": "DICOM_B",
+                        "format": "DICOM",
+                        "file_count": "50",
+                        "file_size": "25000000",
+                        "content": "RAW",
+                    },
+                    {
+                        "label": "DICOM_C",
+                        "format": "DICOM",
+                        "file_count": "10",
+                        "file_size": "5000000",
+                        "content": "RAW",
+                    },
+                ]
+            }
+        }
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "resource",
+                            "list",
+                            "XNAT_E00001",
+                            "--filter",
+                            "format:DICOM",
+                            "--limit",
+                            "2",
+                            "-o",
+                            "json",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        # A disabled-TLS warning (verify_ssl=False in _mock_config) shares
+        # stdout with the JSON in CliRunner's merged output; skip past it.
+        rows = json.loads(result.output[result.output.index("[") :])
+        assert [r["label"] for r in rows] == ["DICOM_A", "DICOM_B"]
 
     def test_resource_list_with_scan(self, runner: CliRunner) -> None:
         client = _mock_client()
@@ -293,6 +363,41 @@ class TestResourceShow:
         assert result.exit_code == 0
         call_url = client.get_json.call_args_list[0][0][0]
         assert call_url.endswith("/data/experiments/XNAT_E00001/scans/1/resources")
+
+    def test_resource_show_files_listing_failure_is_not_silent(self, runner: CliRunner) -> None:
+        """A file-listing failure must be visible, not indistinguishable from "no files".
+
+        A bare ``except Exception: files = []`` around the file listing
+        would render a transient 500 identically -- silently -- to a
+        resource that genuinely has no files. The graceful fallback stays
+        (the command still succeeds) but warns on stderr so the failure is
+        visible.
+        """
+        client = _mock_client()
+        client.get_json.side_effect = [
+            {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "label": "DICOM",
+                            "format": "DICOM",
+                            "content": "RAW",
+                            "file_count": 100,
+                            "file_size": "50000000",
+                        }
+                    ]
+                }
+            },
+            ServerError(500, "GET", "/data/experiments/XNAT_E00001/resources/DICOM/files"),
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["resource", "show", "XNAT_E00001", "DICOM"])
+
+        assert result.exit_code == 0
+        assert "Warning: could not list files" in result.output
 
 
 class TestResourceUpload:

@@ -26,11 +26,13 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 from click.testing import CliRunner, Result
+from hypothesis import settings
 
 from xnatctl.cli.common import Context
 from xnatctl.cli.main import cli
 from xnatctl.core.client import XNATClient
 from xnatctl.core.config import Config, Profile
+from xnatctl.models.info import UserInfo
 
 # The seams every CLI test patches. Keeping them in one place is the point of
 # this module: renaming anything in cli/common.py must not touch test files.
@@ -39,6 +41,15 @@ _CORE_CONFIG_LOAD_SEAM = "xnatctl.core.config.Config.load"
 _AUTH_MANAGER_SEAM = "xnatctl.cli.common.AuthManager"
 
 DEFAULT_BASE_URL = "https://xnat.example.org"
+
+# Deterministic, fast property-based tests: no per-example deadline (CI
+# machines vary in speed and a timing-based failure is not a real bug),
+# derandomize=True so the same examples run every time instead of Hypothesis
+# seeding its search from system entropy (deadline=None alone only removes
+# the timing gate -- it does not make example GENERATION reproducible), and
+# few enough examples that the property suite stays well under a second.
+settings.register_profile("ci", deadline=None, derandomize=True, max_examples=50)
+settings.load_profile("ci")
 
 
 def make_response(
@@ -73,7 +84,11 @@ def make_fake_client(base_url: str = DEFAULT_BASE_URL) -> MagicMock:
     client = MagicMock(spec=XNATClient)
     client.is_authenticated = True
     client.base_url = base_url
-    client.whoami.return_value = {"login": "user"}
+    client.whoami.return_value = UserInfo(username="user", enabled=True)
+    # Unknown by default: version-gated call sites (see core.server_version)
+    # must fail open on a plain mock client, not choke comparing a MagicMock
+    # against a version tuple. Tests that exercise gating set this themselves.
+    client.server_version = None
     return client
 
 
@@ -104,7 +119,7 @@ def make_authenticated_context(
     mock_client = MagicMock()
     mock_client.is_authenticated = True
     mock_client.base_url = DEFAULT_BASE_URL
-    mock_client.whoami.return_value = {"login": "user"}
+    mock_client.whoami.return_value = UserInfo(username="user", enabled=True)
     ctx.client = cast(Any, mock_client)
     ctx.auth_manager = MagicMock()
     return ctx, mock_client

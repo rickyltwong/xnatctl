@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import builtins
+import shutil
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
-import httpx
-
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import ClientRequestError, ResourceNotFoundError
 from xnatctl.models.hierarchy import (
     ExperimentRef,
     HierarchyParentRef,
@@ -28,9 +28,8 @@ class ResourceService(BaseService):
 
     Resources attach at every hierarchy level (project, subject, experiment,
     scan). Callers may either pass a ``parent`` :class:`HierarchyParentRef`
-    directly, or the legacy ``(session_id, scan_id, project)`` triple which is
-    converted to the equivalent experiment/scan ref (the resulting URLs are
-    byte-identical to the historical hardcoded paths).
+    directly, or the ``(session_id, scan_id, project)`` triple, which is
+    converted to the equivalent experiment/scan ref.
     """
 
     @staticmethod
@@ -320,8 +319,8 @@ class ResourceService(BaseService):
 
         try:
             self._put(path, params=params)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 409:
+        except ClientRequestError as exc:
+            if exc.status_code != 409:
                 raise
             # 409 Conflict means the resource already exists; proceed to return it
         return self.get(resource_label=resource_label, parent=resolved)
@@ -458,9 +457,6 @@ class ResourceService(BaseService):
         Returns:
             Upload result dict
         """
-        import shutil
-        import tempfile
-
         if directory_path is None:
             raise ValueError("directory_path is required")
         if not directory_path.is_dir():

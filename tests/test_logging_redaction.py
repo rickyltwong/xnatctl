@@ -1,9 +1,10 @@
 """Redaction invariants for the logging path and URL validation.
 
-Redaction used to be applied only where a human explicitly remembered it --
-``print_error``/``print_warning`` and a couple of client call sites. Nothing
-routed ``logging.Logger`` records through it, which blocked diagnostics: verbose
-HTTP diagnostics log full request URLs, and those carry query-string tokens.
+Redaction applied only where a human explicitly remembers it --
+``print_error``/``print_warning`` and a couple of client call sites -- would
+leave ``logging.Logger`` records outside it, which blocks diagnostics:
+verbose HTTP diagnostics log full request URLs, and those carry query-string
+tokens.
 """
 
 from __future__ import annotations

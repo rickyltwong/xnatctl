@@ -290,6 +290,10 @@ class ExamUploadService(BaseService):
         misc_label: str,
     ) -> None:
         """Attach resource directories and zip up misc files onto the session."""
+        # Imported here for the same reason as the UploadService import in
+        # upload_exam above: tests monkeypatch
+        # xnatctl.services.resources.ResourceService to intercept the
+        # lookup, which only works if this stays a call-time import.
         from xnatctl.services.resources import ResourceService
 
         resource_service = ResourceService(self.client)

@@ -1,11 +1,10 @@
 """Argv-password rejection for auth login and --dest-pass.
 
 A password on argv is visible in ``ps``, ``/proc/*/cmdline``, and shell
-history. ``auth login --password <secret>`` used to accept one, and the hidden
-``--dest-pass`` on the transfer commands did the same. Both now refuse at parse
-time and offer a ``--*-stdin`` flag instead, following docker login's pattern.
-The canonical rejection helper started life in ``cli/xsync.py``
-(``--remote-pass``) and was later moved to ``cli/common.py``.
+history. ``auth login --password`` and the hidden ``--dest-pass`` on the
+transfer commands refuse one at parse time and offer a ``--*-stdin`` flag
+instead, following docker login's pattern. The shared rejection helper lives
+in ``cli/common.py`` and also covers ``--remote-pass``.
 """
 
 from __future__ import annotations
@@ -195,7 +194,7 @@ class TestSessionUploadPassword:
         (src / "a.dcm").write_bytes(b"DICM")
         harness = make_authenticated_cli(default_project="PROJ")
 
-        with patch("xnatctl.cli.session_upload._upload_directory_parallel") as upload:
+        with patch("xnatctl.cli.session_upload_rest._upload_directory_parallel") as upload:
             result = harness.invoke(
                 [
                     "session",
@@ -222,7 +221,7 @@ class TestSessionUploadPassword:
         (src / "a.dcm").write_bytes(b"DICM")
         harness = make_authenticated_cli(default_project="PROJ")
 
-        with patch("xnatctl.cli.session_upload._upload_directory_parallel") as upload:
+        with patch("xnatctl.cli.session_upload_rest._upload_directory_parallel") as upload:
             result = harness.invoke(
                 [
                     "session",

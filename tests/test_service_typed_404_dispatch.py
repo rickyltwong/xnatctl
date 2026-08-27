@@ -2,7 +2,7 @@
 
 ``tests/test_api_surface.py`` guards that no module classifies an error by
 sniffing ``str(exc)``; this module pins the behavior that guard protects,
-across every service that used to do the string match, in one place rather
+across every service that re-scopes a typed 404, in one place rather
 than duplicated per-service test file.
 """
 
@@ -30,8 +30,8 @@ def _mock_client() -> MagicMock:
 
 
 # (service class, a call that triggers a single-resource GET, expected
-# resource_type, expected resource_id) for every service that used to
-# string-match "404" in the caught exception's message.
+# resource_type, expected resource_id) for every service that re-scopes
+# the client's typed 404 into a resource-specific error.
 _GET_CASES = [
     pytest.param(
         SubjectService,

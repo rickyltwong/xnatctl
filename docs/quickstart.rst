@@ -5,6 +5,9 @@ This guide walks you through your first session with xnatctl. By the end, you
 will have connected to your XNAT server, browsed your projects, and downloaded
 imaging data.
 
+*The commands and output below are illustrative -- run them against your own
+XNAT server; project names, IDs, and results will differ.*
+
 
 Before You Begin
 ----------------

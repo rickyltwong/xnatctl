@@ -1,9 +1,8 @@
 """One-call client construction from a config profile.
 
-The credential-resolution stack the CLI runs before every command used to live
-only inside ``Context.get_client``. :func:`resolve_client_params` is that same
-resolution, extracted so a library user gets an authenticated-ready client from
-a profile name alone -- :func:`build_client_from_profile` (and
+:func:`resolve_client_params` is the credential resolution the CLI runs before
+every command, shared here so a library user gets an authenticated-ready client
+from a profile name alone -- :func:`build_client_from_profile` (and
 ``XNATClient.from_profile``) wrap it, and the CLI context reuses it to build the
 client every command shares. The rendering side of ``get_client`` (the
 disabled-TLS warning) stays in the CLI: this module resolves parameters and must

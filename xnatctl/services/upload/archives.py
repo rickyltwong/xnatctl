@@ -123,7 +123,7 @@ def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
                         tf.addfile(tarinfo, fileobj=src)
     except zipfile.BadZipFile:
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # exception-translation boundary: any ZIP->TAR failure becomes documented OSError
         raise OSError(f"Failed to convert ZIP to TAR: {e}") from e
 
 

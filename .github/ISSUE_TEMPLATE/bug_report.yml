@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a problem with xnatctl
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you paste anything below**: strip credentials, session tokens,
+        and any Protected Health Information (PHI) from every field, including
+        command output and tracebacks. This is a neuroimaging tool -- pasted
+        output can contain patient-identifying data. Redact hostnames and
+        usernames if your institution requires it.
+
+  - type: input
+    id: xnatctl-version
+    attributes:
+      label: xnatctl version
+      description: Output of `xnatctl --version`
+    validations:
+      required: true
+
+  - type: input
+    id: xnat-version
+    attributes:
+      label: XNAT server version
+      description: Output of `xnatctl health ping` or `xnatctl api get /xapi/siteConfig/buildInfo/version`
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and Python version
+      description: e.g. "Ubuntu 22.04, Python 3.12.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command and -v output
+      description: The full command you ran, with `--verbose` added, and its complete output. Redact credentials, tokens, and PHI before pasting.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true

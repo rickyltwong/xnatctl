@@ -3,26 +3,102 @@
 from __future__ import annotations
 
 import builtins
+import re
 from typing import Any
 
-from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
+import httpx
+
+from xnatctl.core.exceptions import (
+    ClientRequestError,
+    InputValidationError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+)
 from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.hierarchy import ExperimentRef
+from xnatctl.models.resource import Resource
+from xnatctl.models.scan import Scan
 from xnatctl.models.session import Session
 
 from .base import BaseService
 from .hierarchy import HierarchyService
+from .resources import ResourceService
+from .scans import ScanService
 
-#: Substring that identifies each modality inside an experiment's xsiType,
-#: e.g. "xnat:mrSessionData" for MR. A table rather than four ``elif`` branches
-#: because ruff's SIM114 autofix collapsed the equivalent branches into one
-#: 200-character boolean.
-_MODALITY_XSI_MARKERS = {
-    "MR": "mrsession",
-    "PET": "petsession",
-    "CT": "ctsession",
-    "EEG": "eegsession",
-}
+#: Same constraint as ``SubjectService``'s custom-variable names -- see that
+#: module's own comment. Kept as a separate module-level compile rather than
+#: shared, matching how each service file already carries its own small
+#: local helpers (e.g. ``_normalize_modality_filter`` above) instead of a
+#: shared cross-file utility for a two-line regex.
+# Matched with `fullmatch`, not `match`: Python's `$` also matches just
+# BEFORE a final newline, so a `^...$` + `.match()` pair accepts
+# "field\n" and embeds the newline in the XNAT query key.
+_FIELD_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]+")
+
+
+def _validate_field_name(name: str) -> str:
+    """Reject a custom-variable name that could break the field[] expression."""
+    if not name or not _FIELD_NAME_RE.fullmatch(name):
+        raise InputValidationError(
+            "custom variable name must be a non-empty string of letters, digits, '.', '_' or '-'",
+            field="name",
+            value=name,
+        )
+    return name
+
+
+#: XNAT session xsiTypes follow `xnat:{modality}SessionData` -- the same
+#: pattern `list()` builds when it sends `xsiType` to the server (see below).
+#: Matching it generically, instead of a fixed MR/PET/CT/EEG table, is what
+#: makes modality detection and filtering work for any modality XNAT accepts
+#: (US, XA, CR, MG, ..., and PETMR as its own type distinct from PET), not
+#: just the four that table happened to name.
+#: Matched with `fullmatch`, not `.match()` on an anchored `^...$` pattern --
+#: see `_FIELD_NAME_RE` above for why that combination is unsafe.
+_XSI_MODALITY_RE = re.compile(r"xnat:([a-z0-9]+)sessiondata")
+
+#: User-facing modality names that diverge from the xsiType segment XNAT
+#: actually stores. OCT ("Optical Coherence Tomography", what users and
+#: clinicians call it) is archived as `xnat:optSessionData` -- OPT is
+#: DICOM's own modality code for Ophthalmic Tomography. Confirmed against
+#: the xnat-web schema (`xnat_optSessionData.js`) and this project's own
+#: 0.2.11 fix for the same xsiType (see CHANGELOG.md). `--modality OCT` and
+#: `--modality OPT` both have to match; `_detect_modality` below still
+#: reports the row's real segment ("OPT"), only the REQUESTED filter value
+#: is aliased.
+_MODALITY_ALIASES = {"OCT": "OPT"}
+
+
+def _detect_modality(xsi_type: str) -> str:
+    """Best-effort modality extracted from an experiment's xsiType.
+
+    Args:
+        xsi_type: The experiment's raw ``xsiType`` (any case).
+
+    Returns:
+        The modality segment, uppercased (e.g. ``"MR"``, ``"OPT"``), or
+        ``"?"`` when ``xsi_type`` does not follow the
+        ``xnat:{modality}SessionData`` pattern. This is XNAT's own segment,
+        not a user-facing alias -- an OCT session reports ``"OPT"`` here;
+        see ``_MODALITY_ALIASES`` for the filter-side translation.
+    """
+    match = _XSI_MODALITY_RE.fullmatch(xsi_type.lower())
+    return match.group(1).upper() if match else "?"
+
+
+def _normalize_modality_filter(modality: str) -> str:
+    """Resolve a user-supplied ``--modality`` value through the alias table.
+
+    Args:
+        modality: The raw filter value as given (any case).
+
+    Returns:
+        The uppercased xsiType segment to compare ``_detect_modality``
+        against -- the alias target when ``modality`` is a known alias (e.g.
+        ``"OCT"`` -> ``"OPT"``), otherwise ``modality`` itself, uppercased.
+    """
+    upper = modality.upper()
+    return _MODALITY_ALIASES.get(upper, upper)
 
 
 class SessionService(BaseService):
@@ -41,7 +117,9 @@ class SessionService(BaseService):
         Args:
             project: Filter by project ID
             subject: Filter by subject ID
-            modality: Filter by modality (MR, PET, CT)
+            modality: Filter by modality (MR, PET, CT, PETMR, OCT, ...).
+                "OCT" is accepted as an alias for XNAT's "OPT" xsiType
+                segment (see ``_MODALITY_ALIASES``).
             limit: Maximum number of results
             columns: Specific columns to retrieve
 
@@ -53,12 +131,12 @@ class SessionService(BaseService):
         # silently widen to the unfiltered/site-wide listing. quote_path_segment
         # already rejects the empty string wherever it's used below.
         #
-        # `subject` without `project` used to be silently DROPPED (falling
+        # `subject` without `project` must not be silently DROPPED (falling
         # through to the same site-wide /data/experiments as "no filter at
-        # all"), not merely widened by an empty string -- XNAT subject
-        # labels aren't globally unique without a project to scope them, so
-        # there is no route this could route to that would honor it. Same
-        # convention as HierarchyService.build_experiment_collection_path.
+        # all") -- XNAT subject labels aren't globally unique without a
+        # project to scope them, so there is no route that would honor it.
+        # Same convention as
+        # HierarchyService.build_experiment_collection_path.
         if subject is not None and project is None:
             raise InputValidationError(
                 "subject filter requires project", field="subject", value=subject
@@ -87,12 +165,17 @@ class SessionService(BaseService):
                     field="modality",
                     value=modality,
                 )
-            params["xsiType"] = f"xnat:{modality.lower()}SessionData"
+            # Alias-resolved (e.g. "OCT" -> "OPT") for the same reason
+            # list_sessions() below is -- XNAT stores OCT sessions as
+            # `xnat:optSessionData`, not `xnat:octSessionData`.
+            params["xsiType"] = f"xnat:{_normalize_modality_filter(modality).lower()}SessionData"
+        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+            params["limit"] = str(limit)
 
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+        if limit is not None:  # belt-and-braces: some XNAT endpoints ignore `limit`
             results = results[:limit]
 
         return [Session(**r) for r in results]
@@ -231,7 +314,7 @@ class SessionService(BaseService):
         self,
         session_id: str,
         project: str | None = None,
-    ) -> builtins.list[dict[str, Any]]:
+    ) -> builtins.list[Scan]:
         """Get scans for a session.
 
         Args:
@@ -239,25 +322,22 @@ class SessionService(BaseService):
             project: Project ID
 
         Returns:
-            List of scan data dicts
-        """
-        # Built rather than interpolated: the project-scoped form is not a scan
-        # listing. XNAT answers /data/projects/{P}/experiments/{E}/scans with
-        # the experiment document, so this returned zero rows for every session
-        # that had a project. See ``HierarchyService.routable_scan_parent``.
-        path = HierarchyService.build_scan_collection_path(
-            ExperimentRef(experiment=session_id, project_id=project)
-        )
+            List of :class:`Scan` models
 
-        params = {"format": "json"}
-        data = self._get(path, params=params)
-        return HierarchyService.extract_rows(data)
+        Raises:
+            pydantic.ValidationError: If a scan row lacks the fields
+                :class:`Scan` requires (an ``ID``).
+        """
+        # Delegated: ScanService.list issues the identical routable-scans
+        # request (see ``HierarchyService.routable_scan_parent``) and owns the
+        # row -> Scan validation.
+        return ScanService(self.client).list(session_id, project)
 
     def get_resources(
         self,
         session_id: str,
         project: str | None = None,
-    ) -> builtins.list[dict[str, Any]]:
+    ) -> builtins.list[Resource]:
         """Get resources for a session.
 
         Args:
@@ -265,19 +345,13 @@ class SessionService(BaseService):
             project: Project ID
 
         Returns:
-            List of resource data dicts
+            List of :class:`Resource` models
         """
-        if project is not None:  # not truthy -- see get() above
-            path = (
-                f"/data/projects/{quote_path_segment(project)}"
-                f"/experiments/{quote_path_segment(session_id)}/resources"
-            )
-        else:
-            path = f"/data/experiments/{quote_path_segment(session_id)}/resources"
-
-        params = {"format": "json"}
-        data = self._get(path, params=params)
-        return HierarchyService.extract_rows(data)
+        # Delegated: ResourceService.list issues the identical experiment-level
+        # resources request and owns the row normalization (resource rows carry
+        # xnat_abstractresource_id rather than ID) and row -> Resource
+        # validation.
+        return ResourceService(self.client).list(session_id=session_id, project=project)
 
     def set_field(
         self,
@@ -316,16 +390,25 @@ class SessionService(BaseService):
         label: str | None = None,
         primary: bool = False,
     ) -> bool:
-        """Share a session with another project.
+        """Share a session with another project without moving it.
+
+        Verified live against XNAT 1.9.2.1: this is the real, working shape --
+        PUT /data/experiments/{id}/projects/{target_project}.
 
         Args:
-            session_id: Session ID
+            session_id: Session ID (canonical accession ID; the flat
+                ``/data/experiments/{id}`` route this builds does not accept
+                a bare label).
             target_project: Target project ID
             label: New label in target project
             primary: Make target the primary project
 
         Returns:
             True if successful
+
+        Raises:
+            ResourceExistsError: The session is already shared into
+                ``target_project`` (XNAT answers this with HTTP 409).
         """
         path = (
             f"/data/experiments/{quote_path_segment(session_id)}"
@@ -338,8 +421,176 @@ class SessionService(BaseService):
         if primary:
             params["primary"] = "true"
 
-        self._put(path, params=params)
+        try:
+            self._put(path, params=params)
+        except ClientRequestError as e:
+            if e.status_code == 409:
+                raise ResourceExistsError(
+                    "session share", f"{session_id} -> {target_project}"
+                ) from e
+            raise
         return True
+
+    def unshare(
+        self, session_id: str, target_project: str, *, primary_project: str
+    ) -> httpx.Response:
+        """Remove a session's share into another project.
+
+        ``primary_project`` is required, and aiming this at it is refused.
+        Verified live against XNAT 1.9.2.1: ``DELETE
+        /data/experiments/{id}/projects/{primary}`` answers 200 and
+        **deletes the experiment outright** -- afterwards it is 404. The
+        response is indistinguishable from removing an ordinary share, so a
+        mistyped target project silently destroys the session's data while
+        reporting that a share was removed. The guard is here rather than
+        only in the CLI so a library caller gets it too.
+
+        Project IDs are compared case-insensitively -- refusing slightly too
+        much is the right trade when a false negative deletes a session.
+
+        Verified live: unlike the subject equivalent, XNAT answers a
+        never-shared ``target_project`` with HTTP 200 -- unsharing a session
+        is idempotent where unsharing a subject is not.
+
+        Args:
+            session_id: Session ID (canonical accession ID).
+            target_project: Project to remove the share from.
+            primary_project: The session's owning project, used to refuse
+                the destructive case.
+
+        Returns:
+            The raw DELETE response.
+
+        Raises:
+            InputValidationError: If ``target_project`` is the session's
+                primary project.
+        """
+        if not primary_project or not primary_project.strip():
+            raise InputValidationError(
+                f"refusing to unshare session {session_id}: the primary project is unknown, so "
+                "the check that stops this from deleting the session outright cannot run. "
+                "Pass the owning project explicitly.",
+                field="primary_project",
+                value=primary_project,
+            )
+        if target_project.strip().casefold() == primary_project.strip().casefold():
+            raise InputValidationError(
+                f"refusing to unshare session {session_id} from {target_project}: that is its "
+                "primary project, and XNAT answers this by deleting the session and its data, "
+                "not by removing a share. Delete the session explicitly if that is what you "
+                "want.",
+                field="from",
+                value=target_project,
+            )
+        path = (
+            f"/data/experiments/{quote_path_segment(session_id)}"
+            f"/projects/{quote_path_segment(target_project)}"
+        )
+        return self.client.delete(path)
+
+    def list_shares(self, session_id: str) -> builtins.list[dict[str, Any]]:
+        """List every project a session is assigned to (primary + shared).
+
+        Args:
+            session_id: Session ID (canonical accession ID).
+
+        Returns:
+            One row per project, each carrying ``ID`` (the project id),
+            ``label`` (the session's label in that project),
+            ``Secondary_ID`` and ``Name`` -- exactly what
+            ``GET /data/experiments/{id}/projects`` returns, including
+            the session's own primary project as one of the rows.
+        """
+        data = self.client.get_json(f"/data/experiments/{quote_path_segment(session_id)}/projects")
+        return HierarchyService.extract_rows(data)
+
+    # -------------------------------------------------------------------------
+    # Custom variables (the "xnat-varput" surface)
+    #
+    # Verified live and materially different from the subject case:
+    #
+    # * A flat ``/data/experiments/{id}`` PUT silently accepts (HTTP 200) a
+    #   custom-field query key and does NOT persist it -- even a documented,
+    #   always-writable field like `note` no-ops through that route on this
+    #   XNAT version. Only the subject-scoped
+    #   ``/data/projects/{P}/subjects/{S}/experiments/{E}`` route actually
+    #   applies the write, which is why these methods require project+subject
+    #   (resolved by the caller) rather than accepting a bare experiment ID.
+    # * The field key must carry the experiment's own xsiType prefix
+    #   (``xnat:mrSessionData/fields/field[name=X]/field``, not the
+    #   unprefixed ``fields/field[name=X]/field`` that works for subjects) --
+    #   the unprefixed form is the same silent-200-no-op trap.
+    # * The PUT also needs an explicit ``xsiType`` query param alongside the
+    #   field keys, or the same silent no-op happens.
+    #
+    # Reads are unaffected by any of this: GET on the flat
+    # ``/data/experiments/{id}`` document returns the same ``fields/field``
+    # children either way.
+    # -------------------------------------------------------------------------
+
+    def list_vars(self, experiment_id: str) -> builtins.list[dict[str, str]]:
+        """List a session's custom variables.
+
+        Args:
+            experiment_id: Session ID (canonical accession ID).
+
+        Returns:
+            One dict per variable, each shaped ``{"name": ..., "value": ...}``.
+        """
+        data = self.client.get_json(
+            f"/data/experiments/{quote_path_segment(experiment_id)}", params={"format": "json"}
+        )
+        children = HierarchyService.extract_item_children(data, "fields/field")
+        return [
+            {
+                "name": HierarchyService.stringify_field(c.get("name")),
+                "value": HierarchyService.stringify_field(c.get("field")),
+            }
+            for c in children
+        ]
+
+    def set_vars(
+        self,
+        *,
+        project: str,
+        subject: str,
+        experiment_id: str,
+        xsi_type: str,
+        fields: dict[str, str],
+    ) -> httpx.Response:
+        """Set one or more custom variables on a session in a single request.
+
+        Requires the resolved project, subject, and xsiType -- see the class
+        docstring above for why the flat experiment route silently no-ops.
+        Each name is validated against a plain-identifier shape before
+        building the request -- see :func:`_validate_field_name`.
+
+        Args:
+            project: Canonical project ID.
+            subject: Canonical subject ID.
+            experiment_id: Session ID (canonical accession ID).
+            xsi_type: The experiment's own xsiType (e.g.
+                ``"xnat:mrSessionData"``), used to prefix every field key.
+            fields: Mapping of variable name -> value; creates a variable
+                that doesn't exist yet, overwrites one that does.
+
+        Returns:
+            The raw PUT response.
+
+        Raises:
+            InputValidationError: A field name is empty or contains a
+                character outside the allowed identifier shape.
+        """
+        path = (
+            f"/data/projects/{quote_path_segment(project)}"
+            f"/subjects/{quote_path_segment(subject)}"
+            f"/experiments/{quote_path_segment(experiment_id)}"
+        )
+        params: dict[str, str] = {"xsiType": xsi_type}
+        for name, value in fields.items():
+            key = f"{xsi_type}/fields/field[name={_validate_field_name(name)}]/field"
+            params[key] = value
+        return self.client.put(path, params=params)
 
     # -------------------------------------------------------------------------
     # Raw-row accessors
@@ -383,14 +634,19 @@ class SessionService(BaseService):
     ) -> builtins.list[dict[str, Any]]:
         """Return classified, modality-filtered rows for the ``session list`` screen.
 
-        Each row's ``xsiType`` is mapped to a display modality; when *modality*
-        is given, rows whose xsiType does not carry that modality's marker are
-        dropped.
+        Each row's ``xsiType`` is mapped to a display modality via
+        :func:`_detect_modality`; when *modality* is given (case-insensitive),
+        rows whose detected modality does not match it are dropped. Works for
+        any modality XNAT accepts (MR, PET, CT, EEG, US, XA, CR, MG, ...),
+        not a fixed set -- including PETMR, which is its own xsiType and
+        never matches a plain ``"PET"`` filter. ``"OCT"`` is accepted as an
+        alias for the ``"OPT"`` segment XNAT actually stores (see
+        ``_MODALITY_ALIASES``).
 
         Args:
             project: Project ID.
             subject: Optional subject-label filter.
-            modality: Optional modality filter (MR/PET/CT/EEG).
+            modality: Optional modality filter.
 
         Returns:
             Render-ready dicts with id/label/subject/date/modality keys.
@@ -407,23 +663,13 @@ class SessionService(BaseService):
                 value=modality,
             )
         rows = self.list_project_experiment_rows(project, subject=subject)
-        marker = _MODALITY_XSI_MARKERS.get(modality) if modality is not None else None
+        modality_upper = _normalize_modality_filter(modality) if modality is not None else None
 
         sessions: builtins.list[dict[str, Any]] = []
         for r in rows:
-            xsi_lower = r.get("xsiType", "").lower()
-            if modality is not None and marker and marker not in xsi_lower:
+            detected_modality = _detect_modality(r.get("xsiType", ""))
+            if modality_upper is not None and detected_modality != modality_upper:
                 continue
-
-            detected_modality = "?"
-            if "mrsession" in xsi_lower:
-                detected_modality = "MR"
-            elif "petsession" in xsi_lower:
-                detected_modality = "PET"
-            elif "ctsession" in xsi_lower:
-                detected_modality = "CT"
-            elif "eegsession" in xsi_lower:
-                detected_modality = "EEG"
 
             sessions.append(
                 {

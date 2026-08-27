@@ -16,8 +16,8 @@ def _parse_cutoff(last_sync_time: str | None) -> datetime | None:
 
     ``None`` means "no cutoff" (full discovery) and is the real omitted
     case. An explicitly-supplied empty/whitespace-only STRING is a
-    different thing: ``if last_sync_time else None`` used to treat it the
-    same as ``None``, silently turning an incremental sync into a full
+    different thing: a truthy check would treat it the same as ``None``,
+    silently turning an incremental sync into a full
     resync of every subject/experiment on the source instead of failing on
     the caller's malformed timestamp.
     """

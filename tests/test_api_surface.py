@@ -68,10 +68,10 @@ def test_version_is_sourced_from_installed_metadata() -> None:
 def test_download_sites_use_the_public_client_surface() -> None:
     """No service or CLI module reaches into XNATClient privates for streaming.
 
-    ``_get_client()`` / ``_get_cookies()`` / ``_get_auth(`` are the internals
-    that streamed downloads used to bypass the retry/auth/typed-error path
-    with; they must stay inside ``core/``. The public ``stream()`` and
-    ``stream_to_file`` are the sanctioned entry points now.
+    ``_get_client()`` / ``_get_cookies()`` / ``_get_auth(`` are internals a
+    streamed download could use to bypass the retry/auth/typed-error path;
+    they must stay inside ``core/``. The public ``stream()`` and
+    ``stream_to_file`` are the sanctioned entry points.
     """
     forbidden = ("_get_client()", "_get_cookies()", "_get_auth(")
     offenders: list[str] = []

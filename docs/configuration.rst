@@ -41,6 +41,7 @@ After running ``config init``, your configuration file will look like this:
 .. code-block:: yaml
 
    # ~/.config/xnatctl/config.yaml
+   version: 1                        # Config file schema version (see Config File Versioning below)
    default_profile: default          # The profile used when --profile is not specified
    output_format: table              # Global output format (table or json)
 
@@ -354,6 +355,51 @@ You can also explicitly clear your session at any time:
    (``xnatctl config set-password``), environment variables, a secrets manager,
    or the interactive prompt. xnatctl warns at startup if it finds a plaintext
    password in a config file that other users can read.
+
+Config File Versioning
+-----------------------
+
+Both ``config.yaml`` and the session cache (``~/.config/xnatctl/.session``)
+carry a ``version`` field. It exists so the on-disk shape can change later
+without breaking files written by an older xnatctl:
+
+- A ``config.yaml`` with no ``version`` key predates the field and is
+  treated as version 1, same as an explicit ``version: 1`` -- it keeps
+  loading exactly as before.
+- Loading applies any registered migrations for that file's version, in
+  memory only. The file on disk is never rewritten just because it was
+  read -- it may be root-owned or shared read-only. The migrated,
+  current-version form is written back only the next time a command that
+  already mutates the config saves it (``add-profile``, ``remove-profile``,
+  ``use-context``, ``set-password``, or ``config init``).
+- A file declaring a version newer than this xnatctl understands still
+  *loads* best-effort, with a warning naming both versions. It cannot be
+  *saved*, though: this build never captured whatever new fields that
+  version added, so writing the file back would silently drop them and
+  relabel the file as the older, current version. Every mutating command
+  refuses with an actionable error instead -- upgrade xnatctl, or edit
+  the file by hand -- **except** ``config init --force``, which is the
+  deliberate escape hatch: it exists to recover from a config.yaml this
+  build cannot even parse, so it cannot itself refuse on a version it CAN
+  parse either, or it would be useless for the file it is most needed for.
+  It still warns (best-effort -- a genuinely unparseable file gets no
+  warning, since there is nothing to inspect) before overwriting a
+  readable, newer-version file.
+- Unrecognized keys anywhere in the file (top-level or inside a profile)
+  produce one warning listing them and are otherwise ignored -- never a
+  hard error, so a config edited by a newer xnatctl keeps working with an
+  older one.
+- The session cache has no version field predating it, and no migration
+  table: a missing ``version`` key is simply version 1, and loads
+  normally. Any other mismatch (older, newer, or unparseable) discards the
+  cached token and falls through to a normal re-authentication instead of
+  migrating it. There is no user data at stake in a cache entry -- forcing
+  a fresh login is always safe, and simpler than a migration would be.
+
+The rule for future changes: **any change to the config file format ships
+a migration function keyed off the version field**, and old files keep
+loading rather than erroring out. The session cache format deliberately
+does not follow this rule -- see above.
 
 Audit trail
 -----------

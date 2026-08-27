@@ -7,7 +7,13 @@ from unittest.mock import MagicMock
 import pytest
 from conftest import make_response
 
-from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
+from xnatctl.core.exceptions import (
+    ClientRequestError,
+    InputValidationError,
+    NetworkError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+)
 from xnatctl.models.subject import Subject
 from xnatctl.services.subjects import SubjectService
 
@@ -196,6 +202,37 @@ class TestSubjectDelete:
             service.delete("SUB001", project="PROJ01")
 
         mock_client.delete.assert_not_called()
+
+    def test_delete_aborts_when_safety_check_fails_open(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """A transient failure in the safety check must abort the delete, not bypass it.
+
+        A pre-delete "does this subject still have experiments" check that
+        caught bare ``Exception`` would treat ANY failure -- including a
+        network/auth error unrelated to whether experiments exist -- as "no
+        experiments attached", letting the delete proceed as if the check
+        had passed. The check must fail
+        closed: only a genuinely-gone subject/project (``ResourceNotFoundError``)
+        is a valid "no sessions" inference; every other failure propagates
+        and the delete does not happen.
+        """
+        mock_client.get.side_effect = NetworkError("https://xnat.example.org", "connection reset")
+
+        with pytest.raises(NetworkError):
+            service.delete("SUB001", project="PROJ01")
+
+        mock_client.delete.assert_not_called()
+
+    def test_delete_proceeds_when_safety_check_finds_subject_gone(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """A genuinely-gone subject/project is a valid "no sessions" inference."""
+        mock_client.get.side_effect = ResourceNotFoundError("subject", "SUB001")
+        mock_client.delete.return_value = make_response("")
+
+        assert service.delete("SUB001", project="PROJ01") is True
+        mock_client.delete.assert_called_once()
 
     def test_delete_force_overrides_guard(
         self, service: SubjectService, mock_client: MagicMock
@@ -572,3 +609,292 @@ class TestSubjectRawAccessors:
         mock_client.put.assert_called_once_with(
             "/data/projects/PROJ01/subjects/OLD", params={"label": "NEW"}
         )
+
+
+class TestSubjectShare:
+    """Tests for SubjectService.share/unshare/list_shares."""
+
+    def test_share_puts_flat_accession_path(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+
+        resp = service.share("XNAT_S00001", "PROJ02", label="SUB001_SHARED")
+
+        assert resp.status_code == 200
+        mock_client.put.assert_called_once_with(
+            "/data/subjects/XNAT_S00001/projects/PROJ02", params={"label": "SUB001_SHARED"}
+        )
+
+    def test_share_without_label_omits_param(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+
+        service.share("XNAT_S00001", "PROJ02")
+
+        mock_client.put.assert_called_once_with(
+            "/data/subjects/XNAT_S00001/projects/PROJ02", params={}
+        )
+
+    def test_share_conflict_raises_resource_exists(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """A 409 (already shared) is translated to a clear typed error."""
+        mock_client.put.side_effect = ClientRequestError(
+            409, "PUT", "/data/subjects/XNAT_S00001/projects/PROJ02", "Already assigned"
+        )
+
+        with pytest.raises(ResourceExistsError, match="XNAT_S00001 -> PROJ02"):
+            service.share("XNAT_S00001", "PROJ02")
+
+    def test_share_other_client_error_propagates(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.put.side_effect = ClientRequestError(
+            400, "PUT", "/data/subjects/XNAT_S00001/projects/PROJ02", "bad request"
+        )
+
+        with pytest.raises(ClientRequestError):
+            service.share("XNAT_S00001", "PROJ02")
+
+    def test_unshare_deletes_flat_accession_path(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.delete.return_value = make_response("", status_code=200)
+
+        resp = service.unshare("XNAT_S00001", "PROJ02", primary_project="PROJ01")
+
+        assert resp.status_code == 200
+        mock_client.delete.assert_called_once_with("/data/subjects/XNAT_S00001/projects/PROJ02")
+
+    def test_unshare_refuses_the_primary_project(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """Unsharing FROM the primary project is a delete, not an unshare.
+
+        Verified against XNAT 1.9.2.1: DELETE /data/subjects/{id}/projects/{primary}
+        answers 200 and the subject is 404 afterwards -- the server destroys
+        it and its data, and the response is indistinguishable from removing
+        an ordinary share. A mistyped --from would silently delete the
+        subject while reporting success, so the request must never be sent.
+        """
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_S00001", "PROJ01", primary_project="PROJ01")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_primary_check_ignores_case(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """Refusing a little too much beats deleting a subject on a case slip."""
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_S00001", "proj01", primary_project="PROJ01")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_refuses_empty_primary_project(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_S00001", "PROJ01", primary_project="")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_refuses_whitespace_only_primary_project(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_S00001", "PROJ01", primary_project="   ")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_primary_check_ignores_target_padding(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """Padded input must not slip past the equality check as a distinct project."""
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_S00001", " PROJ01 ", primary_project="PROJ01")
+
+        mock_client.delete.assert_not_called()
+
+    def test_unshare_primary_check_ignores_primary_padding(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        with pytest.raises(InputValidationError):
+            service.unshare("XNAT_S00001", "PROJ01", primary_project=" PROJ01 ")
+
+        mock_client.delete.assert_not_called()
+
+    def test_list_shares_returns_result_rows(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    {"label": "SUB001", "ID": "PROJ01"},
+                    {"label": "XNAT_S00001", "ID": "PROJ02"},
+                ]
+            }
+        }
+
+        rows = service.list_shares("XNAT_S00001")
+
+        assert rows == [
+            {"label": "SUB001", "ID": "PROJ01"},
+            {"label": "XNAT_S00001", "ID": "PROJ02"},
+        ]
+        mock_client.get_json.assert_called_once_with("/data/subjects/XNAT_S00001/projects")
+
+
+class TestSubjectVars:
+    """Tests for SubjectService.list_vars/set_vars."""
+
+    def _fields_document(self, fields: list[tuple[str, str]]) -> dict:
+        """Build a minimal format=json document with a fields/field child."""
+        return {
+            "items": [
+                {
+                    "data_fields": {"ID": "XNAT_S00001", "label": "SUB001"},
+                    "meta": {"xsi:type": "xnat:subjectData"},
+                    "children": [
+                        {
+                            "field": "fields/field",
+                            "items": [
+                                {"data_fields": {"name": name, "field": value}, "children": []}
+                                for name, value in fields
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+    def test_list_vars_flat_path(self, service: SubjectService, mock_client: MagicMock) -> None:
+        mock_client.get.return_value = make_response(
+            self._fields_document([("studytag", "phase1"), ("cohort", "A")])
+        )
+
+        rows = service.list_vars("XNAT_S00001")
+
+        assert rows == [
+            {"name": "studytag", "value": "phase1"},
+            {"name": "cohort", "value": "A"},
+        ]
+        mock_client.get.assert_called_once_with(
+            "/data/subjects/XNAT_S00001", params={"format": "json"}
+        )
+
+    def test_list_vars_project_scoped_path(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get.return_value = make_response(self._fields_document([]))
+
+        assert service.list_vars("SUB001", project="PROJ01") == []
+        mock_client.get.assert_called_once_with(
+            "/data/projects/PROJ01/subjects/SUB001", params={"format": "json"}
+        )
+
+    def test_list_vars_no_fields_child_returns_empty(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get.return_value = make_response(
+            {"items": [{"data_fields": {"ID": "XNAT_S00001"}, "meta": {}, "children": []}]}
+        )
+
+        assert service.list_vars("XNAT_S00001") == []
+
+    def test_list_vars_null_field_value_stays_empty_not_the_word_none(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        """A null ``field``/``name`` must render as "" -- not the string "None"."""
+        mock_client.get.return_value = make_response(
+            {
+                "items": [
+                    {
+                        "data_fields": {"ID": "XNAT_S00001"},
+                        "meta": {},
+                        "children": [
+                            {
+                                "field": "fields/field",
+                                "items": [{"data_fields": {"name": "studytag", "field": None}}],
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        rows = service.list_vars("XNAT_S00001")
+
+        assert rows == [{"name": "studytag", "value": ""}]
+        assert "None" not in rows[0]["value"]
+
+    def test_list_vars_not_found(self, service: SubjectService, mock_client: MagicMock) -> None:
+        mock_client.get.side_effect = ResourceNotFoundError("resource", "/data/subjects/GONE")
+
+        with pytest.raises(ResourceNotFoundError, match="subject not found: GONE"):
+            service.list_vars("GONE")
+
+    def test_set_vars_builds_prefixed_field_keys(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get.return_value = make_response(self._fields_document([]))
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+
+        service.set_vars("XNAT_S00001", {"studytag": "phase1", "cohort": "A"})
+
+        mock_client.put.assert_called_once_with(
+            "/data/subjects/XNAT_S00001",
+            params={
+                "xnat:subjectData/fields/field[name=studytag]/field": "phase1",
+                "xnat:subjectData/fields/field[name=cohort]/field": "A",
+            },
+        )
+
+    def test_set_vars_project_scoped_path(
+        self, service: SubjectService, mock_client: MagicMock
+    ) -> None:
+        mock_client.get.return_value = make_response(self._fields_document([]))
+        mock_client.put.return_value = make_response("", content_type="text/plain")
+
+        service.set_vars("SUB001", {"studytag": "phase1"}, project="PROJ01")
+
+        mock_client.put.assert_called_once_with(
+            "/data/projects/PROJ01/subjects/SUB001",
+            params={"xnat:subjectData/fields/field[name=studytag]/field": "phase1"},
+        )
+        mock_client.get.assert_called_once_with(
+            "/data/projects/PROJ01/subjects/SUB001", params={"format": "json"}
+        )
+
+    # "trailing\n" is the non-obvious one: Python's `$` matches just
+    # BEFORE a final newline, so a `^...$` regex checked with `.match()`
+    # accepts it and the newline lands inside the XNAT query key.
+    @pytest.mark.parametrize(
+        "bad_name",
+        ["", "has space", "has]bracket", "has=equals", "a/b", "trailing\n", "crlf\r\n"],
+    )
+    def test_set_vars_rejects_unsafe_field_names(
+        self, service: SubjectService, mock_client: MagicMock, bad_name: str
+    ) -> None:
+        with pytest.raises(InputValidationError):
+            service.set_vars("XNAT_S00001", {bad_name: "value"})
+        mock_client.put.assert_not_called()
+
+    def test_set_vars_not_found(self, service: SubjectService, mock_client: MagicMock) -> None:
+        """A nonexistent subject_id must be rejected before any PUT is issued.
+
+        Regression test for the phantom-subject bug: the PUT this method
+        issues is the same create-or-update route ``SubjectService.create``
+        uses, and XNAT answers a nonexistent subject with 201, not 404
+        (verified live against 1.9.2.1) -- so relying on the PUT itself to
+        404 (as the old code did) never catches a typo; it just silently
+        creates an empty subject. This asserts the existence preflight GET
+        is what raises, and that the PUT is never reached.
+        """
+        mock_client.get.side_effect = ResourceNotFoundError("resource", "/data/subjects/GONE")
+
+        with pytest.raises(ResourceNotFoundError, match="subject not found: GONE"):
+            service.set_vars("GONE", {"k": "v"})
+        mock_client.put.assert_not_called()

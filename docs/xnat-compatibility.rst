@@ -100,6 +100,34 @@ XNAT Import API support for ``Direct-Archive=true``.
    administrator, uploads using this mode will fail. Use prearchive-first
    workflows instead (``session upload --prearchive``).
 
+``xnatctl`` checks this itself before starting a direct-archive upload. It
+probes the server's build version once per command (the same version
+``admin version`` reports), on its own short (a few seconds) timeout that is
+independent of the command's own transfer timeout, and caches the result --
+including a failed probe, so a broken or unreachable ``buildInfo`` endpoint
+is asked once, not on every gated call -- and then:
+
+- If the server reports a version below 1.8.3, the upload is rejected
+  immediately with an error naming the required and actual versions --
+  before any files are archived or sent -- rather than failing partway
+  through with a server-side error that doesn't say why.
+- If the version cannot be determined (an older server without the
+  ``buildInfo`` endpoint, a network hiccup or timeout on the probe, or a
+  response that isn't a recognizable version string), ``xnatctl`` proceeds
+  without blocking the upload. Version detection is a convenience, not a
+  hard requirement -- it is designed to never turn a server that would
+  otherwise work into a failure, or slow one down: parsing the probe
+  response cannot raise, and only a version that is positively confirmed to
+  be too old blocks anything.
+
+This applies to REST direct-archive uploads (``session upload
+--direct-archive``, ``upload-exam``). ``session upload-dicom`` is a separate
+DICOM C-STORE transport and is not covered by this check.
+
+This check only covers the version floor; it cannot detect an administrator
+disabling direct-archive on an otherwise-current server. That still surfaces
+as a failure from the upload itself.
+
 DICOM C-STORE uploads
 ^^^^^^^^^^^^^^^^^^^^^
 
@@ -129,12 +157,12 @@ steps below walk you through this process.
    later.
 
 **Step 1 -- Confirm server version and connectivity.**
-Use ``admin info`` to verify that ``xnatctl`` can reach the server and to check
+Use ``admin version`` to verify that ``xnatctl`` can reach the server and to check
 the reported XNAT version:
 
 .. code-block:: console
 
-   $ xnatctl admin info
+   $ xnatctl admin version
 
 You should see the server URL and XNAT version in the output. If the command
 times out or returns a connection error, check your network, VPN, and the
@@ -187,7 +215,7 @@ details up front helps maintainers reproduce and diagnose the problem quickly.
    When opening an issue, please include the following information:
 
    - **xnatctl version** -- run ``xnatctl --version``.
-   - **XNAT server version** -- from ``xnatctl admin info`` output.
+   - **XNAT server version** -- from ``xnatctl admin version`` output.
    - **Exact command** -- the full command line you ran, with any sensitive
      values (passwords, internal hostnames) redacted.
    - **Sanitized error output** -- the complete traceback or error message,

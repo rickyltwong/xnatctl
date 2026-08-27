@@ -1,37 +1,39 @@
 """HTTP client for XNAT REST API.
 
-Provides retry logic, pagination, and session-based authentication.
+Provides retry logic and session-based authentication.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import ssl
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import quote
 
 import httpx
+from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from xnatctl.services.admin import AdminService
+    # Only the two service packages that themselves import this module at
+    # their own module scope (services.downloads.transport, and every
+    # services.upload transport module -- rest_batch.py, gradual.py,
+    # resources.py -- import XNATClient eagerly) stay TYPE_CHECKING-only
+    # here; importing them for real at module scope would close
+    # core.client -> services.{downloads,upload} -> core.client.
+    # ExamUploadService (services.exam_upload) does NOT import core.client
+    # at its own module scope -- it defers UploadService/ResourceService
+    # inside its methods for a test-mocking reason, not a cycle -- so it is
+    # imported directly below like every other service accessor.
     from xnatctl.services.downloads import DownloadService
-    from xnatctl.services.exam_upload import ExamUploadService
-    from xnatctl.services.hierarchy import HierarchyService
-    from xnatctl.services.pipelines import PipelineService
-    from xnatctl.services.prearchive import PrearchiveService
-    from xnatctl.services.projects import ProjectService
-    from xnatctl.services.resources import ResourceService
-    from xnatctl.services.scans import ScanService
-    from xnatctl.services.sessions import SessionService
-    from xnatctl.services.subjects import SubjectService
     from xnatctl.services.upload import UploadService
 
 from xnatctl.core import transport
@@ -41,18 +43,31 @@ from xnatctl.core.exceptions import (
     PermissionDeniedError,
     ServerUnreachableError,
     SessionExpiredError,
+    XNATCtlError,
 )
 from xnatctl.core.exceptions import (
     RequestTimeoutError as XNATTimeoutError,
 )
 from xnatctl.core.redact import redact_url_query
 from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, RETRYABLE_TRANSPORT_ERRORS
+from xnatctl.core.server_version import probe_server_version
 from xnatctl.core.timeouts import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_HTTP_TIMEOUT_SECONDS,
     build_httpx_timeout,
 )
 from xnatctl.core.validation import validate_server_url
+from xnatctl.models.info import ServerInfo, UserInfo
+from xnatctl.services.admin import AdminService
+from xnatctl.services.exam_upload import ExamUploadService
+from xnatctl.services.hierarchy import HierarchyService
+from xnatctl.services.pipelines import PipelineService
+from xnatctl.services.prearchive import PrearchiveService
+from xnatctl.services.projects import ProjectService
+from xnatctl.services.resources import ResourceService
+from xnatctl.services.scans import ScanService
+from xnatctl.services.sessions import SessionService
+from xnatctl.services.subjects import SubjectService
 
 # =============================================================================
 # Constants
@@ -74,7 +89,7 @@ _ServiceT = TypeVar("_ServiceT")
 
 @dataclass
 class XNATClient:
-    """HTTP client for XNAT REST API with retry and pagination."""
+    """HTTP client for XNAT REST API with retry and session management."""
 
     base_url: str
     username: str | None = None
@@ -98,6 +113,19 @@ class XNATClient:
     # hitting one expiry each open their own fresh session, which is exactly
     # the concurrent-session exhaustion that locks out shared service accounts.
     _reauth_lock: threading.Lock = field(init=False, default_factory=threading.Lock, repr=False)
+    # Cache for `server_version` below. A separate probed flag (rather than
+    # treating a None cache as "not yet probed") is what lets a failed probe
+    # be cached too -- otherwise a server with a broken buildInfo endpoint
+    # would be re-probed on every gated call.
+    _server_version_cache: tuple[int, int, int] | None = field(init=False, default=None, repr=False)
+    _server_version_probed: bool = field(init=False, default=False, repr=False)
+    # Guards the check/probe/set sequence in `server_version` below: without
+    # it, two threads racing past the `not self._server_version_probed` check
+    # both probe. The common (already-cached) case never touches this lock --
+    # only the first access(es), before the probe result is in.
+    _server_version_lock: threading.Lock = field(
+        init=False, default_factory=threading.Lock, repr=False
+    )
 
     def __post_init__(self) -> None:
         """Validate and normalize URL."""
@@ -205,9 +233,11 @@ class XNATClient:
     def _service(self, name: str, factory: Callable[[XNATClient], _ServiceT]) -> _ServiceT:
         """Return the cached service for ``name``, building it once on first use.
 
-        The service imports are function-local at each property to avoid the
-        core -> services import cycle (services import core.client); this just
-        holds the per-instance cache so repeated access returns one object.
+        Holds the per-instance cache so repeated access (``client.projects``,
+        ...) returns one object. ``downloads``/``uploads`` import their
+        service class function-locally instead of passing an already-imported
+        class in, to avoid the core -> services import cycle those two
+        packages close (see the module-level ``TYPE_CHECKING`` comment above).
         """
         service = self._services.get(name)
         if service is None:
@@ -218,64 +248,46 @@ class XNATClient:
     @property
     def projects(self) -> ProjectService:
         """Bound :class:`ProjectService` for this client (cached)."""
-        from xnatctl.services.projects import ProjectService
-
         return self._service("projects", ProjectService)
 
     @property
     def subjects(self) -> SubjectService:
         """Bound :class:`SubjectService` for this client (cached)."""
-        from xnatctl.services.subjects import SubjectService
-
         return self._service("subjects", SubjectService)
 
     @property
     def sessions(self) -> SessionService:
         """Bound :class:`SessionService` for this client (cached)."""
-        from xnatctl.services.sessions import SessionService
-
         return self._service("sessions", SessionService)
 
     @property
     def scans(self) -> ScanService:
         """Bound :class:`ScanService` for this client (cached)."""
-        from xnatctl.services.scans import ScanService
-
         return self._service("scans", ScanService)
 
     @property
     def resources(self) -> ResourceService:
         """Bound :class:`ResourceService` for this client (cached)."""
-        from xnatctl.services.resources import ResourceService
-
         return self._service("resources", ResourceService)
 
     @property
     def prearchive(self) -> PrearchiveService:
         """Bound :class:`PrearchiveService` for this client (cached)."""
-        from xnatctl.services.prearchive import PrearchiveService
-
         return self._service("prearchive", PrearchiveService)
 
     @property
     def pipelines(self) -> PipelineService:
         """Bound :class:`PipelineService` for this client (cached)."""
-        from xnatctl.services.pipelines import PipelineService
-
         return self._service("pipelines", PipelineService)
 
     @property
     def admin(self) -> AdminService:
         """Bound :class:`AdminService` for this client (cached)."""
-        from xnatctl.services.admin import AdminService
-
         return self._service("admin", AdminService)
 
     @property
     def hierarchy(self) -> HierarchyService:
         """Bound :class:`HierarchyService` for this client (cached)."""
-        from xnatctl.services.hierarchy import HierarchyService
-
         return self._service("hierarchy", HierarchyService)
 
     @property
@@ -295,8 +307,6 @@ class XNATClient:
     @property
     def exam_uploads(self) -> ExamUploadService:
         """Bound :class:`ExamUploadService` for this client (cached)."""
-        from xnatctl.services.exam_upload import ExamUploadService
-
         return self._service("exam_uploads", ExamUploadService)
 
     # =========================================================================
@@ -360,7 +370,7 @@ class XNATClient:
                 # deprecates `cookies=` on individual calls.
                 client.cookies.set("JSESSIONID", self.session_token)
                 client.delete("/data/JSESSION")
-            except Exception:
+            except Exception:  # noqa: BLE001 -- best-effort logout, must not block client cleanup
                 pass  # Best effort
             finally:
                 self.session_token = None
@@ -440,6 +450,7 @@ class XNATClient:
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
         retry_non_idempotent: bool = False,
+        max_retries: int | None = None,
     ) -> httpx.Response:
         """Execute HTTP request with retry logic.
 
@@ -458,6 +469,10 @@ class XNATClient:
                 :data:`IDEMPOTENT_METHODS`. Opt in per call site, only where the
                 operation is provably safe to repeat -- a retried POST can mean a
                 double archive or a double pipeline launch.
+            max_retries: Per-call retry budget, overriding the client's. Pass 0
+                for a single-shot call. ``timeout`` alone does not bound
+                wall-clock: the ladder honours ``Retry-After`` up to 300s an
+                attempt, so a call that must not delay other work needs both.
 
         Returns:
             HTTP response (2xx only; error statuses raise typed exceptions).
@@ -485,6 +500,7 @@ class XNATClient:
             headers=headers,
             timeout=timeout,
             retry_non_idempotent=retry_non_idempotent,
+            max_retries=max_retries,
         )
 
     def get(
@@ -494,14 +510,20 @@ class XNATClient:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
+        max_retries: int | None = None,
     ) -> httpx.Response:
-        """GET request."""
+        """GET request.
+
+        ``max_retries`` overrides the client's retry budget for this call
+        alone; pass 0 to make it single-shot. See :meth:`_request`.
+        """
         return self._request(
             "GET",
             path,
             params=params,
             headers=headers,
             timeout=timeout,
+            max_retries=max_retries,
         )
 
     def post(
@@ -572,105 +594,6 @@ class XNATClient:
         )
 
     # =========================================================================
-    # Pagination
-    # =========================================================================
-
-    def paginate(
-        self,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        page_size: int = 100,
-        result_key: str = "ResultSet.Result",
-    ) -> Iterator[dict[str, Any]]:
-        """Paginated GET returning items one by one.
-
-        Args:
-            path: API path.
-            params: Additional query parameters.
-            page_size: Number of items per page.
-            result_key: Dot-separated path to results in response.
-
-        Yields:
-            Individual result items.
-        """
-        offset = 0
-        base_params = params.copy() if params else {}
-        base_params["format"] = "json"
-        previous_page: list[Any] | None = None
-
-        while True:
-            page_params = {
-                **base_params,
-                "offset": offset,
-                "limit": page_size,
-            }
-
-            resp = self.get(path, params=page_params)
-            data = resp.json()
-
-            # Navigate to results using dot notation
-            results = data
-            for key in result_key.split("."):
-                results = results.get(key, []) if isinstance(results, dict) else []
-
-            # Per-page visibility turns "the list command is slow" into a
-            # number of pages and items. Logged in the client rather
-            # than BaseService._paginate, which only delegates here.
-            logger.debug(
-                "paginate %s: offset=%d limit=%d -> %d items",
-                path,
-                offset,
-                page_size,
-                len(results),
-            )
-
-            if not results:
-                break
-
-            # Not every XNAT endpoint paginates. XNAT 1.9.2.1 ignores `limit`
-            # and `offset` on /data/projects entirely and answers every
-            # request with the full result set -- so the loop below advanced
-            # the offset forever, re-yielding the same rows, and callers hung.
-            # Verified against a live server; the integration tier reached
-            # offset 151450 before it was stopped.
-            #
-            # Two shapes of that, and the first alone is not enough: a server
-            # returning more rows than `limit` asked for is obviously not
-            # honouring it, but when the collection is smaller than a page
-            # the counts look perfectly normal and only the repetition shows
-            # it. Both are checked before the offset advances.
-            ignores_limit = len(results) > page_size
-            repeats_page = results == previous_page
-            if ignores_limit or repeats_page:
-                if not repeats_page:
-                    yield from results
-                # WARNING, not DEBUG. Stopping is right for a server that
-                # ignores these parameters, but it is indistinguishable from
-                # one that honours `limit` while ignoring `offset` -- where
-                # stopping truncates the listing instead. Nobody runs this at
-                # DEBUG, and a short result set that should have been long is
-                # exactly the kind of wrong answer that gets believed.
-                logger.warning(
-                    "paginate %s: %s at offset=%d limit=%d. Treating the endpoint as "
-                    "unpaginated and stopping after %d row(s); if the server does "
-                    "paginate, this listing may be incomplete.",
-                    path,
-                    "returned more rows than requested" if ignores_limit else "repeated a page",
-                    offset,
-                    page_size,
-                    len(results),
-                )
-                break
-
-            yield from results
-            previous_page = results
-            offset += page_size
-
-            if len(results) < page_size:
-                break
-
-    # =========================================================================
     # Convenience Methods
     # =========================================================================
 
@@ -687,11 +610,43 @@ class XNATClient:
         resp = self.get(path, params=params)
         return resp.json()
 
-    def ping(self) -> dict[str, Any]:
+    @property
+    def server_version(self) -> tuple[int, int, int] | None:
+        """The server's XNAT version as ``(major, minor, patch)``, cached.
+
+        Probes the same ``buildInfo`` endpoint :meth:`ping` uses, once per
+        client -- including a failed probe, so a broken or unreachable
+        endpoint is asked once, not on every version-gated call. Safe under
+        concurrent access from multiple threads: the check/probe/set
+        sequence is guarded by ``_server_version_lock`` so two callers
+        racing in before the first probe completes cannot both issue a GET;
+        once probed, the outer flag check is lock-free. Never raises: any
+        HTTP or parse failure is reported as ``None`` here, because version
+        detection is best-effort and must not break a command that does not
+        otherwise depend on it. See
+        :func:`xnatctl.core.server_version.require_server_version`.
+
+        Returns:
+            The parsed version, or ``None`` if it could not be determined.
+        """
+        if not self._server_version_probed:
+            with self._server_version_lock:
+                if not self._server_version_probed:
+                    try:
+                        self._server_version_cache = probe_server_version(self)
+                    finally:
+                        # Set even if probe_server_version somehow raised, so a
+                        # broken endpoint is never re-probed -- probing itself
+                        # is documented to be total, but the cache invariant
+                        # must hold regardless.
+                        self._server_version_probed = True
+        return self._server_version_cache
+
+    def ping(self) -> ServerInfo:
         """Check server connectivity and get version info.
 
         Returns:
-            Dict with server info.
+            :class:`ServerInfo` with url, status, version, and latency.
 
         Raises:
             NetworkError: If server is unreachable.
@@ -700,18 +655,20 @@ class XNATClient:
         resp = self.get("/xapi/siteConfig/buildInfo/version")
         latency = int((time.time() - start) * 1000)
 
-        return {
-            "url": self.base_url,
-            "status": "ok",
-            "version": resp.text.strip(),
-            "latency_ms": latency,
-        }
+        return ServerInfo(
+            url=self.base_url,
+            status="ok",
+            version=resp.text.strip(),
+            latency_ms=latency,
+        )
 
-    def whoami(self) -> dict[str, Any]:
+    def whoami(self) -> UserInfo:
         """Get current user information.
 
         Returns:
-            Dict with user info.
+            :class:`UserInfo` for the authenticated account. Falls back to the
+            configured username (or ``"unknown"``) when the server's
+            current-user endpoints are unavailable.
 
         Raises:
             AuthenticationError: If not authenticated.
@@ -721,32 +678,13 @@ class XNATClient:
             display_username = self._apply_username_hint(current_username)
             details = self._get_user_details(current_username)
             if details is not None:
-                details["username"] = display_username
-                return details
-            return {
-                "username": display_username,
-                "firstname": "",
-                "lastname": "",
-                "email": "",
-                "enabled": True,
-            }
+                return details.model_copy(update={"username": display_username})
+            return UserInfo(username=display_username, enabled=True)
 
         if self.username:
-            return {
-                "username": self.username,
-                "firstname": "",
-                "lastname": "",
-                "email": "",
-                "enabled": True,
-            }
+            return UserInfo(username=self.username, enabled=True)
 
-        return {
-            "username": "unknown",
-            "firstname": "",
-            "lastname": "",
-            "email": "",
-            "enabled": False,
-        }
+        return UserInfo(username="unknown", enabled=False)
 
     def _get_current_username(self) -> str | None:
         """Resolve the authenticated username from server endpoints.
@@ -762,7 +700,7 @@ class XNATClient:
                 return username
         except (AuthenticationError, SessionExpiredError, PermissionDeniedError):
             raise
-        except Exception:
+        except XNATCtlError:
             pass
 
         try:
@@ -772,28 +710,45 @@ class XNATClient:
                 return match.group(1).strip()
         except (AuthenticationError, SessionExpiredError, PermissionDeniedError):
             raise
-        except Exception:
+        except XNATCtlError:
             pass
 
         return None
 
-    def _get_user_details(self, username: str) -> dict[str, Any] | None:
+    def _get_user_details(self, username: str) -> UserInfo | None:
         """Fetch user details for a resolved username, if available."""
         try:
             data = self.get_json(f"/xapi/users/{quote(username, safe='')}")
-        except Exception:
+        except (XNATCtlError, json.JSONDecodeError):
             return None
 
         if not isinstance(data, dict):
             return None
 
-        return {
-            "username": data.get("username", username),
-            "firstname": data.get("firstName", ""),
-            "lastname": data.get("lastName", ""),
-            "email": data.get("email", ""),
-            "enabled": data.get("enabled", False),
-        }
+        payload = dict(data)
+        # The payload's own username wins when present and usable (matching
+        # the old dict.get fallback); a missing/blank/non-string username in
+        # the payload falls back to the already-resolved one instead of
+        # sinking an otherwise-good payload over one bad field.
+        payload_username = payload.get("username")
+        if not isinstance(payload_username, str) or not payload_username.strip():
+            payload["username"] = username
+
+        try:
+            return UserInfo.model_validate(payload)
+        except ValidationError:
+            # A genuinely unusable payload (some field violates the model in
+            # a way the field validators don't absorb) must not be discarded
+            # wholesale -- it may still carry a perfectly good `enabled`
+            # value. Salvage it here if it is at least a real bool;
+            # otherwise default to False (fail-closed: report the account
+            # as not-confirmed-enabled rather than inventing an active
+            # one).
+            enabled = payload.get("enabled")
+            return UserInfo(
+                username=username,
+                enabled=enabled if isinstance(enabled, bool) else False,
+            )
 
     def _apply_username_hint(self, username: str) -> str:
         """Preserve configured/cached username casing when it matches."""

@@ -202,7 +202,7 @@ def test_deprecated_validation_error_warns_and_subclasses_canonical() -> None:
 
 
 def test_internal_connection_errors_are_not_the_deprecated_alias() -> None:
-    """The rename's whole point: raised errors no longer match ``except ConnectionError``."""
+    """The deprecation's whole point: raised errors do not match ``except ConnectionError``."""
     from xnatctl.core.exceptions import ConnectionError as DeprecatedConnectionError
 
     assert not isinstance(NetworkError("https://x"), DeprecatedConnectionError)

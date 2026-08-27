@@ -57,15 +57,19 @@ def _deprecated_options() -> list[tuple[CommandPath, click.Parameter, str]]:
     return found
 
 
-def _alias_callback_flags() -> set[str]:
-    """Flags wired to a deprecation callback, whatever their help text says.
+def _wired_alias_params() -> list[tuple[CommandPath, click.Parameter, str]]:
+    """Every option whose callback closure carries a baked deprecation warning.
 
     Most deprecated aliases carry no help at all (they are hidden), so the
     help-text sweep above cannot see them. The callback closure can: the
-    message it was built with names the flag.
+    message it was built with names the flag. Detection is by the closure's
+    literal ``Warning: `` string, NOT by consulting the registry -- built
+    the other way around (iterating the registry and looking for its
+    messages), an alias wired with an unregistered flag or hand-baked text
+    would simply be invisible to the checks it is supposed to fail.
     """
-    flags: set[str] = set()
-    for _path, command in _walk(cli):
+    found: list[tuple[CommandPath, click.Parameter, str]] = []
+    for path, command in _walk(cli):
         for param in command.params:
             callback = getattr(param, "callback", None)
             closure = getattr(callback, "__closure__", None)
@@ -73,9 +77,28 @@ def _alias_callback_flags() -> set[str]:
                 continue
             for cell in closure:
                 value = cell.cell_contents
-                if isinstance(value, str) and value.startswith("Warning: --"):
-                    flags.add(value.split()[1])
-    return flags
+                if isinstance(value, str) and value.startswith("Warning: "):
+                    found.append((path, param, value))
+    return found
+
+
+def _alias_callback_flags() -> set[str]:
+    """Registered flags whose exact canonical warning is actually wired up.
+
+    This matches by the *whole* canonical message (``deprecation_message``
+    built fresh from each registry entry), not by picking the flag name back
+    out of free text with a regex. A first-token regex assumed every
+    registered key was itself the literal flag text with no internal
+    whitespace, which holds for a full long-flag rename (``--file``) but
+    not for a short-flag-only retirement scoped to one command (e.g. ``-f
+    (api post/put)``, needed because ``-f`` means something different --
+    and gets a different replacement -- in another command). Matching on the
+    full message avoids that assumption, and is strictly stronger: it also
+    catches a callback whose baked-in text has drifted from what the
+    registry would produce today.
+    """
+    wired_messages = {message for _path, _param, message in _wired_alias_params()}
+    return {flag for flag in DEPRECATED_FLAGS if deprecation_message(flag) in wired_messages}
 
 
 class TestRegistryCoverage:
@@ -93,10 +116,50 @@ class TestRegistryCoverage:
             "removal release."
         )
 
-    def test_every_alias_callback_flag_is_registered(self) -> None:
-        unregistered = _alias_callback_flags() - set(DEPRECATED_FLAGS)
+    def test_every_wired_warning_matches_a_registry_entry(self) -> None:
+        """A baked warning that no registry entry would produce today is drift.
 
-        assert not unregistered, sorted(unregistered)
+        Covers both an alias wired around the registry entirely (hand-baked
+        text) and one whose text was built from the registry once but no
+        longer matches it. Comparing wired -> registry, not the reverse:
+        the reverse is a subset of the registry by construction and can
+        never fail.
+        """
+        canonical = {deprecation_message(flag) for flag in DEPRECATED_FLAGS}
+        stray = {msg for _path, _param, msg in _wired_alias_params() if msg not in canonical}
+
+        assert not stray, sorted(stray)
+
+    def test_the_wired_alias_sites_are_exactly_the_expected_ones(self) -> None:
+        """Pin every (command, flag) alias site, not just a count.
+
+        A count floor of len(DEPRECATED_FLAGS) would let duplicate sites
+        (the second ``-s``, two of the three ``-e``, one API ``-f``) vanish
+        silently while all five registry messages stayed wired somewhere.
+        Removing a site fails here; adding one fails until it is listed
+        here deliberately. This is also what keeps the closure sweep
+        honest: if a refactor changed how alias callbacks bake their
+        message, the sweep would come back empty and this equality fails
+        loudly instead of every sweep-based check passing vacuously.
+        """
+        expected = {
+            (("scan", "delete"), "-s"),
+            (("scan", "download"), "-s"),
+            (("resource", "download"), "--file"),
+            (("pipeline", "run"), "-e"),
+            (("pipeline", "jobs"), "-e"),
+            (("admin", "refresh-catalogs"), "-e"),
+            (("api", "post"), "-f (api post/put)"),
+            (("api", "put"), "-f (api post/put)"),
+            (("container", "logs"), "-f (container logs)"),
+        }
+        canonical = {deprecation_message(flag): flag for flag in DEPRECATED_FLAGS}
+        actual = {
+            (path, canonical.get(message, message))
+            for path, _param, message in _wired_alias_params()
+        }
+
+        assert actual == expected
 
     def test_the_registry_has_no_dead_entries(self) -> None:
         """A flag deleted from the CLI should not linger in the table."""
@@ -149,20 +212,14 @@ class TestRegistryCoverage:
 
 class TestMessage:
     def test_a_replacement_is_named(self) -> None:
-        message = deprecation_message("--unzip")
+        message = deprecation_message("--file")
 
-        assert "--unzip is deprecated" in message
-        assert "use --extract instead" in message
+        assert "--file is deprecated" in message
+        assert "use --output-file instead" in message
 
     def test_the_removal_release_is_named(self) -> None:
         """A user reading one warning line should know how long they have."""
-        assert "will be removed in 0.5.0" in deprecation_message("--unzip")
-
-    def test_a_noop_flag_says_so_rather_than_naming_a_replacement(self) -> None:
-        message = deprecation_message("--cleanup")
-
-        assert "it has no effect" in message
-        assert "use  instead" not in message
+        assert "will be removed in 0.7.0" in deprecation_message("--file")
 
     def test_an_unregistered_flag_raises(self) -> None:
         """Caught at import time, since the factories build the message eagerly."""
@@ -180,44 +237,39 @@ class TestWarningsAreVisible:
 
     @staticmethod
     def _harness() -> click.Command:
-        from xnatctl.cli.common import _make_alias_cb, _make_forwarding_alias_cb, _make_noop_cb
+        from xnatctl.cli.common import _make_alias_cb, _make_forwarding_alias_cb
 
         @click.command()
-        @click.option("--extract/--no-extract", default=False)
-        @click.option("--mode", default=None)
+        @click.option("--follow", is_flag=True, default=False)
+        @click.option("--output-file", default=None)
         @click.option(
-            "--unzip",
+            "-f",
+            "legacy_follow_f",
             is_flag=True,
             hidden=True,
             expose_value=False,
-            callback=_make_alias_cb("--unzip", "extract", True),
+            callback=_make_alias_cb("-f (container logs)", "follow", True),
         )
         @click.option(
-            "--archive-format",
+            "--file",
+            "legacy_file_flag",
             hidden=True,
             expose_value=False,
-            callback=_make_forwarding_alias_cb("--archive-format", "mode"),
+            callback=_make_forwarding_alias_cb("--file", "output_file"),
         )
-        @click.option(
-            "--cleanup",
-            is_flag=True,
-            hidden=True,
-            expose_value=False,
-            callback=_make_noop_cb("--cleanup"),
-        )
-        def command(extract: bool, mode: str | None) -> None:
-            click.echo(f"extract={extract} mode={mode}")
+        def command(follow: bool, output_file: str | None) -> None:
+            click.echo(f"follow={follow} output_file={output_file}")
 
         return command
 
     def test_the_warning_is_printed(self) -> None:
-        result = CliRunner().invoke(self._harness(), ["--unzip"])
+        result = CliRunner().invoke(self._harness(), ["-f"])
 
-        assert deprecation_message("--unzip") in result.stderr
+        assert deprecation_message("-f (container logs)") in result.stderr
 
     def test_the_warning_lands_on_stderr_not_stdout(self) -> None:
         """Polluting stdout breaks a piped --output json or --quiet result."""
-        result = CliRunner().invoke(self._harness(), ["--unzip"])
+        result = CliRunner().invoke(self._harness(), ["-f"])
 
         assert "deprecated" not in result.stdout
 
@@ -229,25 +281,28 @@ class TestWarningsAreVisible:
 
     def test_an_alias_still_does_what_it_used_to(self) -> None:
         """A deprecation that also broke the flag would be a removal in disguise."""
-        result = CliRunner().invoke(self._harness(), ["--unzip"])
+        result = CliRunner().invoke(self._harness(), ["-f"])
 
-        assert "extract=True" in result.stdout
+        assert "follow=True" in result.stdout
 
     def test_a_forwarding_alias_carries_the_value(self) -> None:
-        result = CliRunner().invoke(self._harness(), ["--archive-format", "zip"])
+        result = CliRunner().invoke(self._harness(), ["--file", "out.zip"])
 
-        assert "mode=zip" in result.stdout
-        assert deprecation_message("--archive-format") in result.stderr
-
-    def test_a_noop_flag_warns_rather_than_being_accepted_in_silence(self) -> None:
-        """Silent acceptance reads as "still supported"."""
-        result = CliRunner().invoke(self._harness(), ["--cleanup"])
-
-        assert deprecation_message("--cleanup") in result.stderr
-        assert result.exit_code == 0
+        assert "output_file=out.zip" in result.stdout
+        assert deprecation_message("--file") in result.stderr
 
     def test_deprecated_flags_are_hidden_from_help(self) -> None:
+        """Both detection paths: help-marked options AND hidden alias callbacks.
+
+        The alias sweep is what gives this test teeth at HEAD -- the
+        surviving aliases carry no help text, so ``_deprecated_options()``
+        alone would iterate zero times and the test would assert nothing.
+        """
         for path, param, flag in _deprecated_options():
             assert getattr(param, "hidden", False), (
                 f"{flag} on '{' '.join(path)}' is deprecated but still advertised in --help"
+            )
+        for path, param, _message in _wired_alias_params():
+            assert getattr(param, "hidden", False), (
+                f"deprecated alias {param.opts} on '{' '.join(path)}' is advertised in --help"
             )

@@ -425,6 +425,83 @@ class TestDownloadResourcePathConstruction:
         assert path_arg == "/data/experiments/INTERNAL_ID/resources/SNAPSHOTS/files"
 
 
+class TestDownloadResourceAndScansSkippedEntries:
+    """download_resource / download_scans (the single-ZIP, extract=True
+    paths) populate DownloadSummary.skipped_unsafe_entries and log a
+    warning -- the same observability the parallel engine gets.
+    """
+
+    @staticmethod
+    def _fake_stream_to_file(client, path, dest, *, params=None, progress_cb=None):
+        """Write a real ZIP with one symlink-typed member to *dest*."""
+        from xnatctl.services.downloads import StreamedFile
+
+        with zipfile.ZipFile(dest, "w") as zf:
+            zf.writestr("good.dcm", b"data")
+            info = zipfile.ZipInfo("link.dcm")
+            info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+            zf.writestr(info, "../../../etc/passwd")
+        return StreamedFile(bytes_written=dest.stat().st_size, content_length=None)
+
+    def test_download_resource_extract_reports_skipped_entries(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = MagicMock()
+        service = DownloadService(client)
+        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
+            return_value=ExperimentRef(experiment="E1")
+        )
+
+        with (
+            patch(
+                "xnatctl.services.downloads.resource_scan.stream_to_file",
+                side_effect=self._fake_stream_to_file,
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            summary = service.download_resource(
+                session_id="E1",
+                resource_label="DICOM",
+                output_dir=tmp_path,
+                extract=True,
+            )
+
+        assert summary.success is True
+        assert summary.skipped_unsafe_entries == 1
+        assert (tmp_path / "DICOM" / "good.dcm").exists()
+        assert not (tmp_path / "DICOM" / "link.dcm").exists()
+        assert "Skipped 1 unsafe ZIP entries" in caplog.text
+
+    def test_download_scans_extract_reports_skipped_entries(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = MagicMock()
+        service = DownloadService(client)
+        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
+            return_value=ExperimentRef(experiment="E1")
+        )
+
+        with (
+            patch(
+                "xnatctl.services.downloads.resource_scan.stream_to_file",
+                side_effect=self._fake_stream_to_file,
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            summary = service.download_scans(
+                session_id="E1",
+                scan_ids=["1"],
+                output_dir=tmp_path,
+                extract=True,
+            )
+
+        assert summary.success is True
+        assert summary.skipped_unsafe_entries == 1
+        assert (tmp_path / "scans" / "good.dcm").exists()
+        assert not (tmp_path / "scans" / "link.dcm").exists()
+        assert "Skipped 1 unsafe ZIP entries" in caplog.text
+
+
 # =============================================================================
 # download_session_fast: the parallel per-scan engine at the service seam
 # =============================================================================
@@ -437,6 +514,19 @@ def _write_scan_zip(path: str, dest: Path) -> None:
     label = parts[parts.index("resources") + 1] if "resources" in parts else "DICOM"
     with zipfile.ZipFile(dest, "w") as zf:
         zf.writestr(f"E/scans/{scan_id}/resources/{label}/files/0001.dcm", b"data")
+
+
+def _write_hostile_scan_zip(path: str, dest: Path, outside: Path) -> None:
+    """Like _write_scan_zip, but adds one member that escapes containment
+    via a planted symlink (the realistic ZipSlip vector -- see
+    test_zip_extract.py for why a literal ".." never reaches the check).
+    """
+    parts = path.strip("/").split("/")
+    scan_id = parts[parts.index("scans") + 1]
+    label = parts[parts.index("resources") + 1] if "resources" in parts else "DICOM"
+    with zipfile.ZipFile(dest, "w") as zf:
+        zf.writestr(f"E/scans/{scan_id}/resources/{label}/files/0001.dcm", b"data")
+        zf.writestr(f"E/scans/{scan_id}/resources/{label}/files/linked/evil.txt", b"pwned")
 
 
 class TestDownloadSessionFast:
@@ -457,7 +547,7 @@ class TestDownloadSessionFast:
                 return_value=[{"ID": s} for s in scan_ids],
             ),
             patch(
-                "xnatctl.services.downloads.stream_to_file",
+                "xnatctl.services.downloads.session.stream_to_file",
                 side_effect=stream_side_effect,
             ),
         ):
@@ -580,6 +670,69 @@ class TestDownloadSessionFast:
         assert [scan for scan, _msg in outcome.failed] == ["2"]
         assert any(not r.ok and r.scan_id == "2" for r in results)
 
+    def test_hostile_zip_entries_are_counted_reported_and_logged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A ZipSlip entry (a planted symlink -- see test_zip_extract.py for
+        why a literal ".." never reaches this check) is skipped, counted
+        into the outcome, and logged -- not dropped without a trace.
+        """
+        outside = tmp_path.parent / "outside_download_session_fast"
+        outside.mkdir(exist_ok=True)
+
+        def fake_stream(client, path, dest, *, params=None, **kw):
+            scan_id = path.strip("/").split("/")[path.strip("/").split("/").index("scans") + 1]
+            files_dir = tmp_path / "scans" / scan_id / "resources" / "DICOM" / "files"
+            files_dir.mkdir(parents=True, exist_ok=True)
+            link = files_dir / "linked"
+            if not link.exists():
+                link.symlink_to(outside, target_is_directory=True)
+            _write_hostile_scan_zip(path, dest, outside)
+
+        with caplog.at_level("WARNING"):
+            outcome = self._run(tmp_path, scan_ids=["1"], stream_side_effect=fake_stream)
+
+        assert outcome.succeeded == 1
+        assert outcome.files == 1
+        assert outcome.skipped_unsafe_entries == 1
+        assert not (outside / "evil.txt").exists()
+        assert "Skipped 1 unsafe ZIP entries" in caplog.text
+
+    def test_shared_scans_dir_exists_before_any_worker_starts(self, tmp_path: Path) -> None:
+        """Regression test for a Windows-only false-positive containment failure.
+
+        Every scan's ``scan_base`` (``session_dir/scans/{id}``) is checked
+        with ``verify_directory_contained_in`` against ``session_dir`` before
+        that scan is extracted. On Windows, ``Path.resolve()`` only
+        canonicalizes (corrects case, expands any 8.3 short name, follows a
+        substituted drive/junction) the deepest ALREADY-EXISTING ancestor of
+        a path -- so if the shared ``scans/`` parent does not exist yet when
+        one worker's check runs, and a *different*, concurrent worker's
+        ``mkdir`` is what actually creates it, the two workers' resolves of
+        overlapping paths can disagree and fail containment on a perfectly
+        safe directory. This is exactly what was observed in CI: "Scan 2
+        FAILED: Invalid path: ...\\XNAT_E00001\\scans\\2 - scan directory
+        resolves outside its trusted root ...\\XNAT_E00001".
+
+        The fix creates ``session_dir/scans`` once, single-threaded, before
+        the worker pool starts -- removing the race outright rather than
+        trying to make two independent concurrent resolves agree. Proven
+        here by asserting the shared parent already exists at the moment
+        the FIRST per-scan action (streaming the ZIP) runs, for every scan
+        in the batch -- true on any platform, not just Windows, since this
+        is about ordering, not OS-specific path canonicalization.
+        """
+        seen_before_stream: list[bool] = []
+
+        def fake_stream(client, path, dest, *, params=None, **kw):
+            seen_before_stream.append((tmp_path / "scans").exists())
+            _write_scan_zip(path, dest)
+
+        outcome = self._run(tmp_path, scan_ids=["1", "2", "3"], stream_side_effect=fake_stream)
+
+        assert outcome.succeeded == 3
+        assert seen_before_stream == [True, True, True]
+
 
 class TestDownloadSessionArchiveAndResources:
     """The sequential single-ZIP path and the session-level resources loop."""
@@ -594,7 +747,7 @@ class TestDownloadSessionArchiveAndResources:
             dest.write_bytes(b"zip")
 
         seen: list[tuple[int, int | None]] = []
-        with patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream):
+        with patch("xnatctl.services.downloads.session.stream_to_file", side_effect=fake_stream):
             out = DownloadService(MagicMock()).download_session_archive(
                 session_project="P",
                 subject="S",
@@ -625,7 +778,7 @@ class TestDownloadSessionArchiveAndResources:
                 "xnatctl.services.downloads.SessionService.experiment_resource_rows",
                 return_value=[{"label": "QC"}, {"label": "MISC"}],
             ) as rows_mock,
-            patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream),
+            patch("xnatctl.services.downloads.session.stream_to_file", side_effect=fake_stream),
         ):
             downloaded = DownloadService(MagicMock()).download_session_level_resources(
                 session_project="P",
@@ -666,7 +819,7 @@ class TestDownloadSessionArchiveAndResources:
                 "xnatctl.services.downloads.SessionService.experiment_resource_rows",
                 return_value=[{"label": "QC"}, {"label": "MISC"}],
             ),
-            patch("xnatctl.services.downloads.stream_to_file", side_effect=fake_stream),
+            patch("xnatctl.services.downloads.session.stream_to_file", side_effect=fake_stream),
         ):
             with pytest.raises(DownloadError):
                 DownloadService(MagicMock()).download_session_level_resources(
@@ -696,7 +849,7 @@ class TestSingleTargetDownloadContract:
         """A typed client-layer failure passes through, so a caller can catch it."""
         service = self._service()
         with patch(
-            "xnatctl.services.downloads.stream_to_file",
+            "xnatctl.services.downloads.resource_scan.stream_to_file",
             side_effect=SessionExpiredError("https://xnat.example.org"),
         ):
             # The whole point of the contract: an expired session is catchable
@@ -717,7 +870,7 @@ class TestSingleTargetDownloadContract:
         service = self._service()
         disk_full = OSError("No space left on device")
         with patch(
-            "xnatctl.services.downloads.stream_to_file",
+            "xnatctl.services.downloads.resource_scan.stream_to_file",
             side_effect=disk_full,
         ):
             with pytest.raises(DownloadError) as excinfo:
@@ -734,7 +887,7 @@ class TestSingleTargetDownloadContract:
         """Pass-through means the identical object, not a lookalike."""
         service = self._service()
         exc = SessionExpiredError("https://xnat.example.org")
-        with patch("xnatctl.services.downloads.stream_to_file", side_effect=exc):
+        with patch("xnatctl.services.downloads.resource_scan.stream_to_file", side_effect=exc):
             with pytest.raises(SessionExpiredError) as excinfo:
                 service.download_resource(
                     session_id="XNAT_E00001",
@@ -756,7 +909,7 @@ class TestSingleTargetDownloadContract:
                 raise RuntimeError("callback exploded")
 
         exc = SessionExpiredError("https://xnat.example.org")
-        with patch("xnatctl.services.downloads.stream_to_file", side_effect=exc):
+        with patch("xnatctl.services.downloads.resource_scan.stream_to_file", side_effect=exc):
             with pytest.raises(SessionExpiredError) as excinfo:
                 service.download_resource(
                     session_id="XNAT_E00001",
@@ -777,7 +930,7 @@ class TestDownloadScanDelegation:
     def test_resource_path_raises(self, tmp_path: Path) -> None:
         service = self._service()
         exc = SessionExpiredError("https://xnat.example.org")
-        with patch("xnatctl.services.downloads.stream_to_file", side_effect=exc):
+        with patch("xnatctl.services.downloads.resource_scan.stream_to_file", side_effect=exc):
             with pytest.raises(SessionExpiredError):
                 service.download_scan(
                     session_id="XNAT_E00001",

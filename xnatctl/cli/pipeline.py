@@ -8,10 +8,15 @@ import click
 
 from xnatctl.cli.common import (
     Context,
+    _make_forwarding_alias_cb,
+    apply_filter,
+    apply_sort_limit,
     confirm_destructive,
     global_options,
     handle_errors,
+    list_options,
     require_auth,
+    resolve_columns,
 )
 from xnatctl.core.exceptions import OperationError
 from xnatctl.core.output import OutputFormat, print_output, print_success
@@ -26,12 +31,17 @@ def pipeline() -> None:
 
 @pipeline.command("list")
 @click.option("--project", help="Filter by project ID")
+@list_options
 @global_options
 @handle_errors
 @require_auth
 def pipeline_list(
     ctx: Context,
     project: str | None,
+    filter_expr: str | None,
+    limit: int | None,
+    sort_by: str | None,
+    columns: str | None,
 ) -> None:
     """List available pipelines.
 
@@ -39,23 +49,43 @@ def pipeline_list(
     Example:
         xnatctl pipeline list
         xnatctl pipeline list --project MYPROJ
+        xnatctl pipeline list --filter 'name:dcm*' --sort-by name
     """
     client = ctx.get_client()
     service = PipelineService(client)
     pipelines = service.list(project=project)
+
+    pipelines = apply_filter(pipelines, filter_expr)
+    pipelines = apply_sort_limit(pipelines, sort_by, limit)
 
     if ctx.quiet:
         for p in pipelines:
             click.echo(p.get("name", p.get("Name", "")))
         return
 
-    columns = ["name", "description", "version", "path"]
-    print_output(pipelines, format=ctx.output_format, columns=columns, title="Available Pipelines")
+    default_columns = ["name", "description", "version", "path"]
+    print_output(
+        pipelines,
+        format=ctx.output_format,
+        columns=resolve_columns(default_columns, columns),
+        title="Available Pipelines",
+    )
 
 
 @pipeline.command("run")
 @click.argument("pipeline_name")
-@click.option("--experiment", "-e", required=True, help="Experiment/session ID")
+@click.option(
+    "--experiment",
+    "-E",
+    help="Experiment/session ID",
+)
+@click.option(
+    "-e",
+    "legacy_experiment_e",
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("-e", "experiment"),
+)
 @click.option("--param", multiple=True, help="Pipeline parameter (key=value)")
 @click.option("--wait", is_flag=True, help="Wait for completion")
 @click.option("--timeout", type=int, default=3600, help="Wait timeout in seconds")
@@ -65,7 +95,7 @@ def pipeline_list(
 def pipeline_run(
     ctx: Context,
     pipeline_name: str,
-    experiment: str,
+    experiment: str | None,
     param: tuple[str, ...],
     wait: bool,
     timeout: int,
@@ -75,9 +105,18 @@ def pipeline_run(
     \b
     Example:
         xnatctl pipeline run dcm2niix --experiment XNAT_E00001
-        xnatctl pipeline run freesurfer -e XNAT_E00001 --wait
-        xnatctl pipeline run myproc -e XNAT_E00001 --param param1=value1 --param param2=value2
+        xnatctl pipeline run freesurfer -E XNAT_E00001 --wait
+        xnatctl pipeline run myproc -E XNAT_E00001 --param param1=value1 --param param2=value2
     """
+    # `--experiment` is not required=True at the Click level: the deprecated
+    # `-e` alias forwards into this same param via a callback that runs
+    # after Click's own required-check on --experiment would already have
+    # fired (Click checks each option's own parsed value, not ctx.params),
+    # so required=True here would reject a bare `-e`. Enforced by hand
+    # instead.
+    if not experiment:
+        raise click.UsageError("Missing option '--experiment' / '-E'.")
+
     # Parse parameters
     params = {}
     for p in param:
@@ -222,10 +261,24 @@ def pipeline_cancel(
 
 
 @pipeline.command("jobs")
-@click.option("--experiment", "-e", help="Filter by experiment ID")
+@click.option(
+    "--experiment",
+    "-E",
+    help="Filter by experiment ID",
+)
+@click.option(
+    "-e",
+    "legacy_experiment_e",
+    hidden=True,
+    expose_value=False,
+    callback=_make_forwarding_alias_cb("-e", "experiment"),
+)
 @click.option("--project", help="Filter by project ID")
 @click.option("--status", "-s", help="Filter by status")
-@click.option("--limit", type=int, default=100, help="Maximum results")
+@click.option(
+    "--limit", type=click.IntRange(min=0), default=100, help="Maximum results (sent to the server)"
+)
+@list_options(include_limit=False)
 @global_options
 @handle_errors
 @require_auth
@@ -235,6 +288,9 @@ def pipeline_jobs(
     project: str | None,
     status: str | None,
     limit: int,
+    filter_expr: str | None,
+    sort_by: str | None,
+    columns: str | None,
 ) -> None:
     """List pipeline jobs.
 
@@ -243,15 +299,35 @@ def pipeline_jobs(
         xnatctl pipeline jobs
         xnatctl pipeline jobs --experiment XNAT_E00001
         xnatctl pipeline jobs --status Running
+        xnatctl pipeline jobs --filter 'status:Complete' --sort-by start_time:desc
     """
     client = ctx.get_client()
     service = PipelineService(client)
+
+    # A client-side --filter/--sort-by must see the full result set it is
+    # filtering/sorting over, not just whatever fits in the server's
+    # --limit window -- fetching that window FIRST and filtering/sorting
+    # second would silently drop matches outside it.
+    client_side_controls = bool(filter_expr or sort_by)
+    fetch_limit = None if client_side_controls else limit
+
     jobs = service.list_jobs(
         experiment_id=experiment,
         project=project,
         status=status,
-        limit=limit,
+        limit=fetch_limit,
     )
 
-    columns = ["id", "pipeline", "experiment", "status", "start_time", "end_time"]
-    print_output(jobs, format=ctx.output_format, columns=columns, title="Pipeline Jobs")
+    if client_side_controls:
+        jobs = apply_filter(jobs, filter_expr)
+        jobs = apply_sort_limit(jobs, sort_by, limit)
+    else:
+        jobs = jobs[:limit]
+
+    default_columns = ["id", "pipeline", "experiment", "status", "start_time", "end_time"]
+    print_output(
+        jobs,
+        format=ctx.output_format,
+        columns=resolve_columns(default_columns, columns),
+        title="Pipeline Jobs",
+    )

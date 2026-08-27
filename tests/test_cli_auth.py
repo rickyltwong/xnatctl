@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
 from xnatctl.core.exceptions import AuthenticationError
+from xnatctl.models.info import UserInfo
 
 
 @pytest.fixture
@@ -40,7 +41,7 @@ class TestAuthLogin:
     def test_login_success(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.authenticate.return_value = "fake-session-token"
-        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.whoami.return_value = UserInfo(username="testuser", enabled=True)
         mock_client.close.return_value = None
 
         mock_auth_mgr = MagicMock()
@@ -60,7 +61,7 @@ class TestAuthLogin:
     def test_login_json_output(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.authenticate.return_value = "fake-session-token"
-        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.whoami.return_value = UserInfo(username="testuser", enabled=True)
         mock_client.close.return_value = None
 
         mock_auth_mgr = MagicMock()
@@ -97,7 +98,7 @@ class TestAuthLogin:
     def test_login_prompts_for_missing_credentials(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.authenticate.return_value = "token123"
-        mock_client.whoami.return_value = {"username": "prompted_user"}
+        mock_client.whoami.return_value = UserInfo(username="prompted_user", enabled=True)
         mock_client.close.return_value = None
 
         mock_auth_mgr = MagicMock()
@@ -191,18 +192,44 @@ class TestAuthStatus:
         assert result.exit_code == 0
         assert "url" in result.output
 
+    def test_status_tsv_output(self, runner: CliRunner) -> None:
+        """`-o tsv` emits a tab-separated header+row, not the Rich key-value view."""
+        mock_auth_mgr = MagicMock()
+        mock_auth_mgr.get_session_info.return_value = None
+        mock_auth_mgr.get_credentials.return_value = (None, None)
+        mock_auth_mgr.get_token_from_env.return_value = None
+
+        with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.AuthManager", return_value=mock_auth_mgr):
+                result = runner.invoke(cli, ["auth", "status", "-o", "tsv"])
+
+        assert result.exit_code == 0
+        assert "\x1b" not in result.output
+        assert "Auth Status" not in result.output
+        lines = result.output.splitlines()
+        header, row = lines[0].split("\t"), lines[1].split("\t")
+        assert header == [
+            "url",
+            "env_username",
+            "env_password",
+            "env_token",
+            "session_cached",
+        ]
+        assert row[0] == "https://xnat.example.org"
+        assert row[4] == "false"
+
 
 class TestAuthTest:
     """Tests for auth test command."""
 
     def test_auth_test_with_session(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
-        mock_client.whoami.return_value = {
-            "username": "testuser",
-            "firstname": "Test",
-            "lastname": "User",
-            "email": "test@example.org",
-        }
+        mock_client.whoami.return_value = UserInfo(
+            username="testuser",
+            firstname="Test",
+            lastname="User",
+            email="test@example.org",
+        )
         mock_client.close.return_value = None
 
         mock_auth_mgr = MagicMock()
@@ -235,11 +262,11 @@ class TestAuthTest:
 
     def test_auth_test_json_output(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
-        mock_client.whoami.return_value = {
-            "username": "testuser",
-            "firstname": "Test",
-            "lastname": "User",
-        }
+        mock_client.whoami.return_value = UserInfo(
+            username="testuser",
+            firstname="Test",
+            lastname="User",
+        )
         mock_client.close.return_value = None
 
         mock_auth_mgr = MagicMock()
@@ -256,16 +283,16 @@ class TestAuthTest:
 
 
 class TestAuthGlobalOptions:
-    """auth commands now carry the standard decorator stack.
+    """auth commands carry the standard decorator stack.
 
-    They previously declared their own -p/-o -- with the output choices in the
-    opposite order and no -q/-v -- and hand-rolled print_error + SystemExit,
-    which meant the exceptions' actionable hints never rendered on this path.
+    Command-local -p/-o declarations and hand-rolled print_error +
+    SystemExit would mean the exceptions' actionable hints never render on
+    this path, and the root-group flags would go unseen.
     """
 
     def test_root_level_profile_flag_is_respected(self, runner: CliRunner) -> None:
-        """`xnatctl -p other auth status` -- the root-group flag, which the
-        local -p could not see.
+        """`xnatctl -p other auth status` -- the root-group flag reaches
+        auth commands.
         """
         cfg = Config(
             default_profile="default",
@@ -333,11 +360,56 @@ class TestFirstRun:
         assert "Traceback" not in result.output
 
     def test_no_config_does_not_blame_a_missing_default_profile(self, runner: CliRunner) -> None:
-        """It used to say `Profile not found: default`, sending the user
-        looking for a typo that does not exist.
+        """Saying `Profile not found: default` would send the user looking
+        for a typo that does not exist.
         """
         with patch("xnatctl.cli.common.Config.load", return_value=self._empty()):
             result = runner.invoke(cli, ["auth", "login"])
 
         assert "Profile not found" not in result.output
         assert "No profiles configured" in result.output
+
+
+class TestAuthTestJsonShapePin:
+    """The exact `auth test -o json` bytes, pinned across the UserInfo migration.
+
+    The command spreads whoami's result into its JSON payload; converting the
+    typed model back to a dict at the call site must keep this byte-identical.
+    """
+
+    def test_auth_test_json_shape_is_pinned(self, runner: CliRunner) -> None:
+        mock_client = MagicMock()
+        mock_client.whoami.return_value = UserInfo(
+            username="testuser",
+            firstname="Test",
+            lastname="User",
+            email="test@example.org",
+            enabled=True,
+        )
+        mock_client.close.return_value = None
+
+        mock_auth_mgr = MagicMock()
+        mock_auth_mgr.get_session_token.return_value = "cached-token"
+        mock_auth_mgr.get_credentials.return_value = (None, None)
+
+        with patch("xnatctl.cli.common.Config.load", return_value=_mock_config()):
+            with patch("xnatctl.cli.common.AuthManager", return_value=mock_auth_mgr):
+                with patch("xnatctl.cli.auth.XNATClient", return_value=mock_client):
+                    result = runner.invoke(cli, ["auth", "test", "-o", "json"])
+
+        assert result.exit_code == 0
+        expected = {
+            "status": "authenticated",
+            "url": "https://xnat.example.org",
+            "username": "testuser",
+            "firstname": "Test",
+            "lastname": "User",
+            "email": "test@example.org",
+            "enabled": True,
+        }
+        # CliRunner mixes the stderr progress line into output; the JSON on
+        # stdout after it is the byte-exact payload.
+        assert (
+            result.output
+            == "Testing with cached session...\n" + json.dumps(expected, indent=2) + "\n"
+        )

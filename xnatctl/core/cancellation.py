@@ -1,14 +1,14 @@
 """Cooperative cancellation for parallel operations.
 
-Ctrl+C during a parallel upload used to be nearly inert. Every batch is
+Without this, Ctrl+C during a parallel upload is nearly inert: every batch is
 submitted to a :class:`~concurrent.futures.ThreadPoolExecutor` up front, so an
-interrupt raised in the main thread (inside the ``as_completed`` loop) unwound
+interrupt raised in the main thread (inside the ``as_completed`` loop) unwinds
 into ``ThreadPoolExecutor.__exit__``, which calls ``shutdown(wait=True)``. That
 waits for *every queued batch to run to completion* -- the queue is never
-cancelled -- so a 500-file upload kept uploading after the user asked it to
-stop, silently, for as long as the transfer had left to run.
+cancelled -- so a 500-file upload keeps uploading after the user asks it to
+stop, silently, for as long as the transfer has left to run.
 
-Two mechanisms fix that, and both are needed:
+Two mechanisms prevent that, and both are needed:
 
 * ``shutdown(wait=False, cancel_futures=True)`` drops work that has not started.
   This is the bulk of it, but it cannot touch a batch already in a worker.

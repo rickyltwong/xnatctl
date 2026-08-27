@@ -227,3 +227,75 @@ class TestGradualUpload401Retry:
         assert call_count == 2
         assert call_tokens[0] == "stale-token"
         assert call_tokens[1] == "fresh-token"
+
+
+class TestGradualUploadErrorDetail:
+    """Pin the non-2xx error-detail and same-token-refresh branches.
+
+    These two paths run the real `_upload_single_file_gradual` body; most
+    other tests monkeypatch the function out entirely.
+    """
+
+    @staticmethod
+    def _run_with_response(
+        tmp_path: Path, responses: list[MagicMock], refresher: object
+    ) -> tuple[str, bool, str, MagicMock]:
+        dcm = tmp_path / "test.dcm"
+        dcm.write_bytes(b"\x00" * 128)
+
+        mock_client = MagicMock()
+        mock_client.post.side_effect = responses
+
+        class _FakePool:
+            def get_client(self, *, base_url: str, verify_ssl: object) -> MagicMock:
+                return mock_client
+
+        from xnatctl.services.upload.gradual_client import _upload_single_file_gradual
+
+        with patch(
+            "xnatctl.services.upload.gradual_client.upload_with_retry",
+            side_effect=lambda fn, **kwargs: fn(),
+        ):
+            name, ok, err = _upload_single_file_gradual(
+                pool=_FakePool(),  # type: ignore[arg-type]
+                base_url="https://xnat.example.org",
+                session_refresher=refresher,  # type: ignore[arg-type]
+                verify_ssl=True,
+                file_path=dcm,
+                project="PROJ",
+                subject="SUBJ",
+                session="SESS",
+            )
+        return name, ok, err, mock_client
+
+    def test_non_2xx_failure_carries_status_and_body_snippet(self, tmp_path: Path) -> None:
+        resp_403 = MagicMock(spec=httpx.Response)
+        resp_403.status_code = 403
+        resp_403.text = "  Access denied\nfor project  "
+
+        refresher = MagicMock()
+        refresher.token = "some-token"
+
+        name, ok, err, mock_client = self._run_with_response(tmp_path, [resp_403], refresher)
+
+        assert name == "test.dcm"
+        assert ok is False
+        assert err == "HTTP 403: Access denied for project"
+        assert mock_client.post.call_count == 1
+        refresher.refresh.assert_not_called()
+
+    def test_refresh_returning_the_same_token_does_not_retry(self, tmp_path: Path) -> None:
+        resp_401 = MagicMock(spec=httpx.Response)
+        resp_401.status_code = 401
+        resp_401.text = "Unauthorized"
+
+        refresher = MagicMock()
+        refresher.token = "stale-token"
+        refresher.refresh.return_value = "stale-token"
+
+        name, ok, err, mock_client = self._run_with_response(tmp_path, [resp_401], refresher)
+
+        assert ok is False
+        assert err.startswith("HTTP 401")
+        assert mock_client.post.call_count == 1, "same token back means no retry attempt"
+        refresher.refresh.assert_called_once_with("stale-token")

@@ -1,12 +1,11 @@
-"""Transport-level tests for XNATClient pagination, convenience methods, and
-the public ``transport=`` seam.
+"""Transport-level tests for XNATClient convenience methods and the public
+``transport=`` seam.
 
 Retry/backoff numerics and status->exception mapping live in
 ``tests/test_core_client_retry.py``; this module deliberately does not
 duplicate them. What it owns:
 
 * the ``transport=`` constructor seam itself,
-* ``paginate()`` — offsets on the wire and all three page boundaries,
 * ``get_json`` / ``ping`` / ``whoami`` request shapes,
 * connect/timeout failure mapping through a real httpx request cycle.
 
@@ -72,11 +71,6 @@ def query_of(request: httpx.Request) -> dict[str, list[str]]:
     return parse_qs(urlparse(str(request.url)).query)
 
 
-def page(count: int, *, start: int = 0) -> dict[str, object]:
-    """Build an XNAT ResultSet page with ``count`` synthetic rows."""
-    return {"ResultSet": {"Result": [{"ID": f"ITEM{start + i:04d}"} for i in range(count)]}}
-
-
 # =============================================================================
 # The transport seam itself
 # =============================================================================
@@ -105,155 +99,6 @@ class TestTransportSeam:
         client.get("/data/projects")
 
         assert str(calls[0].url).startswith("https://xnat.example.org/data/projects")
-
-
-# =============================================================================
-# paginate()
-# =============================================================================
-
-
-class TestPaginate:
-    def test_partial_final_page_stops_without_extra_request(self) -> None:
-        """100 + 100 + 50 yields 250 items in exactly three requests."""
-        pages = [page(100, start=0), page(100, start=100), page(50, start=200)]
-        seq = iter(pages)
-        client, calls = make_client(lambda _r: httpx.Response(200, json=next(seq)))
-
-        items = list(client.paginate("/data/projects", page_size=100))
-
-        assert len(items) == 250
-        assert len(calls) == 3
-        assert [query_of(c)["offset"][0] for c in calls] == ["0", "100", "200"]
-        assert {query_of(c)["limit"][0] for c in calls} == {"100"}
-
-    def test_exactly_full_final_page_costs_one_extra_empty_request(self) -> None:
-        """A final page equal to page_size cannot be known to be last."""
-        pages = [page(100, start=0), page(100, start=100), page(0)]
-        seq = iter(pages)
-        client, calls = make_client(lambda _r: httpx.Response(200, json=next(seq)))
-
-        items = list(client.paginate("/data/projects", page_size=100))
-
-        assert len(items) == 200
-        assert len(calls) == 3, "the empty third page is what terminates the loop"
-        assert query_of(calls[2])["offset"][0] == "200"
-
-    def test_a_server_that_ignores_limit_does_not_loop_forever(self) -> None:
-        """Regression: XNAT 1.9.2.1 returns the whole set for any limit.
-
-        The old loop saw len(results) >= page_size, advanced the offset, and
-        got the identical page back on every subsequent request -- an infinite
-        generator that also re-yielded every row each time round. Found by the
-        integration tier against a real server, on /data/projects.
-        """
-        client, calls = make_client(lambda _r: httpx.Response(200, json=page(7)))
-
-        items = list(client.paginate("/data/projects", page_size=2))
-
-        assert len(items) == 7, "the full result set is still delivered once"
-        assert len(calls) == 1, "a server that ignores limit has no second page"
-
-    def test_a_repeated_page_stops_the_loop(self) -> None:
-        """The same regression when the collection is smaller than a page.
-
-        Counting rows cannot detect it here: one row for a page size of one
-        looks exactly like a legitimate full page, so the loop advanced the
-        offset and got that same row back forever. This is the shape the live
-        server actually presented -- one project, page_size=1 -- and it is why
-        the row-count check alone was not enough.
-        """
-        client, calls = make_client(lambda _r: httpx.Response(200, json=page(1)))
-
-        items = list(client.paginate("/data/projects", page_size=1))
-
-        assert len(items) == 1, "the row is yielded once, not twice"
-        assert len(calls) == 2, "one request, then one that proves it repeated"
-
-    def test_a_repeated_page_is_not_yielded_twice(self) -> None:
-        client, _ = make_client(lambda _r: httpx.Response(200, json=page(2)))
-
-        ids = [item["ID"] for item in client.paginate("/data/projects", page_size=2)]
-
-        assert ids == sorted(set(ids)), f"duplicate rows yielded: {ids}"
-
-    def test_genuinely_paginating_servers_are_unaffected(self) -> None:
-        """Distinct pages of equal size must still walk to the end."""
-        pages = [page(2, start=0), page(2, start=2), page(1, start=4)]
-        seq = iter(pages)
-        client, calls = make_client(lambda _r: httpx.Response(200, json=next(seq)))
-
-        items = list(client.paginate("/data/projects", page_size=2))
-
-        assert len(items) == 5
-        assert len(calls) == 3
-
-    def test_empty_first_page_makes_exactly_one_request(self) -> None:
-        client, calls = make_client(lambda _r: httpx.Response(200, json=page(0)))
-
-        items = list(client.paginate("/data/projects", page_size=100))
-
-        assert items == []
-        assert len(calls) == 1
-
-    def test_missing_result_key_yields_nothing_and_does_not_raise(self) -> None:
-        """Dot-navigation into an absent key degrades to empty, not KeyError."""
-        client, calls = make_client(lambda _r: httpx.Response(200, json={"Unexpected": {}}))
-
-        items = list(client.paginate("/data/projects", result_key="ResultSet.Result"))
-
-        assert items == []
-        assert len(calls) == 1
-
-    def test_result_key_navigating_through_non_dict_yields_nothing(self) -> None:
-        client, _ = make_client(lambda _r: httpx.Response(200, json={"ResultSet": "not-a-dict"}))
-
-        assert list(client.paginate("/data/projects")) == []
-
-    def test_custom_result_key_is_honoured(self) -> None:
-        payload = {"items": [{"ID": "A"}, {"ID": "B"}]}
-        client, _ = make_client(lambda _r: httpx.Response(200, json=payload))
-
-        items = list(client.paginate("/data/x", page_size=100, result_key="items"))
-
-        assert [i["ID"] for i in items] == ["A", "B"]
-
-    def test_format_json_and_extra_params_are_sent(self) -> None:
-        client, calls = make_client(lambda _r: httpx.Response(200, json=page(0)))
-
-        list(client.paginate("/data/projects", params={"columns": "ID,label"}))
-
-        q = query_of(calls[0])
-        assert q["format"] == ["json"]
-        assert q["columns"] == ["ID,label"]
-
-    def test_caller_params_are_not_mutated(self) -> None:
-        """Paginate copies its params; the caller's dict stays clean."""
-        client, _ = make_client(lambda _r: httpx.Response(200, json=page(0)))
-        params: dict[str, object] = {"columns": "ID"}
-
-        list(client.paginate("/data/projects", params=params))
-
-        assert params == {"columns": "ID"}
-
-    def test_page_size_smaller_than_default(self) -> None:
-        pages = [page(2, start=0), page(1, start=2)]
-        seq = iter(pages)
-        client, calls = make_client(lambda _r: httpx.Response(200, json=next(seq)))
-
-        items = list(client.paginate("/data/projects", page_size=2))
-
-        assert len(items) == 3
-        assert [query_of(c)["offset"][0] for c in calls] == ["0", "2"]
-
-    def test_is_lazy(self) -> None:
-        """No request is issued until the generator is consumed."""
-        client, calls = make_client(lambda _r: httpx.Response(200, json=page(0)))
-
-        gen = client.paginate("/data/projects")
-
-        assert calls == []
-        next(gen, None)
-        assert len(calls) == 1
 
 
 # =============================================================================
@@ -287,7 +132,8 @@ class TestPing:
         result = client.ping()
 
         assert calls[0].url.path == "/xapi/siteConfig/buildInfo/version"
-        assert "1.8.10" in str(result.get("version", ""))
+        assert result.version == "1.8.10"
+        assert result.status == "ok"
 
 
 class TestWhoami:
@@ -312,9 +158,9 @@ class TestWhoami:
 
         info = client.whoami()
 
-        assert info["username"] == "jdoe"
-        assert info["firstname"] == "Jane"
-        assert info["email"] == "jdoe@example.org"
+        assert info.username == "jdoe"
+        assert info.firstname == "Jane"
+        assert info.email == "jdoe@example.org"
 
     def test_html_response_is_not_treated_as_a_username(self) -> None:
         """A login page must not become the reported identity."""
@@ -326,15 +172,15 @@ class TestWhoami:
 
         client, _ = make_client(handler, username="configured")
 
-        assert client.whoami()["username"] == "configured"
+        assert client.whoami().username == "configured"
 
     def test_falls_back_to_unknown_without_configured_username(self) -> None:
         client, _ = make_client(lambda _r: httpx.Response(404))
 
         info = client.whoami()
 
-        assert info["username"] == "unknown"
-        assert info["enabled"] is False
+        assert info.username == "unknown"
+        assert info.enabled is False
 
 
 # =============================================================================
@@ -647,39 +493,3 @@ class TestNoHttpxExceptionEscapes:
             client.get_json("/data/projects")
 
         assert len(calls) == 1
-
-
-class TestPaginateTruncationIsAudible:
-    """Stopping early is a guess, and the guess must be visible.
-
-    The stop condition cannot tell "this endpoint does not paginate" (right to
-    stop) from "this server honours limit but ignores offset" (stopping
-    truncates). Logging that at DEBUG hid the difference from everyone who was
-    not already debugging, so a short listing that should have been long would
-    simply be believed.
-    """
-
-    def test_it_warns_rather_than_whispering(self, caplog: pytest.LogCaptureFixture) -> None:
-        import logging
-
-        client, _ = make_client(lambda _r: httpx.Response(200, json=page(7)))
-
-        with caplog.at_level(logging.WARNING, logger="xnatctl.core.client"):
-            list(client.paginate("/data/projects", page_size=2))
-
-        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-        assert warnings, "an early stop was not surfaced above DEBUG"
-        assert "incomplete" in warnings[0].getMessage()
-
-    def test_a_normal_walk_stays_quiet(self, caplog: pytest.LogCaptureFixture) -> None:
-        """The warning must not cry wolf on every ordinary listing."""
-        import logging
-
-        pages = [page(2, start=0), page(2, start=2), page(1, start=4)]
-        seq = iter(pages)
-        client, _ = make_client(lambda _r: httpx.Response(200, json=next(seq)))
-
-        with caplog.at_level(logging.WARNING, logger="xnatctl.core.client"):
-            list(client.paginate("/data/projects", page_size=2))
-
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

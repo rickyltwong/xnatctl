@@ -1,15 +1,13 @@
 """A session download that loses scans must not report success.
 
-The engine (formerly the CLI helper ``_download_session_fast``, now
-``DownloadService.download_session_fast``) used to collect per-scan failures,
-echo a warning, and return nothing. ``session_download`` then printed "Downloaded session to:
-..." and exited 0 regardless -- and because the warning was suppressed under
-``--quiet``, the scripting mode said nothing at all. So
-``xnatctl session download -q ... && process_data`` proceeded on an incomplete
-dataset with no signal that anything was missing.
-
-The exit-nonzero-under-json fix covered uploads and ``scan download``; this
-path has no summary object, so it was missed and nothing covered it.
+If ``DownloadService.download_session_fast`` merely collected per-scan
+failures, echoed a warning, and returned nothing, ``session_download`` would
+print "Downloaded session to: ..." and exit 0 regardless -- and with the
+warning suppressed under ``--quiet``, the scripting mode would say nothing
+at all: ``xnatctl session download -q ... && process_data`` would proceed on
+an incomplete dataset with no signal that anything was missing. Unlike
+uploads and ``scan download``, this path has no summary object, so nothing
+else guards it.
 
 These tests drive a real local HTTP server rather than mocking the transport,
 so they exercise the streaming, retry, and typed-error path that
@@ -41,16 +39,31 @@ SCANS = ("1", "2", "3")
 EXPERIMENT = "XNAT_E00001"
 
 
-def _scan_zip() -> bytes:
+def _scan_zip(scan_id: str, hostile: bool = False) -> bytes:
+    """Build a scan ZIP whose internal ``scans/{id}`` path matches *scan_id*.
+
+    Faithful per scan (not a single fixed "scans/1" reused for every scan
+    ID): a real XNAT scan ZIP always names the scan it came from, and the
+    extraction guard is exercised concurrently across all three scans in
+    the hostile-entries test, so each scan's fixture should look like the
+    ZIP that scan would actually produce.
+    """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
-        zf.writestr(f"{EXPERIMENT}/scans/1/resources/DICOM/files/0001.dcm", b"x" * 64)
+        zf.writestr(f"{EXPERIMENT}/scans/{scan_id}/resources/DICOM/files/0001.dcm", b"x" * 64)
+        if hostile:
+            # A symlink-typed member: its content is a target path, not real
+            # file content -- skipped by the extraction guard rather than
+            # written, and counted/logged as an unsafe entry.
+            info = zipfile.ZipInfo(f"{EXPERIMENT}/scans/{scan_id}/resources/DICOM/files/link.dcm")
+            info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+            zf.writestr(info, "../../../etc/passwd")
     return buffer.getvalue()
 
 
-def _serve(failing_scan: str | None, status: int = 500) -> Iterator[str]:
+def _serve(failing_scan: str | None, status: int = 500, hostile: bool = False) -> Iterator[str]:
     """Run a fake XNAT where one scan's file request fails."""
-    zip_bytes = _scan_zip()
+    zip_bytes_by_scan = {sid: _scan_zip(sid, hostile=hostile) for sid in SCANS}
     listing = json.dumps({"ResultSet": {"Result": [{"ID": s} for s in SCANS]}}).encode()
     experiment = json.dumps(
         {
@@ -89,7 +102,8 @@ def _serve(failing_scan: str | None, status: int = 500) -> Iterator[str]:
             elif path.endswith("/scans"):
                 self._send(listing, "application/json")
             elif "/scans/" in path and path.endswith("/files"):
-                self._send(zip_bytes, "application/zip")
+                requested_scan = path.split("/scans/", 1)[1].split("/", 1)[0]
+                self._send(zip_bytes_by_scan[requested_scan], "application/zip")
             elif "/experiments/" in path:
                 self._send(experiment, "application/json")
             else:
@@ -232,7 +246,7 @@ class TestOutcomeShape:
                 workers=2,
             )
 
-        assert outcome == (0, [], 0)
+        assert outcome == (0, [], 0, 0)
 
 
 @pytest.mark.parametrize("workers", [1, 4])

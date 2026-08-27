@@ -58,7 +58,8 @@ Feature Highlights
   resource-centric subcommands, consistent flags, and output you can read as a human
   or pipe into other tools. xnatctl is a standalone CLI that talks directly to XNAT's
   REST API with automatic retries and exponential backoff -- no Python environment
-  required.
+  required. The same client and service layer are also a supported Python library
+  for scripting; see :doc:`api/core`.
 
 
 Quick Example
@@ -128,6 +129,7 @@ Trigger a catalog refresh for a specific project (admin operation):
    debugging
    performance
    contributing
+   adding-a-command
    changelog
 
 .. toctree::

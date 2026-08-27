@@ -29,6 +29,23 @@ What is covered
      - Stable
      - Existing fields keep their name, type, and meaning. New fields may be
        added at any time, so parse defensively -- do not assume a fixed key set.
+   * - ``--output tsv`` shape
+     - Stable
+     - The *shape* is stable, and depends on what the command returns:
+       a list of records prints a header line of raw column keys (unless
+       ``--no-headers``) followed by one tab-joined line per record; a
+       single record prints the same header-plus-one-row shape; a bare
+       scalar or a list of non-record values prints one sanitized value per
+       line with **no** header line, ``--no-headers`` or not, because there
+       are no field names to print; an empty list with no columns resolved
+       prints nothing at all (not even a header) -- the missing line is the
+       emptiness signal. Embedded tabs/newlines collapse to single spaces,
+       and stray control bytes (including ANSI escapes) are stripped, so
+       every record is exactly one line. The *column set* is not stable:
+       without ``--columns``, list output falls back to the union of keys
+       across all records in first-seen order, which is not guaranteed to
+       match ``--output table``'s default columns. Scripts should pass
+       ``--columns`` to pin an exact, ordered column set.
    * - ``--quiet`` output
      - Stable
      - One identifier per line, nothing else. Safe for ``xargs``.
@@ -66,7 +83,11 @@ What is covered
      - Covers three cases: a class that exists but isn't top-level-exported
        (``UserService``, ``XsyncService`` -- reachable only via
        ``xnatctl.services.users``/``xnatctl.services.xsync``, with no
-       ``client.users``/``client.xsync`` accessor either);
+       ``client.users``/``client.xsync`` accessor either; and
+       ``AsyncXNATClient``, reachable only via ``xnatctl.core.async_client``
+       -- it has landed in one release and has not yet proven its final
+       shape, particularly whether the read-only/no-service-accessors
+       boundary holds up under real use);
        ``xnatctl.core.*``/``xnatctl.services.*`` internals reached by
        importing the submodule directly instead of the top-level name; and
        any ``_``-prefixed name. All three are documented and intentional, but
@@ -84,8 +105,8 @@ or ``--quiet`` result:
 
 .. code-block:: console
 
-   $ xnatctl session download -E XNAT_E00001 --unzip --out ./data
-   Warning: --unzip is deprecated and will be removed in 0.5.0; use --extract instead
+   $ xnatctl resource download XNAT_E00001 DICOM --file ./dicom.zip
+   Warning: --file is deprecated and will be removed in 0.7.0; use --output-file instead
 
 The warning names the release that removes the flag, so you can tell from a
 single log line how long you have.
@@ -110,7 +131,11 @@ They still work; they are just no longer advertised.
 Currently deprecated
 --------------------
 
-All of the flags below are removed in **0.5.0**.
+All of the flags below are removed in **0.7.0** -- deprecated to reconcile
+argument conventions across the CLI: a stray ``-e`` short flag that should
+have been ``-E`` all along, ``--file`` used for two different meanings
+depending on the command, and a ``-s``/``-S`` collision on the same command
+line.
 
 .. list-table::
    :header-rows: 1
@@ -119,36 +144,21 @@ All of the flags below are removed in **0.5.0**.
    * - Deprecated
      - Use instead
      - Commands
-   * - ``--unzip``
-     - ``--extract``
-     - ``session download``, ``scan download``
-   * - ``--no-unzip``
-     - ``--no-extract``
-     - ``session download``, ``scan download``
-   * - ``--no-cleanup``
-     - ``--extract --keep-zips``
-     - ``session download``, ``scan download``
-   * - ``--cleanup``
-     - nothing; cleanup is implicit with ``--extract``
-     - ``session download``, ``scan download``
-   * - ``--include-resources``
-     - ``--session-resources``
-     - ``session download``
-   * - ``--no-parallel``
-     - ``--workers 1``
-     - ``admin refresh-catalogs``, ``project transfer``, ``scan delete``
-   * - ``--parallel``
-     - nothing; parallel is the default
-     - ``admin refresh-catalogs``, ``project transfer``, ``scan delete``
-   * - ``--session``
-     - ``--experiment`` / ``-E``
-     - ``session upload``, ``session upload-exam``
-   * - ``--gradual``
-     - ``--mode gradual``
-     - ``session upload``
-   * - ``--archive-format``
-     - ``--mode``
-     - ``session upload``
+   * - ``-e``
+     - ``-E`` / ``--experiment``
+     - ``pipeline run``, ``pipeline jobs``, ``admin refresh-catalogs``
+   * - ``--file``
+     - ``--output-file`` / ``-f``
+     - ``resource download``
+   * - ``-f``
+     - ``--file`` (long form only)
+     - ``api post``, ``api put``
+   * - ``-f``
+     - ``--follow`` (long form only)
+     - ``container logs``
+   * - ``-s``
+     - ``--scans`` (long form only)
+     - ``scan delete``, ``scan download``
 
 
 What 0.x means here

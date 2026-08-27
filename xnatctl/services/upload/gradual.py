@@ -5,20 +5,16 @@ parallel across worker threads, with a warm-up phase, a bounded-concurrency
 salvage pass, and a final sequential retry for stragglers.
 
 ``GradualUploadRun`` (see :mod:`gradual_client` for the HTTP client pool it
-wraps) replaces what used to be one ~450-line function with closures for
-report/display/scan-grouping/submit helpers: each phase (warm-up, main
-parallel pass, salvage pass, final retry) is now an independently readable
-method holding no module-level mutable state.
+wraps) carries the report/display/scan-grouping/submit helpers as methods:
+each phase (warm-up, main parallel pass, salvage pass, final retry) is an
+independently readable method holding no module-level mutable state.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import shutil
-import tempfile
 import time
-import zipfile
 from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
@@ -28,15 +24,19 @@ from typing import Any
 
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken, cancellable_pool
 from xnatctl.core.client import XNATClient
+from xnatctl.core.server_version import MIN_VERSION_DIRECT_ARCHIVE, require_server_version
 from xnatctl.models.progress import OperationPhase, UploadProgress, UploadSummary
 
 from .gradual_client import GradualClientPool, _upload_single_file_gradual
 from .shared import (
     DEFAULT_UPLOAD_WORKERS,
     SessionRefresher,
+    _compute_display_root,
     _error_signature,
     _is_dicom_like_path,
-    collect_dicom_files,
+    _reject_duplicate_resolved_paths,
+    _stage_source_files,
+    _validate_files_exist,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,10 +46,9 @@ logger = logging.getLogger(__name__)
 class GradualUploadRun:
     """Shared state for one gradual-DICOM upload operation.
 
-    Promotes what used to be closures inside a single ~450-line function
-    (report/display/scan-grouping/submit helpers) to methods, so each phase
-    (warm-up, main parallel pass, salvage pass, final retry) is independently
-    readable and testable.
+    Holds the report/display/scan-grouping/submit helpers as methods, so
+    each phase (warm-up, main parallel pass, salvage pass, final retry) is
+    independently readable and testable.
     """
 
     client: XNATClient
@@ -96,7 +95,7 @@ class GradualUploadRun:
         """Path shown in progress/error messages, relative to the upload root."""
         try:
             return str(path.relative_to(self.display_root))
-        except Exception:
+        except ValueError:
             return path.name
 
     def _upload_one(
@@ -120,7 +119,7 @@ class GradualUploadRun:
         """Extract scan ID from standard session layout paths, if present."""
         try:
             rel = path.relative_to(self.display_root)
-        except Exception:
+        except ValueError:
             return None
         parts = rel.parts
         # Expected layout: scans/<scan_id>/resources/DICOM/files/<...>
@@ -302,7 +301,7 @@ class GradualUploadRun:
 
                     try:
                         _name, ok, err = future.result()
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001  # worker-pool isolation: future.result() can re-raise anything the upload task raised
                         ok = False
                         err = str(e)
 
@@ -387,7 +386,7 @@ class GradualUploadRun:
                     p = retry_future_to_path.pop(future)
                     try:
                         _name, ok, err = future.result()
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001  # worker-pool isolation: future.result() re-raise, salvage pass
                         ok = False
                         err = str(e)
 
@@ -464,6 +463,18 @@ class GradualUploadRun:
     def run(self, files: Sequence[Path], workers: int) -> UploadSummary:
         """Upload every file in *files*, returning the completed summary.
 
+        Gates on ``direct_archive`` before any archive creation or network
+        upload -- this is the canonical boundary for that check.
+        ``upload_dicom_gradual``/``upload_dicom_gradual_files`` construct and
+        run an instance after their own local validation (empty file list,
+        missing source, no DICOM files found), so gating here rather than in
+        those functions naturally keeps the gate after local validation and
+        before any network work. It also means a library caller that
+        constructs and runs ``GradualUploadRun`` directly -- it is exported
+        for that -- cannot send a direct-archive import to an unsupported
+        server ungated, since there is no other, un-gated boundary left to
+        reach the network from.
+
         Resets every accumulator a previous ``run()`` on this instance would
         have left behind (``completed``, ``failed_paths``, ``error_by_path``,
         ``total_files``) so a reused instance starts clean rather than
@@ -480,7 +491,15 @@ class GradualUploadRun:
         stops ``GradualUploadRun`` from being constructed and run directly, and
         without a scope of its own here the pool's HTTP clients would never be
         closed. The scope is refcounted, so nesting under an outer one is safe.
+
+        Raises:
+            UnsupportedServerVersionError: If ``direct_archive`` is set and
+                the server is known to be older than
+                :data:`~xnatctl.core.server_version.MIN_VERSION_DIRECT_ARCHIVE`.
         """
+        if self.direct_archive:
+            require_server_version(self.client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")
+
         if self._has_run:
             self.start_time = time.time()
         self._has_run = True
@@ -559,6 +578,11 @@ def upload_dicom_gradual(
     Raises:
         ValueError: If source_path is not a directory or ZIP file.
         FileNotFoundError: If source_path does not exist.
+        UnsupportedServerVersionError: If ``direct_archive`` is set and the
+            server is known to be older than
+            :data:`~xnatctl.core.server_version.MIN_VERSION_DIRECT_ARCHIVE`
+            (raised by :meth:`GradualUploadRun.run`, after the local checks
+            below).
     """
     pool = GradualClientPool()
     with pool.scope():
@@ -568,29 +592,9 @@ def upload_dicom_gradual(
         if not source_path.exists():
             raise FileNotFoundError(f"Source not found: {source_path}")
 
-        temp_dir: str | None = None
-        files: list[Path] = []
+        temp_dir, files = _stage_source_files(source_path)
 
         try:
-            if source_path.is_file() and source_path.suffix.lower() == ".zip":
-                temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
-                temp_path = Path(temp_dir)
-                with zipfile.ZipFile(source_path, "r") as zf:
-                    for member in zf.infolist():
-                        if member.is_dir():
-                            continue
-                        target = (temp_path / member.filename).resolve()
-                        if not target.is_relative_to(temp_path.resolve()):
-                            continue
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(member) as src, open(target, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
-                files = collect_dicom_files(temp_path)
-            elif source_path.is_dir():
-                files = collect_dicom_files(source_path)
-            else:
-                raise ValueError("gradual-DICOM requires a directory or ZIP file")
-
             if not files:
                 return UploadSummary(
                     success=False,
@@ -655,6 +659,11 @@ def upload_dicom_gradual_files(
     Raises:
         FileNotFoundError: If any provided path does not exist.
         ValueError: If any provided path is not a file.
+        UnsupportedServerVersionError: If ``direct_archive`` is set and the
+            server is known to be older than
+            :data:`~xnatctl.core.server_version.MIN_VERSION_DIRECT_ARCHIVE`
+            (raised by :meth:`GradualUploadRun.run`, after the local checks
+            below).
     """
     pool = GradualClientPool()
     with pool.scope():
@@ -670,11 +679,7 @@ def upload_dicom_gradual_files(
                 errors=["No files provided"],
             )
 
-        for p in file_list:
-            if not p.exists():
-                raise FileNotFoundError(f"File not found: {p}")
-            if not p.is_file():
-                raise ValueError(f"Not a file: {p}")
+        _validate_files_exist(file_list)
 
         dicom_file_list = [p for p in file_list if _is_dicom_like_path(p)]
         if not dicom_file_list:
@@ -687,25 +692,9 @@ def upload_dicom_gradual_files(
                 errors=["No DICOM files found"],
             )
 
-        resolved_to_original: dict[Path, Path] = {}
-        duplicate_resolved: set[Path] = set()
-        for p in dicom_file_list:
-            resolved = p.expanduser().resolve(strict=False)
-            if resolved in resolved_to_original:
-                duplicate_resolved.add(resolved)
-            else:
-                resolved_to_original[resolved] = p
+        _reject_duplicate_resolved_paths(dicom_file_list)
 
-        if duplicate_resolved:
-            dup_str = ", ".join(sorted(str(p) for p in duplicate_resolved))
-            raise ValueError(f"Duplicate file paths provided: {dup_str}")
-
-        # Use a stable common root for relative display paths.
-        try:
-            common = Path(os.path.commonpath([str(p.resolve()) for p in dicom_file_list]))
-            display_root = common if common.is_dir() else common.parent
-        except Exception:
-            display_root = dicom_file_list[0].parent
+        display_root = _compute_display_root(dicom_file_list)
 
         run = GradualUploadRun(
             client=client,

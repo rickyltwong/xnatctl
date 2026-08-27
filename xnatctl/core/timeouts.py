@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-import httpx
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import httpx
 
 # Read/write ceiling. Deliberately generous: a single large DICOM transfer can
 # legitimately stream for hours, so the read phase must not time out.
@@ -27,7 +30,7 @@ def build_httpx_timeout(read_timeout: float | None) -> httpx.Timeout:
     """Build a structured httpx.Timeout with a fast connect and a long read.
 
      Passing a bare scalar to httpx sets connect/read/write/pool all to that value,
-     which is why a 6-hour read ceiling used to also govern connect and let a
+     so a 6-hour read ceiling would otherwise also govern connect and let a
      blackholed host hang any command for hours. This keeps the connect (and pool)
      phases short while letting the read/write phases run as long as ``read_timeout``
      allows. Centralized here so every httpx.Client in the package shares one policy
@@ -42,6 +45,11 @@ def build_httpx_timeout(read_timeout: float | None) -> httpx.Timeout:
          :data:`DEFAULT_CONNECT_TIMEOUT_SECONDS`.
     """
     read = float(read_timeout if read_timeout is not None else DEFAULT_HTTP_TIMEOUT_SECONDS)
+    # Imported at call time so that importing config (which needs the timeout
+    # constants) -- e.g. from the detached update-check child or a bare
+    # `import xnatctl` -- does not pay for httpx and the CLI stack httpx pulls.
+    import httpx
+
     return httpx.Timeout(
         connect=DEFAULT_CONNECT_TIMEOUT_SECONDS,
         read=read,

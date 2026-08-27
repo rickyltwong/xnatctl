@@ -164,7 +164,7 @@ class ArchivePoller:
                         self._poll_scan_count(item)
 
                 self._stop_event.wait(timeout=self._poll_interval)
-        except Exception:
+        except Exception:  # noqa: BLE001  # top-level guard for the background poll thread (see docstring)
             logger.error("Archive poller crashed", exc_info=True)
 
     def _fetch_prearchive_snapshot(
@@ -194,7 +194,7 @@ class ArchivePoller:
                         result[(project, name)] = entry
                     if folder_name:
                         result[(project, folder_name)] = entry
-        except Exception:
+        except Exception:  # noqa: BLE001  # per-cycle isolation: prearchive snapshot fetch failure returns None
             logger.error("Failed to fetch prearchive snapshot", exc_info=True)
             return None
 
@@ -235,7 +235,7 @@ class ArchivePoller:
                 item.subject.local_label,
                 item.exp.local_label,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001  # per-cycle isolation: scan-count query failure retried next poll cycle
             logger.debug(
                 "count_dest_scans failed for %s, will retry",
                 item.exp.local_label,
@@ -278,7 +278,7 @@ def service_prearchive_actions(
 
         try:
             entry = executor.find_prearchive_entry(ctx.dest_project, ctx.exp.local_label)
-        except Exception:
+        except Exception:  # noqa: BLE001  # per-item isolation: one experiment's prearchive resolution failure must not block others
             ctx.archive_retries += 1
             logger.warning(
                 "Prearchive resolution failed for %s (attempt %d), will retry",
@@ -307,7 +307,7 @@ def service_prearchive_actions(
                         experiment_label=ctx.exp.local_label,
                         overwrite=overwrite,
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001  # per-item isolation: archive failure recorded on ctx.archive_error, not swallowed
                     ctx.archive_error = (
                         f"Prearchive archive failed for {ctx.exp.local_label}: {exc}"
                     )
@@ -396,7 +396,7 @@ def drain_ready(
             continue
         try:
             finalize(ctx, result, progress_callback)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # per-experiment isolation: finalize() failure recorded via _record_experiment_failure, drain continues
             _record_experiment_failure(state_store, ctx, result, str(e))
         drained = True
     return drained
@@ -433,14 +433,14 @@ def _resolve_deferred_prearchive_blocking(
                     overwrite=overwrite,
                 )
                 ctx.prearchive_cleared = True
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  # per-item isolation, blocking-drain fallback: archive failure recorded on ctx.archive_error
                 ctx.archive_error = f"Prearchive archive failed for {ctx.exp.local_label}: {exc}"
                 logger.error(
                     "Prearchive archive failed for %s in blocking drain",
                     ctx.exp.local_label,
                     exc_info=True,
                 )
-    except Exception:
+    except Exception:  # noqa: BLE001  # documented fallback: prearchive lookup failure logged, left for wait_for_archive fallback
         logger.warning(
             "Prearchive resolution failed for %s in blocking drain, "
             "falling back to wait_for_archive",
@@ -503,7 +503,7 @@ def drain_all_blocking(
                     timeout=config.archive_wait_timeout,
                     interval=config.archive_poll_interval,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  # per-item isolation: wait_for_archive failure recorded on ctx.archive_error
                 ctx.archive_error = f"Archive wait failed for {ctx.exp.local_label}: {exc}"
                 logger.error(
                     "Archive wait failed for %s in blocking drain",
@@ -518,5 +518,5 @@ def drain_all_blocking(
 
         try:
             finalize(ctx, result, progress_callback)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # per-experiment isolation: finalize() failure recorded via _record_experiment_failure
             _record_experiment_failure(state_store, ctx, result, str(e))

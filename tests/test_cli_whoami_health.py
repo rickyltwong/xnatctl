@@ -17,6 +17,7 @@ from conftest import config_seam
 
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
+from xnatctl.models.info import ServerInfo, UserInfo
 
 
 @pytest.fixture
@@ -50,6 +51,16 @@ def two_profile_config(monkeypatch) -> Config:
     )
 
 
+def _whoami_result() -> UserInfo:
+    """Exactly what ``XNATClient.whoami()`` returns for a resolved user."""
+    return UserInfo(username="serveruser", enabled=True)
+
+
+def _ping_result(url: str) -> ServerInfo:
+    """Exactly what ``XNATClient.ping()`` returns for a healthy server."""
+    return ServerInfo(url=url, status="ok", version="1.8.0", latency_ms=5)
+
+
 def _mock_client():
     """A patch context for XNATClient plus a configured instance."""
     ctx = patch("xnatctl.cli.common.XNATClient")
@@ -57,13 +68,8 @@ def _mock_client():
     inst = mock_cls.return_value
     inst.is_authenticated = True
     inst.session_token = "tok"
-    inst.whoami.return_value = {"username": "serveruser"}
-    inst.ping.return_value = {
-        "url": inst.base_url,
-        "status": "OK",
-        "version": "1.8.0",
-        "latency_ms": 5,
-    }
+    inst.whoami.return_value = _whoami_result()
+    inst.ping.return_value = _ping_result("https://default.example.org")
     return ctx, mock_cls, inst
 
 
@@ -162,12 +168,7 @@ def test_health_ping_honors_output_json(runner, two_profile_config) -> None:
     with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         inst.base_url = "https://prod.example.org"
-        inst.ping.return_value = {
-            "url": "https://prod.example.org",
-            "status": "OK",
-            "version": "1.8.0",
-            "latency_ms": 5,
-        }
+        inst.ping.return_value = _ping_result("https://prod.example.org")
         try:
             result = runner.invoke(cli, ["-p", "prod", "-o", "json", "health", "ping"])
         finally:
@@ -179,16 +180,30 @@ def test_health_ping_honors_output_json(runner, two_profile_config) -> None:
     assert payload["authenticated"] is True
 
 
+def test_health_ping_honors_output_tsv(runner, two_profile_config) -> None:
+    """`-o tsv health ping` emits real tab-separated output, not a Rich table."""
+    with config_seam(two_profile_config):
+        cm, mock_cls, inst = _mock_client()
+        inst.base_url = "https://prod.example.org"
+        inst.ping.return_value = _ping_result("https://prod.example.org")
+        try:
+            result = runner.invoke(cli, ["-p", "prod", "-o", "tsv", "health", "ping"])
+        finally:
+            cm.__exit__(None, None, None)
+
+    assert result.exit_code == 0
+    assert "\x1b" not in result.output
+    assert "┃" not in result.output and "│" not in result.output
+    lines = [line for line in result.output.splitlines() if "\t" in line]
+    assert lines[0] == "status\tversion\tlatency\tauthenticated"
+    assert lines[1].split("\t") == ["ok", "1.8.0", "5ms", "true"]
+
+
 def test_health_ping_quiet_prints_only_url(runner, two_profile_config) -> None:
     """`-q health ping` suppresses the banner/table, prints just the URL."""
     with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
-        inst.ping.return_value = {
-            "url": "https://prod.example.org",
-            "status": "OK",
-            "version": "1.8.0",
-            "latency_ms": 5,
-        }
+        inst.ping.return_value = _ping_result("https://prod.example.org")
         try:
             result = runner.invoke(cli, ["-p", "prod", "-q", "health", "ping"])
         finally:
@@ -197,3 +212,55 @@ def test_health_ping_quiet_prints_only_url(runner, two_profile_config) -> None:
     assert result.exit_code == 0
     assert result.output.strip() == "https://prod.example.org"
     assert "Server reachable" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# JSON-shape pins
+#
+# The exact `-o json` bytes for whoami and health ping. Written against the
+# dict-returning client and kept unchanged across the typed ServerInfo/UserInfo
+# migration: the CLI converts model -> dict at the call site, so these outputs
+# must never move.
+# ---------------------------------------------------------------------------
+
+
+def test_whoami_json_shape_is_pinned(runner, two_profile_config) -> None:
+    """`-o json whoami` output is byte-identical to the pre-typed-model shape."""
+    with config_seam(two_profile_config):
+        cm, mock_cls, inst = _mock_client()
+        inst.base_url = "https://prod.example.org"
+        try:
+            result = runner.invoke(cli, ["-p", "prod", "-o", "json", "whoami"])
+        finally:
+            cm.__exit__(None, None, None)
+
+    assert result.exit_code == 0
+    expected = {
+        "username": "serveruser",
+        "server": "https://prod.example.org",
+        "profile": "prod",
+        "default_project": "PRODPROJ",
+        "auth_mode": "session",
+    }
+    assert result.output == json.dumps(expected, indent=2) + "\n"
+
+
+def test_health_ping_json_shape_is_pinned(runner, two_profile_config) -> None:
+    """`-o json health ping` output is byte-identical to the pre-typed-model shape."""
+    with config_seam(two_profile_config):
+        cm, mock_cls, inst = _mock_client()
+        inst.ping.return_value = _ping_result("https://prod.example.org")
+        try:
+            result = runner.invoke(cli, ["-p", "prod", "-o", "json", "health", "ping"])
+        finally:
+            cm.__exit__(None, None, None)
+
+    assert result.exit_code == 0
+    expected = {
+        "url": "https://prod.example.org",
+        "status": "ok",
+        "version": "1.8.0",
+        "latency_ms": 5,
+        "authenticated": True,
+    }
+    assert result.output == json.dumps(expected, indent=2) + "\n"

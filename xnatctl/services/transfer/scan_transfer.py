@@ -180,17 +180,76 @@ class ScanTransfer:
         if not filtered_scans:
             return 0
 
-        # Casefold preflight over the whole batch, sequentially, before any
-        # worker thread starts (so no locking is needed): two scan IDs
-        # differing only by case would share the same `scan_{id}` staging
-        # directory once download workers write into it concurrently.
-        seen_scan_dirs: set[str] = set()
-        for s in filtered_scans:
-            check_no_casefold_collision(s.get("ID", ""), seen_scan_dirs, "scan_id")
+        self._casefold_preflight(filtered_scans)
 
         workers = min(self.config.scan_workers, len(filtered_scans))
 
         # -- Phase A: Download all scans in parallel --
+        downloaded, download_failures = self._download_all_scans(
+            filtered_scans,
+            exp,
+            dest_project,
+            subject,
+            work_dir,
+            dicom_only,
+            scan_resources_cache,
+            create_missing_scans,
+            workers,
+        )
+
+        self._record_download_failures(download_failures, exp, result, dicom_only)
+
+        if not downloaded:
+            return 0
+
+        # -- Phase B: Upload all downloaded scans in parallel --
+        return self._upload_downloaded_scans(downloaded, exp, result, dicom_only, workers)
+
+    @staticmethod
+    def _casefold_preflight(filtered_scans: list[dict[str, Any]]) -> None:
+        """Reject scan IDs that would collide case-insensitively on disk.
+
+        Runs over the whole batch, sequentially, before any worker thread
+        starts (so no locking is needed): two scan IDs differing only by case
+        would share the same ``scan_{id}`` staging directory once download
+        workers write into it concurrently.
+
+        Args:
+            filtered_scans: Scans selected for this phase.
+        """
+        seen_scan_dirs: set[str] = set()
+        for s in filtered_scans:
+            check_no_casefold_collision(s.get("ID", ""), seen_scan_dirs, "scan_id")
+
+    def _download_all_scans(
+        self,
+        filtered_scans: list[dict[str, Any]],
+        exp: DiscoveredEntity,
+        dest_project: str,
+        subject: DiscoveredEntity,
+        work_dir: Path,
+        dicom_only: bool,
+        scan_resources_cache: dict[str, list[dict[str, Any]]],
+        create_missing_scans: bool,
+        workers: int,
+    ) -> tuple[list[_DownloadedScan], list[tuple[str, str]]]:
+        """Download every selected scan's resources (Phase A dispatch).
+
+        Args:
+            filtered_scans: Scans selected for this phase.
+            exp: Parent experiment entity.
+            dest_project: Destination project ID.
+            subject: Parent subject entity.
+            work_dir: Temporary working directory.
+            dicom_only: Phase selector (True=DICOM, False=non-DICOM).
+            scan_resources_cache: Shared cache of scan resources across phases.
+            create_missing_scans: Create/tolerate scan shells before generic
+                resource upload.
+            workers: Worker count decided by the caller for this phase.
+
+        Returns:
+            Tuple of (downloaded items, (scan_id, error) failures).
+        """
         downloaded: list[_DownloadedScan] = []
         download_failures: list[tuple[str, str]] = []
 
@@ -233,19 +292,29 @@ class ScanTransfer:
                 else:
                     download_failures.append((scan_id, error))
 
-        # Record download failures
+        return downloaded, download_failures
+
+    @staticmethod
+    def _record_download_failures(
+        download_failures: list[tuple[str, str]],
+        exp: DiscoveredEntity,
+        result: TransferResult,
+        dicom_only: bool,
+    ) -> None:
+        """Fold Phase A download failures into the mutable result.
+
+        Args:
+            download_failures: (scan_id, error) pairs from Phase A.
+            exp: Parent experiment entity.
+            result: Mutable result to update.
+            dicom_only: Phase selector, for scans_* vs resources_* counters.
+        """
         for scan_id, error in download_failures:
             if dicom_only:
                 result.scans_failed += 1
             else:
                 result.resources_failed += 1
             result.errors.append(f"Scan {scan_id} ({exp.local_label}): {error}")
-
-        if not downloaded:
-            return 0
-
-        # -- Phase B: Upload all downloaded scans in parallel --
-        return self._upload_downloaded_scans(downloaded, exp, result, dicom_only, workers)
 
     def _upload_downloaded_scans(
         self,
@@ -352,7 +421,7 @@ class ScanTransfer:
                 create_missing_scan=create_missing_scans,
             )
             return scan_id, items, ""
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # per-scan worker-pool isolation (parallel download task, see docstring)
             return scan_id, None, str(e)
 
     def _upload_scan_task(
@@ -372,7 +441,7 @@ class ScanTransfer:
         try:
             self._upload_single_scan(item, exp)
             return item.scan_id, True, ""
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # per-scan worker-pool isolation (parallel upload task, see docstring)
             return item.scan_id, False, str(e)
 
     def _download_single_scan(
@@ -405,16 +474,7 @@ class ScanTransfer:
         scan_id = scan.get("ID", "")
         xsi_type = exp.xsi_type or ""
 
-        # Use cached resources or discover and cache.
-        # Thread safety: each scan_id is processed by exactly one thread
-        # within a phase, so dict keys are disjoint across workers (CPython GIL).
-        cached = (scan_resources_cache or {}).get(scan_id)
-        if cached is not None:
-            resources = cached
-        else:
-            resources = self.executor.discover_scan_resources(exp.local_id, scan_id)
-            if scan_resources_cache is not None:
-                scan_resources_cache[scan_id] = resources
+        resources = self._resolve_scan_resources(scan_id, exp, scan_resources_cache)
 
         self._ensure_scan_shell(
             scan,
@@ -436,16 +496,7 @@ class ScanTransfer:
         # downloads before any of them uploads, the second would silently
         # overwrite the first on disk before either reaches the destination.
         seen_resource_labels: set[str] = set()
-        for res in resources:
-            if not self._should_include_scan_resource(xsi_type, res):
-                continue
-
-            is_dicom = _is_dicom_resource(res)
-
-            # Phase filtering: skip resources not matching current phase
-            if is_dicom != dicom_only:
-                continue
-
+        for res, is_dicom in self._filter_scan_resources_for_phase(resources, xsi_type, dicom_only):
             check_no_casefold_collision(
                 str(res.get("label", "")), seen_resource_labels, "resource label"
             )
@@ -457,6 +508,60 @@ class ScanTransfer:
             )
 
         return items
+
+    def _resolve_scan_resources(
+        self,
+        scan_id: str,
+        exp: DiscoveredEntity,
+        scan_resources_cache: dict[str, list[dict[str, Any]]] | None,
+    ) -> list[dict[str, Any]]:
+        """Return the scan's resources from the cache, discovering on a miss.
+
+        Thread safety: each scan_id is processed by exactly one thread
+        within a phase, so dict keys are disjoint across workers (CPython GIL).
+
+        Args:
+            scan_id: Scan ID.
+            exp: Parent experiment entity.
+            scan_resources_cache: Shared cache of scan resources across phases.
+
+        Returns:
+            Resource dicts for this scan.
+        """
+        cached = (scan_resources_cache or {}).get(scan_id)
+        if cached is not None:
+            return cached
+        resources = self.executor.discover_scan_resources(exp.local_id, scan_id)
+        if scan_resources_cache is not None:
+            scan_resources_cache[scan_id] = resources
+        return resources
+
+    def _filter_scan_resources_for_phase(
+        self,
+        resources: list[dict[str, Any]],
+        xsi_type: str,
+        dicom_only: bool,
+    ) -> list[tuple[dict[str, Any], bool]]:
+        """Select the resources that pass the filters and match the phase.
+
+        Args:
+            resources: Resource dicts for one scan.
+            xsi_type: Parent experiment XSI type.
+            dicom_only: Phase selector (True=DICOM, False=non-DICOM).
+
+        Returns:
+            (resource, is_dicom) pairs, in source order.
+        """
+        selected: list[tuple[dict[str, Any], bool]] = []
+        for res in resources:
+            if not self._should_include_scan_resource(xsi_type, res):
+                continue
+            is_dicom = _is_dicom_resource(res)
+            # Phase filtering: skip resources not matching current phase
+            if is_dicom != dicom_only:
+                continue
+            selected.append((res, is_dicom))
+        return selected
 
     def _ensure_scan_shell(
         self,

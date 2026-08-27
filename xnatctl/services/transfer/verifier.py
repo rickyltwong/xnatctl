@@ -208,7 +208,7 @@ class Verifier:
                     dst_count = self._get_file_count(
                         self._dest, f"{dst_scan_path}/resources/{q_res_label}/files"
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001  # fail-safe verification: unreadable dest file count treated as 0, surfaces as mismatch not false pass
                     logger.debug(
                         "Could not fetch dest file count for scan %s/%s: %s",
                         scan_id,

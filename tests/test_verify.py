@@ -201,7 +201,7 @@ class TestSessionResourceZipMemberKeys:
     The label is known in advance (from the ZIP's own filename), never
     guessed -- only located, or used to strip a wrapper. Real XNAT resource
     ZIPs are documented (see
-    services/transfer/executor.py::_strip_xnat_prefix) to carry the full
+    services/transfer/executor_resources.py::_strip_xnat_prefix) to carry the full
     hierarchy; the exact shape a given server actually emits isn't
     guaranteed, so all three are accepted. Genuine ambiguity between shapes
     is resolved against the manifest -- see TestVerifyManifestSessionResourceZip.

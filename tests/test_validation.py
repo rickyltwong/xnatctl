@@ -40,55 +40,52 @@ from xnatctl.core.validation import (
 # =============================================================================
 
 
-class TestValidateServerUrl:
-    """Tests for validate_server_url."""
-
-    def test_valid_https_url(self):
-        assert validate_server_url("https://xnat.example.org") == "https://xnat.example.org"
-
-    def test_valid_http_url(self):
-        assert validate_server_url("http://localhost:8080") == "http://localhost:8080"
-
-    def test_strips_trailing_slash(self):
-        assert validate_server_url("https://xnat.example.org/") == "https://xnat.example.org"
-        assert validate_server_url("https://xnat.example.org///") == "https://xnat.example.org"
-
-    def test_strips_whitespace(self):
-        assert validate_server_url("  https://xnat.example.org  ") == "https://xnat.example.org"
-
-    def test_empty_url_raises(self):
-        with pytest.raises(InvalidURLError):
-            validate_server_url("")
-
-    def test_none_raises(self):
-        with pytest.raises(InvalidURLError):
-            validate_server_url(None)  # type: ignore
-
-    def test_missing_scheme_raises(self):
-        with pytest.raises(InvalidURLError, match="must include scheme"):
-            validate_server_url("xnat.example.org")
-
-    def test_unsupported_scheme_raises(self):
-        with pytest.raises(InvalidURLError, match="Unsupported scheme"):
-            validate_server_url("ftp://xnat.example.org")
-
-    def test_missing_hostname_raises(self):
-        with pytest.raises(InvalidURLError, match="must include hostname"):
-            validate_server_url("https://")
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://xnat.example.org", "https://xnat.example.org"),
+        ("http://localhost:8080", "http://localhost:8080"),
+        ("https://xnat.example.org/", "https://xnat.example.org"),
+        ("https://xnat.example.org///", "https://xnat.example.org"),
+        ("  https://xnat.example.org  ", "https://xnat.example.org"),
+    ],
+)
+def test_validate_server_url_valid(url: str, expected: str) -> None:
+    assert validate_server_url(url) == expected
 
 
-class TestValidateUrlOrNone:
-    """Tests for validate_url_or_none."""
+@pytest.mark.parametrize(
+    ("url", "match"),
+    [
+        ("", None),
+        (None, None),
+        ("xnat.example.org", "must include scheme"),
+        ("ftp://xnat.example.org", "Unsupported scheme"),
+        ("https://", "must include hostname"),
+    ],
+    ids=["empty", "none", "missing-scheme", "unsupported-scheme", "missing-hostname"],
+)
+def test_validate_server_url_invalid(url: str | None, match: str | None) -> None:
+    with pytest.raises(InvalidURLError, match=match):
+        validate_server_url(url)  # type: ignore[arg-type]
 
-    def test_valid_url(self):
-        assert validate_url_or_none("https://xnat.example.org") == "https://xnat.example.org"
 
-    def test_none_returns_none(self):
-        assert validate_url_or_none(None) is None
-
-    def test_empty_string_returns_none(self):
-        assert validate_url_or_none("") is None
-        assert validate_url_or_none("   ") is None
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://xnat.example.org", "https://xnat.example.org"),
+        (None, None),
+        ("", None),
+        ("   ", None),
+    ],
+    ids=["valid", "none", "empty", "whitespace-only"],
+)
+def test_validate_url_or_none(url: str | None, expected: str | None) -> None:
+    result = validate_url_or_none(url)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == expected
 
 
 # =============================================================================
@@ -96,39 +93,21 @@ class TestValidateUrlOrNone:
 # =============================================================================
 
 
-class TestValidatePort:
-    """Tests for validate_port."""
+@pytest.mark.parametrize(
+    ("port", "expected"), [(8080, 8080), (1, 1), (65535, 65535), ("8080", 8080)]
+)
+def test_validate_port_valid(port: int | str, expected: int) -> None:
+    assert validate_port(port) == expected
 
-    def test_valid_port(self):
-        assert validate_port(8080) == 8080
-        assert validate_port(1) == 1
-        assert validate_port(65535) == 65535
 
-    def test_port_as_string(self):
-        assert validate_port("8080") == 8080
+def test_validate_port_none_with_allow_none() -> None:
+    assert validate_port(None, allow_none=True) is None
 
-    def test_none_with_allow_none(self):
-        assert validate_port(None, allow_none=True) is None
 
-    def test_none_without_allow_none_raises(self):
-        with pytest.raises(InvalidPortError):
-            validate_port(None)
-
-    def test_port_zero_raises(self):
-        with pytest.raises(InvalidPortError):
-            validate_port(0)
-
-    def test_port_too_high_raises(self):
-        with pytest.raises(InvalidPortError):
-            validate_port(65536)
-
-    def test_negative_port_raises(self):
-        with pytest.raises(InvalidPortError):
-            validate_port(-1)
-
-    def test_invalid_string_raises(self):
-        with pytest.raises(InvalidPortError):
-            validate_port("not_a_port")
+@pytest.mark.parametrize("port", [None, 0, 65536, -1, "not_a_port"])
+def test_validate_port_invalid(port: int | str | None) -> None:
+    with pytest.raises(InvalidPortError):
+        validate_port(port)
 
 
 # =============================================================================
@@ -136,99 +115,83 @@ class TestValidatePort:
 # =============================================================================
 
 
-class TestValidateXnatIdentifier:
-    """Tests for validate_xnat_identifier."""
-
-    def test_valid_identifier(self):
-        assert validate_xnat_identifier("PROJECT01") == "PROJECT01"
-        assert validate_xnat_identifier("my_project") == "my_project"
-        assert validate_xnat_identifier("test-123") == "test-123"
-
-    def test_strips_whitespace(self):
-        assert validate_xnat_identifier("  PROJECT01  ") == "PROJECT01"
-
-    def test_empty_raises(self):
-        with pytest.raises(InvalidIdentifierError, match="cannot be empty"):
-            validate_xnat_identifier("")
-
-    def test_empty_allowed(self):
-        assert validate_xnat_identifier("", allow_empty=True) == ""
-
-    def test_too_long_raises(self):
-        long_id = "a" * 65
-        with pytest.raises(InvalidIdentifierError, match="exceeds maximum length"):
-            validate_xnat_identifier(long_id)
-
-    def test_custom_max_length(self):
-        assert validate_xnat_identifier("short", max_length=10) == "short"
-        with pytest.raises(InvalidIdentifierError):
-            validate_xnat_identifier("toolongvalue", max_length=5)
-
-    def test_invalid_characters_raise(self):
-        with pytest.raises(InvalidIdentifierError, match="alphanumeric"):
-            validate_xnat_identifier("project@123")
-        with pytest.raises(InvalidIdentifierError):
-            validate_xnat_identifier("project 123")
-        with pytest.raises(InvalidIdentifierError):
-            validate_xnat_identifier("project/123")
+@pytest.mark.parametrize("value", ["PROJECT01", "my_project", "test-123"])
+def test_validate_xnat_identifier_valid(value: str) -> None:
+    assert validate_xnat_identifier(value) == value
 
 
-class TestValidateProjectId:
-    """Tests for validate_project_id."""
-
-    def test_valid_project(self):
-        assert validate_project_id("ABC01_CMH") == "ABC01_CMH"
-
-    def test_invalid_raises(self):
-        with pytest.raises(InvalidIdentifierError):
-            validate_project_id("project with spaces")
+def test_validate_xnat_identifier_strips_whitespace() -> None:
+    assert validate_xnat_identifier("  PROJECT01  ") == "PROJECT01"
 
 
-class TestValidateSubjectId:
-    """Tests for validate_subject_id."""
-
-    def test_valid_subject(self):
-        assert validate_subject_id("SUB001") == "SUB001"
+def test_validate_xnat_identifier_empty_allowed() -> None:
+    assert validate_xnat_identifier("", allow_empty=True) == ""
 
 
-class TestValidateSessionId:
-    """Tests for validate_session_id."""
-
-    def test_valid_session(self):
-        assert validate_session_id("XNAT_E00001") == "XNAT_E00001"
-
-
-class TestValidateScanId:
-    """Tests for validate_scan_id."""
-
-    def test_numeric_scan_id(self):
-        assert validate_scan_id("1") == "1"
-        assert validate_scan_id("123") == "123"
-
-    def test_alphanumeric_scan_id(self):
-        assert validate_scan_id("T1w") == "T1w"
+def test_validate_xnat_identifier_custom_max_length() -> None:
+    assert validate_xnat_identifier("short", max_length=10) == "short"
+    with pytest.raises(InvalidIdentifierError):
+        validate_xnat_identifier("toolongvalue", max_length=5)
 
 
-class TestValidateResourceLabel:
-    """Tests for validate_resource_label."""
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        ("", "cannot be empty"),
+        ("a" * 65, "exceeds maximum length"),
+        ("project@123", "alphanumeric"),
+        ("project 123", None),
+        ("project/123", None),
+    ],
+    ids=["empty", "too-long", "at-symbol", "space", "slash"],
+)
+def test_validate_xnat_identifier_invalid(value: str, match: str | None) -> None:
+    with pytest.raises(InvalidIdentifierError, match=match):
+        validate_xnat_identifier(value)
 
-    def test_valid_label(self):
-        assert validate_resource_label("DICOM") == "DICOM"
-        assert validate_resource_label("NIFTI") == "NIFTI"
 
-    def test_with_special_chars(self):
-        assert validate_resource_label("my-resource_01") == "my-resource_01"
+@pytest.mark.parametrize(
+    ("validator", "value", "expected"),
+    [
+        (validate_project_id, "ABC01_CMH", "ABC01_CMH"),
+        (validate_subject_id, "SUB001", "SUB001"),
+        (validate_session_id, "XNAT_E00001", "XNAT_E00001"),
+        (validate_scan_id, "1", "1"),
+        (validate_scan_id, "123", "123"),
+        (validate_scan_id, "T1w", "T1w"),
+    ],
+)
+def test_identifier_wrappers_valid(validator, value: str, expected: str) -> None:
+    assert validator(value) == expected
 
-    def test_path_separator_raises(self):
-        with pytest.raises(InvalidIdentifierError, match="path separators"):
-            validate_resource_label("path/label")
-        with pytest.raises(InvalidIdentifierError):
-            validate_resource_label("path\\label")
 
-    def test_too_long_raises(self):
-        long_label = "a" * 65
-        with pytest.raises(InvalidIdentifierError, match="exceeds maximum length"):
-            validate_resource_label(long_label)
+def test_validate_project_id_invalid() -> None:
+    with pytest.raises(InvalidIdentifierError):
+        validate_project_id("project with spaces")
+
+
+# =============================================================================
+# Resource Label Validation Tests
+# =============================================================================
+
+
+@pytest.mark.parametrize("value", ["DICOM", "NIFTI", "my-resource_01"])
+def test_validate_resource_label_valid(value: str) -> None:
+    assert validate_resource_label(value) == value
+
+
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        ("path/label", "path separators"),
+        ("path\\label", None),
+        ("a" * 65, "exceeds maximum length"),
+    ],
+    ids=["forward-slash", "backslash", "too-long"],
+)
+def test_validate_resource_label_invalid(value: str, match: str | None) -> None:
+    with pytest.raises(InvalidIdentifierError, match=match):
+        validate_resource_label(value)
 
 
 # =============================================================================
@@ -236,21 +199,19 @@ class TestValidateResourceLabel:
 # =============================================================================
 
 
-class TestValidateAeTitle:
-    """Tests for validate_ae_title."""
+@pytest.mark.parametrize("value", ["XNAT", "DICOM_STORE", "1234567890123456"])
+def test_validate_ae_title_valid(value: str) -> None:
+    assert validate_ae_title(value) == value
 
-    def test_valid_ae_title(self):
-        assert validate_ae_title("XNAT") == "XNAT"
-        assert validate_ae_title("DICOM_STORE") == "DICOM_STORE"
 
-    def test_max_length_16(self):
-        assert validate_ae_title("1234567890123456") == "1234567890123456"
-        with pytest.raises(InvalidIdentifierError, match="exceeds maximum length"):
-            validate_ae_title("12345678901234567")  # 17 chars
-
-    def test_backslash_raises(self):
-        with pytest.raises(InvalidIdentifierError, match="printable ASCII"):
-            validate_ae_title("AE\\TITLE")
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [("12345678901234567", "exceeds maximum length"), ("AE\\TITLE", "printable ASCII")],
+    ids=["17-chars", "backslash"],
+)
+def test_validate_ae_title_invalid(value: str, match: str) -> None:
+    with pytest.raises(InvalidIdentifierError, match=match):
+        validate_ae_title(value)
 
 
 # =============================================================================
@@ -258,145 +219,129 @@ class TestValidateAeTitle:
 # =============================================================================
 
 
-class TestValidatePathExists:
-    """Tests for validate_path_exists."""
-
-    def test_existing_file(self, temp_dir: Path):
-        test_file = temp_dir / "test.txt"
-        test_file.write_text("test content")
-        result = validate_path_exists(test_file)
-        assert result.exists()
-
-    def test_existing_directory(self, temp_dir: Path):
-        result = validate_path_exists(temp_dir)
-        assert result.is_dir()
-
-    def test_nonexistent_raises(self, temp_dir: Path):
-        with pytest.raises(PathValidationError, match="does not exist"):
-            validate_path_exists(temp_dir / "nonexistent")
-
-    def test_must_be_file(self, temp_dir: Path):
-        with pytest.raises(PathValidationError, match="must be a file"):
-            validate_path_exists(temp_dir, must_be_file=True)
-
-    def test_must_be_dir(self, temp_dir: Path):
-        test_file = temp_dir / "test.txt"
-        test_file.write_text("test")
-        with pytest.raises(PathValidationError, match="must be a directory"):
-            validate_path_exists(test_file, must_be_dir=True)
+def test_validate_path_exists_file(temp_dir: Path) -> None:
+    test_file = temp_dir / "test.txt"
+    test_file.write_text("test content")
+    assert validate_path_exists(test_file).exists()
 
 
-class TestValidatePathWritable:
-    """Tests for validate_path_writable."""
+def test_validate_path_exists_directory(temp_dir: Path) -> None:
+    assert validate_path_exists(temp_dir).is_dir()
 
-    def test_writable_path(self, temp_dir: Path):
-        result = validate_path_writable(temp_dir / "new_file.txt")
-        assert result.parent.exists()
 
-    def test_nonexistent_parent_raises(self, temp_dir: Path):
-        with pytest.raises(PathValidationError, match="parent directory does not exist"):
-            validate_path_writable(temp_dir / "nonexistent" / "file.txt")
+def test_validate_path_exists_nonexistent_raises(temp_dir: Path) -> None:
+    with pytest.raises(PathValidationError, match="does not exist"):
+        validate_path_exists(temp_dir / "nonexistent")
+
+
+def test_validate_path_exists_must_be_file_raises(temp_dir: Path) -> None:
+    with pytest.raises(PathValidationError, match="must be a file"):
+        validate_path_exists(temp_dir, must_be_file=True)
+
+
+def test_validate_path_exists_must_be_dir_raises(temp_dir: Path) -> None:
+    test_file = temp_dir / "test.txt"
+    test_file.write_text("test")
+    with pytest.raises(PathValidationError, match="must be a directory"):
+        validate_path_exists(test_file, must_be_dir=True)
+
+
+def test_validate_path_writable_valid(temp_dir: Path) -> None:
+    assert validate_path_writable(temp_dir / "new_file.txt").parent.exists()
+
+
+def test_validate_path_writable_nonexistent_parent_raises(temp_dir: Path) -> None:
+    with pytest.raises(PathValidationError, match="parent directory does not exist"):
+        validate_path_writable(temp_dir / "nonexistent" / "file.txt")
 
 
 # =============================================================================
-# Configuration Validation Tests
+# Configuration Validation Tests (timeout + workers share a shape: both take
+# an int/str/None value and a ConfigurationError min/max, so their cases are
+# tabulated together)
 # =============================================================================
 
 
-class TestValidateTimeout:
-    """Tests for validate_timeout."""
-
-    def test_valid_timeout(self):
-        assert validate_timeout(30) == 30
-        assert validate_timeout("60") == 60
-
-    def test_none_returns_default(self):
-        assert validate_timeout(None) == DEFAULT_HTTP_TIMEOUT_SECONDS
-        assert validate_timeout(None, default=120) == 120
-
-    def test_too_small_raises(self):
-        with pytest.raises(ConfigurationError, match="at least"):
-            validate_timeout(0)
-
-    def test_invalid_value_raises(self):
-        with pytest.raises(ConfigurationError, match="valid integer"):
-            validate_timeout("not_a_number")
+@pytest.mark.parametrize(
+    ("validator", "value", "kwargs", "expected"),
+    [
+        (validate_timeout, 30, {}, 30),
+        (validate_timeout, "60", {}, 60),
+        (validate_timeout, None, {}, DEFAULT_HTTP_TIMEOUT_SECONDS),
+        (validate_timeout, None, {"default": 120}, 120),
+        (validate_workers, 4, {}, 4),
+        (validate_workers, "8", {}, 8),
+        (validate_workers, None, {}, 4),
+        (validate_workers, None, {"default": 8}, 8),
+    ],
+)
+def test_timeout_and_workers_valid(validator, value, kwargs: dict, expected: int) -> None:
+    assert validator(value, **kwargs) == expected
 
 
-class TestValidateWorkers:
-    """Tests for validate_workers."""
-
-    def test_valid_workers(self):
-        assert validate_workers(4) == 4
-        assert validate_workers("8") == 8
-
-    def test_none_returns_default(self):
-        assert validate_workers(None) == 4
-        assert validate_workers(None, default=8) == 8
-
-    def test_too_small_raises(self):
-        with pytest.raises(ConfigurationError, match="at least"):
-            validate_workers(0)
-
-    def test_too_large_raises(self):
-        with pytest.raises(ConfigurationError, match="cannot exceed"):
-            validate_workers(101)
+@pytest.mark.parametrize(
+    ("validator", "value", "match"),
+    [
+        (validate_timeout, 0, "at least"),
+        (validate_timeout, "not_a_number", "valid integer"),
+        (validate_workers, 0, "at least"),
+        (validate_workers, 101, "cannot exceed"),
+    ],
+)
+def test_timeout_and_workers_invalid(validator, value, match: str) -> None:
+    with pytest.raises(ConfigurationError, match=match):
+        validator(value)
 
 
-class TestValidateRegexPattern:
-    """Tests for validate_regex_pattern."""
+def test_validate_regex_pattern_valid() -> None:
+    result = validate_regex_pattern(r"^SUB\d{3}$")
+    assert isinstance(result, re.Pattern)
+    assert result.match("SUB001")
 
-    def test_valid_pattern(self):
-        result = validate_regex_pattern(r"^SUB\d{3}$")
-        assert isinstance(result, re.Pattern)
-        assert result.match("SUB001")
 
-    def test_empty_raises(self):
-        with pytest.raises(ConfigurationError, match="cannot be empty"):
-            validate_regex_pattern("")
-
-    def test_invalid_regex_raises(self):
-        with pytest.raises(ConfigurationError, match="Invalid regex"):
-            validate_regex_pattern("[unclosed")
+@pytest.mark.parametrize(
+    ("pattern", "match"),
+    [("", "cannot be empty"), ("[unclosed", "Invalid regex")],
+    ids=["empty", "unclosed-bracket"],
+)
+def test_validate_regex_pattern_invalid(pattern: str, match: str) -> None:
+    with pytest.raises(ConfigurationError, match=match):
+        validate_regex_pattern(pattern)
 
 
 # =============================================================================
-# Batch Input Validation Tests
+# Batch Input Validation Tests (scan-IDs and project-list parsers share a
+# shape: comma-split + per-item validate, "" -> InvalidIdentifierError)
 # =============================================================================
 
 
-class TestValidateScanIdsInput:
-    """Tests for validate_scan_ids_input."""
+@pytest.mark.parametrize(
+    ("validator", "value", "expected"),
+    [
+        (validate_scan_ids_input, "*", None),
+        (validate_scan_ids_input, "1", ["1"]),
+        (validate_scan_ids_input, "1,2,3", ["1", "2", "3"]),
+        (validate_scan_ids_input, " 1 , 2 , 3 ", ["1", "2", "3"]),
+        (validate_project_list, "PROJECT01", ["PROJECT01"]),
+        (validate_project_list, "PROJ1,PROJ2,PROJ3", ["PROJ1", "PROJ2", "PROJ3"]),
+        (validate_project_list, " PROJ1 , PROJ2 ", ["PROJ1", "PROJ2"]),
+    ],
+)
+def test_scan_ids_and_project_list_valid(validator, value: str, expected: list[str] | None) -> None:
+    result = validator(value)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == expected
 
-    def test_asterisk_returns_none(self):
-        assert validate_scan_ids_input("*") is None
 
-    def test_single_id(self):
-        assert validate_scan_ids_input("1") == ["1"]
-
-    def test_comma_separated(self):
-        assert validate_scan_ids_input("1,2,3") == ["1", "2", "3"]
-
-    def test_strips_whitespace(self):
-        assert validate_scan_ids_input(" 1 , 2 , 3 ") == ["1", "2", "3"]
-
-    def test_empty_raises(self):
-        with pytest.raises(InvalidIdentifierError, match="no valid scan IDs"):
-            validate_scan_ids_input("")
-
-
-class TestValidateProjectList:
-    """Tests for validate_project_list."""
-
-    def test_single_project(self):
-        assert validate_project_list("PROJECT01") == ["PROJECT01"]
-
-    def test_comma_separated(self):
-        assert validate_project_list("PROJ1,PROJ2,PROJ3") == ["PROJ1", "PROJ2", "PROJ3"]
-
-    def test_strips_whitespace(self):
-        assert validate_project_list(" PROJ1 , PROJ2 ") == ["PROJ1", "PROJ2"]
-
-    def test_empty_raises(self):
-        with pytest.raises(InvalidIdentifierError, match="no valid project IDs"):
-            validate_project_list("")
+@pytest.mark.parametrize(
+    ("validator", "match"),
+    [
+        (validate_scan_ids_input, "no valid scan IDs"),
+        (validate_project_list, "no valid project IDs"),
+    ],
+)
+def test_scan_ids_and_project_list_empty_raises(validator, match: str) -> None:
+    with pytest.raises(InvalidIdentifierError, match=match):
+        validator("")

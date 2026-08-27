@@ -2,6 +2,350 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.5.0 - 2026-08-27
+
+**Breaking**
+
+- `project transfer` config: the `filtering` sections `project_resources`,
+  `subject_resources`, `subject_assessors`, and the per-xsi-type
+  `session_assessors` key are removed and now rejected with an error naming
+  the offending section. They never did anything: the transfer pipeline
+  moves experiments, scans, scan resources, and session resources only, and
+  those sections were accepted in silence while the corresponding data was
+  never transferred. If your config sets them, delete the sections -- the
+  transferred data is unchanged. `project transfer-init` no longer emits
+  them.
+- The ten flags deprecated in 0.3.0 and scheduled for removal in 0.5.0 are
+  removed, as their warnings promised: `--unzip`/`--no-unzip` (use
+  `--extract`/`--no-extract`), `--cleanup` (no replacement; cleanup is
+  implicit with `--extract`), `--no-cleanup` (use `--extract --keep-zips`),
+  `--include-resources` (use `--session-resources`), `--no-parallel` (use
+  `--workers 1`), `--parallel` (no replacement; parallel is the default),
+  `--session` (use `--experiment`/`-E`), `--gradual` (use `--mode gradual`),
+  and `--archive-format` (use `--mode`). The flags deprecated in 0.5.0
+  (`-e`, `--file`, the two command-local `-f` uses, `-s`) still work and
+  remain scheduled for removal in 0.7.0.
+- Library only, CLI output is unchanged: `XNATClient.ping()` now returns a
+  typed `ServerInfo` model and `XNATClient.whoami()` a typed `UserInfo`
+  model instead of plain dicts, and `SessionService.get_scans()` /
+  `get_resources()` return `list[Scan]` / `list[Resource]` instead of raw
+  row dicts. Migration: read attributes instead of keys
+  (`info["username"]` -> `info.username`). For `ServerInfo`/`UserInfo`,
+  `.model_dump(by_alias=True)` approximates the old dict's wire keys if one
+  is still needed; it is not exact for every caller (`by_alias=True` spells
+  the name fields `firstName`/`lastName`, not the historical `firstname`/
+  `lastname` whoami keys -- use plain `.model_dump()` for those instead).
+  For `Scan`/`Resource` rows, there is no dict-shaped equivalent to fall
+  back on: `.model_dump()` uses the model's own field names and defaults
+  (`id` not `ID`, plus fields like `session_id`/`project` the raw rows never
+  carried), so existing consumers of the old row dicts must move to
+  attribute access.
+- `XNATClient.paginate()` (and the `BaseService._paginate()` wrapper around
+  it) are removed. Dead code: no command ever called it, it had no test
+  coverage of its own callers, and it is a known infinite-loop hazard
+  against any endpoint that ignores `offset`. Use
+  `list()` on the relevant service instead -- it fetches the complete
+  result set in one call, optionally bounded with `limit=N`, rather than
+  paging through it.
+- CLI argument conventions reconciled: `pipeline run`/`pipeline jobs`/`admin
+  refresh-catalogs` now take `-E` for `--experiment` (was `-e`, the only
+  outliers against the `-E` convention used at 14 other sites);
+  `resource download` now takes `--output-file` for the output path (was
+  `--file` -- the same concept `project transfer-init --output-file`
+  already used under a different name; `-f` is unchanged); `api
+  post`/`api put --file` and `container logs --follow` lose their `-f`
+  short flag (long form only -- `-f` meant two different things across
+  those commands and `resource download`, so it now belongs to
+  `--output-file` alone); `scan delete`/`scan download --scans` loses its
+  `-s` short flag (long form only -- it collided with `-S`/`--subject` on
+  the same command line). Also additive, not breaking: `--scans` is now
+  repeatable (`--scans 1 --scans 2`), alongside its existing comma-list
+  syntax (`--scans 1,2,3`). Every old spelling still works and prints a
+  deprecation warning to stderr; removed in 0.7.0. See
+  `docs/stability.rst` for the full table.
+
+**Features**
+
+- `session normalize-labels` -- rename a project's experiment labels to the
+  standardized `{SUBJECT}_{VISIT:02d}_SE{SESSION:02d}_{MODALITY}` convention,
+  with `--dry-run`/`--yes` confirmation. Replaces the experiment-label pass
+  of the retired `scripts/apply_label_fixes.py` maintenance script; its
+  subject-rename pass is unchanged, use `subject rename` for that.
+- New `ServerInfo` and `UserInfo` models (exported from the package root)
+  typing the `ping()`/`whoami()` results; `UserInfo` validates the raw
+  `/xapi/users/{username}` payload and round-trips its wire keys via
+  `model_dump(by_alias=True)`.
+- `-o tsv` output format plus a `--no-headers` global flag: plain
+  tab-separated lines (header line of column keys, one record per line,
+  embedded tabs/newlines sanitized to spaces, stray control bytes and ANSI
+  escapes stripped, never colored) for `awk`/`cut` pipelines. Every command
+  honors it, including `health ping`, `auth status`, `config show`, and
+  `session show`. `--no-headers` also drops the header row from
+  `-o table`. Pass `--columns` to pin an exact column set for scripts.
+- `--no-color` global flag; `NO_COLOR` and `CLICOLOR=0` are honored
+  everywhere, and no status output conveys state by color alone.
+- Downloads report ZIP entries skipped as unsafe (path traversal,
+  symlink-typed members) instead of silently dropping them: one warning
+  naming them, plus an additive `skipped_unsafe_entries` count in the JSON
+  transfer summary.
+- The config file and session cache are versioned: `config.yaml` gains
+  `version: 1`, unknown keys warn instead of being silently ignored, a file
+  written by a newer xnatctl is refused by mutating commands rather than
+  silently downgraded (`config init --force` is the one documented
+  override), and a stale or unrecognized session cache discards itself and
+  re-authenticates.
+- `--log-file PATH` (also `XNATCTL_LOG_FILE`, or `log_file:` in the config)
+  writes a persistent, redacted JSON-lines diagnostics file for the
+  invocation: the full DEBUG stream including the per-request HTTP trace
+  and the command's final error, independent of `--quiet`/`--verbose`, with
+  a per-invocation correlation id, 0600 permissions, and 10 MB rotation.
+- DICOM C-STORE TLS is now proven against a real TLS peer in the
+  integration tier, and a static guard keeps DICOM tag values out of logs
+  and error details package-wide. SECURITY.md documents what xnatctl writes
+  to disk and the PHI-in-logs posture.
+- `import xnatctl` no longer loads Rich, Click, or httpx -- cold import is
+  roughly 5x faster for library consumers. A missing dependency now
+  surfaces at first attribute use rather than at import time.
+
+- `project list`, `subject list`, `session list`, `scan list`,
+  `resource list`, `prearchive list`, `pipeline list`, and
+  `admin user list` gain uniform, CLIENT-side list controls: `--filter
+  'field:glob'`, `--sort-by FIELD[:desc]`, `--limit N`, and `--columns
+  a,b,c` (table output only -- `-o json` always carries every field).
+  `pipeline jobs` and `admin audit` gain `--filter`/`--sort-by`/`--columns`
+  the same way, but keep their existing `--limit`, which is still
+  forwarded to the server as a request parameter -- UNLESS `--filter` or
+  `--sort-by` is also given, in which case the server-side limit is
+  dropped for that request (so filtering/sorting sees the full result set
+  it needs to work over, not just whatever fit in the small default
+  window) and `--limit` is applied client-side afterward instead.
+  `xsync list` gains the same filter/sort/limit/columns controls over its
+  dynamic, per-deployment row shape.
+- `session list --modality` accepts any free-text modality string
+  (case-insensitive), not just `MR|PET|CT|EEG` -- XNAT sessions can carry
+  arbitrary modality values (`US`, `XA`, `CR`, `MG`, ...), and the filter
+  now matches any of them (it used to silently pass every session through
+  for a modality outside the old fixed four). `PETMR` is its own value,
+  distinct from `PET`. `OCT` is accepted as an alias for `OPT`, the xsiType
+  segment XNAT actually archives Optical Coherence Tomography sessions
+  under (`xnat:optSessionData`) -- the same xsiType the `scan list` fix in
+  0.2.11 already had to work around.
+- `ProjectService.list()`, `SubjectService.list()`, and
+  `SessionService.list()` (the typed library methods -- no CLI command
+  calls them; the list commands above use separate row-listing methods)
+  forward `limit` to the server as a request parameter instead of always
+  fetching the full result set and slicing it in Python; the client-side
+  slice stays in place as belt-and-braces for endpoints that ignore it.
+- A one-line update-availability notice, like `gh`/`npm`: after a successful
+  command, if a newer xnatctl release exists, a stderr line reports it
+  (skipped for `-q`, `-o json`, non-interactive/non-tty output, pre-release
+  versions, and when `NO_UPDATE_NOTIFIER`, `XNAT_NO_UPDATE_CHECK`, or `CI` is
+  set). The check itself only ever reads a local 24h cache, so it never adds
+  latency to a command; refreshing that cache from PyPI happens in a
+  detached background process (not a thread, so it isn't killed by the
+  parent exiting before the request completes) with a 1-second timeout.
+- `xnatctl upgrade` updates xnatctl in place: it detects how the install was
+  made (standalone PyInstaller binary, pipx, pip/uv virtual environment, or
+  Docker) and either runs the matching package-manager command or, for a
+  standalone binary, downloads and verifies the latest GitHub release asset,
+  runs it with `--version` as a sanity check, and only then atomically
+  replaces itself -- running `--version` again against the installed copy
+  and automatically rolling back to a kept backup if that second check
+  fails. On Windows, where a running `.exe` can't be overwritten or deleted,
+  the previous binary is renamed aside instead and cleaned up on the next
+  launch. Dry by default -- pass `--yes`/`-y` to actually run it; a Docker
+  install only ever prints the `docker pull` command, never subprocesses it.
+  `xnatctl upgrade --check` does an on-demand PyPI lookup (bypassing the
+  notice's 24h cache) and reports up-to-date/newer-available/unreachable.
+  `update_check: false` in config.yaml opts out of both the notice and this
+  command's background cache refresh, and the notice now points at
+  `xnatctl upgrade`. Both the notice and the background refresh now require
+  a loaded config to run at all -- a command that never loads one (shell
+  completion, `local extract`, `config init`, ...) neither notifies nor
+  spawns a PyPI fetch behind the scenes.
+- `subject delete` and `scan delete` gain `--batch FILE`: a file of IDs (one
+  per line, or a JSON array of strings), or `--batch -` to read the list
+  from stdin -- e.g. `xnatctl subject list -P PROJ -q | xnatctl subject
+  delete -P PROJ --batch - --yes`. `--batch` is mutually exclusive with the
+  positional `SUBJECT_ID` / `--scans`; `--batch -` requires `--yes` or
+  `--dry-run` since the confirmation prompt would otherwise read from the
+  same stdin the batch list is consuming.
+- Direct-to-archive REST uploads (`session upload --direct-archive`,
+  `upload-exam`) are checked against the server's XNAT version before any
+  files move, and fail with an actionable "requires XNAT >= 1.8.3; server
+  reports X.Y.Z" error instead of an opaque server-side failure partway
+  through. The version is probed once per client, on its own short timeout
+  independent of the command's transfer timeout, and cached; when it can't
+  be determined, the upload proceeds unblocked rather than guessing.
+  `upload-dicom` is a separate DICOM C-STORE transport and is not affected
+  by this check. See `docs/xnat-compatibility.rst`.
+- New Container Service surface, for servers with the plugin installed:
+  `command list/show/create/update/delete`, `wrapper list`, `wrapper
+  enable/disable` and `wrapper config get/set`, `container
+  list/show/logs`, and `admin docker images/hubs/server/pull`. Launching
+  and killing containers land later. Two server behaviours are worth
+  knowing before using the mutating verbs: `command update` is a full
+  replace, so a payload without its `xnat` block removes every wrapper on
+  that command (`--dry-run` shows the diff, including the removal); and
+  XNAT answers a delete of a nonexistent command id with success.
+  `wrapper list` is derived
+  client-side from each command's embedded wrappers because the plugin
+  exposes no wrapper-listing endpoint of its own. `container list` prefers
+  a project scope (`-P`, or the profile's `default_project`) over the
+  site-wide listing. Every endpoint path was checked against a running
+  server with Container Service 3.7.2 rather than inferred, and the
+  integration tier exercises the command/wrapper ones. The container
+  object's field names come from the plugin's own annotations rather than
+  an observed response -- populating one needs a reachable Docker daemon,
+  which the test stack deliberately does not provide -- so `container
+  list/show` is the one part of this not exercised end to end.
+- Cross-project sharing: `subject share/unshare` and `session
+  share/unshare` put a subject or session into a second project without
+  moving it, optionally under a different label there (`--label`).
+  `subject show` and `session show` list the projects a resource is shared
+  into (a `shared_projects` field under `-o json`). Unsharing a
+  resource from its *primary* project is refused: XNAT answers that by
+  deleting the resource and everything under it, with a response
+  indistinguishable from removing an ordinary share.
+- Custom variables: `subject vars`, `session vars` and their `vars set`
+  forms read and write the project-defined fields XNAT calls custom
+  variables (the ground `xnat-varput` covers). Several `KEY=VALUE` pairs in
+  one `vars set` are written in a single request.
+- New, Provisional (not in `xnatctl.__all__`): `AsyncXNATClient`, an
+  asyncio client over `httpx.AsyncClient` for the READ path -- `get`,
+  `get_json`, `stream`, and `from_profile`. It shares the sync client's
+  retry policy and typed exceptions, so `except SessionExpiredError` works
+  the same either way. Uploads, downloads, and service accessors stay
+  synchronous. Import it from `xnatctl.core.async_client`; being outside
+  `__all__`, it may change between minor releases.
+
+- `container launch`, `container kill`, and `--follow` on `container logs`
+  complete the Container Service group. `launch` takes a wrapper by id or
+  name and `--param KEY=VALUE` inputs, with `--wait` polling to a terminal
+  status. It resolves the wrapper locally first, and that is not a nicety:
+  the server answers a launch against a wrapper id that does not exist with
+  HTTP 200 `"success"` and then creates nothing, so an unresolved typo
+  would report success and silently do no work.
+- New `anon` group for DICOM anonymization scripts: `anon show/set`, and
+  `anon enable/disable`, each addressing either the site-wide script or one
+  project's override via `-P`. `anon set --dry-run` prints a unified diff
+  against the script currently on the server, and the confirmation names
+  the scope being replaced -- these scripts are what stands between PHI and
+  the archive, so replacing the site's while meaning a project's should not
+  be an easy mistake to make.
+- New `scp` group for DICOM SCP receivers: `scp list/show/create/delete`
+  and `scp enable/disable`. AE titles and ports are validated before any
+  request is sent.
+
+- New `event` group for Event Service subscriptions: `event
+  list/show/create/delete`, `event enable/disable`, plus `event actions`
+  and `event types` listing the valid action keys and trigger types to
+  build a subscription from. Note the server's own route spelling is
+  asymmetric -- listing is `/xapi/events/subscriptions`, everything else
+  `/xapi/events/subscription` -- which the service handles.
+- New `search` group for saved searches: `search list/show/run/delete`.
+  `search run` renders the result set through the normal output path, so
+  its per-search column shape works with `-o json|table|tsv` and `-q`.
+- `prearchive settings [-P PROJECT]` shows a project's routing mode, and
+  `--set manual|auto-archive|auto-archive-overwrite` changes it. Modes are
+  named rather than numeric, and are validated before the request goes out:
+  XNAT stores any integer you send it -- 3 and 9 are accepted and read back
+  unchanged -- so a typo would otherwise leave a project routing to nothing
+  meaningful while reporting success. A project already carrying such a
+  value reads back as `unrecognized (N)` rather than being guessed at.
+
+**Fixes**
+
+- `subject vars set` no longer creates the subject it was asked to update.
+  Its PUT is the same create-or-update route `subject create` uses, so a
+  mistyped `--subject` silently wrote a new empty subject into the project
+  and reported success (verified against XNAT 1.9.2.1: the PUT answers 201
+  for a subject that does not exist, never 404). It now confirms the subject
+  exists first, under `--dry-run` as well.
+
+- Mixing a deprecated flag with its current spelling on one command line no
+  longer drops values. `admin refresh-catalogs -E NEW1 -E NEW2 -e OLD1`
+  reached the command as `('OLD1',)` -- both `-E` values discarded, exit 0,
+  those experiments simply never refreshed. Repeatable options now merge
+  both spellings, so nothing is lost whichever order they are typed in.
+  Affects `-e` on `admin refresh-catalogs` and `-s` on `scan
+  delete`/`scan download`. Single-valued options are unchanged: only one
+  value can survive, and the deprecated spelling still takes precedence
+  there.
+
+- `container launch --wait` no longer times out on a launch that succeeded.
+  It snapshotted the existing containers *after* firing the launch, so the
+  new container was already in the "already existed" set and never matched
+  -- and because the launch response usually carries the placeholder
+  `workflow-id: "To be assigned"`, the id-matching path could not fire
+  either. It now snapshots before launching.
+
+- `container launch` fails instead of reporting success when the server
+  returns a failure launch report; `container launch --wait --timeout` and
+  `container logs --follow --interval` reject non-positive values at parse
+  time rather than after queueing a container.
+
+- `wrapper config set --dry-run` works for a wrapper that has no
+  configuration yet. Dry-run read the current config to build a diff, which
+  the server answers with a 404 in that case, so the preview failed while
+  the same command with `--yes` succeeded. It now previews a creation.
+
+- `scp create` rejects a port another receiver already uses, as its
+  documentation always claimed it did. Two receivers cannot both bind one
+  socket, and XNAT accepts the duplicate silently.
+
+- `search delete` fails on a saved search that does not exist, instead of
+  reporting that it deleted one. Saved-search listing, `search run`, and
+  `session normalize-labels` now raise on a malformed response body rather
+  than reporting an empty result set -- `normalize-labels` in particular
+  reported "renamed 0" when the server had not answered the question asked.
+
+- `session list --modality` no longer classifies an xsiType with a trailing
+  newline as a valid modality.
+
+- `prearchive settings --set manual` reports a permission failure as a
+  permission failure. Every 403 was rewritten as "this is site policy", an
+  explanation that only applies to the auto-archive modes.
+
+- The update-availability check now works on the standalone binary. Its
+  background refresh re-invoked `sys.executable -m ...`, which on a
+  PyInstaller build is the `xnatctl` binary itself rather than a Python
+  interpreter, so the child exited immediately, the cache never refreshed,
+  and the "newer release available" notice never appeared -- for exactly
+  the users who cannot `pip install -U`.
+
+- `session upload --session` and `session upload-exam --session` work again.
+  `--session` is the deprecated spelling of `--experiment`, documented as
+  working until it is removed, but passing it alone failed with
+  `Missing option '--experiment' / '-E'` -- Click enforces an option's own
+  required-ness regardless of another option's callback having already
+  supplied the value, so the alias forwarded, warned, and was then rejected.
+  The exact pre-deprecation invocation the alias exists to keep working was
+  the one that did not.
+
+- `subject delete`'s pre-delete safety check (refusing to delete a subject
+  that still has attached experiments) no longer fails open: a network or
+  auth error while checking now aborts the delete instead of being treated
+  as "no experiments attached" and letting the delete -- and XNAT's
+  cascade-delete of any real experiments -- proceed anyway. Only a
+  genuinely-gone subject/project is still read as "no sessions."
+- `resource show`, `scan show`, `session show`, and `subject show` no
+  longer render a listing failure as an empty list indistinguishable from
+  "genuinely empty" -- a warning is now printed to stderr when the
+  files/resources/scans/sessions fetch fails.
+- `resource upload`'s "resource may already exist" fallback caught any
+  exception, including auth and network failures unrelated to the resource
+  already existing; it now narrows to the actual 409 response.
+- The transfer-state database (`~/.config/xnatctl/transfer.db`) is created
+  owner-only (0600) instead of inheriting the process umask, and a rotated
+  `audit.log.1` is tightened to 0600 instead of keeping a legacy file's
+  looser mode.
+- The CLI reference now documents the whole `xsync` family, `resource
+  refresh`, and `dicom modify` (a drift test keeps it in sync with the real
+  command tree), and the piped `xsync refresh-credentials` examples show
+  `--yes` -- without it the confirmation prompt consumed the piped
+  password.
+
 ## 0.4.0 - 2026-08-22
 
 **Breaking**

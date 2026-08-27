@@ -105,7 +105,7 @@ def session_resource_zip_member_keys(parts: Sequence[str], *, label: str) -> tup
     The ZIP is already scoped to exactly one resource by the caller (its own
     filename carries the label -- ``resources_{label}.zip``), so *label* is
     never guessed -- only located. XNAT resource ZIPs are documented (see
-    ``services/transfer/executor.py::_strip_xnat_prefix``) to carry the full
+    ``services/transfer/executor_resources.py::_strip_xnat_prefix``) to carry the full
     hierarchy ``{session_label}/resources/{label}/files/{name}``; a bare
     ``{label}/{name}`` or a flat ``{name}`` with no wrapper at all are also
     accepted, since the exact shape a given server emits isn't guaranteed.

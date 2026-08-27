@@ -13,10 +13,10 @@ class XNATCtlError(Exception):
     """Base exception for all xnatctl errors.
 
     ``str(exc)`` is the human-facing message and nothing else. ``details``
-    survives for verbose output and structured rendering, but is no longer
-    appended to the message: doing so turned "Profile not found: prod" into
+    is kept for verbose output and structured rendering, never appended to
+    the message: doing so would turn "Profile not found: prod" into
     "Profile not found: prod (field=profile, value='prod')", where the suffix
-    only restated the message as debug noise.
+    only restates the message as debug noise.
     """
 
     #: Next step for this class of error, shown under the message as
@@ -473,6 +473,25 @@ class DownloadError(OperationError):
         self.resource = resource
 
 
+class UpgradeError(OperationError):
+    """Error self-updating a frozen (PyInstaller) binary install.
+
+    Only raised by ``cli/upgrade.py``'s frozen-binary path (download, sha256
+    verification, and the atomic swap of ``sys.executable``); the
+    package-manager paths (pipx/pip/uv/docker) print a command instead of
+    running anything themselves, so they have nothing of this shape to fail.
+    """
+
+    default_hint = "See the release notes: https://github.com/rickyltwong/xnatctl/releases"
+
+    def __init__(
+        self,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ):
+        super().__init__("upgrade", message, details)
+
+
 class BatchOperationError(OperationError):
     """Error in batch operation with partial success."""
 
@@ -491,6 +510,37 @@ class BatchOperationError(OperationError):
         self.succeeded = succeeded
         self.failed = failed
         self.errors = errors
+
+
+# =============================================================================
+# Compatibility Errors
+# =============================================================================
+
+
+class UnsupportedServerVersionError(XNATCtlError):
+    """A feature requires a newer XNAT server than the one reporting in.
+
+    Raised only when the server's version is known and below the floor --
+    see ``core.server_version.require_server_version``. An unknown version
+    fails open rather than raising this.
+    """
+
+    def __init__(
+        self,
+        feature_name: str,
+        minimum: tuple[int, int, int],
+        actual: tuple[int, int, int],
+    ):
+        min_str = ".".join(str(part) for part in minimum)
+        actual_str = ".".join(str(part) for part in actual)
+        msg = f"{feature_name} requires XNAT >= {min_str}; server reports {actual_str}"
+        super().__init__(
+            msg,
+            {"feature": feature_name, "minimum": min_str, "actual": actual_str},
+        )
+        self.feature_name = feature_name
+        self.minimum = minimum
+        self.actual = actual
 
 
 # =============================================================================

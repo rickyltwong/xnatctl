@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -90,6 +91,55 @@ class TestProjectList:
 
         assert result.exit_code == 0
         assert "PROJ1" in result.output
+
+    def test_project_list_filter_and_limit(self, runner: CliRunner) -> None:
+        """--filter and --limit narrow the JSON output, client-side.
+
+        The non-matching rows are placed FIRST in the server response: if
+        --filter were silently ignored, --limit 2 alone would return exactly
+        those two non-matching rows and this test would still pass by
+        accident. Ordering it this way means the assertions only pass when
+        filtering actually ran before the limit was applied.
+        """
+        mock_client = MagicMock()
+        mock_client.is_authenticated = True
+        mock_client.base_url = "https://xnat.example.org"
+        mock_client.whoami.return_value = {"username": "testuser"}
+        mock_client.get_json.return_value = {
+            "ResultSet": {
+                "Result": [
+                    {"ID": "PROJZ", "name": "Other", "pi_lastname": "", "description": ""},
+                    {"ID": "PROJY", "name": "Another", "pi_lastname": "", "description": ""},
+                ]
+                + [
+                    {"ID": f"PROJ{i}", "name": f"ABC{i}", "pi_lastname": "", "description": ""}
+                    for i in range(3)
+                ]
+            }
+        }
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=mock_client):
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "project",
+                            "list",
+                            "--filter",
+                            "name:ABC*",
+                            "--limit",
+                            "2",
+                            "-o",
+                            "json",
+                        ],
+                    )
+
+        assert result.exit_code == 0
+        # A disabled-TLS warning (verify_ssl=False in _mock_config) shares
+        # stdout with the JSON in CliRunner's merged output; skip past it.
+        rows = json.loads(result.output[result.output.index("[") :])
+        assert [row["id"] for row in rows] == ["PROJ0", "PROJ1"]
 
     def test_project_list_json(self, runner: CliRunner) -> None:
         mock_client = MagicMock()

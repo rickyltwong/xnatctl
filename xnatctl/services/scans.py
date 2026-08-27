@@ -70,7 +70,13 @@ class ScanService(BaseService):
             params["columns"] = ",".join(columns)
 
         data = self._get(path, params=params)
-        results = self._extract_results(data)
+        # extract_rows, not _extract_results: some XNAT deployments answer a
+        # scans listing with a bare top-level JSON array rather than a
+        # ResultSet envelope. _extract_results only understands the envelope
+        # shape and silently returns [] for a bare array, which would make
+        # this look like a session with zero scans. extract_rows accepts
+        # both shapes.
+        results = HierarchyService.extract_rows(data)
 
         scans = []
         for r in results:
@@ -184,7 +190,7 @@ class ScanService(BaseService):
             try:
                 self.delete(session_id, scan_id, project=project, remove_files=remove_files)
                 return (scan_id, True, "")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 -- per-scan worker-pool isolation in delete_scan task
                 return (scan_id, False, str(e))
 
         if parallel and len(scan_ids) > 1:
