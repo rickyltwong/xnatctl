@@ -180,6 +180,15 @@ class SessionLabelService(BaseService):
             f"listing experiments for project {project!r}",
         )
 
+        # Occupancy is project-wide: XNAT experiment labels are unique per
+        # PROJECT, so a target can be blocked by ANY row's current label --
+        # including rows excluded from planning below (other subjects,
+        # filter misses, malformed rows). Those never rename, so their
+        # labels are permanent blockers, and they must be collected before
+        # any row is dropped.
+        all_labels = {str(row.get("label") or "") for row in rows}
+        all_labels.discard("")
+
         by_subject: dict[str, list[dict[str, Any]]] = {}
         skipped: list[dict[str, Any]] = []
         for row in rows:
@@ -190,8 +199,8 @@ class SessionLabelService(BaseService):
                 # dropping it silently would understate the plan.
                 skipped.append(
                     {
-                        "id": str(row.get("ID", "")),
-                        "label": str(row.get("label", "")),
+                        "id": str(row.get("ID") or ""),
+                        "label": str(row.get("label") or ""),
                         "reason": "row missing subject_label",
                     }
                 )
@@ -202,17 +211,23 @@ class SessionLabelService(BaseService):
                 continue
             by_subject.setdefault(subject_label, []).append(row)
 
-        renames: list[dict[str, Any]] = []
-
+        seen_targets: dict[str, str] = {}
+        tentative: list[dict[str, Any]] = []
         for subject_label in sorted(by_subject):
             self._plan_subject(
                 subject_label,
                 by_subject[subject_label],
                 modality_filter=modality_filter,
-                renames=renames,
+                seen_targets=seen_targets,
+                tentative=tentative,
                 skipped=skipped,
             )
 
+        # One project-wide resolution pass, not one per subject: a vacating
+        # rename and the rename that takes its label may belong to
+        # different subjects, and only a global pass can see (and order)
+        # that dependency.
+        renames = self._resolve_collisions(tentative, all_labels, skipped)
         return {"renames": renames, "skipped": skipped}
 
     def _plan_subject(
@@ -221,16 +236,18 @@ class SessionLabelService(BaseService):
         experiments: list[dict[str, Any]],
         *,
         modality_filter: set[str],
-        renames: list[dict[str, Any]],
+        seen_targets: dict[str, str],
+        tentative: list[dict[str, Any]],
         skipped: list[dict[str, Any]],
     ) -> None:
-        """Append this subject's renames/skips onto the running plan lists."""
-        existing_labels = {e.get("label", "") for e in experiments if e.get("label")}
-
+        """Append this subject's candidate renames/skips onto the running lists."""
         by_modality_date: dict[str, dict[date, list[dict[str, Any]]]] = {}
         for exp in experiments:
-            exp_id = str(exp.get("ID", ""))
-            exp_label = str(exp.get("label", ""))
+            # `or ""` and not a plain default: a JSON null must not become
+            # the literal string "None" and pass the emptiness checks (a
+            # "None"-ID rename would target /data/experiments/None).
+            exp_id = str(exp.get("ID") or "")
+            exp_label = str(exp.get("label") or "")
             modality = _modality_from_xsi(exp.get("xsiType", ""))
 
             if not exp_id:
@@ -278,8 +295,6 @@ class SessionLabelService(BaseService):
                 }
             )
 
-        seen_targets: dict[str, str] = {}
-        tentative: list[dict[str, Any]] = []
         for modality in sorted(by_modality_date):
             by_date = by_modality_date[modality]
             for visit_idx, session_date in enumerate(sorted(by_date), start=1):
@@ -291,7 +306,6 @@ class SessionLabelService(BaseService):
                     tentative=tentative,
                     skipped=skipped,
                 )
-        renames.extend(self._resolve_collisions(tentative, existing_labels, skipped))
 
     def _plan_visit(
         self,
@@ -373,20 +387,25 @@ class SessionLabelService(BaseService):
         existing_labels: set[str],
         skipped: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Order one subject's renames so vacated labels free up before reuse.
+        """Order the project's renames so vacated labels free up before reuse.
 
-        A target equal to another experiment's *current* label is allowed
-        when that experiment is itself renamed away in this plan: the
+        A target equal to some experiment's *current* label is allowed when
+        that experiment is itself renamed away in this plan -- across
+        subjects, since XNAT experiment labels are unique per project: the
         vacating rename is placed earlier in the returned list, and
         ``apply_label_normalization`` executes in list order. A target held
         by an experiment with no planned rename is a genuine collision and
         is refused. A rename cycle (A -> B while B -> A) has no safe order
         without a temporary label, so every member is refused.
 
+        Iterative with an explicit stack, not recursive: a vacating chain
+        can in principle be as long as the plan itself, and a long valid
+        chain must not die on the interpreter's recursion limit.
+
         Args:
-            tentative: This subject's validated candidate renames.
-            existing_labels: Current labels of ALL this subject's
-                experiments (planned or not).
+            tentative: All validated candidate renames for the project.
+            existing_labels: Current labels of every experiment the listing
+                returned, planned or not (project-wide occupancy).
             skipped: Running skip list to append refusals onto.
 
         Returns:
@@ -396,34 +415,53 @@ class SessionLabelService(BaseService):
         ordered: list[dict[str, Any]] = []
         state: dict[str, bool] = {}
 
-        def resolve(item: dict[str, Any], stack: frozenset[str]) -> bool:
-            exp_id = str(item["id"])
-            if exp_id in state:
-                return state[exp_id]
-            target = item["new_label"]
-            blocker = by_old.get(target) if target in existing_labels else None
-            if blocker is not None and str(blocker["id"]) == exp_id:
-                blocker = None
+        def refuse(item: dict[str, Any], reason: str) -> None:
+            state[str(item["id"])] = False
+            skipped.append({"id": str(item["id"]), "label": item["old_label"], "reason": reason})
 
-            reason: str | None = None
-            if target in existing_labels and blocker is None:
-                reason = f"target label exists: {target}"
-            elif blocker is not None:
-                if str(blocker["id"]) in stack:
-                    reason = f"target label exists: {target} (rename cycle)"
-                elif not resolve(blocker, stack | {exp_id}):
-                    reason = f"target label exists: {target}"
-
-            if reason is not None:
-                state[exp_id] = False
-                skipped.append({"id": exp_id, "label": item["old_label"], "reason": reason})
-                return False
-            state[exp_id] = True
+        def accept(item: dict[str, Any]) -> None:
+            state[str(item["id"])] = True
             ordered.append(item)
-            return True
 
-        for item in tentative:
-            resolve(item, frozenset())
+        def blocker_of(item: dict[str, Any]) -> dict[str, Any] | None:
+            """The planned rename currently holding this item's target, if any."""
+            blocker = by_old.get(item["new_label"])
+            if blocker is not None and str(blocker["id"]) == str(item["id"]):
+                return None
+            return blocker
+
+        for root in tentative:
+            if str(root["id"]) in state:
+                continue
+            stack = [root]
+            on_stack = {str(root["id"])}
+            while stack:
+                item = stack[-1]
+                exp_id = str(item["id"])
+                if exp_id in state:
+                    stack.pop()
+                    on_stack.discard(exp_id)
+                    continue
+                target = item["new_label"]
+                if target not in existing_labels:
+                    accept(item)
+                    continue
+                blocker = blocker_of(item)
+                if blocker is None:
+                    refuse(item, f"target label exists: {target}")
+                    continue
+                blocker_id = str(blocker["id"])
+                if blocker_id in state:
+                    if state[blocker_id]:
+                        accept(item)
+                    else:
+                        refuse(item, f"target label exists: {target}")
+                    continue
+                if blocker_id in on_stack:
+                    refuse(item, f"target label exists: {target} (rename cycle)")
+                    continue
+                stack.append(blocker)
+                on_stack.add(blocker_id)
         return ordered
 
     def apply_label_normalization(self, plan: dict[str, Any]) -> dict[str, Any]:

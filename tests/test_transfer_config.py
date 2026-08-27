@@ -159,6 +159,16 @@ class TestOutOfScopeFilterSectionsAreRejected:
         with pytest.raises(ValueError, match="unsupported filtering section.*project_resources"):
             FilterConfig.model_validate(UserDict({"project_resources": {"sync_type": "all"}}))
 
+    def test_a_mapping_with_lying_contains_is_still_rejected(self) -> None:
+        """The guard checks the same materialized dict pydantic validates."""
+
+        class Sneaky(dict):
+            def __contains__(self, key: object) -> bool:
+                return False
+
+        with pytest.raises(ValueError, match="unsupported filtering section.*project_resources"):
+            FilterConfig.model_validate(Sneaky({"project_resources": {"sync_type": "all"}}))
+
     def test_an_unknown_key_is_still_ignored(self) -> None:
         """Only the named out-of-scope keys are rejected; extra=ignore stands."""
         config = FilterConfig.model_validate({"unrelated_future_key": 1})

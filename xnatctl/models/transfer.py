@@ -29,8 +29,12 @@ def _reject_out_of_scope_keys(data: Any, keys: tuple[str, ...]) -> Any:
 
     Checks any ``Mapping``, not just ``dict`` -- pydantic accepts arbitrary
     mappings, and a ``UserDict``-shaped config must not slip past the guard.
+    The mapping is first materialized to a plain dict and that SAME dict is
+    both checked and returned for validation, so a subclass with lying
+    ``__contains__`` cannot show the guard one key set and pydantic another.
     """
     if isinstance(data, Mapping):
+        data = dict(data)
         present = [k for k in keys if k in data]
         if present:
             raise ValueError(

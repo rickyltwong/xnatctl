@@ -130,15 +130,36 @@ class TestRegistryCoverage:
 
         assert not stray, sorted(stray)
 
-    def test_alias_detection_sees_the_current_aliases(self) -> None:
-        """The closure sweep must keep finding the aliases that exist.
+    def test_the_wired_alias_sites_are_exactly_the_expected_ones(self) -> None:
+        """Pin every (command, flag) alias site, not just a count.
 
-        If a refactor changed how alias callbacks bake their message, every
-        check built on ``_wired_alias_params`` would silently pass on an
-        empty list; pin the current alias count so that failure mode is
-        loud instead.
+        A count floor of len(DEPRECATED_FLAGS) would let duplicate sites
+        (the second ``-s``, two of the three ``-e``, one API ``-f``) vanish
+        silently while all five registry messages stayed wired somewhere.
+        Removing a site fails here; adding one fails until it is listed
+        here deliberately. This is also what keeps the closure sweep
+        honest: if a refactor changed how alias callbacks bake their
+        message, the sweep would come back empty and this equality fails
+        loudly instead of every sweep-based check passing vacuously.
         """
-        assert len(_wired_alias_params()) >= len(DEPRECATED_FLAGS)
+        expected = {
+            (("scan", "delete"), "-s"),
+            (("scan", "download"), "-s"),
+            (("resource", "download"), "--file"),
+            (("pipeline", "run"), "-e"),
+            (("pipeline", "jobs"), "-e"),
+            (("admin", "refresh-catalogs"), "-e"),
+            (("api", "post"), "-f (api post/put)"),
+            (("api", "put"), "-f (api post/put)"),
+            (("container", "logs"), "-f (container logs)"),
+        }
+        canonical = {deprecation_message(flag): flag for flag in DEPRECATED_FLAGS}
+        actual = {
+            (path, canonical.get(message, message))
+            for path, _param, message in _wired_alias_params()
+        }
+
+        assert actual == expected
 
     def test_the_registry_has_no_dead_entries(self) -> None:
         """A flag deleted from the CLI should not linger in the table."""

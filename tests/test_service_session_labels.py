@@ -144,6 +144,73 @@ class TestPlanLabelNormalization:
         assert "target label exists" in reasons["E1"]
         assert "target label exists" in reasons["E2"]
 
+    def test_a_cross_subject_vacating_chain_resolves_in_order(self, fake_client) -> None:
+        """Labels are project-unique, so the vacator may belong to another subject."""
+        fake_client.get_json.return_value = [
+            _row("E1", "OLD1", subject="SUB01", date="2024-01-01"),
+            # A DIFFERENT subject currently holds SUB01's target and
+            # vacates it via its own rename.
+            _row("E2", "SUB01_01_SE01_MR", subject="SUB02", date="2024-01-01"),
+        ]
+        service = SessionLabelService(fake_client)
+
+        plan = service.plan_label_normalization("PROJ")
+
+        assert plan["skipped"] == []
+        assert [(r["id"], r["new_label"]) for r in plan["renames"]] == [
+            ("E2", "SUB02_01_SE01_MR"),  # vacates SUB01_01_SE01_MR first
+            ("E1", "SUB01_01_SE01_MR"),
+        ]
+
+    def test_a_label_held_outside_the_planned_subjects_still_blocks(self, fake_client) -> None:
+        """A subject excluded by the filter never renames, so its labels are occupied."""
+        fake_client.get_json.return_value = [
+            _row("E1", "OLD1", subject="SUB01", date="2024-01-01"),
+            _row("E2", "SUB01_01_SE01_MR", subject="SUB02", date="2024-01-01"),
+        ]
+        service = SessionLabelService(fake_client)
+
+        plan = service.plan_label_normalization("PROJ", subjects=["SUB01"])
+
+        assert plan["renames"] == []
+        assert plan["skipped"] == [
+            {"id": "E1", "label": "OLD1", "reason": "target label exists: SUB01_01_SE01_MR"}
+        ]
+
+    def test_a_long_vacating_chain_resolves_without_recursion_error(self, fake_client) -> None:
+        """A valid chain longer than the interpreter's recursion limit must plan."""
+        from datetime import date as date_cls
+        from datetime import timedelta
+
+        n = 1500
+        base = date_cls(2000, 1, 1)
+        fake_client.get_json.return_value = [
+            # Experiment k (visit k by date order) currently holds
+            # experiment k+1's target, forming one n-long vacating chain
+            # whose far end (visit 1's target) is free.
+            _row(f"E{k}", f"SUB01_{k + 1:02d}_SE01_MR", date=str(base + timedelta(days=k)))
+            for k in range(1, n + 1)
+        ]
+        service = SessionLabelService(fake_client)
+
+        plan = service.plan_label_normalization("PROJ")
+
+        assert plan["skipped"] == []
+        assert len(plan["renames"]) == n
+        assert plan["renames"][0]["id"] == "E1"  # free end of the chain goes first
+
+    def test_a_null_id_row_is_skipped_not_planned(self, fake_client) -> None:
+        """A JSON null ID must not become the literal string "None" in a plan."""
+        row = _row("ignored", "OLD1")
+        row["ID"] = None
+        fake_client.get_json.return_value = [row]
+        service = SessionLabelService(fake_client)
+
+        plan = service.plan_label_normalization("PROJ")
+
+        assert plan["renames"] == []
+        assert plan["skipped"] == [{"id": "", "label": "OLD1", "reason": "missing experiment ID"}]
+
     def test_row_missing_experiment_id_is_skipped_not_planned(self, fake_client) -> None:
         """An un-addressable row must not survive into a plan dry-run shows as valid."""
         fake_client.get_json.return_value = [_row("", "OLD1")]
