@@ -178,7 +178,15 @@ class TestPlanLabelNormalization:
         ]
 
     def test_a_long_vacating_chain_resolves_without_recursion_error(self, fake_client) -> None:
-        """A valid chain longer than the interpreter's recursion limit must plan."""
+        """A valid chain longer than the interpreter's recursion limit must plan.
+
+        Direction matters: resolution walks the candidate list in plan
+        order, so the FIRST candidate (visit 1) must sit at the DEEP end of
+        the chain -- its blocker's blocker's ... blocker, n links down, is
+        the free label. Pointed the other way, every lookup ends after one
+        hop at an already-resolved item and even a recursive resolver would
+        pass.
+        """
         from datetime import date as date_cls
         from datetime import timedelta
 
@@ -186,9 +194,13 @@ class TestPlanLabelNormalization:
         base = date_cls(2000, 1, 1)
         fake_client.get_json.return_value = [
             # Experiment k (visit k by date order) currently holds
-            # experiment k+1's target, forming one n-long vacating chain
-            # whose far end (visit 1's target) is free.
-            _row(f"E{k}", f"SUB01_{k + 1:02d}_SE01_MR", date=str(base + timedelta(days=k)))
+            # experiment k-1's target, so E1's rename waits on E2's, which
+            # waits on E3's, ... down to E_n, whose target is free.
+            _row(
+                f"E{k}",
+                "OLD1" if k == 1 else f"SUB01_{k - 1:02d}_SE01_MR",
+                date=str(base + timedelta(days=k)),
+            )
             for k in range(1, n + 1)
         ]
         service = SessionLabelService(fake_client)
@@ -197,7 +209,37 @@ class TestPlanLabelNormalization:
 
         assert plan["skipped"] == []
         assert len(plan["renames"]) == n
-        assert plan["renames"][0]["id"] == "E1"  # free end of the chain goes first
+        assert plan["renames"][0]["id"] == f"E{n}"  # free end of the chain goes first
+        assert plan["renames"][-1]["id"] == "E1"  # deepest dependent goes last
+
+    def test_a_label_held_by_multiple_experiments_is_never_treated_as_vacated(
+        self, fake_client
+    ) -> None:
+        """One holder renaming away cannot free a label another holder keeps.
+
+        Duplicate labels in one project are a server anomaly, but if the
+        listing reports one, accepting a taker on the strength of a single
+        holder's rename would race the remaining holder.
+        """
+        contested = "SUB01_01_SE01_MR"
+        fake_client.get_json.return_value = [
+            _row("E1", "OLD1", subject="SUB01", date="2024-01-01"),  # taker of the label
+            _row("E2", contested, subject="SUB02", date="2024-01-01"),  # holder 1, renames away
+            _row("E3", contested, subject="SUB03", date="2024-01-01"),  # holder 2, renames away
+        ]
+        service = SessionLabelService(fake_client)
+
+        plan = service.plan_label_normalization("PROJ")
+
+        planned = {r["id"] for r in plan["renames"]}
+        assert planned == {"E2", "E3"}  # the holders still normalize themselves
+        assert plan["skipped"] == [
+            {
+                "id": "E1",
+                "label": "OLD1",
+                "reason": f"target label exists: {contested} (held by multiple experiments)",
+            }
+        ]
 
     def test_a_null_id_row_is_skipped_not_planned(self, fake_client) -> None:
         """A JSON null ID must not become the literal string "None" in a plan."""

@@ -27,6 +27,7 @@ project's subjects still need normalizing.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Sequence
 from datetime import date, datetime, time
 from typing import Any
@@ -185,9 +186,13 @@ class SessionLabelService(BaseService):
         # including rows excluded from planning below (other subjects,
         # filter misses, malformed rows). Those never rename, so their
         # labels are permanent blockers, and they must be collected before
-        # any row is dropped.
-        all_labels = {str(row.get("label") or "") for row in rows}
-        all_labels.discard("")
+        # any row is dropped. Multiplicity matters too: a label the listing
+        # reports on MORE than one row (a server anomaly -- labels are
+        # supposed to be project-unique) can never be proven vacated by any
+        # single rename, so targets equal to it are refused outright.
+        label_counts = Counter(str(row.get("label") or "") for row in rows)
+        all_labels = {label for label in label_counts if label}
+        contested_labels = {label for label, count in label_counts.items() if label and count > 1}
 
         by_subject: dict[str, list[dict[str, Any]]] = {}
         skipped: list[dict[str, Any]] = []
@@ -227,7 +232,7 @@ class SessionLabelService(BaseService):
         # rename and the rename that takes its label may belong to
         # different subjects, and only a global pass can see (and order)
         # that dependency.
-        renames = self._resolve_collisions(tentative, all_labels, skipped)
+        renames = self._resolve_collisions(tentative, all_labels, contested_labels, skipped)
         return {"renames": renames, "skipped": skipped}
 
     def _plan_subject(
@@ -385,6 +390,7 @@ class SessionLabelService(BaseService):
     def _resolve_collisions(
         tentative: list[dict[str, Any]],
         existing_labels: set[str],
+        contested_labels: set[str],
         skipped: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Order the project's renames so vacated labels free up before reuse.
@@ -406,6 +412,11 @@ class SessionLabelService(BaseService):
             tentative: All validated candidate renames for the project.
             existing_labels: Current labels of every experiment the listing
                 returned, planned or not (project-wide occupancy).
+            contested_labels: Labels the listing reported on more than one
+                row. ``by_old`` below can hold only one vacator per label,
+                so a taker of a contested label could otherwise be accepted
+                on the strength of ONE holder's rename while another holder
+                keeps the label; refused instead.
             skipped: Running skip list to append refusals onto.
 
         Returns:
@@ -445,6 +456,9 @@ class SessionLabelService(BaseService):
                 target = item["new_label"]
                 if target not in existing_labels:
                     accept(item)
+                    continue
+                if target in contested_labels:
+                    refuse(item, f"target label exists: {target} (held by multiple experiments)")
                     continue
                 blocker = blocker_of(item)
                 if blocker is None:
