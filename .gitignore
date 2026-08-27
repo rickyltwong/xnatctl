@@ -106,3 +106,7 @@ docs/adr/
 
 # Generated per-run TLS test fixture (docker-compose.integration.yml)
 docker/integration/tls-scp/certs/
+
+# Dryduck run logs and fan-out worktrees (disposable; changes/ is NOT ignored
+# -- its planning artifacts are committed as the acceptance record)
+.dryduck/
