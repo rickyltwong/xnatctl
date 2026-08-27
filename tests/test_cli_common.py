@@ -391,7 +391,7 @@ class TestBatchOption:
         goes around it and calls .main() directly with a mocked sys.stdin,
         rather than through CliRunner.invoke().
         """
-        with patch("xnatctl.cli.common.sys.stdin") as mock_stdin:
+        with patch("xnatctl.cli.common.batch.sys.stdin") as mock_stdin:
             mock_stdin.isatty.return_value = True
             with pytest.raises(click.UsageError, match="interactive terminal"):
                 _batch_probe.main(["--batch", "-", "--yes"], standalone_mode=False)

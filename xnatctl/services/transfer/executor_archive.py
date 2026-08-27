@@ -108,26 +108,6 @@ class _ArchiveMixin(_ExecutorAttrs):
             data=data,
         )
 
-    def delete_prearchive_entry(
-        self,
-        dest_project: str,
-        timestamp: str,
-        session_name: str,
-    ) -> None:
-        """Delete a prearchive entry on the destination.
-
-        Args:
-            dest_project: Destination project ID.
-            timestamp: Prearchive entry timestamp.
-            session_name: Session folder name in prearchive.
-        """
-        encoded_project = _quote_path_segment(dest_project)
-        encoded_timestamp = _quote_path_segment(timestamp)
-        encoded_session_name = _quote_path_segment(session_name)
-        self.dest.delete(
-            f"/data/prearchive/projects/{encoded_project}/{encoded_timestamp}/{encoded_session_name}",
-        )
-
     def _safe_count_dest_scans(
         self,
         dest_project: str,

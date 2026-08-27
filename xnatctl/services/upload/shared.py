@@ -1,14 +1,19 @@
 """Cross-transport helpers shared by the upload transports.
 
-Thread-safe session token refresh, DICOM file discovery, and batch-splitting
-utilities used by more than one transport module.
+Thread-safe session token refresh, DICOM file discovery and staging, file-list
+validation, and batch-splitting utilities used by more than one transport
+module.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import ssl
+import tempfile
 import threading
+import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -273,3 +278,100 @@ def _error_signature(error: str) -> str:
     reach the variable tail.
     """
     return error.strip()[:200]
+
+
+def _stage_source_files(source_path: Path) -> tuple[str | None, list[Path]]:
+    """Resolve an upload source into DICOM-like files, extracting ZIPs first.
+
+    ZIP sources are extracted into a fresh temp directory that the caller must
+    remove after the upload; on a mid-extraction failure the directory is
+    removed here before the error propagates, so the caller never has to
+    clean up a half-staged tree it was never told about.
+
+    Args:
+        source_path: Existing directory or ZIP file.
+
+    Returns:
+        Tuple of (temp extraction dir or None, DICOM-like files found).
+
+    Raises:
+        ValueError: If source_path is neither a directory nor a ZIP file.
+    """
+    if source_path.is_file() and source_path.suffix.lower() == ".zip":
+        temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
+        try:
+            temp_path = Path(temp_dir)
+            with zipfile.ZipFile(source_path, "r") as zf:
+                for member in zf.infolist():
+                    if member.is_dir():
+                        continue
+                    target = (temp_path / member.filename).resolve()
+                    if not target.is_relative_to(temp_path.resolve()):
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+            return temp_dir, collect_dicom_files(temp_path)
+        except BaseException:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+    if source_path.is_dir():
+        return None, collect_dicom_files(source_path)
+    raise ValueError("gradual-DICOM requires a directory or ZIP file")
+
+
+def _validate_files_exist(file_list: list[Path]) -> None:
+    """Reject a file list containing missing paths or non-files.
+
+    Args:
+        file_list: Caller-provided paths.
+
+    Raises:
+        FileNotFoundError: If any path does not exist.
+        ValueError: If any path is not a file.
+    """
+    for p in file_list:
+        if not p.exists():
+            raise FileNotFoundError(f"File not found: {p}")
+        if not p.is_file():
+            raise ValueError(f"Not a file: {p}")
+
+
+def _reject_duplicate_resolved_paths(dicom_file_list: list[Path]) -> None:
+    """Reject distinct input paths that resolve to the same file on disk.
+
+    Args:
+        dicom_file_list: DICOM-like files selected for upload.
+
+    Raises:
+        ValueError: If two paths resolve to the same file.
+    """
+    resolved_to_original: dict[Path, Path] = {}
+    duplicate_resolved: set[Path] = set()
+    for p in dicom_file_list:
+        resolved = p.expanduser().resolve(strict=False)
+        if resolved in resolved_to_original:
+            duplicate_resolved.add(resolved)
+        else:
+            resolved_to_original[resolved] = p
+
+    if duplicate_resolved:
+        dup_str = ", ".join(sorted(str(p) for p in duplicate_resolved))
+        raise ValueError(f"Duplicate file paths provided: {dup_str}")
+
+
+def _compute_display_root(dicom_file_list: list[Path]) -> Path:
+    """Pick a stable common root for relative display paths.
+
+    Args:
+        dicom_file_list: DICOM-like files selected for upload.
+
+    Returns:
+        The deepest common directory, falling back to the first file's
+        parent when no common path exists.
+    """
+    try:
+        common = Path(os.path.commonpath([str(p.resolve()) for p in dicom_file_list]))
+        return common if common.is_dir() else common.parent
+    except (ValueError, OSError):
+        return dicom_file_list[0].parent

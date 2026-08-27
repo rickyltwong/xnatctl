@@ -257,7 +257,7 @@ class TestTheBatchPathAlsoReauthenticates:
         """Upload one archive whose first attempt 401s, and report the calls."""
         import httpx
 
-        import xnatctl.services.upload.rest_batch as uploads
+        import xnatctl.services.upload.rest_archive as uploads
 
         archive = tmp_path / "batch_1.tar"
         archive.write_bytes(b"tar-ish")

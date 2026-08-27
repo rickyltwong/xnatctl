@@ -17,7 +17,7 @@ from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.progress import UploadSummary
 from xnatctl.services.import_service import archive_destination_params
 from xnatctl.services.upload.archives import _safe_mtime, _zip_to_tar
-from xnatctl.services.upload.rest_batch import upload_archive_or_raise
+from xnatctl.services.upload.rest_archive import upload_archive_or_raise
 
 
 class _FakeAuthClient:
@@ -59,7 +59,7 @@ def _wire(monkeypatch, responses):
     ``httpx.Client`` was constructed with. The last response repeats once the
     list is consumed.
     """
-    import xnatctl.services.upload.rest_batch as uploads
+    import xnatctl.services.upload.rest_archive as uploads
 
     posts: list[dict] = []
     clients: list[dict] = []
@@ -283,7 +283,7 @@ class TestSingleUploadKeepsTheExitCodeTaxonomy:
     def test_a_connect_timeout_raises_timeout(self, tmp_path, monkeypatch) -> None:
         archive_path = tmp_path / "sample.zip"
         archive_path.write_bytes(b"zip-data")
-        import xnatctl.services.upload.rest_batch as uploads
+        import xnatctl.services.upload.rest_archive as uploads
 
         class TimingOutClient:
             def __init__(self, *a, **kw) -> None:

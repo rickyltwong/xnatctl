@@ -327,7 +327,7 @@ class TestDirectArchiveGating:
     """
 
     def test_upload_archive_or_raise_gates_direct_archive(self, tmp_path: Path) -> None:
-        from xnatctl.services.upload.rest_batch import upload_archive_or_raise
+        from xnatctl.services.upload.rest_archive import upload_archive_or_raise
 
         archive = tmp_path / "batch.zip"
         archive.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # minimal empty-zip EOCD
@@ -356,7 +356,7 @@ class TestDirectArchiveGating:
 
     def test_upload_archive_or_raise_skips_gate_for_prearchive(self, tmp_path: Path) -> None:
         from xnatctl.core.exceptions import UploadError
-        from xnatctl.services.upload.rest_batch import upload_archive_or_raise
+        from xnatctl.services.upload.rest_archive import upload_archive_or_raise
 
         archive = tmp_path / "batch.zip"
         archive.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
@@ -469,7 +469,7 @@ class TestDirectArchiveGating:
 
 class TestPublicBoundaryGating:
     def test_upload_single_archive_direct_call_gates_direct_archive(self, tmp_path: Path) -> None:
-        from xnatctl.services.upload.rest_batch import upload_single_archive
+        from xnatctl.services.upload.rest_archive import upload_single_archive
 
         archive = tmp_path / "batch.zip"
         archive.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # minimal empty-zip EOCD

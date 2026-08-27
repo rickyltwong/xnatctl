@@ -53,7 +53,7 @@ def mock_uploads_http(handler: Handler) -> Iterator[list[httpx.Request]]:
         kwargs["transport"] = httpx.MockTransport(recording)
         return real_client(**kwargs)  # type: ignore[arg-type]
 
-    with patch("xnatctl.services.upload.rest_batch.httpx.Client", factory):
+    with patch("xnatctl.services.upload.rest_archive.httpx.Client", factory):
         yield seen
 
 

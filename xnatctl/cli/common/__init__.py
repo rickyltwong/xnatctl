@@ -20,7 +20,6 @@ constraint and lives in its own focused submodule.
 from __future__ import annotations
 
 import logging
-import sys
 from collections.abc import Callable
 from functools import wraps
 from typing import Any, TypeVar
@@ -79,6 +78,7 @@ from xnatctl.core.redact import SECRET_QUERY_KEYS, redact_url_query
 # same pattern for the same reason.
 from .batch import _parse_batch_text as _parse_batch_text
 from .batch import batch_option
+from .credentials import dest_profile_options, read_password_stdin, reject_argv_password
 from .deprecation import (
     DEPRECATED_FLAGS,
     DeprecatedFlag,
@@ -96,6 +96,15 @@ from .errors import (
     render_cli_error,
 )
 from .listing import apply_filter, apply_sort_limit, list_options, resolve_columns
+from .profile_defaults import (
+    default_project_from_context,
+    get_profile,
+    require_project_from_context,
+    resolve_archive_mode_from_context,
+    resolve_direct_archive_from_context,
+    resolve_overwrite_from_context,
+    resolve_workers_from_context,
+)
 from .validators import reject_blank_option_value, validate_local_path_option_cb
 
 __all__ = [
@@ -245,77 +254,6 @@ class Context:
 
 
 pass_context = click.make_pass_decorator(Context, ensure=True)
-
-
-def get_profile(ctx: Context) -> Profile | None:
-    """Return the active profile, if configured and resolvable."""
-    if ctx.config is None:
-        return None
-
-    try:
-        return ctx.config.get_profile(ctx.profile_name)
-    except ProfileNotFoundError:
-        return None
-
-
-def default_project_from_context(ctx: Context) -> str | None:
-    """Return the profile default project if available."""
-    profile = get_profile(ctx)
-    return profile.default_project if profile else None
-
-
-def require_project_from_context(ctx: Context, project: str | None) -> str:
-    """Return an explicit or default project, or raise a Click error."""
-    resolved_project = project or default_project_from_context(ctx)
-    if resolved_project:
-        return resolved_project
-
-    profile_name = ctx.profile_name or (ctx.config.default_profile if ctx.config else "default")
-    raise click.ClickException(
-        f"Project required. Pass --project/-P or set default_project in profile '{profile_name}'."
-    )
-
-
-def resolve_workers_from_context(ctx: Context, workers: int | None, default: int = 4) -> int:
-    """Resolve worker count from explicit option, profile, or a default."""
-    if workers is not None:
-        return workers
-
-    profile = get_profile(ctx)
-    if profile and profile.workers is not None:
-        return profile.workers
-
-    return default
-
-
-def resolve_overwrite_from_context(ctx: Context, overwrite: str | None) -> str:
-    """Resolve overwrite mode from explicit option, profile, or ``delete``."""
-    if overwrite is not None:
-        return overwrite
-    profile = get_profile(ctx)
-    if profile and profile.overwrite is not None:
-        return profile.overwrite
-    return "delete"
-
-
-def resolve_direct_archive_from_context(ctx: Context, direct_archive: bool | None) -> bool:
-    """Resolve direct-archive flag from explicit option, profile, or ``True``."""
-    if direct_archive is not None:
-        return direct_archive
-    profile = get_profile(ctx)
-    if profile and profile.direct_archive is not None:
-        return profile.direct_archive
-    return True
-
-
-def resolve_archive_mode_from_context(ctx: Context, mode: str | None) -> str:
-    """Resolve archive mode from explicit option, profile, or ``tar``."""
-    if mode is not None:
-        return mode
-    profile = get_profile(ctx)
-    if profile and profile.archive_mode is not None:
-        return profile.archive_mode
-    return "tar"
 
 
 # =============================================================================
@@ -779,88 +717,6 @@ def confirm_destructive_when(
 # =============================================================================
 # Destination Profile Helpers
 # =============================================================================
-
-
-def reject_argv_password(
-    alternatives: str,
-) -> Callable[[click.Context, click.Parameter, Any], None]:
-    """Build a Click callback that rejects an argv-supplied password.
-
-    A password on argv is visible in ``ps``, ``/proc/*/cmdline``, and shell
-    history. The option this is wired to survives only as a deterrent that
-    surfaces the secret-sourcing contract in ``--help``; supplying a value is
-    unconditionally a :class:`click.UsageError` (exit 2) raised at parse time,
-    before any authentication or context decorator runs. The callback never
-    propagates a value into the command body.
-
-    Args:
-        alternatives: One sentence naming the supported sources, appended to
-            the refusal message (e.g. "Use --password-stdin, ...").
-    """
-
-    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> None:
-        del ctx  # The rejection is unconditional.
-        if value is not None:
-            option = (param.opts or [param.name])[0]
-            raise click.UsageError(
-                f"Refusing to read {option} from argv (visible in ps, "
-                f"/proc/*/cmdline, and shell history). {alternatives}"
-            )
-        return
-
-    return callback
-
-
-def read_password_stdin(flag_name: str) -> str:
-    """Read one password line from stdin for a ``--*-stdin`` flag.
-
-    ``readline`` rather than ``read`` so a trailing newline (common with
-    ``echo``) is stripped without consuming any further stdin bytes -- the
-    command may still need the rest of the stream.
-
-    Raises:
-        click.UsageError: If stdin yields an empty line.
-    """
-    secret = sys.stdin.readline()
-    if secret.endswith("\n"):
-        secret = secret[:-1]
-    if not secret:
-        raise click.UsageError(f"{flag_name} was set but stdin was empty.")
-    return secret
-
-
-def dest_profile_options(f: F) -> F:
-    """Add destination profile options for transfer commands.
-
-    ``--dest-pass`` is argv-rejected; the wrapper resolves
-    ``--dest-pass-stdin`` here and injects the secret as ``dest_pass``, so the
-    wrapped commands keep their existing signatures.
-    """
-
-    @click.option("--dest-profile", help="Destination config profile name")
-    @click.option("--dest-url", hidden=True, help="Destination XNAT URL (inline)")
-    @click.option("--dest-user", hidden=True, help="Destination username (inline)")
-    @click.option(
-        "--dest-pass",
-        hidden=True,
-        expose_value=False,
-        is_eager=True,
-        callback=reject_argv_password(
-            "Use --dest-pass-stdin, or --dest-profile with stored credentials."
-        ),
-        help="REFUSED: use --dest-pass-stdin or --dest-profile",
-    )
-    @click.option(
-        "--dest-pass-stdin",
-        is_flag=True,
-        help="Read the destination password from stdin (one line)",
-    )
-    @wraps(f)
-    def wrapper(*args: Any, dest_pass_stdin: bool = False, **kwargs: Any) -> Any:
-        kwargs["dest_pass"] = read_password_stdin("--dest-pass-stdin") if dest_pass_stdin else None
-        return f(*args, **kwargs)
-
-    return wrapper  # type: ignore
 
 
 def create_dest_client(

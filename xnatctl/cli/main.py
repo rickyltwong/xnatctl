@@ -12,7 +12,13 @@ from click.shell_completion import get_completion_class
 
 from xnatctl import __version__
 from xnatctl.cli import (
+    admin_user as _admin_user,  # noqa: F401  # registers the user group on the admin group
+)
+from xnatctl.cli import (
     custom_vars as _custom_vars,  # noqa: F401  # registers vars/vars-set on the subject/session groups
+)
+from xnatctl.cli import (
+    scan_download as _scan_download,  # noqa: F401  # registers download on the scan group
 )
 from xnatctl.cli import (
     session_labels as _session_labels,  # noqa: F401  # registers normalize-labels on the session group

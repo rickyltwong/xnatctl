@@ -693,12 +693,3 @@ def get_credentials(profile: Profile | None = None) -> tuple[str | None, str | N
             password = profile.resolve_password()
 
     return username, password
-
-
-def get_token() -> str | None:
-    """Get session token from environment variable.
-
-    Returns:
-        Token if set, None otherwise.
-    """
-    return os.getenv(ENV_TOKEN)
