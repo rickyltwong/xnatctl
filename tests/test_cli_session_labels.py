@@ -33,6 +33,23 @@ class TestSessionNormalizeLabels:
         assert "OLD1 -> SUB01_01_SE01_MR" in result.output
         assert "Renamed 1 experiment label" in result.output
 
+    def test_subject_pattern_skips_nonmatching_subjects(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        kept = _row("E1", "OLD1")
+        excluded = dict(_row("E2", "OLD2"), subject_label="pilot1")
+        authenticated_cli.client.get_json.return_value = [kept, excluded]
+
+        result = authenticated_cli.invoke(
+            ["session", "normalize-labels", "-P", "PROJ", "--subject-pattern", "^SUB", "--yes"]
+        )
+
+        assert result.exit_code == 0
+        authenticated_cli.client.put.assert_called_once_with(
+            "/data/experiments/E1", params={"label": "SUB01_01_SE01_MR"}
+        )
+        assert "OLD2" not in result.output
+
     def test_declined_confirmation_no_mutation(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = [_row("E1", "OLD1")]
 

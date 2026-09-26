@@ -26,11 +26,17 @@ from xnatctl.services.session_labels import SessionLabelService
 
 @session.command("normalize-labels")
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
+@click.option(
+    "--subject-pattern",
+    help="Only normalize experiments whose subject label matches this regex",
+)
 @confirm_destructive("Rename experiment labels to the standardized convention?")
 @global_options
 @handle_errors
 @require_auth
-def session_normalize_labels(ctx: Context, project: str | None, dry_run: bool) -> None:
+def session_normalize_labels(
+    ctx: Context, project: str | None, subject_pattern: str | None, dry_run: bool
+) -> None:
     """Normalize experiment labels to {SUBJECT}_{VISIT:02d}_SE{SESSION:02d}_{MODALITY}.
 
     Recomputes each experiment's target label from its subject, imaging
@@ -44,16 +50,19 @@ def session_normalize_labels(ctx: Context, project: str | None, dry_run: bool) -
 
     Run ``subject rename`` first if this project's subjects still need
     their own labels normalized -- this command only touches experiment
-    labels, using subjects' current labels as-is.
+    labels, using subjects' current labels as-is. ``--subject-pattern``
+    limits the pass to subjects whose label matches a regex, so subjects
+    still outside the project's naming convention are left untouched.
 
     \b
     Example:
         xnatctl session normalize-labels -P MYPROJ --dry-run
         xnatctl session normalize-labels -P MYPROJ --yes
+        xnatctl session normalize-labels -P MYPROJ --subject-pattern '^MYPROJ_' --yes
     """
     project = validate_project_id(require_project_from_context(ctx, project))
     service = SessionLabelService(ctx.get_client())
-    plan = service.plan_label_normalization(project)
+    plan = service.plan_label_normalization(project, subject_pattern=subject_pattern)
 
     renames = plan["renames"]
     skipped = plan["skipped"]

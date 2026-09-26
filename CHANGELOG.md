@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+**Features**
+
+- `session normalize-labels --subject-pattern REGEX` limits the pass to
+  subjects whose label matches, so a project's pilot or scanner-side
+  subjects that are still outside its naming convention keep their
+  experiment labels until the subjects themselves are renamed.
+
 ## 0.5.1 - 2026-08-27
 
 **Fixes**
