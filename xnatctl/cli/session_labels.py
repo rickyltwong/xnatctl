@@ -48,6 +48,10 @@ def session_normalize_labels(
     experiment whose target collides with another experiment's *current*
     label (outside this run's rename set) is refused the same way.
 
+    Each rename is confirmed through its XNAT workflow, not the HTTP
+    reply: relabelling moves the session's archive directory, which for a
+    large session takes hours, and the next rename waits for it.
+
     Run ``subject rename`` first if this project's subjects still need
     their own labels normalized -- this command only touches experiment
     labels, using subjects' current labels as-is. ``--subject-pattern``

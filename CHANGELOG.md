@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+**Fixes**
+
+- `session normalize-labels` now confirms each rename through its XNAT
+  workflow instead of the HTTP reply. A large session's relabel moves its
+  archive directory and can run for hours, outliving any proxy timeout; the
+  old code waited on the PUT, ate the 504, and retried a rename that was
+  already running. The PUT is now single-shot with a short read timeout,
+  the `Renamed` workflow is polled to `Complete` (4 h cap per rename), and
+  the next rename does not start until the previous one has finished.
+- `XNATClient.put` accepts the same per-call `max_retries` override `get`
+  and `delete` already had.
+
 **Features**
 
 - `session normalize-labels --subject-pattern REGEX` limits the pass to

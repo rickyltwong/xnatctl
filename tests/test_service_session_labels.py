@@ -2,10 +2,59 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from unittest.mock import MagicMock
+
 import pytest
 
-from xnatctl.core.exceptions import SessionExpiredError, XNATCtlError
+from xnatctl.core.exceptions import (
+    NetworkError,
+    RetryExhaustedError,
+    SessionExpiredError,
+    XNATCtlError,
+)
+from xnatctl.services import session_labels
 from xnatctl.services.session_labels import SessionLabelService, build_experiment_label
+
+
+def wire_rename_confirmation(
+    fake_client: MagicMock,
+    *,
+    status: str = "Complete",
+    put: Callable[..., None] | None = None,
+) -> dict[str, int]:
+    """Make the fake server behave like XNAT does on an experiment rename.
+
+    A PUT that reaches the server creates a ``Renamed`` workflow, which then
+    appears in that experiment's history; ``/xapi/workflows/{id}`` reports
+    ``status`` for it. Returns the ``{experiment id: workflow id}`` map the
+    fake fills in as PUTs land, so a test can also fake a PUT that raised
+    after reaching the server by inserting an entry itself.
+    """
+    landed: dict[str, int] = {}
+
+    def default_put(path: str, **_: object) -> None:
+        landed[path.rsplit("/", 1)[1]] = 100 + len(landed)
+
+    def get_json(path: str, **_: object) -> object:
+        exp_id = path.split("/")[3]
+        workflow = landed.get(exp_id)
+        events = [{"event_action": "Renamed", "event_id": workflow}] if workflow else []
+        return {"events": events}
+
+    fake_client.put.side_effect = put or default_put
+    fake_client.get_json.side_effect = get_json
+    fake_client.get.return_value.json.return_value = {"status": status}
+    return landed
+
+
+def _plan(*ids: str) -> dict:
+    return {
+        "renames": [
+            {"id": i, "subject": "SUB01", "old_label": f"OLD{i}", "new_label": f"NEW{i}"}
+            for i in ids
+        ]
+    }
 
 
 def _row(
@@ -354,33 +403,95 @@ class TestPlanLabelNormalization:
 
 
 class TestApplyLabelNormalization:
-    def test_applies_each_rename_via_put(self, fake_client) -> None:
+    def test_applies_each_rename_via_put_and_confirms_via_workflow(self, fake_client) -> None:
         service = SessionLabelService(fake_client)
-        plan = {
-            "renames": [
-                {"id": "E1", "subject": "SUB01", "old_label": "OLD1", "new_label": "NEW1"},
-                {"id": "E2", "subject": "SUB01", "old_label": "OLD2", "new_label": "NEW2"},
-            ]
-        }
+        wire_rename_confirmation(fake_client)
 
-        result = service.apply_label_normalization(plan)
+        result = service.apply_label_normalization(_plan("E1", "E2"), poll_interval=0)
 
         assert result == {"renamed": 2, "failed": []}
         assert fake_client.put.call_count == 2
-        fake_client.put.assert_any_call("/data/experiments/E1", params={"label": "NEW1"})
-        fake_client.put.assert_any_call("/data/experiments/E2", params={"label": "NEW2"})
+        # Single-shot with a short read timeout: the workflow is the truth.
+        fake_client.put.assert_any_call(
+            "/data/experiments/E1", params={"label": "NEWE1"}, timeout=60, max_retries=0
+        )
+        fake_client.put.assert_any_call(
+            "/data/experiments/E2", params={"label": "NEWE2"}, timeout=60, max_retries=0
+        )
+        fake_client.get.assert_any_call("/xapi/workflows/100")
+        fake_client.get.assert_any_call("/xapi/workflows/101")
+
+    def test_put_timeout_still_counts_when_workflow_completes(self, fake_client) -> None:
+        # A 504 / read timeout after the PUT was sent: XNAT is still
+        # renaming. Confirm through the workflow rather than retrying.
+        service = SessionLabelService(fake_client)
+        landed = wire_rename_confirmation(fake_client)
+
+        def put_then_time_out(path: str, **_: object) -> None:
+            landed["E1"] = 100
+            raise RetryExhaustedError("request", 1, NetworkError("https://x", "Timeout after 60s"))
+
+        fake_client.put.side_effect = put_then_time_out
+
+        result = service.apply_label_normalization(_plan("E1"), poll_interval=0)
+
+        assert result == {"renamed": 1, "failed": []}
+        assert fake_client.put.call_count == 1
+
+    def test_put_error_with_no_workflow_reports_the_put_error(
+        self, fake_client, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(session_labels, "RENAME_WORKFLOW_APPEAR_SECONDS", 0.0)
+        service = SessionLabelService(fake_client)
+        wire_rename_confirmation(fake_client, put=None)
+        fake_client.put.side_effect = NetworkError("https://x", "connection reset")
+
+        result = service.apply_label_normalization(_plan("E1"), poll_interval=0)
+
+        assert result["renamed"] == 0
+        assert [f["id"] for f in result["failed"]] == ["E1"]
+        assert "connection reset" in result["failed"][0]["error"]
+
+    def test_clean_put_with_no_workflow_is_a_failure(self, fake_client, monkeypatch) -> None:
+        monkeypatch.setattr(session_labels, "RENAME_WORKFLOW_APPEAR_SECONDS", 0.0)
+        service = SessionLabelService(fake_client)
+        wire_rename_confirmation(fake_client, put=lambda path, **_: None)
+
+        result = service.apply_label_normalization(_plan("E1"), poll_interval=0)
+
+        assert result["renamed"] == 0
+        assert "no rename workflow appeared" in result["failed"][0]["error"]
+
+    def test_failed_workflow_is_reported(self, fake_client) -> None:
+        service = SessionLabelService(fake_client)
+        wire_rename_confirmation(fake_client, status="Failed")
+
+        result = service.apply_label_normalization(_plan("E1"), poll_interval=0)
+
+        assert result["renamed"] == 0
+        assert "ended 'failed'" in result["failed"][0]["error"]
+
+    def test_workflow_still_running_at_timeout_is_reported(self, fake_client) -> None:
+        service = SessionLabelService(fake_client)
+        wire_rename_confirmation(fake_client, status="In Progress")
+
+        result = service.apply_label_normalization(_plan("E1"), rename_timeout=0, poll_interval=0)
+
+        assert result["renamed"] == 0
+        assert "in progress after 0s" in result["failed"][0]["error"]
 
     def test_per_item_failure_isolation(self, fake_client) -> None:
         service = SessionLabelService(fake_client)
-        plan = {
-            "renames": [
-                {"id": "E1", "subject": "SUB01", "old_label": "OLD1", "new_label": "NEW1"},
-                {"id": "E2", "subject": "SUB01", "old_label": "OLD2", "new_label": "NEW2"},
-            ]
-        }
-        fake_client.put.side_effect = [RuntimeError("boom"), None]
+        landed = wire_rename_confirmation(fake_client)
 
-        result = service.apply_label_normalization(plan)
+        def put(path: str, **_: object) -> None:
+            if path.endswith("/E1"):
+                raise RuntimeError("boom")
+            landed["E2"] = 100
+
+        fake_client.put.side_effect = put
+
+        result = service.apply_label_normalization(_plan("E1", "E2"), poll_interval=0)
 
         assert result["renamed"] == 1
         assert len(result["failed"]) == 1
@@ -389,16 +500,8 @@ class TestApplyLabelNormalization:
 
     def test_session_expired_aborts_rather_than_isolated(self, fake_client) -> None:
         service = SessionLabelService(fake_client)
-        plan = {
-            "renames": [
-                {"id": "E1", "subject": "SUB01", "old_label": "OLD1", "new_label": "NEW1"},
-            ]
-        }
+        wire_rename_confirmation(fake_client)
         fake_client.put.side_effect = SessionExpiredError("https://example.org")
 
-        try:
-            service.apply_label_normalization(plan)
-        except SessionExpiredError:
-            pass
-        else:
-            raise AssertionError("expected SessionExpiredError to propagate")
+        with pytest.raises(SessionExpiredError):
+            service.apply_label_normalization(_plan("E1"), poll_interval=0)

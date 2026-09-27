@@ -562,8 +562,13 @@ class XNATClient:
         files: Any | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
+        max_retries: int | None = None,
     ) -> httpx.Response:
-        """PUT request."""
+        """PUT request.
+
+        ``max_retries`` overrides the client's retry budget for this call
+        alone; pass 0 to make it single-shot. See :meth:`_request`.
+        """
         return self._request(
             "PUT",
             path,
@@ -574,6 +579,7 @@ class XNATClient:
             files=files,
             headers=headers,
             timeout=timeout,
+            max_retries=max_retries,
         )
 
     def delete(
