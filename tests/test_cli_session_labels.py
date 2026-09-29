@@ -17,15 +17,17 @@ def _wire(client: MagicMock, rows: Any) -> None:
 
     def get_json(path: str, **_: object) -> Any:
         if path.endswith("/history"):
-            workflow = landed.get(path.split("/")[3])
-            return {
-                "events": [{"event_action": "Renamed", "event_id": workflow}] if workflow else []
-            }
+            event = landed.get(path.split("/")[3])
+            events = (
+                [{"event_action": "Renamed", "event_id": event, "event_status": "Complete"}]
+                if event
+                else []
+            )
+            return {"events": events}
         return rows
 
     client.put.side_effect = put
     client.get_json.side_effect = get_json
-    client.get.return_value.json.return_value = {"status": "Complete"}
 
 
 def _row(exp_id: str, label: str, *, date: str = "2024-01-01") -> dict:

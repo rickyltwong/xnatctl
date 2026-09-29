@@ -61,7 +61,6 @@ RENAME_TIMEOUT_SECONDS = 4 * 60 * 60.0
 #: Interval between workflow status polls.
 RENAME_POLL_INTERVAL_SECONDS = 30.0
 
-_TERMINAL_WORKFLOW_STATUSES = frozenset({"complete", "failed"})
 
 #: XSI type -> modality code used to build experiment labels.
 XSI_MODALITY_MAP: dict[str, str] = {
@@ -576,17 +575,20 @@ class SessionLabelService(BaseService):
         socket or proxy 5xx after the request was sent means nothing
         either way -- XNAT keeps relabelling regardless, so retrying the
         PUT would only stack a second rename behind the first. What
-        decides success is a new ``Renamed`` workflow appearing in the
-        experiment's history and reaching ``Complete``.
+        decides success is a new ``Renamed`` event appearing in the
+        experiment's history and reaching ``Complete``. The history
+        endpoint reports each event's live workflow status, so it is
+        polled directly rather than ``/xapi/workflows/{id}``, whose ids do
+        not line up with history event ids on every XNAT version.
 
         Raises:
-            OperationError: no rename workflow appeared, the workflow ended
+            OperationError: no rename event appeared, the rename ended
                 ``Failed``, or it was still running at ``rename_timeout``.
-            XNATConnectionError, ServerError: the PUT failed AND no workflow
-                appeared afterwards, so the request never reached XNAT.
+            XNATConnectionError, ServerError: the PUT failed AND no rename
+                event appeared afterwards, so the request never reached XNAT.
         """
         path = f"/data/experiments/{quote_path_segment(exp_id)}"
-        before = self._latest_rename_event(exp_id)
+        before = max(self._rename_events(exp_id), default=0)
         put_error: Exception | None = None
         try:
             self.client.put(
@@ -598,72 +600,64 @@ class SessionLabelService(BaseService):
         except (XNATConnectionError, ServerError) as exc:
             put_error = exc
             logger.info(
-                "Rename PUT for %s did not return cleanly (%s); confirming via workflow",
+                "Rename PUT for %s did not return cleanly (%s); confirming via history",
                 exp_id,
                 exc,
             )
 
-        workflow_id = self._wait_for_rename_workflow(exp_id, before, poll_interval)
-        if workflow_id is None:
+        event_id = self._wait_for_rename_event(exp_id, before, poll_interval)
+        if event_id is None:
             if put_error is not None:
                 raise put_error
             raise OperationError(
                 "rename",
-                f"no rename workflow appeared for {exp_id} within "
+                f"no rename event appeared for {exp_id} within "
                 f"{RENAME_WORKFLOW_APPEAR_SECONDS:.0f}s",
             )
 
-        logger.info("Rename %s -> %s: waiting on workflow %d", exp_id, new_label, workflow_id)
-        status = self._wait_for_workflow(workflow_id, rename_timeout, poll_interval)
+        logger.info("Rename %s -> %s: waiting on rename event %d", exp_id, new_label, event_id)
+        status = self._wait_for_rename_event_status(exp_id, event_id, rename_timeout, poll_interval)
         if status != "complete":
             raise OperationError(
                 "rename",
-                f"rename workflow {workflow_id} for {exp_id} -> {new_label} ended {status!r}",
+                f"rename of {exp_id} -> {new_label} (event {event_id}) ended {status!r}",
             )
 
-    def _latest_rename_event(self, exp_id: str) -> int:
-        """Highest ``Renamed`` workflow id in the experiment's history, or 0."""
+    def _rename_events(self, exp_id: str) -> dict[int, str]:
+        """``{event_id: lower-cased status}`` for every ``Renamed`` event in the history."""
         body = self.client.get_json(f"/data/experiments/{quote_path_segment(exp_id)}/history")
         events = body.get("events") if isinstance(body, dict) else None
-        ids: list[int] = []
+        found: dict[int, str] = {}
         for event in events or []:
             if not isinstance(event, dict) or event.get("event_action") != "Renamed":
                 continue
             try:
-                ids.append(int(event["event_id"]))
+                found[int(event["event_id"])] = str(event.get("event_status") or "").lower()
             except (KeyError, TypeError, ValueError):
                 continue
-        return max(ids, default=0)
+        return found
 
-    def _wait_for_rename_workflow(
-        self, exp_id: str, before: int, poll_interval: float
-    ) -> int | None:
-        """Id of the rename workflow created after ``before``, or None on timeout."""
+    def _wait_for_rename_event(self, exp_id: str, before: int, poll_interval: float) -> int | None:
+        """Id of the rename event created after ``before``, or None on timeout."""
         deadline = monotonic() + RENAME_WORKFLOW_APPEAR_SECONDS
         while True:
-            latest = self._latest_rename_event(exp_id)
+            latest = max(self._rename_events(exp_id), default=0)
             if latest > before:
                 return latest
             if monotonic() >= deadline:
                 return None
             sleep(min(poll_interval, 5.0))
 
-    def _workflow_status(self, workflow_id: int) -> str:
-        """Lower-cased ``status`` of a workflow, or ``""`` if absent."""
-        body = self.client.get(f"/xapi/workflows/{workflow_id}").json()
-        status = body.get("status") if isinstance(body, dict) else None
-        return str(status or "").lower()
-
-    def _wait_for_workflow(
-        self, workflow_id: int, rename_timeout: float, poll_interval: float
+    def _wait_for_rename_event_status(
+        self, exp_id: str, event_id: int, rename_timeout: float, poll_interval: float
     ) -> str:
-        """Poll a workflow until it is terminal; on timeout, describe where it stopped."""
+        """Poll one rename event until it is terminal; on timeout, describe where it stopped."""
         deadline = monotonic() + rename_timeout
         while True:
-            status = self._workflow_status(workflow_id)
-            if status in _TERMINAL_WORKFLOW_STATUSES:
+            status = self._rename_events(exp_id).get(event_id, "")
+            if status == "complete" or status.startswith("failed"):
                 return status
             if monotonic() >= deadline:
                 return f"{status or 'unknown'} after {rename_timeout:.0f}s"
-            logger.debug("Workflow %d: %s", workflow_id, status)
+            logger.debug("Rename event %d on %s: %s", event_id, exp_id, status)
             sleep(poll_interval)

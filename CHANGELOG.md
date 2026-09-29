@@ -11,8 +11,9 @@ All notable changes to this project will be documented in this file.
   archive directory and can run for hours, outliving any proxy timeout; the
   old code waited on the PUT, ate the 504, and retried a rename that was
   already running. The PUT is now single-shot with a short read timeout,
-  the `Renamed` workflow is polled to `Complete` (4 h cap per rename), and
-  the next rename does not start until the previous one has finished.
+  the `Renamed` event in the experiment's history is polled to `Complete`
+  (4 h cap per rename), and the next rename does not start until the
+  previous one has finished.
 - `XNATClient.put` accepts the same per-call `max_retries` override `get`
   and `delete` already had.
 

@@ -25,11 +25,11 @@ def wire_rename_confirmation(
 ) -> dict[str, int]:
     """Make the fake server behave like XNAT does on an experiment rename.
 
-    A PUT that reaches the server creates a ``Renamed`` workflow, which then
-    appears in that experiment's history; ``/xapi/workflows/{id}`` reports
-    ``status`` for it. Returns the ``{experiment id: workflow id}`` map the
-    fake fills in as PUTs land, so a test can also fake a PUT that raised
-    after reaching the server by inserting an entry itself.
+    A PUT that reaches the server creates a ``Renamed`` event in that
+    experiment's history, carrying the rename's live ``event_status``.
+    Returns the ``{experiment id: event id}`` map the fake fills in as PUTs
+    land, so a test can also fake a PUT that raised after reaching the
+    server by inserting an entry itself.
     """
     landed: dict[str, int] = {}
 
@@ -38,13 +38,16 @@ def wire_rename_confirmation(
 
     def get_json(path: str, **_: object) -> object:
         exp_id = path.split("/")[3]
-        workflow = landed.get(exp_id)
-        events = [{"event_action": "Renamed", "event_id": workflow}] if workflow else []
+        event = landed.get(exp_id)
+        events = (
+            [{"event_action": "Renamed", "event_id": event, "event_status": status}]
+            if event
+            else []
+        )
         return {"events": events}
 
     fake_client.put.side_effect = put or default_put
     fake_client.get_json.side_effect = get_json
-    fake_client.get.return_value.json.return_value = {"status": status}
     return landed
 
 
@@ -403,7 +406,7 @@ class TestPlanLabelNormalization:
 
 
 class TestApplyLabelNormalization:
-    def test_applies_each_rename_via_put_and_confirms_via_workflow(self, fake_client) -> None:
+    def test_applies_each_rename_via_put_and_confirms_via_history(self, fake_client) -> None:
         service = SessionLabelService(fake_client)
         wire_rename_confirmation(fake_client)
 
@@ -418,12 +421,12 @@ class TestApplyLabelNormalization:
         fake_client.put.assert_any_call(
             "/data/experiments/E2", params={"label": "NEWE2"}, timeout=60, max_retries=0
         )
-        fake_client.get.assert_any_call("/xapi/workflows/100")
-        fake_client.get.assert_any_call("/xapi/workflows/101")
+        fake_client.get_json.assert_any_call("/data/experiments/E1/history")
+        fake_client.get_json.assert_any_call("/data/experiments/E2/history")
 
-    def test_put_timeout_still_counts_when_workflow_completes(self, fake_client) -> None:
+    def test_put_timeout_still_counts_when_rename_completes(self, fake_client) -> None:
         # A 504 / read timeout after the PUT was sent: XNAT is still
-        # renaming. Confirm through the workflow rather than retrying.
+        # renaming. Confirm through the history rather than retrying.
         service = SessionLabelService(fake_client)
         landed = wire_rename_confirmation(fake_client)
 
@@ -438,7 +441,7 @@ class TestApplyLabelNormalization:
         assert result == {"renamed": 1, "failed": []}
         assert fake_client.put.call_count == 1
 
-    def test_put_error_with_no_workflow_reports_the_put_error(
+    def test_put_error_with_no_rename_event_reports_the_put_error(
         self, fake_client, monkeypatch
     ) -> None:
         monkeypatch.setattr(session_labels, "RENAME_WORKFLOW_APPEAR_SECONDS", 0.0)
@@ -452,7 +455,7 @@ class TestApplyLabelNormalization:
         assert [f["id"] for f in result["failed"]] == ["E1"]
         assert "connection reset" in result["failed"][0]["error"]
 
-    def test_clean_put_with_no_workflow_is_a_failure(self, fake_client, monkeypatch) -> None:
+    def test_clean_put_with_no_rename_event_is_a_failure(self, fake_client, monkeypatch) -> None:
         monkeypatch.setattr(session_labels, "RENAME_WORKFLOW_APPEAR_SECONDS", 0.0)
         service = SessionLabelService(fake_client)
         wire_rename_confirmation(fake_client, put=lambda path, **_: None)
@@ -460,9 +463,9 @@ class TestApplyLabelNormalization:
         result = service.apply_label_normalization(_plan("E1"), poll_interval=0)
 
         assert result["renamed"] == 0
-        assert "no rename workflow appeared" in result["failed"][0]["error"]
+        assert "no rename event appeared" in result["failed"][0]["error"]
 
-    def test_failed_workflow_is_reported(self, fake_client) -> None:
+    def test_failed_rename_is_reported(self, fake_client) -> None:
         service = SessionLabelService(fake_client)
         wire_rename_confirmation(fake_client, status="Failed")
 
@@ -471,7 +474,7 @@ class TestApplyLabelNormalization:
         assert result["renamed"] == 0
         assert "ended 'failed'" in result["failed"][0]["error"]
 
-    def test_workflow_still_running_at_timeout_is_reported(self, fake_client) -> None:
+    def test_rename_still_running_at_timeout_is_reported(self, fake_client) -> None:
         service = SessionLabelService(fake_client)
         wire_rename_confirmation(fake_client, status="In Progress")
 
