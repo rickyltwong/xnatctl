@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.6.0 - 2026-10-08
+
+**Fixes**
+
+- `session normalize-labels` now confirms each rename through its XNAT
+  workflow instead of the HTTP reply. A large session's relabel moves its
+  archive directory and can run for hours, outliving any proxy timeout; the
+  old code waited on the PUT, ate the 504, and retried a rename that was
+  already running. The PUT is now single-shot with a short read timeout,
+  the `Renamed` event in the experiment's history is polled to `Complete`
+  (4 h cap per rename), and the next rename does not start until the
+  previous one has finished.
+- `XNATClient.put` accepts the same per-call `max_retries` override `get`
+  and `delete` already had.
+
+**Features**
+
+- `session normalize-labels --subject-pattern REGEX` limits the pass to
+  subjects whose label matches, so a project's pilot or scanner-side
+  subjects that are still outside its naming convention keep their
+  experiment labels until the subjects themselves are renamed.
+
 ## 0.5.1 - 2026-08-27
 
 **Fixes**

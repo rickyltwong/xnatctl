@@ -11,18 +11,27 @@ Modern CLI for XNAT neuroimaging server administration. Resource-centric command
 
 ```
 xnatctl
-  config    init | show | use-context | current-context | add-profile | remove-profile
+  config    init | show | use-context | current-context | add-profile | remove-profile | set-password
   auth      login | logout | status | test
-  project   list | show | create
-  subject   list | show | rename | delete
-  session   list | show | download | upload | upload-exam
+  project   list | show | create | users | grant | revoke | access | requests
+            | transfer | transfer-init | transfer-check | transfer-status | transfer-history
+  subject   list | show | rename | delete | share | unshare | vars | vars set
+  session   list | show | download | upload | upload-dicom | upload-exam | normalize-labels
+            | share | unshare | vars | vars set
   scan      list | show | delete | download
-  resource  list | show | upload | download
-  prearchive list | archive | delete | rebuild | move
+  resource  list | show | upload | download | refresh
+  prearchive list | archive | delete | rebuild | move | settings
   pipeline  list | run | status | jobs | cancel
-  admin     refresh-catalogs | user add | audit
-  dicom     validate | inspect | list-tags | anonymize
+  admin     refresh-catalogs | audit | version | site-config (get/set) | plugins (show)
+            | user (list/show/add/enable/disable/roles/remove/kill-sessions/groups)
+            | docker (images/hubs/pull/server)
+  command | wrapper | container          (Container Service)
+  event | anon | scp | search            (Event Service, anon scripts, DICOM SCP receivers, saved searches)
+  xsync     sync | sync-subject | status | progress | history | list | setup | refresh-credentials
+  dicom     validate | inspect | list-tags | anonymize | modify
+  local     extract
   api       get | post | put | delete                    (raw REST escape hatch)
+  upgrade
   whoami
   health ping
   completion [bash|zsh|fish]
@@ -45,7 +54,7 @@ xnatctl
 | `--subject` | `-S` | Subject ID/label | Used in `session list` (filter) and `session upload` |
 | `--experiment` | `-E` | Experiment ID or label | **Labels require -P** (explicit or via profile `default_project`) |
 
-**Critical**: `-E LABEL` without `-P` fails. `-E XNAT_E00001` (accession ID) works without `-P`.
+`-E LABEL` needs a project: `-P`, or the profile's `default_project`. `-E XNAT_E00001` (accession ID) needs neither.
 
 ## Quick Reference: Common Commands
 
@@ -132,15 +141,15 @@ xnatctl session upload-exam ./exam_root -P NEURO -S SUB001 -E SESS001 --attach-o
 # List scans
 xnatctl scan list -E XNAT_E00001
 
-# Delete specific scans (comma-separated with -s flag)
-xnatctl scan delete -E XNAT_E00042 -P BRAIN -s 1,3,5 --dry-run
-xnatctl scan delete -E XNAT_E00042 -P BRAIN -s 1,3,5 --yes
+# Delete specific scans (comma-separated, or repeat --scans)
+xnatctl scan delete -E XNAT_E00042 -P BRAIN --scans 1,3,5 --dry-run
+xnatctl scan delete -E XNAT_E00042 -P BRAIN --scans 1,3,5 --yes
 
 # Delete ALL scans
-xnatctl scan delete -E XNAT_E00042 -s "*" --yes
+xnatctl scan delete -E XNAT_E00042 --scans "*" --yes
 
 # Download scans as ZIP
-xnatctl scan download -E XNAT_E00001 -s 1,2,3 --out ./scans
+xnatctl scan download -E XNAT_E00001 --scans 1,2,3 --out ./scans
 ```
 
 ### Resources
@@ -156,7 +165,7 @@ xnatctl resource list XNAT_E00001 --scan 1
 xnatctl resource upload XNAT_E00001 MY_RESOURCE ./data/
 
 # Download resource
-xnatctl resource download XNAT_E00001 MY_RESOURCE --file ./output.zip
+xnatctl resource download XNAT_E00001 MY_RESOURCE --output-file ./output.zip
 ```
 
 ### Prearchive
@@ -188,7 +197,7 @@ xnatctl prearchive move MYPROJ 20240115_143022 SessionFolder TARGET_PROJ
 xnatctl pipeline list --project MYPROJ
 
 # Run pipeline and wait for completion
-xnatctl pipeline run dcm2niix -e XNAT_E00001 -P key1=val1 -P key2=val2 --wait
+xnatctl pipeline run dcm2niix -E XNAT_E00001 --param key1=val1 --param key2=val2 --wait
 
 # Check job status (with watch mode)
 xnatctl pipeline status JOB_ID --watch
@@ -213,8 +222,8 @@ xnatctl admin audit -P MYPROJ --since 7d --limit 50
 ### Raw API (escape hatch)
 
 ```bash
-# GET with query parameters (use -P key=value, NOT query strings in path)
-xnatctl api get /data/projects/MYPROJ/subjects -P format=json
+# GET with query parameters (use --params key=value, NOT query strings in path)
+xnatctl api get /data/projects/MYPROJ/subjects --params format=json
 
 # POST with data
 xnatctl api post /data/projects -d '{"ID":"NEW_PROJ","name":"New Project"}'
@@ -269,11 +278,11 @@ profiles:
 
 1. **`-o` is output FORMAT** (`json`/`table`), NOT output directory. Use `--out` for download destination.
 2. **Filter uses colon**: `--filter "label:CTRL_*"` not `label=CTRL_*`.
-3. **Scan IDs use `-s` flag**: `-s 1,3,5` (comma-separated) or `-s "*"` (all). NOT positional args.
+3. **Scan IDs use `--scans`**: `--scans 1,3,5` (comma-separated, or repeat the flag) or `--scans "*"` (all). NOT positional args. `-s` is a deprecated alias.
 4. **Prearchive uses positional args**: `PROJECT TIMESTAMP SESSION_NAME`. NOT `-P`/`-E` flags.
-5. **API params use `-P key=value`**: NOT query strings appended to path.
-6. **Workers flag varies**: session download uses `-w`, upload uses `--workers`. Both control parallelism.
-7. **`-P` flag is overloaded**: In session/scan commands, `-P` means `--project`. In `api` and `pipeline` commands, `-P` means parameter (`key=value`). Context matters.
+5. **API params use `--params key=value`** (pipeline parameters: `--param key=value`): NOT query strings appended to path.
+6. **`-w`/`--workers` sets parallelism** on session download, upload, upload-exam, and admin refresh-catalogs.
+7. **`-P` always means `--project`**. Request and pipeline parameters take the long flags in item 5.
 8. **Default timeout is 6 hours** (21600s) for large DICOM transfers.
 9. **upload-exam waits for archive**: By default waits for XNAT to finish archiving before attaching resources. Control with `--wait-for-archive`/`--no-wait-for-archive`.
 10. **`default_project` fallback**: If profile has `default_project`, `-P` can be omitted and session/scan commands auto-resolve.

@@ -26,17 +26,41 @@ project's subjects still need normalizing.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
 from collections.abc import Sequence
 from datetime import date, datetime, time
+from time import monotonic, sleep
 from typing import Any
 
-from xnatctl.core.exceptions import InvalidIdentifierError, SessionExpiredError
+from xnatctl.core.exceptions import (
+    InvalidIdentifierError,
+    OperationError,
+    ServerError,
+    SessionExpiredError,
+    XNATConnectionError,
+)
 from xnatctl.core.validation import quote_path_segment, validate_xnat_label
 
 from .base import BaseService
 from .hierarchy import HierarchyService
+
+logger = logging.getLogger(__name__)
+
+#: Read timeout for the rename PUT itself. XNAT relabels an experiment by
+#: moving its archive directory, which for a large session takes hours and
+#: outlives any proxy timeout, so the HTTP reply is only a hint that the
+#: request was accepted. The rename's *workflow* is the source of truth.
+RENAME_PUT_TIMEOUT_SECONDS = 60
+#: How long after the PUT to wait for the "Renamed" workflow to show up in
+#: the experiment's history before concluding the request never landed.
+RENAME_WORKFLOW_APPEAR_SECONDS = 120.0
+#: Cap on one rename's server-side completion before it is reported as failed.
+RENAME_TIMEOUT_SECONDS = 4 * 60 * 60.0
+#: Interval between workflow status polls.
+RENAME_POLL_INTERVAL_SECONDS = 30.0
+
 
 #: XSI type -> modality code used to build experiment labels.
 XSI_MODALITY_MAP: dict[str, str] = {
@@ -478,22 +502,34 @@ class SessionLabelService(BaseService):
                 on_stack.add(blocker_id)
         return ordered
 
-    def apply_label_normalization(self, plan: dict[str, Any]) -> dict[str, Any]:
+    def apply_label_normalization(
+        self,
+        plan: dict[str, Any],
+        *,
+        rename_timeout: float = RENAME_TIMEOUT_SECONDS,
+        poll_interval: float = RENAME_POLL_INTERVAL_SECONDS,
+    ) -> dict[str, Any]:
         """Execute a rename plan produced by :meth:`plan_label_normalization`.
 
         Renames are applied one experiment at a time IN PLAN ORDER -- the
         plan places a label-vacating rename before the rename that reuses
         that label, so reordering would reintroduce the collision the
-        planner resolved. A failure on one does
-        not stop the rest -- it is collected in ``"failed"`` instead, the
-        same per-item isolation the ported script used. A session expiry
-        aborts the whole run rather than being counted as a per-item
-        failure, since XNAT would otherwise reject every remaining rename
-        in a way indistinguishable from a real per-experiment error.
+        planner resolved. Each rename is confirmed by its server-side
+        workflow, not by the HTTP reply (see :meth:`_rename_experiment`),
+        and the next rename does not start until the previous one has
+        finished moving the archive. A failure on one does not stop the
+        rest -- it is collected in ``"failed"`` instead, the same per-item
+        isolation the ported script used. A session expiry aborts the whole
+        run rather than being counted as a per-item failure, since XNAT
+        would otherwise reject every remaining rename in a way
+        indistinguishable from a real per-experiment error.
 
         Args:
             plan: The dict returned by :meth:`plan_label_normalization`.
                 Only its ``"renames"`` key is used.
+            rename_timeout: Seconds to wait for one rename's workflow to
+                reach a terminal status before reporting it as failed.
+            poll_interval: Seconds between workflow status polls.
 
         Returns:
             Dict with ``"renamed"`` (count successfully applied) and
@@ -504,9 +540,11 @@ class SessionLabelService(BaseService):
         failed: list[dict[str, Any]] = []
         for item in plan["renames"]:
             try:
-                self.client.put(
-                    f"/data/experiments/{quote_path_segment(item['id'])}",
-                    params={"label": item["new_label"]},
+                self._rename_experiment(
+                    item["id"],
+                    item["new_label"],
+                    rename_timeout=rename_timeout,
+                    poll_interval=poll_interval,
                 )
                 renamed += 1
             except SessionExpiredError:
@@ -521,3 +559,105 @@ class SessionLabelService(BaseService):
                     }
                 )
         return {"renamed": renamed, "failed": failed}
+
+    def _rename_experiment(
+        self,
+        exp_id: str,
+        new_label: str,
+        *,
+        rename_timeout: float,
+        poll_interval: float,
+    ) -> None:
+        """Rename one experiment and wait for XNAT to finish doing it.
+
+        The PUT is single-shot with a short read timeout: a reply that
+        arrives means the request was accepted, and a timeout, dropped
+        socket or proxy 5xx after the request was sent means nothing
+        either way -- XNAT keeps relabelling regardless, so retrying the
+        PUT would only stack a second rename behind the first. What
+        decides success is a new ``Renamed`` event appearing in the
+        experiment's history and reaching ``Complete``. The history
+        endpoint reports each event's live workflow status, so it is
+        polled directly rather than ``/xapi/workflows/{id}``, whose ids do
+        not line up with history event ids on every XNAT version.
+
+        Raises:
+            OperationError: no rename event appeared, the rename ended
+                ``Failed``, or it was still running at ``rename_timeout``.
+            XNATConnectionError, ServerError: the PUT failed AND no rename
+                event appeared afterwards, so the request never reached XNAT.
+        """
+        path = f"/data/experiments/{quote_path_segment(exp_id)}"
+        before = max(self._rename_events(exp_id), default=0)
+        put_error: Exception | None = None
+        try:
+            self.client.put(
+                path,
+                params={"label": new_label},
+                timeout=RENAME_PUT_TIMEOUT_SECONDS,
+                max_retries=0,
+            )
+        except (XNATConnectionError, ServerError) as exc:
+            put_error = exc
+            logger.info(
+                "Rename PUT for %s did not return cleanly (%s); confirming via history",
+                exp_id,
+                exc,
+            )
+
+        event_id = self._wait_for_rename_event(exp_id, before, poll_interval)
+        if event_id is None:
+            if put_error is not None:
+                raise put_error
+            raise OperationError(
+                "rename",
+                f"no rename event appeared for {exp_id} within "
+                f"{RENAME_WORKFLOW_APPEAR_SECONDS:.0f}s",
+            )
+
+        logger.info("Rename %s -> %s: waiting on rename event %d", exp_id, new_label, event_id)
+        status = self._wait_for_rename_event_status(exp_id, event_id, rename_timeout, poll_interval)
+        if status != "complete":
+            raise OperationError(
+                "rename",
+                f"rename of {exp_id} -> {new_label} (event {event_id}) ended {status!r}",
+            )
+
+    def _rename_events(self, exp_id: str) -> dict[int, str]:
+        """``{event_id: lower-cased status}`` for every ``Renamed`` event in the history."""
+        body = self.client.get_json(f"/data/experiments/{quote_path_segment(exp_id)}/history")
+        events = body.get("events") if isinstance(body, dict) else None
+        found: dict[int, str] = {}
+        for event in events or []:
+            if not isinstance(event, dict) or event.get("event_action") != "Renamed":
+                continue
+            try:
+                found[int(event["event_id"])] = str(event.get("event_status") or "").lower()
+            except (KeyError, TypeError, ValueError):
+                continue
+        return found
+
+    def _wait_for_rename_event(self, exp_id: str, before: int, poll_interval: float) -> int | None:
+        """Id of the rename event created after ``before``, or None on timeout."""
+        deadline = monotonic() + RENAME_WORKFLOW_APPEAR_SECONDS
+        while True:
+            latest = max(self._rename_events(exp_id), default=0)
+            if latest > before:
+                return latest
+            if monotonic() >= deadline:
+                return None
+            sleep(min(poll_interval, 5.0))
+
+    def _wait_for_rename_event_status(
+        self, exp_id: str, event_id: int, rename_timeout: float, poll_interval: float
+    ) -> str:
+        """Poll one rename event until it is terminal; on timeout, describe where it stopped."""
+        deadline = monotonic() + rename_timeout
+        while True:
+            status = self._rename_events(exp_id).get(event_id, "")
+            if status == "complete" or status.startswith("failed"):
+                return status
+            if monotonic() >= deadline:
+                return f"{status or 'unknown'} after {rename_timeout:.0f}s"
+            logger.debug("Rename event %d on %s: %s", event_id, exp_id, status)
+            sleep(poll_interval)
