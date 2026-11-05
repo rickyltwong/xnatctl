@@ -114,8 +114,8 @@ def test_upload_archive_or_raise_sets_import_params(tmp_path, monkeypatch) -> No
 
     (call,) = posts
     assert call["url"] == "/data/services/import"
-    assert call["headers"] == {"Content-Type": "application/zip"}
-    assert call["cookies"] == {"JSESSIONID": "TOKEN"}
+    assert call["headers"] == {"Content-Type": "application/zip", "Cookie": "JSESSIONID=TOKEN"}
+    assert call["cookies"] is None
     assert call["body"] == b"zip-data"
     assert clients[0]["timeout"].read == DEFAULT_HTTP_TIMEOUT_SECONDS
 
@@ -474,7 +474,7 @@ def test_upload_archive_or_raise_converts_zip_to_tar(tmp_path, monkeypatch) -> N
     )
 
     (call,) = posts
-    assert call["headers"] == {"Content-Type": "application/x-tar"}
+    assert call["headers"] == {"Content-Type": "application/x-tar", "Cookie": "JSESSIONID=TOKEN"}
     assert call["body"] is not None
     with tarfile.open(fileobj=BytesIO(call["body"]), mode="r") as tf:
         assert set(tf.getnames()) == {"alpha/first.dcm", "beta/second.dcm"}

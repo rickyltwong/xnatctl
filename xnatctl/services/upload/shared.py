@@ -31,6 +31,26 @@ DICOM_EXTENSIONS = {".dcm", ".ima", ".img", ".dicom"}
 DEFAULT_UPLOAD_WORKERS = 4
 
 
+def session_cookie_header(token: str | None) -> dict[str, str]:
+    """The ``Cookie`` header that carries *token* on an upload request.
+
+    Uploads send the token in an explicit header, never through ``cookies=``.
+    XNAT answers a request on an expired session with 401 and a Set-Cookie for
+    a new anonymous JSESSIONID under its own path. The httpx client keeps that
+    cookie and sends it ahead of any ``cookies=`` value, and XNAT reads the
+    first one, so the retry after :meth:`SessionRefresher.refresh` still went
+    out as the dead session. The stdlib cookie jar adds nothing to a request
+    that already has a Cookie header.
+
+    Args:
+        token: JSESSIONID, or None to send no session cookie.
+
+    Returns:
+        ``{"Cookie": "JSESSIONID=<token>"}``, or ``{}`` when there is no token.
+    """
+    return {"Cookie": f"JSESSIONID={token}"} if token else {}
+
+
 class SessionRefresher:
     """Thread-safe XNAT session token manager.
 

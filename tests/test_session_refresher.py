@@ -180,8 +180,8 @@ class TestGradualUpload401Retry:
 
         def mock_post(*args: object, **kwargs: object) -> MagicMock:
             nonlocal call_count
-            cookies = kwargs.get("cookies", {})
-            call_tokens.append(cookies.get("JSESSIONID"))
+            cookie = kwargs.get("headers", {}).get("Cookie", "")  # type: ignore[attr-defined]
+            call_tokens.append(cookie.removeprefix("JSESSIONID=") or None)
             call_count += 1
             if call_count == 1:
                 return resp_401
