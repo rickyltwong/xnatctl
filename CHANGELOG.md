@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 **Fixes**
 
+- Uploads now reach XNAT with the refreshed session after a re-login.
+  XNAT answers a request on an expired session with 401 and a Set-Cookie
+  for a new anonymous JSESSIONID; the upload client kept that cookie and
+  sent it ahead of the refreshed token, so every retry still went out as
+  the dead session. An `upload-exam` whose file scan outlived the
+  15-minute session timeout got 401 on every warmup file and the circuit
+  breaker aborted it. The gradual and archive upload paths now send the
+  token in an explicit `Cookie` header.
 - Gradual uploads no longer lose files silently. XNAT stored each scan's
   first file under the request name `upload.dcm`, so when several of a
   series' first files arrived together they overwrote each other, and every

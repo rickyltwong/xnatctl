@@ -35,7 +35,7 @@ from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_time
 from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
 
 from .archives import _maybe_zip_to_tar
-from .shared import SessionRefresher
+from .shared import SessionRefresher, session_cookie_header
 
 logger = logging.getLogger(__name__)
 
@@ -292,9 +292,11 @@ def upload_single_archive(
                     return client.post(
                         IMPORT_ENDPOINT,
                         params=params,
-                        headers={"Content-Type": content_type},
+                        headers={
+                            "Content-Type": content_type,
+                            **session_cookie_header(jar.get("JSESSIONID")),
+                        },
                         content=data,
-                        cookies=jar,
                     )
 
             try:
@@ -309,7 +311,10 @@ def upload_single_archive(
             finally:
                 if created_session:
                     try:
-                        client.delete("/data/JSESSION", cookies=cookies)
+                        client.delete(
+                            "/data/JSESSION",
+                            headers=session_cookie_header(cookies.get("JSESSIONID")),
+                        )
                     except Exception:  # noqa: BLE001  # best-effort cleanup: deleting a created JSESSION must not fail the upload
                         pass
 
