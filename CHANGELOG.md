@@ -14,6 +14,13 @@ All notable changes to this project will be documented in this file.
   15-minute session timeout got 401 on every warmup file and the circuit
   breaker aborted it. The gradual and archive upload paths now send the
   token in an explicit `Cookie` header.
+- Gradual uploads no longer lose files silently. XNAT stored each scan's
+  first file under the request name `upload.dcm`, so when several of a
+  series' first files arrived together they overwrote each other, and every
+  POST still returned 200. A 102,598-file session lost 21 files with 0
+  failures reported. Gradual uploads now send `rename=true`, so XNAT names
+  every file from its DICOM header. Upgrade before any parallel gradual
+  upload, `upload-exam` included.
 
 ## 0.6.0 - 2026-10-08
 

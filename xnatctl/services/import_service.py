@@ -93,7 +93,9 @@ def build_import_params(
         overwrite_files: Whether existing files may be replaced.
         quarantine: Whether imported data lands in quarantine.
         trigger_pipelines: Whether the import fires autorun pipelines.
-        rename: Whether XNAT may rename the session on collision.
+        rename: Whether XNAT may rename the session on collision. For
+            ``gradual-DICOM``, true makes XNAT name every file from its DICOM
+            header instead of the request file name.
         inbody: True when the archive is the raw request body rather than a
             multipart upload.
         ignore_unparsable: Whether non-DICOM files in the archive are skipped
