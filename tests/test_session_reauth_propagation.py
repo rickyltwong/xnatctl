@@ -276,7 +276,8 @@ class TestTheBatchPathAlsoReauthenticates:
                 return None
 
             def post(self, url: str, **kw: object) -> httpx.Response:
-                jar = dict(kw.get("cookies") or {})
+                cookie = dict(kw.get("headers") or {}).get("Cookie", "")
+                jar = dict([cookie.split("=", 1)]) if cookie else {}
                 posts.append(jar)
                 token = jar.get("JSESSIONID")
                 status = 200 if token == "FRESH" else 401
