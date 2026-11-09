@@ -168,6 +168,10 @@ def _upload_single_file_gradual(
                             subject=subject,
                             session=session,
                             entity_keys="experiment",
+                            # Without rename, XNAT stores a scan's first file under
+                            # the request name ``upload.dcm``; first files sent
+                            # concurrently overwrite each other with a 200 each.
+                            rename=True,
                             inbody=True,
                             direct_archive=direct_archive,
                         ),
