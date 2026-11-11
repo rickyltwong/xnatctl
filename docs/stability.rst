@@ -94,6 +94,14 @@ What is covered
        move between minor releases -- pin an exact version if you import them.
        ``BaseService._get``/``_post`` remain the sanctioned extension point
        for a subclass, but "sanctioned" is not "semver-covered."
+   * - Docker image (``ghcr.io/rickyltwong/xnatctl``): the user it runs as,
+       its in-container paths, and its entrypoint
+     - Provisional
+     - May change in any release, a patch release included (0.6.2 switched it
+       from root to an unprivileged user). Every such change is listed under
+       ``**Breaking**`` in the :doc:`changelog` with its migration. Pull
+       ``:X.Y.Z`` rather than ``:latest`` or ``:main`` to choose when you take
+       one.
 
 
 How deprecation works
