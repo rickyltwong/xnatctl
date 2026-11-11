@@ -21,6 +21,8 @@ All notable changes to this project will be documented in this file.
   failures reported. Gradual uploads now send `rename=true`, so XNAT names
   every file from its DICOM header. Upgrade before any parallel gradual
   upload, `upload-exam` included.
+- Locked `certifi` bumped 2026.1.4 -> 2026.10.23 to close a published
+  advisory (PYSEC-2026-4320), staying within its existing range.
 
 ## 0.6.0 - 2026-10-08
 
