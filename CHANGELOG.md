@@ -6,6 +6,17 @@ All notable changes to this project will be documented in this file.
 
 **Fixes**
 
+- The session cookie no longer follows a redirect off the XNAT server. The
+  client follows redirects, and both its own `JSESSIONID` and the one XNAT
+  sets went along to whatever host a 302 named (an open redirect, a
+  misconfigured proxy), handing over a live session. Cookies now go only to
+  the configured server's own scheme, host and port: a redirect to another
+  host, a subdomain, another port, or down from https to http carries none.
+  An http-to-https upgrade on the same host still keeps the session.
+- `XNATCTL_DEBUG=1` no longer writes the session token. Its wire trace logs
+  every response header, XNAT's `Set-Cookie: JSESSIONID=...` included, to
+  stderr and to the `--log-file` diagnostics file. `JSESSIONID` values are
+  now redacted to `***` in both.
 - The Docker image no longer contains pip. The base image's pip 25.0.1
   carries five published advisories (PYSEC-2026-1796, PYSEC-2026-196,
   PYSEC-2026-2875, PYSEC-2026-2876, PYSEC-2026-3721), and xnatctl never

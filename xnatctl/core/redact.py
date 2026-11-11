@@ -11,6 +11,9 @@ otherwise ride along into every error message and log line that echoes it.
 :func:`redact_url_userinfo` does the authority half alone for a single URL of
 any scheme, which validation needs for values that are not http(s) at all.
 
+:func:`redact_session_cookies` rewrites ``JSESSIONID`` cookie values, which
+the debug wire trace logs from XNAT's ``Set-Cookie`` headers.
+
 The function is intentionally conservative: if the input contains no URL,
 or no URL has a secret-shaped key, the input is returned unchanged
 byte-for-byte. This keeps redaction invisible to any caller whose output
@@ -137,3 +140,21 @@ def redact_url_query(text: str) -> str:
         return urlunsplit((scheme, netloc, path, "&".join(new_parts), fragment)) + trailing
 
     return _URL_RE.sub(_scrub, text)
+
+
+# A session cookie's value is either a double-quoted string (RFC 6265 allows
+# it) or runs to the next attribute separator, whitespace, quote (the closing
+# quote of httpcore's bytes repr), or comma.
+_SESSION_COOKIE_RE = re.compile(r"(JSESSIONID=)(?:\"[^\"]*\"|[^;\s'\",]+)", re.IGNORECASE)
+
+
+def redact_session_cookies(text: str) -> str:
+    """Return ``text`` with every ``JSESSIONID`` cookie value rewritten to ``***``.
+
+    ``XNATCTL_DEBUG``'s wire trace logs each response header, XNAT's
+    ``Set-Cookie: JSESSIONID=...`` included, and that value is a live session.
+    Text without a session cookie is returned unchanged.
+    """
+    if "jsessionid=" not in text.lower():
+        return text
+    return _SESSION_COOKIE_RE.sub(r"\1***", text)
