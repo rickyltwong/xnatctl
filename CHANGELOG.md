@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+**Breaking**
+
+- The Docker image runs as an unprivileged `xnatctl` user (UID 1000)
+  instead of root. The config directory inside the container moved from
+  `/root/.config/xnatctl` to `/home/xnatctl/.config/xnatctl`, so a config
+  mounted at the old path is no longer read. To keep using a host config,
+  run the container as your own user with the config under a writable
+  `HOME`:
+  `docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v ~/.config/xnatctl:/tmp/.config/xnatctl ghcr.io/rickyltwong/xnatctl:main ...`.
+  Runs configured only through `XNAT_URL`/`XNAT_USER`/`XNAT_PASS` need no
+  change.
+
 **Fixes**
 
 - The session cookie no longer follows a redirect off the XNAT server. The
@@ -17,6 +29,13 @@ All notable changes to this project will be documented in this file.
   every response header, XNAT's `Set-Cookie: JSESSIONID=...` included, to
   stderr and to the `--log-file` diagnostics file. `JSESSIONID` values are
   now redacted to `***` in both.
+- The Docker image installs exactly the dependency versions in `uv.lock`,
+  on a base image pinned by digest. It used to resolve dependencies afresh
+  at build time, so the published image ran 16 package versions the
+  release was never tested with.
+- The Docker build context now holds only the package sources and lock
+  files, so an image built on a workstation no longer picks up that
+  machine's `__pycache__` files or anything else lying in the checkout.
 - The Docker image no longer contains pip. The base image's pip 25.0.1
   carries five published advisories (PYSEC-2026-1796, PYSEC-2026-196,
   PYSEC-2026-2875, PYSEC-2026-2876, PYSEC-2026-3721), and xnatctl never

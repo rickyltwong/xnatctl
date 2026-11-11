@@ -64,8 +64,9 @@ jobs:
         run: uv tool run pip-audit -r requirements-audit.txt
 
   image-build:
-    # What a build of this commit would ship today: --pull takes the current
-    # base image and pip resolves the current dependency versions.
+    # What a build of this commit ships: the digest-pinned base image and the
+    # locked dependency set. Run daily, it catches advisories published
+    # against those pins since Dependabot last moved them.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -85,13 +86,17 @@ jobs:
         run: scripts/audit_image.sh xnatctl:audit
 
   image-published:
-    # What users pull right now. `:main` is the tag the docs point at and the
-    # one docker.yml refreshes on every push to main. A schedule runs on main,
-    # so this is the same commit as image-build; it differs in the base image
-    # and dependency versions frozen in at publish time. Public image, so no
-    # registry login and no packages permission.
+    # What users pull right now: `:main` (docker.yml refreshes it on every
+    # push to main) and `:latest` (the newest release, pushed by the release
+    # step). Each was frozen at publish time, so it can carry advisories a
+    # fresh build of the same commit would not. Public image, so no registry
+    # login and no packages permission.
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: [main, latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,7 +108,7 @@ jobs:
           enable-cache: true
 
       - name: Pull the published image
-        run: docker pull ghcr.io/rickyltwong/xnatctl:main
+        run: docker pull "ghcr.io/rickyltwong/xnatctl:${{ matrix.tag }}"
 
       - name: Audit distributions installed in the published image
-        run: scripts/audit_image.sh ghcr.io/rickyltwong/xnatctl:main
+        run: scripts/audit_image.sh "ghcr.io/rickyltwong/xnatctl:${{ matrix.tag }}"
