@@ -1,0 +1,9 @@
+# Allowlist: the build context is only what the Dockerfile copies. Keeps
+# .git, local virtualenvs, caches and stale bytecode out of the image.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!xnatctl/
+**/__pycache__
+**/*.pyc

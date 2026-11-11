@@ -4,8 +4,42 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+**Breaking**
+
+- The Docker image runs as an unprivileged `xnatctl` user (UID 1000)
+  instead of root. Two things change for an existing `docker run` setup:
+  the config directory inside the container moved from
+  `/root/.config/xnatctl` to `/home/xnatctl/.config/xnatctl`, so a config
+  mounted at the old path is no longer read; and the container can write
+  only to mounted directories UID 1000 may write to, so a download target,
+  a `--log-file` path or a CI runner's workspace owned by another user
+  fails with `Permission denied`. Run the container as your own user, with
+  any config under a writable `HOME`:
+  `docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v ~/.config/xnatctl:/tmp/.config/xnatctl ghcr.io/rickyltwong/xnatctl:main ...`.
+  In a CI job container, put the same `--user` in the job's container
+  options. A run that takes its credentials from `XNAT_URL`/`XNAT_USER`/
+  `XNAT_PASS` and writes nothing to a mount needs no change.
+
 **Fixes**
 
+- The session cookie no longer follows a redirect off the XNAT server. The
+  client follows redirects, and both its own `JSESSIONID` and the one XNAT
+  sets went along to whatever host a 302 named (an open redirect, a
+  misconfigured proxy), handing over a live session. Cookies now go only to
+  the configured server's own scheme, host and port: a redirect to another
+  host, a subdomain, another port, or down from https to http carries none.
+  An http-to-https upgrade on the same host still keeps the session.
+- `XNATCTL_DEBUG=1` no longer writes the session token. Its wire trace logs
+  every response header, XNAT's `Set-Cookie: JSESSIONID=...` included, to
+  stderr and to the `--log-file` diagnostics file. `JSESSIONID` values are
+  now redacted to `***` in both.
+- The Docker image installs exactly the dependency versions in `uv.lock`,
+  on a base image pinned by digest. It used to resolve dependencies afresh
+  at build time, so the published image ran 16 package versions the
+  release was never tested with.
+- The Docker build context now holds only the package sources and lock
+  files, so an image built on a workstation no longer picks up that
+  machine's `__pycache__` files or anything else lying in the checkout.
 - The Docker image no longer contains pip. The base image's pip 25.0.1
   carries five published advisories (PYSEC-2026-1796, PYSEC-2026-196,
   PYSEC-2026-2875, PYSEC-2026-2876, PYSEC-2026-3721), and xnatctl never
@@ -15,6 +49,14 @@ All notable changes to this project will be documented in this file.
   had been stuck at 0.3.0 since 2026-08-22, so a tagless `docker pull`,
   and the command `xnatctl upgrade` prints inside a container, installed
   0.3.0. It points at 0.6.1 as of 2026-11-11.
+- The standalone release binaries are now built from the locked dependency
+  set: every package, PyInstaller and the build backend included, is
+  installed at the version and sha256 recorded in `uv.lock`. The 0.6.1
+  binaries were built from whatever PyPI served that day and shipped
+  pydantic 2.14.3 where the lockfile and the test suite use 2.12.5. Each
+  release archive also carries a build provenance attestation; check a
+  download with
+  `gh attestation verify <file> --repo rickyltwong/xnatctl`.
 
 ## 0.6.1 - 2026-11-11
 

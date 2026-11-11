@@ -175,6 +175,29 @@ beyond Docker itself:
 
    $ docker run --rm ghcr.io/rickyltwong/xnatctl:main --help
 
+The image runs as an unprivileged ``xnatctl`` user (UID 1000), so its config
+directory is ``/home/xnatctl/.config/xnatctl``. To use the profiles and session
+cache from your host, run the container as your own user and mount your config
+directory under a writable ``HOME``. The container can then read your
+owner-only (``0600``) config files, and any file it writes stays owned by you:
+
+.. code-block:: console
+
+   $ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+       -v ~/.config/xnatctl:/tmp/.config/xnatctl \
+       ghcr.io/rickyltwong/xnatctl:main project list
+
+The same goes for any directory you mount for the container to write into,
+such as a download target or a ``--log-file`` path. Running as UID 1000, the
+container can write only where UID 1000 may write, so a host directory you own
+fails with ``Permission denied`` unless you pass ``--user``. In a CI job
+container that writes into the runner's workspace, put the same ``--user``
+(the workspace owner's UID) in the job's container options.
+
+On a host where Docker enforces SELinux (RHEL, Fedora), end the volume with
+``:z`` (``-v ~/.config/xnatctl:/tmp/.config/xnatctl:z``) or the container is
+denied access to the mounted directory.
+
 Verifying Your Installation
 ----------------------------
 

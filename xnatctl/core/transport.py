@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +52,45 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BODY_SNIPPET_CHARS = 200
+
+
+def session_may_reach(url: httpx.URL, server: httpx.URL) -> bool:
+    """Whether a request to ``url`` may carry cookies for the XNAT ``server``.
+
+    Only the server's own origin (scheme, host and port), plus the one
+    cross-origin hop httpx itself trusts with ``Authorization``: an
+    http -> https upgrade on the same host with default ports.
+    """
+    if url.host != server.host:
+        return False
+    if url.scheme == server.scheme:
+        return url.port == server.port
+    return (
+        server.scheme == "http"
+        and url.scheme == "https"
+        and server.port is None
+        and url.port is None
+    )
+
+
+def drop_cookies_off_server(server_url: str) -> Callable[[httpx.Request], None]:
+    """Return a request hook that strips cookies from hops off the XNAT server.
+
+    The clients follow redirects, and httpx rebuilds each redirected request's
+    cookies from a default-policy copy of the client's jar. That copy sends a
+    cookie stored without a domain (``cookies.set``) to any host, and XNAT's
+    own host-only ``Set-Cookie: JSESSIONID`` to every subdomain, so a 302 from
+    the server handed a live session to whatever host it named. Request hooks
+    run on every hop, just before it is sent, so this is the one place that
+    sees the final request.
+    """
+    server = httpx.URL(server_url)
+
+    def hook(request: httpx.Request) -> None:
+        if not session_may_reach(request.url, server):
+            request.headers.pop("Cookie", None)
+
+    return hook
 
 
 def _body_snippet(resp: httpx.Response) -> str:
