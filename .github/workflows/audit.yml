@@ -39,7 +39,8 @@ env:
 # Three independent jobs, so a finding in one does not hide the others.
 jobs:
   lockfile:
-    # Same audit as the ci.yml `security` job: the locked runtime deps.
+    # Same audit as the ci.yml `security` job: the locked runtime deps and
+    # the release-binary toolchain.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -55,10 +56,12 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Export locked runtime dependencies
+      - name: Export locked runtime and binary-build dependencies
+        # The `binary` group is what the release-binary job installs;
+        # PyInstaller's bootloader ships inside every binary.
         run: >-
-          uv export --no-dev --no-emit-project --format requirements-txt
-          --output-file requirements-audit.txt
+          uv export --no-dev --group binary --no-emit-project
+          --format requirements-txt --output-file requirements-audit.txt
 
       - name: Audit dependencies for known vulnerabilities
         run: uv tool run pip-audit -r requirements-audit.txt
