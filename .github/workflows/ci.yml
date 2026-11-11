@@ -371,11 +371,16 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
 
   binary:
+    # Runs on every main push, not only release commits, so a broken binary
+    # build surfaces at merge time instead of mid-release. Only
+    # upload-binaries publishes, and only for a release commit.
+    #
+    # No `permissions:` block: this job executes third-party build code
+    # (PyInstaller, every dependency's wheel), so it gets the workflow-level
+    # empty token. Publishing and signing happen in upload-binaries.
     needs: auto-tag
-    if: needs.auto-tag.result == 'success' && needs.auto-tag.outputs.release_commit == 'true'
+    if: needs.auto-tag.result == 'success'
     timeout-minutes: 30
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -412,9 +417,16 @@ jobs:
           # Build a minimal shared-library Python from source.
           yum install -y openssl-devel libffi-devel bzip2-devel xz-devel > /dev/null 2>&1
           SRCVER=3.12.12
+          # sha256 of the tarball whose Sigstore bundle verifies against the
+          # 3.12 release manager (thomas@python.org, issuer
+          # https://accounts.google.com -- python.org/downloads/metadata/sigstore).
+          # Bumping SRCVER means re-verifying that signature, then re-pinning.
+          SRCSHA256=487c908ddf4097a1b9ba859f25fe46d22ccaabfb335880faac305ac62bffb79b
           PREFIX=/opt/python-shared
           cd /tmp
-          curl -sSL "https://www.python.org/ftp/python/${SRCVER}/Python-${SRCVER}.tgz" | tar xz
+          curl -fsSLO "https://www.python.org/ftp/python/${SRCVER}/Python-${SRCVER}.tgz"
+          echo "${SRCSHA256}  Python-${SRCVER}.tgz" | sha256sum -c -
+          tar xzf "Python-${SRCVER}.tgz"
           cd "Python-${SRCVER}"
           ./configure --prefix="$PREFIX" --enable-shared \
             LDFLAGS="-Wl,-rpath,$PREFIX/lib" > /dev/null 2>&1
@@ -422,11 +434,27 @@ jobs:
           make install > /dev/null 2>&1
           echo "$PREFIX/bin" >> $GITHUB_PATH
 
+      - name: Install uv
+        # Only used to export the lockfile below; no cache in a release build.
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+
+      - name: Export locked build dependencies
+        # Runtime deps plus the `binary` group (PyInstaller, hatchling, pip),
+        # every one pinned by version and sha256 from uv.lock.
+        run: >-
+          uv export --frozen --no-dev --group binary --no-emit-project
+          --format requirements-txt --output-file requirements-binary.txt
+
       - name: Install deps
+        # --require-hashes rejects anything not in the export; --only-binary
+        # keeps pip from building an sdist, which would pull that package's
+        # build backend unpinned. The project itself builds with the locked
+        # hatchling already installed, so no build isolation either.
         run: |
-          python3 -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install .
+          python3 -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-binary.txt
+          python3 -m pip install --no-deps --no-build-isolation .
 
       - name: Build binary
         run: pyinstaller xnatctl.spec --noconfirm --clean
@@ -473,7 +501,9 @@ jobs:
     needs: [auto-tag, binary]
     if: needs.auto-tag.result == 'success' && needs.auto-tag.outputs.release_commit == 'true' && needs.binary.result == 'success'
     permissions:
-      contents: write
+      contents: write # upload the release assets
+      id-token: write # Sigstore signing identity for the attestation
+      attestations: write # store the attestation
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -484,6 +514,17 @@ jobs:
         with:
           pattern: binary-*
           merge-multiple: true
+
+      - name: Attest build provenance
+        # Signed here, not in `binary`: the job that runs third-party build
+        # code holds no signing identity. Before the upload, so a failed
+        # attestation leaves no unattested assets on the release.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            xnatctl-linux-amd64.tar.gz
+            xnatctl-darwin-arm64.tar.gz
+            xnatctl-windows-amd64.zip
 
       - name: Upload to release
         env:

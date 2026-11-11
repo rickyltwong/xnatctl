@@ -45,6 +45,14 @@ All notable changes to this project will be documented in this file.
   had been stuck at 0.3.0 since 2026-08-22, so a tagless `docker pull`,
   and the command `xnatctl upgrade` prints inside a container, installed
   0.3.0. It points at 0.6.1 as of 2026-11-11.
+- The standalone release binaries are now built from the locked dependency
+  set: every package, PyInstaller and the build backend included, is
+  installed at the version and sha256 recorded in `uv.lock`. The 0.6.1
+  binaries were built from whatever PyPI served that day and shipped
+  pydantic 2.14.3 where the lockfile and the test suite use 2.12.5. Each
+  release archive also carries a build provenance attestation; check a
+  download with
+  `gh attestation verify <file> --repo rickyltwong/xnatctl`.
 
 ## 0.6.1 - 2026-11-11
 
