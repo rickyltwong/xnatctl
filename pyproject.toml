@@ -100,6 +100,15 @@ dev = [
     "types-PyYAML>=6.0.0",
     "types-defusedxml>=0.7",
 ]
+# Everything the release-binary job installs besides the runtime deps. Locked
+# here so `uv export` hands that job a hash-pinned list: PyInstaller, the
+# build backend (installed up front so pip needs no unpinned build isolation),
+# and pip itself.
+binary = [
+    "hatchling>=1.27",
+    "pip>=25",
+    "pyinstaller>=6.10",
+]
 
 [tool.ruff]
 line-length = 100
