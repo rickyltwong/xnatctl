@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import ssl
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -46,12 +47,24 @@ from xnatctl.core.exceptions import (
 from xnatctl.core.redact import redact_url_query
 from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, RETRYABLE_TRANSPORT_ERRORS
 from xnatctl.core.timeouts import DEFAULT_CONNECT_TIMEOUT_SECONDS, build_httpx_timeout
+from xnatctl.core.transport import drop_cookies_off_server
 from xnatctl.core.validation import validate_server_url
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _async_hook(
+    hook: Callable[[httpx.Request], None],
+) -> Callable[[httpx.Request], Awaitable[None]]:
+    """Adapt a sync request hook to ``httpx.AsyncClient``, which awaits its hooks."""
+
+    async def run(request: httpx.Request) -> None:
+        hook(request)
+
+    return run
 
 
 @dataclass
@@ -214,6 +227,7 @@ class AsyncXNATClient:
                     timeout=build_httpx_timeout(self.timeout),
                     verify=await self.httpx_verify(),
                     follow_redirects=True,
+                    event_hooks={"request": [_async_hook(drop_cookies_off_server(self.base_url))]},
                     transport=self.transport,
                 )
         return self._client

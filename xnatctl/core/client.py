@@ -203,6 +203,7 @@ class XNATClient:
                 timeout=build_httpx_timeout(self.timeout),
                 verify=self.httpx_verify(),
                 follow_redirects=True,
+                event_hooks={"request": [transport.drop_cookies_off_server(self.base_url)]},
                 transport=self.transport,
             )
         return self._client

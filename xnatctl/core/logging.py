@@ -24,7 +24,7 @@ from xnatctl.core.fsutil import (
     open_private_append,
     restrict_permissions,
 )
-from xnatctl.core.redact import redact_url_query
+from xnatctl.core.redact import redact_session_cookies, redact_url_query
 
 # =============================================================================
 # Constants
@@ -69,12 +69,13 @@ def debug_env_enabled() -> bool:
 
 
 class RedactionFilter(logging.Filter):
-    """Scrub secret-shaped URL values out of every record a handler emits.
+    """Scrub secret-shaped URL values and session cookies out of every record.
 
     Installing this once on the root handler makes redaction an invariant of
     the logging path instead of something each call site has to remember. That
     is the precondition for verbose HTTP diagnostics, which log full request
-    URLs -- and those carry query-string tokens.
+    URLs -- and those carry query-string tokens -- and, under the httpcore
+    wire trace, every response header, XNAT's ``Set-Cookie: JSESSIONID`` too.
 
     Scope boundary: this covers the formatted message only. Exception
     tracebacks are rendered by the Formatter *after* filters run, so a secret
@@ -86,7 +87,7 @@ class RedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         """Rewrite ``record`` in place when it contains something to redact."""
         message = record.getMessage()
-        redacted = redact_url_query(message)
+        redacted = redact_session_cookies(redact_url_query(message))
         if redacted != message:
             # Only collapse to the interpolated text when we actually changed
             # something, so untouched records keep their lazy %-args for any
