@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.6.1 - 2026-11-11
+
+**Fixes**
+
+- Uploads now reach XNAT with the refreshed session after a re-login.
+  XNAT answers a request on an expired session with 401 and a Set-Cookie
+  for a new anonymous JSESSIONID; the upload client kept that cookie and
+  sent it ahead of the refreshed token, so every retry still went out as
+  the dead session. An `upload-exam` whose file scan outlived the
+  15-minute session timeout got 401 on every warmup file and the circuit
+  breaker aborted it. The gradual and archive upload paths now send the
+  token in an explicit `Cookie` header.
+- Gradual uploads no longer lose files silently. XNAT stored each scan's
+  first file under the request name `upload.dcm`, so when several of a
+  series' first files arrived together they overwrote each other, and every
+  POST still returned 200. A 102,598-file session lost 21 files with 0
+  failures reported. Gradual uploads now send `rename=true`, so XNAT names
+  every file from its DICOM header. Upgrade before any parallel gradual
+  upload, `upload-exam` included.
+- Locked `certifi` bumped 2026.1.4 -> 2026.10.23 to close a published
+  advisory (PYSEC-2026-4320), staying within its existing range.
+
 ## 0.6.0 - 2026-10-08
 
 **Fixes**

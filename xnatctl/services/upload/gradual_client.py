@@ -21,7 +21,7 @@ from xnatctl.core.retry import upload_with_retry
 from xnatctl.core.timeouts import build_httpx_timeout
 from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
 
-from .shared import SessionRefresher
+from .shared import SessionRefresher, session_cookie_header
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ def _upload_single_file_gradual(
         client = pool.get_client(base_url=base_url, verify_ssl=verify_ssl)
 
         def _do_upload(token: str | None) -> httpx.Response:
-            cookies = {"JSESSIONID": token} if token else {}
+            headers = {"Content-Type": "application/dicom", **session_cookie_header(token)}
 
             def _attempt() -> httpx.Response:
                 with open(file_path, "rb") as f:
@@ -168,12 +168,15 @@ def _upload_single_file_gradual(
                             subject=subject,
                             session=session,
                             entity_keys="experiment",
+                            # Without rename, XNAT stores a scan's first file under
+                            # the request name ``upload.dcm``; first files sent
+                            # concurrently overwrite each other with a 200 each.
+                            rename=True,
                             inbody=True,
                             direct_archive=direct_archive,
                         ),
                         content=f,
-                        headers={"Content-Type": "application/dicom"},
-                        cookies=cookies,
+                        headers=headers,
                     )
 
             return upload_with_retry(
