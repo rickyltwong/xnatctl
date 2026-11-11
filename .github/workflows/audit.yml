@@ -1,0 +1,109 @@
+name: Audit
+
+# Advisories are published on their own clock, not ours. The `security` job in
+# ci.yml only runs when code moves, so an advisory against an unchanged
+# dependency stays invisible until the next push. This runs the same audit
+# daily so a new advisory turns up within a day instead of at the next merge.
+#
+# The image is audited separately from the lockfile because the two are
+# different dependency sets: the Dockerfile installs with `pip install .`,
+# which never reads uv.lock, and the base image contributes packages of its
+# own (its pip once shipped five advisories the lock audit could not see).
+# scripts/audit_image.sh lists what is actually installed inside an image; the
+# local release step runs the same script before pushing a versioned image.
+#
+# NOTE: neither trigger fires until this file reaches the default branch --
+# GitHub reads workflow_dispatch and schedule only from there.
+on:
+  workflow_dispatch:
+  schedule:
+    # 05:17 UTC daily: off the hour to avoid the scheduling stampede, and
+    # clear of the 04:30 integration run.
+    - cron: "17 5 * * *"
+
+# Every job runs on the empty default: the repository and the image are both
+# public, so nothing here needs a token scope.
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_FROZEN: true
+
+# Three independent jobs, so a finding in one does not hide the others.
+jobs:
+  lockfile:
+    # Same audit as the ci.yml `security` job: the locked runtime deps.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Export locked runtime dependencies
+        run: >-
+          uv export --no-dev --no-emit-project --format requirements-txt
+          --output-file requirements-audit.txt
+
+      - name: Audit dependencies for known vulnerabilities
+        run: uv tool run pip-audit -r requirements-audit.txt
+
+  image-build:
+    # What a build of this commit would ship today: --pull takes the current
+    # base image and pip resolves the current dependency versions.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Build image from this commit
+        run: docker build --pull -t xnatctl:audit .
+
+      - name: Audit distributions installed in the built image
+        run: scripts/audit_image.sh xnatctl:audit
+
+  image-published:
+    # What users pull right now. `:main` is the tag the docs point at and the
+    # one docker.yml refreshes on every push to main. A schedule runs on main,
+    # so this is the same commit as image-build; it differs in the base image
+    # and dependency versions frozen in at publish time. Public image, so no
+    # registry login and no packages permission.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Pull the published image
+        run: docker pull ghcr.io/rickyltwong/xnatctl:main
+
+      - name: Audit distributions installed in the published image
+        run: scripts/audit_image.sh ghcr.io/rickyltwong/xnatctl:main
