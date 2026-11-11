@@ -7,14 +7,18 @@ All notable changes to this project will be documented in this file.
 **Breaking**
 
 - The Docker image runs as an unprivileged `xnatctl` user (UID 1000)
-  instead of root. The config directory inside the container moved from
+  instead of root. Two things change for an existing `docker run` setup:
+  the config directory inside the container moved from
   `/root/.config/xnatctl` to `/home/xnatctl/.config/xnatctl`, so a config
-  mounted at the old path is no longer read. To keep using a host config,
-  run the container as your own user with the config under a writable
-  `HOME`:
+  mounted at the old path is no longer read; and the container can write
+  only to mounted directories UID 1000 may write to, so a download target,
+  a `--log-file` path or a CI runner's workspace owned by another user
+  fails with `Permission denied`. Run the container as your own user, with
+  any config under a writable `HOME`:
   `docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v ~/.config/xnatctl:/tmp/.config/xnatctl ghcr.io/rickyltwong/xnatctl:main ...`.
-  Runs configured only through `XNAT_URL`/`XNAT_USER`/`XNAT_PASS` need no
-  change.
+  In a CI job container, put the same `--user` in the job's container
+  options. A run that takes its credentials from `XNAT_URL`/`XNAT_USER`/
+  `XNAT_PASS` and writes nothing to a mount needs no change.
 
 **Fixes**
 
