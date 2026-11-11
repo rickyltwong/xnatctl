@@ -11,6 +11,10 @@ All notable changes to this project will be documented in this file.
   PYSEC-2026-2875, PYSEC-2026-2876, PYSEC-2026-3721), and xnatctl never
   runs pip at runtime. The `ghcr.io/rickyltwong/xnatctl:0.6.1` image is
   already built this way.
+- `ghcr.io/rickyltwong/xnatctl:latest` now tracks the newest release. It
+  had been stuck at 0.3.0 since 2026-08-22, so a tagless `docker pull`,
+  and the command `xnatctl upgrade` prints inside a container, installed
+  0.3.0. It points at 0.6.1 as of 2026-11-11.
 
 ## 0.6.1 - 2026-11-11
 
