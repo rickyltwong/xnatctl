@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+**Fixes**
+
+- The Docker image no longer contains pip. The base image's pip 25.0.1
+  carries five published advisories (PYSEC-2026-1796, PYSEC-2026-196,
+  PYSEC-2026-2875, PYSEC-2026-2876, PYSEC-2026-3721), and xnatctl never
+  runs pip at runtime. The `ghcr.io/rickyltwong/xnatctl:0.6.1` image is
+  already built this way.
+
 ## 0.6.1 - 2026-11-11
 
 **Fixes**
