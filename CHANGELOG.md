@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+**Fixes**
+
+- The Windows release's checksum file (`xnatctl-windows-amd64.zip.sha256`)
+  ends in a plain newline, so `sha256sum -c` accepts it. Through
+  0.6.3 it ended in CRLF, and `sha256sum -c` read the CR as part of the
+  file name and failed. `install.sh` now checks the download against the
+  hash alone, ignoring the file name in the checksum file, so the older
+  Windows checksum files cannot break it either.
+
 ## 0.6.3 - 2026-11-11
 
 **Fixes**
