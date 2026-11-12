@@ -463,6 +463,31 @@ def _noop_verify(path: Path) -> None:
     del path
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in binary is a POSIX sh script")
+def test_verify_binary_starts_the_binary_with_pyinstaller_environment_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The --version check must start the binary as an independent PyInstaller app.
+
+    A frozen xnatctl passes its own ``_PYI_*`` variables to every child. A
+    child at the running binary's own path -- the installed copy, on the
+    post-install check -- then loads the old release's unpacked libraries
+    and, when the two releases bundle different library versions, crashes
+    and rolls the upgrade back. The stand-in exits 0 only if the reset is
+    requested and the rest of the environment still reaches it.
+    """
+    monkeypatch.delenv("PYINSTALLER_RESET_ENVIRONMENT", raising=False)
+    monkeypatch.setenv("XNATCTL_TEST_INHERITED", "kept")
+    fake = tmp_path / "xnatctl"
+    fake.write_text(
+        "#!/bin/sh\n"
+        '[ "$PYINSTALLER_RESET_ENVIRONMENT" = 1 ] && [ "$XNATCTL_TEST_INHERITED" = kept ]\n'
+    )
+    fake.chmod(0o755)
+
+    upgrade_mod._verify_binary(fake)
+
+
 def test_replace_frozen_binary_downloads_verifies_and_installs(tmp_path: Path) -> None:
     target_dir = tmp_path / "install"
     target_dir.mkdir()
