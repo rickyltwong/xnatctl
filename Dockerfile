@@ -14,12 +14,16 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # Install exactly uv.lock's runtime set, hash-verified: the versions the test
-# suite ran against. A plain `pip install .` re-resolved them at build time.
-# The build backend (hatchling) is still fetched by build isolation, unlocked.
+# suite ran against. The build backend comes from the lock too (the `build`
+# group): the project is built with that hatchling, with no build isolation
+# and no network, so nothing unlocked can be fetched. The last sync removes
+# the build group from the venv again.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --locked --no-dev --no-install-project
+RUN uv sync --locked --no-dev --group build --no-install-project
 COPY xnatctl ./xnatctl
-RUN uv sync --locked --no-dev --no-editable
+RUN --network=none \
+    uv sync --locked --offline --no-dev --group build --no-editable --no-build-isolation \
+ && uv sync --locked --offline --no-dev --no-editable --no-build-isolation
 
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
