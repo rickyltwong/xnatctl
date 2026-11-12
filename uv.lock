@@ -1885,6 +1885,9 @@ binary = [
     { name = "pip" },
     { name = "pyinstaller" },
 ]
+build = [
+    { name = "hatchling" },
+]
 dev = [
     { name = "cryptography" },
     { name = "hypothesis" },
@@ -1940,6 +1943,7 @@ binary = [
     { name = "pip", specifier = ">=25" },
     { name = "pyinstaller", specifier = ">=6.10" },
 ]
+build = [{ name = "hatchling", specifier = ">=1.27" }]
 dev = [
     { name = "cryptography", specifier = ">=42" },
     { name = "hypothesis", specifier = ">=6.0" },
