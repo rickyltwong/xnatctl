@@ -52,18 +52,19 @@ binary in ``~/.local/bin``:
    $ curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
 
 To pin a specific version, set the ``XNATCTL_VERSION`` environment variable
-before running the script:
+for ``bash``, after the pipe. Set before ``curl``, it reaches only ``curl``,
+and the script installs the latest release:
 
 .. code-block:: console
 
-   $ XNATCTL_VERSION=v0.1.1 curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
+   $ curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | XNATCTL_VERSION=v0.1.1 bash
 
 To install into a custom directory instead of the default ``~/.local/bin``, set
-``XNATCTL_INSTALL_DIR``:
+``XNATCTL_INSTALL_DIR`` the same way:
 
 .. code-block:: console
 
-   $ XNATCTL_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash
+   $ curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | XNATCTL_INSTALL_DIR=/usr/local/bin bash
 
 .. tip::
 
