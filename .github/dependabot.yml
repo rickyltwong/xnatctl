@@ -2,16 +2,33 @@
 # PRs target `dev` per the branching strategy in CLAUDE.md.
 version: 2
 updates:
-  # Python runtime + dev dependencies (pyproject.toml / uv.lock).
-  - package-ecosystem: "pip"
+  # Python dependencies: the resolved versions in uv.lock, direct and
+  # transitive. The `pip` ecosystem read only pyproject.toml's ranges, whose
+  # `>=` floors already admit the latest release, so it never opened a PR.
+  # lockfile-only leaves those floors alone: they are published metadata.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
     target-branch: "dev"
     open-pull-requests-limit: 5
-    # Group minor/patch bumps into one PR to cut review noise; majors stay
-    # separate so breaking changes are reviewed on their own.
+    versioning-strategy: "lockfile-only"
+    allow:
+      - dependency-type: "all"
+    # Skip releases younger than a week, so a compromised or broken upload
+    # has time to be yanked before it reaches the lock.
+    cooldown:
+      default-days: 7
     groups:
+      # Exercised only by the release-binary job, which runs after the tag
+      # exists: build a binary locally before merging this group.
+      binary-toolchain:
+        patterns:
+          - "pyinstaller*"
+          - "hatchling"
+          - "pip"
+      # Minor/patch bumps in one PR to cut review noise; majors stay
+      # separate so breaking changes are reviewed on their own.
       python-minor-patch:
         update-types:
           - "minor"
