@@ -346,6 +346,18 @@ def _verify_binary(path: Path, *, timeout: float = 10.0) -> None:
     Running ``--version`` is the cheapest real proof of life, used both
     BEFORE the candidate is installed over ``target`` and again AFTER, to
     confirm the installed copy still works.
+
+    The binary runs with ``PYINSTALLER_RESET_ENVIRONMENT=1``. A onefile
+    PyInstaller binary unpacks itself, then re-executes itself, handing the
+    re-executed copy the unpack location through ``_PYI_*`` environment
+    variables -- and every child of the running binary inherits them. A child
+    started from the running binary's own path, which the installed copy is,
+    takes them as meant for it and loads the old release's unpacked
+    libraries instead of unpacking its own. When the two releases bundle
+    different library versions it crashes, and the post-install check rolls
+    back a good upgrade; when they bundle the same ones, the check runs a mix
+    of old and new that proves nothing about the new binary. The variable
+    tells the child's bootloader to drop them and start fresh.
     """
     try:
         result = subprocess.run(  # noqa: S603
@@ -353,6 +365,7 @@ def _verify_binary(path: Path, *, timeout: float = 10.0) -> None:
             capture_output=True,
             timeout=timeout,
             check=False,
+            env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"},
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         raise UpgradeError(f"{path} failed its --version sanity check: {e}") from e

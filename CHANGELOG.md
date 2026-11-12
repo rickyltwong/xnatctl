@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+**Fixes**
+
+- `xnatctl upgrade -y` on a standalone binary no longer rolls back a good
+  upgrade. Its check that the newly installed binary runs started that
+  binary with environment variables the running binary had set for itself.
+  When the two releases bundle different library versions, the new binary
+  crashed on them and the upgrade put the old version back: nothing was
+  lost, but nothing upgraded. Upgrading from 0.6.1 to 0.6.2 hit this. The
+  check runs inside the binary doing the upgrade, so the fix applies to
+  upgrades *from* this release onward. On 0.6.2 or older, if
+  `xnatctl upgrade -y` says it restored the previous version, reinstall
+  instead: on Linux or macOS rerun
+  `curl -fsSL https://github.com/rickyltwong/xnatctl/raw/main/install.sh | bash`
+  (it installs to `~/.local/bin`; for another directory put the variable on
+  the `bash` side of the pipe, `... | XNATCTL_INSTALL_DIR=/your/dir bash`),
+  and on Windows download the zip from the GitHub release. pip, pipx, uv and
+  Docker installs were never affected.
+
 ## 0.6.2 - 2026-11-11
 
 **Breaking**
