@@ -1,5 +1,3 @@
-"""Unit tests for ScanService."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -14,7 +12,6 @@ from xnatctl.services.scans import ScanService
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """Create a mock XNATClient."""
     client = MagicMock()
     client.base_url = "https://xnat.example.org"
     return client
@@ -22,7 +19,6 @@ def mock_client() -> MagicMock:
 
 @pytest.fixture
 def service(mock_client: MagicMock) -> ScanService:
-    """Create ScanService with mock client."""
     return ScanService(mock_client)
 
 
@@ -37,10 +33,7 @@ SAMPLE_SCAN = {
 
 
 class TestScanList:
-    """Tests for ScanService.list."""
-
     def test_list_scans(self, service: ScanService, mock_client: MagicMock) -> None:
-        """List returns Scan objects with session_id injected."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SCAN]}})
 
         result = service.list("XNAT_E00001")
@@ -51,12 +44,6 @@ class TestScanList:
         assert result[0].session_id == "XNAT_E00001"
 
     def test_list_with_project(self, service: ScanService, mock_client: MagicMock) -> None:
-        """A project still tags the result, but must not break the listing URL.
-
-        /data/projects/{P}/experiments/{E}/scans is not a scan listing -- XNAT
-        answers it with the experiment document, so this returned no scans at
-        all. Without a subject segment the flat form is the routed one.
-        """
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SCAN]}})
 
         result = service.list("XNAT_E00001", project="PROJ01")
@@ -66,7 +53,6 @@ class TestScanList:
         assert call_path == "/data/experiments/XNAT_E00001/scans"
 
     def test_list_with_columns(self, service: ScanService, mock_client: MagicMock) -> None:
-        """Columns param is passed."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list("E001", columns=["ID", "type"])
@@ -76,10 +62,7 @@ class TestScanList:
 
 
 class TestScanGet:
-    """Tests for ScanService.get."""
-
     def test_get_scan(self, service: ScanService, mock_client: MagicMock) -> None:
-        """Get returns Scan with session_id."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SCAN]}})
 
         result = service.get("XNAT_E00001", "1")
@@ -89,7 +72,6 @@ class TestScanGet:
         assert result.session_id == "XNAT_E00001"
 
     def test_get_with_project(self, service: ScanService, mock_client: MagicMock) -> None:
-        """Get with project injects project."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SCAN]}})
 
         result = service.get("E001", "1", project="PROJ01")
@@ -97,7 +79,6 @@ class TestScanGet:
         assert result.project == "PROJ01"
 
     def test_get_not_found(self, service: ScanService, mock_client: MagicMock) -> None:
-        """Get raises ResourceNotFoundError on empty results."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         with pytest.raises(ResourceNotFoundError):
@@ -105,16 +86,12 @@ class TestScanGet:
 
 
 class TestScanDelete:
-    """Tests for ScanService.delete."""
-
     def test_delete(self, service: ScanService, mock_client: MagicMock) -> None:
-        """Delete returns True."""
         mock_client.delete.return_value = make_response("")
 
         assert service.delete("E001", "1") is True
 
     def test_delete_with_remove_files(self, service: ScanService, mock_client: MagicMock) -> None:
-        """Delete passes removeFiles."""
         mock_client.delete.return_value = make_response("")
 
         service.delete("E001", "1", remove_files=True)
@@ -124,10 +101,7 @@ class TestScanDelete:
 
 
 class TestScanDeleteMultiple:
-    """Tests for ScanService.delete_multiple."""
-
     def test_delete_multiple_sequential(self, service: ScanService, mock_client: MagicMock) -> None:
-        """Sequential deletion of multiple scans."""
         mock_client.delete.return_value = make_response("")
 
         result = service.delete_multiple("E001", ["1", "2", "3"], parallel=False)
@@ -139,8 +113,6 @@ class TestScanDeleteMultiple:
     def test_delete_multiple_with_failure(
         self, service: ScanService, mock_client: MagicMock
     ) -> None:
-        """Failed deletions are tracked."""
-
         def delete_side_effect(path: str, **kwargs: object) -> MagicMock:
             if "scans/2" in path:
                 raise RuntimeError("server error")
@@ -156,7 +128,6 @@ class TestScanDeleteMultiple:
         assert len(result["errors"]) == 1
 
     def test_delete_multiple_wildcard(self, service: ScanService, mock_client: MagicMock) -> None:
-        """Wildcard '*' fetches all scan IDs first."""
         mock_client.get.return_value = make_response(
             {
                 "ResultSet": {
@@ -176,7 +147,6 @@ class TestScanDeleteMultiple:
     def test_delete_multiple_progress_callback(
         self, service: ScanService, mock_client: MagicMock
     ) -> None:
-        """Progress callback is invoked for each scan."""
         mock_client.delete.return_value = make_response("")
         callback = MagicMock()
 
@@ -186,10 +156,7 @@ class TestScanDeleteMultiple:
 
 
 class TestScanGetResources:
-    """Tests for ScanService.get_resources."""
-
     def test_get_resources(self, service: ScanService, mock_client: MagicMock) -> None:
-        """get_resources returns raw dicts."""
         rows = [{"label": "DICOM", "file_count": 100}]
         mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
@@ -200,10 +167,7 @@ class TestScanGetResources:
 
 
 class TestScanSetQuality:
-    """Tests for ScanService.set_quality."""
-
     def test_set_quality(self, service: ScanService, mock_client: MagicMock) -> None:
-        """set_quality issues PUT with quality param."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
 
         assert service.set_quality("E001", "1", "usable") is True
@@ -212,10 +176,7 @@ class TestScanSetQuality:
 
 
 class TestScanSetNote:
-    """Tests for ScanService.set_note."""
-
     def test_set_note(self, service: ScanService, mock_client: MagicMock) -> None:
-        """set_note issues PUT with note param."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
 
         assert service.set_note("E001", "1", "test note") is True
@@ -224,15 +185,12 @@ class TestScanSetNote:
 
 
 class TestScanRefAccessors:
-    """Tests for the ref-based accessors the CLI routes through."""
-
     def _scan_ref(self):
         from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 
         return ScanRef(experiment=ExperimentRef(experiment="EXP01"), scan_id="1")
 
     def test_get_scan_document_items(self, service: ScanService, mock_client: MagicMock) -> None:
-        """An items[] detail document is unwrapped to its data_fields."""
         mock_client.get_json.return_value = {"items": [{"data_fields": {"ID": "1", "type": "T1"}}]}
 
         doc = service.get_scan_document(self._scan_ref())
@@ -243,19 +201,16 @@ class TestScanRefAccessors:
     def test_get_scan_document_resultset(
         self, service: ScanService, mock_client: MagicMock
     ) -> None:
-        """A ResultSet response returns its first row."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "1"}]}}
 
         assert service.get_scan_document(self._scan_ref()) == {"ID": "1"}
 
     def test_get_scan_document_missing(self, service: ScanService, mock_client: MagicMock) -> None:
-        """An empty response returns None."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         assert service.get_scan_document(self._scan_ref()) is None
 
     def test_delete_scan_ref(self, service: ScanService, mock_client: MagicMock) -> None:
-        """delete_scan_ref DELETEs the ref's scan path and returns the response."""
         mock_client.delete.return_value = make_response("", status_code=200)
 
         resp = service.delete_scan_ref(self._scan_ref())

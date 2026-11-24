@@ -1,5 +1,3 @@
-"""Differentiated, documented exit codes via exit_code_for + handle_errors."""
-
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -54,7 +52,6 @@ def test_exit_code_for(exc: BaseException, expected: int) -> None:
 
 
 def test_permission_denied_beats_auth_error() -> None:
-    """PermissionDeniedError subclasses AuthenticationError; the specific code wins."""
     assert isinstance(PermissionDeniedError("r"), AuthenticationError)
     assert exit_code_for(PermissionDeniedError("r")) == ExitCode.PERMISSION_ERROR
 
@@ -98,7 +95,6 @@ def test_successful_command_exits_zero() -> None:
 
 
 def test_confirm_decline_exits_user_cancelled() -> None:
-    """Declining a destructive-op confirmation maps to USER_CANCELLED (7)."""
     from xnatctl.cli.common import confirm_destructive
 
     @click.command()
@@ -112,13 +108,7 @@ def test_confirm_decline_exits_user_cancelled() -> None:
     assert "deleted" not in result.output
 
 
-# ---------------------------------------------------------------------------
-# Tracebacks under --verbose / XNATCTL_DEBUG, hint otherwise
-# ---------------------------------------------------------------------------
-
-
 def test_unexpected_error_no_traceback_by_default(monkeypatch) -> None:
-    """An unexpected error prints one line + a hint, never a traceback."""
     monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
     result = CliRunner().invoke(_cmd(ValueError("boom")))
     assert result.exit_code == 1
@@ -128,18 +118,15 @@ def test_unexpected_error_no_traceback_by_default(monkeypatch) -> None:
 
 
 def test_unexpected_error_traceback_with_debug_env(monkeypatch) -> None:
-    """XNATCTL_DEBUG=1 surfaces the full traceback on the unexpected path."""
     monkeypatch.setenv("XNATCTL_DEBUG", "1")
     result = CliRunner().invoke(_cmd(ValueError("boom")))
     assert result.exit_code == 1
     assert "Traceback (most recent call last)" in result.output
     assert "test_exit_codes.py" in result.output
-    # The hint is suppressed once the real traceback is shown.
     assert "Run with --verbose for a full traceback." not in result.output
 
 
 def test_xnatctl_error_traceback_with_debug_env(monkeypatch) -> None:
-    """Structured errors also yield a traceback under debug (no hint line)."""
     monkeypatch.setenv("XNATCTL_DEBUG", "1")
     result = CliRunner().invoke(_cmd(ResourceNotFoundError("session", "X")))
     assert result.exit_code == 5
@@ -147,7 +134,6 @@ def test_xnatctl_error_traceback_with_debug_env(monkeypatch) -> None:
 
 
 def test_xnatctl_error_no_hint_or_traceback_by_default(monkeypatch) -> None:
-    """A clean XNATCtlError stays a one-liner: no traceback, no verbose hint."""
     monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
     result = CliRunner().invoke(_cmd(ResourceNotFoundError("session", "X")))
     assert result.exit_code == 5
@@ -156,7 +142,6 @@ def test_xnatctl_error_no_hint_or_traceback_by_default(monkeypatch) -> None:
 
 
 def test_verbose_flag_on_context_enables_traceback(monkeypatch) -> None:
-    """`--verbose` (Context.verbose) enables the traceback without the env var."""
     monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
 
     from xnatctl.cli.common import Context, global_options
@@ -175,7 +160,6 @@ def test_verbose_flag_on_context_enables_traceback(monkeypatch) -> None:
 
 @pytest.mark.parametrize("falsey", ["0", "false", "FALSE", "no", "off", " ", ""])
 def test_debug_env_falsey_values_do_not_enable_traceback(monkeypatch, falsey) -> None:
-    """`XNATCTL_DEBUG=0`/`false`/`off` must NOT fail open into a traceback."""
     monkeypatch.setenv("XNATCTL_DEBUG", falsey)
     result = CliRunner().invoke(_cmd(ValueError("boom")))
     assert result.exit_code == 1
@@ -184,20 +168,12 @@ def test_debug_env_falsey_values_do_not_enable_traceback(monkeypatch, falsey) ->
 
 
 def test_debug_env_arbitrary_truthy_value_enables_traceback(monkeypatch) -> None:
-    """Any non-falsey value (like `gh`'s GH_DEBUG=api) still enables tracebacks."""
     monkeypatch.setenv("XNATCTL_DEBUG", "api")
     result = CliRunner().invoke(_cmd(ValueError("boom")))
     assert "Traceback (most recent call last)" in result.output
 
 
-# ---------------------------------------------------------------------------
-# main() last-resort guard: setup-phase errors (raised in @global_options,
-# outside @handle_errors) must still get the one-line / traceback policy.
-# ---------------------------------------------------------------------------
-
-
 def _run_main_raising(exc: BaseException) -> int:
-    """Invoke ``main()`` with ``cli()`` patched to raise, return the exit code."""
     from xnatctl.cli import main as main_mod
 
     def _boom() -> None:
@@ -220,7 +196,6 @@ def test_main_guard_renders_xnatctl_error_without_traceback(monkeypatch, capsys)
 
 
 def test_main_guard_renders_unexpected_error_with_hint(monkeypatch, capsys) -> None:
-    """A non-XNATCtlError escaping setup (e.g. bad XNAT_TIMEOUT) is rendered, not raw."""
     monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
     code = _run_main_raising(ValueError("bad XNAT_TIMEOUT"))
     captured = capsys.readouterr()
@@ -239,13 +214,6 @@ def test_main_guard_shows_traceback_under_debug_env(monkeypatch, capsys) -> None
 
 
 def test_interrupt_is_distinguishable_from_a_general_error() -> None:
-    """Ctrl+C exits 7, not 1.
-
-    Click converts KeyboardInterrupt to Abort and exits 1 in standalone mode,
-    which made a user-cancelled run indistinguishable from a genuine failure --
-    despite the taxonomy defining USER_CANCELLED for exactly this. handle_errors
-    catches it inside the command body, before Click sees it.
-    """
     result = CliRunner().invoke(_cmd(KeyboardInterrupt()))
 
     assert result.exit_code == ExitCode.USER_CANCELLED
@@ -254,6 +222,5 @@ def test_interrupt_is_distinguishable_from_a_general_error() -> None:
 
 
 def test_keyboard_interrupt_is_not_an_exception_subclass() -> None:
-    """Documents why the broad ``except Exception`` never caught it."""
     assert not isinstance(KeyboardInterrupt(), Exception)
     assert isinstance(KeyboardInterrupt(), BaseException)

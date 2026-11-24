@@ -19,8 +19,6 @@ from .shared import _HierarchyResolveMixin, _reject_empty_resource_filter_values
 
 
 class _VerificationMixin(_HierarchyResolveMixin):
-    """Mixin providing verification-manifest building and comparison."""
-
     def build_verification_manifest(
         self,
         *,
@@ -86,10 +84,6 @@ class _VerificationMixin(_HierarchyResolveMixin):
 
         for scan_id in scan_ids:
             scan_ref = ScanRef(experiment=experiment_ref, scan_id=scan_id)
-            # `is not None`, not truthy: `resource_filter=""` is a caller
-            # mistake, not "no single-resource scope" -- it must not silently
-            # widen verification to every resource on the scan.
-            # list_file_rows below rejects the empty string via ResourceRef.
             if resource_filter is not None:
                 labels = [resource_filter]
             else:

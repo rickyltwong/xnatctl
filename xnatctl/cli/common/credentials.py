@@ -35,7 +35,7 @@ def reject_argv_password(
     """
 
     def callback(ctx: click.Context, param: click.Parameter, value: Any) -> None:
-        del ctx  # The rejection is unconditional.
+        del ctx
         if value is not None:
             option = (param.opts or [param.name])[0]
             raise click.UsageError(

@@ -1,11 +1,3 @@
-"""Cross-project sharing and custom-variable get/set against a real XNAT.
-
-Every route these two commands use was verified live and is documented on
-``SubjectService``/``SessionService``'s ``share``/``unshare``/``list_vars``/
-``set_vars`` docstrings. This tier proves the same thing against a fresh
-server run, not just the request shapes the unit suite asserts.
-"""
-
 from __future__ import annotations
 
 import uuid
@@ -18,7 +10,6 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def second_project(xnat_client: Any) -> Any:
-    """A second throwaway project, distinct from ``integration_project``, deleted afterwards."""
     project_id = f"xctl{uuid.uuid4().hex[:12]}"
     xnat_client.put(f"/data/projects/{project_id}")
     try:
@@ -48,7 +39,6 @@ class TestSubjectSharing:
             SubjectRef(subject=label, project_id=integration_project)
         )
 
-        # Not shared yet.
         shares_before = {r["ID"] for r in subject_service.list_shares(resolved.subject_id)}
         assert second_project not in shares_before
 
@@ -59,7 +49,6 @@ class TestSubjectSharing:
         }
         assert shares_after[second_project] == "SHARED_LABEL"
 
-        # The shared project's subject listing now includes it.
         shared_ids = {s.id for s in subject_service.list(second_project)}
         assert resolved.subject_id in shared_ids
 
@@ -122,8 +111,6 @@ class TestSessionSharing:
         shares_after = {r["ID"]: r["label"] for r in session_service.list_shares(experiment_id)}
         assert shares_after[second_project] == "SESS_SHARED"
 
-        # Idempotent unshare: works once, and succeeds again (verified live
-        # to differ from the subject case -- see SessionService.unshare).
         session_service.unshare(experiment_id, second_project, primary_project=integration_project)
         session_service.unshare(experiment_id, second_project, primary_project=integration_project)
 
@@ -150,7 +137,6 @@ class TestSubjectCustomVars:
         }
         assert rows == {"studytag": "phase1", "cohort": "A"}
 
-        # Overwrite an existing variable in a second call.
         service.set_vars(label, {"studytag": "phase2"}, project=integration_project)
         rows2 = {
             r["name"]: r["value"] for r in service.list_vars(label, project=integration_project)
@@ -189,10 +175,6 @@ class TestSessionCustomVars:
 
         assert session_service.list_vars(experiment_id) == []
 
-        # Regression proof for the silent-no-op trap documented on
-        # SessionService.set_vars: the flat experiment PUT would return 200
-        # without persisting anything, so this must go through the
-        # subject-scoped path with the xsiType-prefixed field key.
         session_service.set_vars(
             project=resolved.project_id,
             subject=resolved.subject_id,

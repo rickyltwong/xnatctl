@@ -1,1 +1,0 @@
-# xnatctl tests

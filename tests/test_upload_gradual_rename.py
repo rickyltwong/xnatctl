@@ -1,15 +1,3 @@
-"""Every gradual-DICOM file must ask XNAT to name it from its DICOM header.
-
-A gradual upload posts each file as a raw request body, so XNAT names it
-``upload.dcm``. Without ``rename=true``, XNAT's ``GradualDicomImporter`` keeps
-that request name whenever the scan has no ``upload.dcm`` yet. When several of
-a series' first files arrive together, they all become ``upload.dcm`` and
-overwrite each other, and every POST still returns 200. A 102,598-file GE
-session lost 21 files this way with 0 failures reported. With ``rename=true``
-XNAT always uses its header-derived file name, which is unique per SOP
-instance, so concurrent first files can no longer collide.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,7 +23,7 @@ def test_gradual_upload_asks_xnat_to_rename_the_file(tmp_path: Path) -> None:
             return httpx.Response(200, text="/prearchive/projects/P")
 
         kwargs["transport"] = httpx.MockTransport(record)
-        return real_client(**kwargs)  # type: ignore[arg-type]
+        return real_client(**kwargs)
 
     refresher = MagicMock()
     refresher.token = "TOKEN"

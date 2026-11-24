@@ -21,8 +21,6 @@ from xnatctl.services.upload.rest_archive import upload_archive_or_raise
 
 
 class _FakeAuthClient:
-    """Minimal authenticated client stub for CLI-glue tests."""
-
     is_authenticated = True
 
     def whoami(self) -> dict[str, str]:
@@ -30,20 +28,11 @@ class _FakeAuthClient:
 
 
 class _FakeXNATClient:
-    """Connection details only -- the fixed path never calls XNATClient.post.
-
-    Deliberately has no ``post`` method: a regression back to posting through
-    ``XNATClient`` (and its second retry ladder) fails these tests with an
-    AttributeError instead of silently passing.
-    """
-
     base_url = "https://xnat.example.org"
     username = "u"
     password = "p"
     session_token = "TOKEN"
     verify_ssl = True
-    # Unknown: these tests exercise these direct_archive=True paths on a
-    # server whose version was never probed, so the gate must fail open.
     server_version = None
 
     def httpx_verify(self) -> bool:
@@ -51,14 +40,6 @@ class _FakeXNATClient:
 
 
 def _wire(monkeypatch, responses):
-    """Capture the raw POSTs the services-layer uploader makes.
-
-    ``upload_archive_or_raise`` must reach XNAT through the services uploader -- one
-    retry ladder, raw responses -- so these tests assert at the wire level.
-    Returns (posts, clients): the recorded POST calls and the kwargs each
-    ``httpx.Client`` was constructed with. The last response repeats once the
-    list is consumed.
-    """
     import xnatctl.services.upload.rest_archive as uploads
 
     posts: list[dict] = []
@@ -136,14 +117,6 @@ def test_upload_archive_or_raise_sets_import_params(tmp_path, monkeypatch) -> No
 
 
 def test_upload_archive_or_raise_prearchive_sets_dest(tmp_path, monkeypatch) -> None:
-    """--prearchive must send dest=/prearchive/projects/{project}, not
-    Direct-Archive=false.
-
-    Direct-Archive=false is defined by XNAT as "use standard upload
-    mechanism", which on projects with auto-archive enabled still routes
-    the session to the archive. Explicitly naming the prearchive dest is
-    the documented way to force prearchive regardless of project config.
-    """
     archive_path = tmp_path / "sample.zip"
     archive_path.write_bytes(b"zip-data")
     posts, _clients = _wire(monkeypatch, [httpx.Response(200)])
@@ -167,13 +140,6 @@ def test_upload_archive_or_raise_prearchive_sets_dest(tmp_path, monkeypatch) -> 
 
 
 def test_upload_archive_or_raise_retries_a_transient_400(tmp_path, monkeypatch) -> None:
-    """A transient import 400 must be retried, not fatal on first sight.
-
-    Wrapping ``XNATClient.post`` -- whose ``_request`` raises a typed
-    error on 400 -- in ``upload_with_retry`` would mean the
-    transient-vs-permanent 400 discrimination never sees a raw response, so
-    one concurrent-modification 400 would kill the upload immediately.
-    """
     monkeypatch.setattr(CancellationToken, "sleep", lambda self, seconds: False)
     archive_path = tmp_path / "sample.zip"
     archive_path.write_bytes(b"zip-data")
@@ -200,7 +166,6 @@ def test_upload_archive_or_raise_retries_a_transient_400(tmp_path, monkeypatch) 
 def test_upload_archive_or_raise_permanent_400_fails_on_first_attempt(
     tmp_path, monkeypatch
 ) -> None:
-    """A permanent 400 (misconfigured upload) fails once, without retries."""
     archive_path = tmp_path / "sample.zip"
     archive_path.write_bytes(b"zip-data")
     posts, _clients = _wire(
@@ -225,7 +190,6 @@ def test_upload_archive_or_raise_permanent_400_fails_on_first_attempt(
 
 
 def _upload_one(archive_path):
-    """Run upload_archive_or_raise with fixed arguments; failures raise typed errors."""
     upload_archive_or_raise(
         _FakeXNATClient(),
         archive_path,
@@ -240,19 +204,9 @@ def _upload_one(archive_path):
 
 
 class TestSingleUploadKeepsTheExitCodeTaxonomy:
-    """Failures must raise the typed exceptions @handle_errors maps to exit codes.
-
-    The old path let ``XNATClient.post`` raise these; the delegation to the
-    services uploader returns strings, so without this mapping every failure
-    collapsed to a general exit 1 -- a regression on a documented Stable
-    surface (auth 3, network 4, permission 6).
-    """
-
     def test_a_401_raises_session_expired(self, tmp_path, monkeypatch) -> None:
         archive_path = tmp_path / "sample.zip"
         archive_path.write_bytes(b"zip-data")
-        # The refresher's reauth POST also lands on the fake client and gets
-        # the same 401, so the refresh fails and the 401 stands.
         _wire(monkeypatch, [httpx.Response(401, text="<html>login</html>")])
 
         with pytest.raises(SessionExpiredError):
@@ -267,7 +221,6 @@ class TestSingleUploadKeepsTheExitCodeTaxonomy:
             _upload_one(archive_path)
 
     def test_exhausted_503_retries_raise_retry_exhausted(self, tmp_path, monkeypatch) -> None:
-        """A 5xx that survives every retry is a connection-class failure (exit 4)."""
         from xnatctl.core.exceptions import RetryExhaustedError
 
         monkeypatch.setattr(CancellationToken, "sleep", lambda self, seconds: False)
@@ -308,26 +261,16 @@ class TestSingleUploadKeepsTheExitCodeTaxonomy:
 
 
 def test_archive_destination_params_direct() -> None:
-    """archive_destination_params(direct=True) returns only Direct-Archive."""
     assert archive_destination_params("PROJ", True) == {"Direct-Archive": "true"}
 
 
 def test_archive_destination_params_prearchive() -> None:
-    """archive_destination_params(direct=False) returns only dest, no Direct-Archive."""
     assert archive_destination_params("PROJ", False) == {"dest": "/prearchive/projects/PROJ"}
 
 
 def test_session_upload_mode_gradual_forwards_prearchive_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression: `session upload --mode gradual --prearchive` must
-    forward direct_archive=False to the service.
-
-    Before this was fixed, the CLI wrapper _upload_gradual_dicom() did
-    not accept a direct_archive kwarg and did not pass it to
-    service.upload_dicom_gradual(), so --prearchive was silently ignored
-    on the gradual code path and uploads went direct-archive regardless.
-    """
     captured: dict[str, object] = {}
 
     class UploadServiceSpy:
@@ -394,7 +337,6 @@ def test_session_upload_mode_gradual_forwards_prearchive_flag(
 def test_session_upload_mode_gradual_default_is_direct_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Without --prearchive, gradual mode defaults to direct archive."""
     captured: dict[str, object] = {}
 
     class UploadServiceSpy:
@@ -480,39 +422,25 @@ def test_upload_archive_or_raise_converts_zip_to_tar(tmp_path, monkeypatch) -> N
         assert set(tf.getnames()) == {"alpha/first.dcm", "beta/second.dcm"}
 
 
-# =============================================================================
-# _safe_mtime Tests
-# =============================================================================
-
-
 def test_safe_mtime_valid_date() -> None:
-    """Valid date tuple converts to timestamp."""
     date_time = (2024, 6, 15, 10, 30, 45)
     result = _safe_mtime(date_time)
     assert result > 0
 
 
 def test_safe_mtime_invalid_date_returns_zero() -> None:
-    """Invalid date (year=0) returns epoch timestamp."""
     date_time = (0, 0, 0, 0, 0, 0)
     result = _safe_mtime(date_time)
     assert result == 0.0
 
 
 def test_safe_mtime_overflow_returns_zero() -> None:
-    """Overflow date returns epoch timestamp."""
     date_time = (99999, 12, 31, 23, 59, 59)
     result = _safe_mtime(date_time)
     assert result == 0.0
 
 
-# =============================================================================
-# _zip_to_tar Tests
-# =============================================================================
-
-
 def test_zip_to_tar_converts_files(tmp_path) -> None:
-    """ZIP file is converted to TAR with all files."""
     zip_path = tmp_path / "test.zip"
     tar_path = tmp_path / "test.tar"
 
@@ -530,12 +458,10 @@ def test_zip_to_tar_converts_files(tmp_path) -> None:
 
 
 def test_zip_to_tar_preserves_directories(tmp_path) -> None:
-    """Directories in ZIP are preserved in TAR."""
     zip_path = tmp_path / "test.zip"
     tar_path = tmp_path / "test.tar"
 
     with zipfile.ZipFile(zip_path, "w") as zf:
-        # Create a directory entry
         zf.writestr("mydir/", "")
         zf.writestr("mydir/file.txt", b"content")
 
@@ -547,13 +473,11 @@ def test_zip_to_tar_preserves_directories(tmp_path) -> None:
 
 
 def test_zip_to_tar_raises_on_corrupted_zip(tmp_path) -> None:
-    """Corrupted ZIP raises BadZipFile."""
     import pytest
 
     zip_path = tmp_path / "bad.zip"
     tar_path = tmp_path / "test.tar"
 
-    # Write invalid ZIP data
     zip_path.write_bytes(b"not a valid zip file")
 
     with pytest.raises(zipfile.BadZipFile):

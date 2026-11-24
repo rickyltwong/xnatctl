@@ -52,12 +52,6 @@ from .base import BaseService
 
 
 def _expect_list(data: Any, path: str) -> list[dict[str, Any]]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``[]``.
-
-    See ``xnatctl.services.commands._expect_list`` for the same reasoning:
-    a server that answers 200 with something other than a JSON array is a
-    shape xnatctl does not understand, not "no results".
-    """
     if not isinstance(data, list):
         raise XNATCtlError(
             f"Unexpected response from GET {path}: expected a JSON array, "
@@ -67,7 +61,6 @@ def _expect_list(data: Any, path: str) -> list[dict[str, Any]]:
 
 
 def _expect_dict(data: Any, path: str) -> dict[str, Any]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``{}``. See :func:`_expect_list`."""
     if not isinstance(data, dict):
         raise XNATCtlError(
             f"Unexpected response from {path}: expected a JSON object, got {type(data).__name__}."
@@ -76,26 +69,6 @@ def _expect_dict(data: Any, path: str) -> dict[str, Any]:
 
 
 def _parse_created_id(text: str, path: str) -> int:
-    """Parse the ``"{name}:{id}"`` plain-text body ``POST .../subscription`` answers on success.
-
-    Verified live: a successful create answers 201 with plain text, not
-    JSON -- the subscription's (possibly server-generated, when ``name`` is
-    omitted from the payload) display name, a literal colon, then its new
-    numeric id. The name half can itself legitimately contain colons
-    (verified live with ``name: "weird:name:test"`` -> body
-    ``"weird:name:test:3"``), so this splits on the *last* colon only --
-    the id is always the trailing run of digits, never the name.
-
-    Args:
-        text: The raw response body.
-        path: The request path, for the error message if parsing fails.
-
-    Returns:
-        The new subscription's numeric id.
-
-    Raises:
-        XNATCtlError: If the body is not of the form ``"...:<digits>"``.
-    """
     stripped = text.strip()
     id_part = stripped.rsplit(":", 1)[-1] if ":" in stripped else ""
     if not id_part.isdigit():

@@ -1,10 +1,3 @@
-"""Terminal accessibility: NO_COLOR / CLICOLOR=0 / --no-color, and color-only status signaling.
-
-Covers two things: xnatctl honors the NO_COLOR and CLICOLOR=0 environment-variable
-conventions plus its own ``--no-color`` flag, and no CLI status is conveyed by color
-alone (a word or symbol always ships alongside any styling).
-"""
-
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -20,14 +13,7 @@ from xnatctl.models.info import UserInfo
 ESCAPE = "\x1b["
 
 
-# =============================================================================
-# no_color_requested() -- pure env parsing
-# =============================================================================
-
-
 class TestNoColorRequested:
-    """NO_COLOR: any non-empty value disables color. CLICOLOR=0 disables it too."""
-
     def test_no_env_vars_means_color_allowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("NO_COLOR", raising=False)
         monkeypatch.delenv("CLICOLOR", raising=False)
@@ -62,11 +48,6 @@ class TestNoColorRequested:
         assert no_color_requested() is False
 
 
-# =============================================================================
-# set_no_color() -- mutates both singletons in place
-# =============================================================================
-
-
 def test_set_no_color_mutates_both_consoles() -> None:
     set_no_color(True)
     assert output_module.console.no_color is True
@@ -75,11 +56,6 @@ def test_set_no_color_mutates_both_consoles() -> None:
     set_no_color(False)
     assert output_module.console.no_color is False
     assert output_module.err_console.no_color is False
-
-
-# =============================================================================
-# CliRunner integration: non-TTY output never carries escapes
-# =============================================================================
 
 
 def _seed_project_list(authenticated_cli: AuthenticatedCLI) -> None:
@@ -94,39 +70,14 @@ def _seed_project_list(authenticated_cli: AuthenticatedCLI) -> None:
 
 
 def test_table_command_no_tty_has_no_escapes(authenticated_cli: AuthenticatedCLI) -> None:
-    """A CliRunner invocation is never a real terminal, so Rich emits no ANSI
-    codes at all -- the baseline every other test in this file builds on.
-    """
     _seed_project_list(authenticated_cli)
     result = authenticated_cli.invoke(["project", "list"])
     assert result.exit_code == 0
     assert ESCAPE not in result.output
 
 
-# =============================================================================
-# NO_COLOR / CLICOLOR=0 / --no-color must beat a real, color-capable terminal
-# =============================================================================
-
-
 @pytest.fixture
 def force_terminal_colors(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Simulate a real, color-capable terminal for console/err_console.
-
-    conftest's autouse ``disable_rich_colour`` forces no_color=True and
-    _force_terminal=False on every test so plain-text assertions elsewhere in
-    the suite are independent of the developer's terminal. These tests exist
-    to prove the *opposite* -- that NO_COLOR/CLICOLOR/--no-color suppress
-    color that would otherwise render -- so they need a real positive control
-    first: a console that would emit ANSI codes absent that handling.
-
-    Detection has to be pinned, not just seeded: every invocation runs
-    ``set_no_color``, which re-derives ``_color_system`` via
-    ``_detect_color_system()`` from the live environment -- so a value set
-    here directly would be clobbered mid-invoke, and the control would then
-    depend on the runner's real ``TERM``. Patching the detection method
-    keeps the control deterministic on any platform while still exercising
-    the real re-detection code path.
-    """
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("CLICOLOR", raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
@@ -143,10 +94,6 @@ def test_positive_control_color_renders_by_default(
     force_terminal_colors: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sanity check for the fixture above, and proof the CLI does not disable
-    color when nothing asked for it: with NO_COLOR/CLICOLOR cleared and no
-    --no-color flag, the table's bold header still renders as an escape.
-    """
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("CLICOLOR", raising=False)
     _seed_project_list(authenticated_cli)
@@ -199,9 +146,6 @@ def test_no_color_flag_after_subcommand_suppresses_color(
     force_terminal_colors: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--no-color is declared on every subcommand too, so it also works when
-    placed after the subcommand name (matching --quiet/--verbose).
-    """
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("CLICOLOR", raising=False)
     _seed_project_list(authenticated_cli)
@@ -210,18 +154,9 @@ def test_no_color_flag_after_subcommand_suppresses_color(
     assert ESCAPE not in result.output
 
 
-# =============================================================================
-# Color-only signaling: a failure row must carry a word, not just styling
-# =============================================================================
-
-
 def test_failure_status_row_carries_a_literal_word(
     authenticated_cli: AuthenticatedCLI,
 ) -> None:
-    """Project transfer-check reports per-check status as literal OK/FAIL text
-    in the table cell, not as color alone -- verified with color rendering
-    off (the CliRunner default), where a color-only signal would be invisible.
-    """
     from unittest.mock import MagicMock, patch
 
     authenticated_cli.client.ping.side_effect = RuntimeError("unreachable")

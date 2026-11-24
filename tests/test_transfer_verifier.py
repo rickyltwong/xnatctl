@@ -1,5 +1,3 @@
-"""Tests for transfer verifier."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -12,7 +10,6 @@ from xnatctl.services.transfer.verifier import VerificationResult, Verifier
 
 @pytest.fixture
 def source_client() -> MagicMock:
-    """Mock source XNAT client."""
     client = MagicMock()
     client.base_url = "https://src.example.org"
     return client
@@ -20,7 +17,6 @@ def source_client() -> MagicMock:
 
 @pytest.fixture
 def dest_client() -> MagicMock:
-    """Mock destination XNAT client."""
     client = MagicMock()
     client.base_url = "https://dst.example.org"
     return client
@@ -28,7 +24,6 @@ def dest_client() -> MagicMock:
 
 @pytest.fixture
 def verifier(source_client: MagicMock, dest_client: MagicMock) -> Verifier:
-    """Create a Verifier with mock clients."""
     return Verifier(source_client, dest_client)
 
 
@@ -120,8 +115,6 @@ class TestVerifyExperiment:
         resources_resp = make_response({"ResultSet": {"Result": [{"label": "DICOM"}]}})
         files_resp = make_response({"ResultSet": {"Result": [{"Name": "f1"}, {"Name": "f2"}]}})
 
-        # Source: scans (tier1+tier2 reused), resources, files
-        # Dest: scans, files
         source_client.get.side_effect = [
             scans_resp,
             resources_resp,
@@ -160,8 +153,6 @@ class TestVerifyExperiment:
         src_files = make_response({"ResultSet": {"Result": [{"Name": "f1"}, {"Name": "f2"}]}})
         dst_files = make_response({"ResultSet": {"Result": [{"Name": "f1"}]}})
 
-        # Source: scans (tier1+tier2 reused), resources, files
-        # Dest: scans, files
         source_client.get.side_effect = [
             scans_resp,
             resources_resp,

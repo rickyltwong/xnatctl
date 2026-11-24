@@ -7,23 +7,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import httpx
 
-# Read/write ceiling. Deliberately generous: a single large DICOM transfer can
-# legitimately stream for hours, so the read phase must not time out.
 DEFAULT_HTTP_TIMEOUT_SECONDS = 21600
 
-# Connect timeout. A blackholed (firewall-DROPped) host must fail in seconds, not
-# hours -- the connect phase has nothing to do with transfer size.
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
 
-# Pool-acquire timeout: bounded so a saturated connection pool surfaces quickly
-# instead of inheriting the multi-hour read ceiling.
 DEFAULT_POOL_TIMEOUT_SECONDS = 30
 
-# Max seconds `session upload-exam` waits for DICOM to finish archiving before
-# attaching session resources. Kept generous: large sessions (100k+ files) can
-# take well over an hour to archive, and a premature timeout aborts the command
-# before resources/misc files are attached.
-DEFAULT_ARCHIVE_WAIT_SECONDS = 14400  # 4 hours
+DEFAULT_ARCHIVE_WAIT_SECONDS = 14400
 
 
 def build_httpx_timeout(read_timeout: float | None) -> httpx.Timeout:
@@ -45,9 +35,6 @@ def build_httpx_timeout(read_timeout: float | None) -> httpx.Timeout:
          :data:`DEFAULT_CONNECT_TIMEOUT_SECONDS`.
     """
     read = float(read_timeout if read_timeout is not None else DEFAULT_HTTP_TIMEOUT_SECONDS)
-    # Imported at call time so that importing config (which needs the timeout
-    # constants) -- e.g. from the detached update-check child or a bare
-    # `import xnatctl` -- does not pay for httpx and the CLI stack httpx pulls.
     import httpx
 
     return httpx.Timeout(

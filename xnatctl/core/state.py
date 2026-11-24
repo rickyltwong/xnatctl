@@ -51,54 +51,30 @@ class TransferStateStore:
         self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
-        # WAL mode is what creates the -wal/-shm siblings, and it does so via
-        # SQLite's own file creation, not the pre-create below -- so they
-        # inherit the process umask same as db_path would have without it.
         self._restrict_wal_siblings()
         self._init_schema()
 
     @staticmethod
     def _ensure_private_db_file(db_path: Path) -> None:
-        """Create the database file 0600 before ``sqlite3.connect`` ever touches it.
-
-        ``sqlite3.connect`` creates a missing file with a plain C-level
-        ``open()`` that inherits the process umask -- 0664 on a typical
-        multi-user host -- the same gap ``core/fsutil.py`` closes for the
-        session cache and ``config.yaml``. This database can hold subject and
-        session labels plus source/destination server URLs from a completed
-        sync, so it gets the same treatment.
-        """
         if db_path.exists():
-            # An existing database's mode may be too loose; tighten it
-            # rather than only protecting freshly created files. Same
-            # pattern as AuditLogger._ensure_private.
             if stat.S_IMODE(db_path.stat().st_mode) & 0o077:
                 restrict_permissions(db_path)
             return
         try:
             fd = os.open(str(db_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, PRIVATE_FILE_MODE)
         except FileExistsError:
-            # Another process won the exists()-to-open race; treat its file
-            # exactly like a pre-existing one instead of aborting startup.
             if stat.S_IMODE(db_path.stat().st_mode) & 0o077:
                 restrict_permissions(db_path)
             return
         os.close(fd)
 
     def _restrict_wal_siblings(self) -> None:
-        """Tighten ``-wal``/``-shm`` if WAL mode just created them.
-
-        Only fires once, right after enabling WAL mode: that call is what
-        creates these two files on a fresh database, so this is the one
-        moment they are known to exist yet to have been checked.
-        """
         for suffix in ("-wal", "-shm"):
             sibling = self.db_path.with_name(self.db_path.name + suffix)
             if sibling.exists() and stat.S_IMODE(sibling.stat().st_mode) & 0o077:
                 restrict_permissions(sibling)
 
     def _init_schema(self) -> None:
-        """Create tables if they don't exist."""
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS sync_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,19 +123,12 @@ class TransferStateStore:
         self._conn.commit()
 
     def _get_tables(self) -> list[str]:
-        """List table names in the database.
-
-        Returns:
-            Sorted list of table names.
-        """
         cur = self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         return [row[0] for row in cur.fetchall()]
 
     def close(self) -> None:
         """Close the database connection."""
         self._conn.close()
-
-    # -- sync_history --------------------------------------------------------
 
     def start_sync(
         self,
@@ -281,8 +250,6 @@ class TransferStateStore:
         row = cur.fetchone()
         return row["sync_end"] if row else None
 
-    # -- entity_manifest -----------------------------------------------------
-
     def record_entity(
         self,
         sync_id: int,
@@ -368,8 +335,6 @@ class TransferStateStore:
                 (sync_id,),
             )
         return [dict(row) for row in cur.fetchall()]
-
-    # -- id_mapping ----------------------------------------------------------
 
     def save_id_mapping(
         self,

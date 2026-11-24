@@ -21,12 +21,6 @@ from xnatctl.core.exceptions import (
 )
 from xnatctl.core.logging import LogContext, get_audit_logger, get_logger, setup_logging
 
-# Config, the client, auth, output (Rich), and validation (which pulls in httpx
-# via core.timeouts) are exported lazily (PEP 562): importing this package is
-# on the path of every `import xnatctl`, and eagerly loading them pulls in
-# httpx/Rich/Click for callers who only want the exception hierarchy or
-# logging helpers. `from xnatctl.core import XNATClient` still works; it just
-# imports the submodule on first use.
 if TYPE_CHECKING:
     from xnatctl.core.auth import AuthManager
     from xnatctl.core.client import XNATClient
@@ -91,7 +85,6 @@ _LAZY_EXPORTS = {
 
 
 def __getattr__(name: str) -> object:
-    """Resolve the lazily-exported names (PEP 562)."""
     module_path = _LAZY_EXPORTS.get(name)
     if module_path is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -101,12 +94,10 @@ def __getattr__(name: str) -> object:
 
 
 def __dir__() -> list[str]:
-    """Include the lazy exports so ``dir(xnatctl.core)`` shows the full surface."""
     return sorted(set(globals()) | set(_LAZY_EXPORTS))
 
 
 __all__ = [
-    # Exceptions
     "XNATCtlError",
     "AuthenticationError",
     "ConfigurationError",
@@ -119,10 +110,8 @@ __all__ = [
     "UploadError",
     "DownloadError",
     "RetryExhaustedError",
-    # Deprecated shadowing aliases (emit DeprecationWarning on instantiation).
     "ConnectionError",
     "ValidationError",
-    # Validation
     "validate_server_url",
     "validate_port",
     "validate_project_id",
@@ -137,16 +126,12 @@ __all__ = [
     "validate_timeout",
     "validate_workers",
     "validate_regex_pattern",
-    # Config
     "Config",
     "Profile",
     "CONFIG_DIR",
     "CONFIG_FILE",
-    # Client
     "XNATClient",
-    # Auth
     "AuthManager",
-    # Output
     "OutputFormat",
     "print_output",
     "print_table",
@@ -155,7 +140,6 @@ __all__ = [
     "print_warning",
     "print_success",
     "console",
-    # Logging
     "get_logger",
     "get_audit_logger",
     "setup_logging",

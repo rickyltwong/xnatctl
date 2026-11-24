@@ -261,11 +261,6 @@ def test_upload_dicom_gradual_returns_no_dicom_files_for_non_dicom_directory(
 def test_display_root_falls_back_to_first_parent_when_commonpath_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A ValueError from os.path.commonpath must not abort the upload.
-
-    With the fallback root (`files[0].parent`), the first file displays as its
-    bare name and the second (outside that root) falls back to its name too.
-    """
     d1 = tmp_path / "a"
     d2 = tmp_path / "b"
     d1.mkdir()

@@ -1,12 +1,3 @@
-"""Help-text rendering guard.
-
-Click rewraps a docstring paragraph into one block unless a line containing only
-``\\b`` precedes it. Without those markers, multi-line ``Example:`` blocks
-collapse into a run-on paragraph (``xnatctl a    xnatctl b``). This meta-test
-walks the whole command tree and fails if any rendered help line carries two
-command invocations, so the formatting cannot silently rot again.
-"""
-
 from __future__ import annotations
 
 import click
@@ -33,12 +24,6 @@ def runner() -> CliRunner:
 
 
 def test_no_rendered_help_line_carries_two_invocations(runner) -> None:
-    """No rendered --help line may contain two `xnatctl ` command invocations.
-
-    Exception: a line joining two invocations with a shell pipe (``|``) is a
-    deliberate one-line pipeline example (e.g. piping `-q` IDs into a
-    `--batch -` consumer), not a collapsed-paragraph rewrap bug.
-    """
     offenders: list[str] = []
     for path, _command in _all_commands():
         result = runner.invoke(cli, [*path[1:], "--help"])
@@ -60,7 +45,6 @@ def test_no_rendered_help_line_carries_two_invocations(runner) -> None:
     ],
 )
 def test_spot_check_examples_each_on_own_line(runner, args) -> None:
-    """Each `xnatctl ` example in these commands starts its own rendered line."""
     result = runner.invoke(cli, args)
     assert result.exit_code == 0
     for line in result.output.splitlines():

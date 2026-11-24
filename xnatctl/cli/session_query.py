@@ -132,15 +132,12 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
         print_error(f"Session not found: {session_id}")
         raise SystemExit(1) from None
 
-    # Keep project scope (and subject scope if known) so nested calls respect
-    # project ACLs and match pre-refactor URLs.
     nested_ref = ExperimentRef(
         experiment=resolved.experiment_id,
         project_id=resolved.project_id or project,
         subject=resolved.subject_id or resolved.subject_label,
     )
 
-    # Get scans — resolve xsiType so non-imaging sessions return results
     try:
         scan_params: dict[str, str] = {}
         scan_xsi = hierarchy.resolve_scan_xsi_type(resolved.xsi_type)
@@ -152,7 +149,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
         click.echo(f"Warning: could not list scans: {exc}", err=True)
         scans = []
 
-    # Get resources
     try:
         res_resp = hierarchy.get_experiment_json(nested_ref, "resources")
         resources = HierarchyService.extract_rows(res_resp)
@@ -214,13 +210,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     ]
 
     if ctx.output_format == OutputFormat.TSV:
-        # Three TSV blocks (session info, scans, resources) rather than the
-        # decorative "[Session: ...]"/"[Scans (N)]" headers the table branch
-        # below prints -- those are not data and would corrupt a
-        # tab-separated stream. A blank line separates non-empty blocks;
-        # each block's own header row (distinct field names, or none under
-        # --no-headers) is what tells them apart. Routed through
-        # print_output like every other TSV render in the CLI.
         session_row = {
             "id": resolved.experiment_id,
             "label": resolved.experiment_label or "",
@@ -253,7 +242,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             )
         return
 
-    # Print session info
     click.echo(f"\n[Session: {resolved.experiment_label or session_id}]")
     click.echo(f"  ID:      {resolved.experiment_id}")
     click.echo(f"  Subject: {resolved.subject_label or resolved.subject_id or ''}")
@@ -261,7 +249,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     click.echo(f"  Date:    {resolved.session_date or ''}")
     click.echo(f"  Type:    {resolved.xsi_type or ''}")
 
-    # Print scans table
     if scan_rows:
         click.echo(f"\n[Scans ({len(scan_rows)})]")
         print_table(
@@ -276,7 +263,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             },
         )
 
-    # Print resources table
     if res_rows:
         click.echo(f"\n[Resources ({len(res_rows)})]")
         print_table(
@@ -290,7 +276,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             },
         )
 
-    # Print shared-projects table
     if share_display_rows:
         click.echo(f"\n[Shared into ({len(share_display_rows)})]")
         print_table(

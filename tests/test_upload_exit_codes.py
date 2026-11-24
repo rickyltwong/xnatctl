@@ -1,10 +1,3 @@
-"""Failed transfers must exit nonzero in every output format.
-
-Before the fix, ``raise SystemExit(1)`` lived only inside the table-output
-branch of each upload helper, so ``-o json`` printed a ``success: false``
-summary and returned 0 -- automation gated on exit code saw success.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -93,7 +86,7 @@ def test_gradual_failed_exits_nonzero(
 @pytest.mark.parametrize("fmt", [OutputFormat.JSON, OutputFormat.TABLE])
 def test_gradual_success_exits_zero(monkeypatch: pytest.MonkeyPatch, fmt, tmp_path) -> None:
     _patch_service(monkeypatch, "upload_dicom_gradual", _upload_summary(success=True))
-    _upload_gradual_dicom(_ctx(fmt), tmp_path, "PROJ", "SUBJ", "SESS")  # no SystemExit
+    _upload_gradual_dicom(_ctx(fmt), tmp_path, "PROJ", "SUBJ", "SESS")
 
 
 @pytest.mark.parametrize("fmt", [OutputFormat.JSON, OutputFormat.TABLE])

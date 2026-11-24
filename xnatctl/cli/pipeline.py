@@ -108,16 +108,9 @@ def pipeline_run(
         xnatctl pipeline run freesurfer -E XNAT_E00001 --wait
         xnatctl pipeline run myproc -E XNAT_E00001 --param param1=value1 --param param2=value2
     """
-    # `--experiment` is not required=True at the Click level: the deprecated
-    # `-e` alias forwards into this same param via a callback that runs
-    # after Click's own required-check on --experiment would already have
-    # fired (Click checks each option's own parsed value, not ctx.params),
-    # so required=True here would reject a bare `-e`. Enforced by hand
-    # instead.
     if not experiment:
         raise click.UsageError("Missing option '--experiment' / '-E'.")
 
-    # Parse parameters
     params = {}
     for p in param:
         if "=" in p:
@@ -143,7 +136,6 @@ def pipeline_run(
             click.echo(f"Waiting for job {job_id} to complete...", err=True)
 
         def progress_callback(status: dict[str, Any]) -> None:
-            """Print pipeline job status updates during wait."""
             if ctx.quiet:
                 return
             job_status = status.get("status", "unknown")
@@ -196,7 +188,6 @@ def pipeline_status(
             click.echo(f"Watching job {job_id}...", err=True)
 
         def progress_callback(status: dict[str, Any]) -> None:
-            """Print pipeline job status updates during watch."""
             if ctx.quiet:
                 return
             job_status = status.get("status", "unknown")
@@ -205,7 +196,7 @@ def pipeline_status(
         try:
             final_status = service.wait(
                 job_id=job_id,
-                timeout=86400,  # 24 hours
+                timeout=86400,
                 poll_interval=interval,
                 progress_callback=progress_callback,
             )
@@ -304,10 +295,6 @@ def pipeline_jobs(
     client = ctx.get_client()
     service = PipelineService(client)
 
-    # A client-side --filter/--sort-by must see the full result set it is
-    # filtering/sorting over, not just whatever fits in the server's
-    # --limit window -- fetching that window FIRST and filtering/sorting
-    # second would silently drop matches outside it.
     client_side_controls = bool(filter_expr or sort_by)
     fetch_limit = None if client_side_controls else limit
 

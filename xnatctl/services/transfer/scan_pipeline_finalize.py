@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 
 
 class _ExperimentFinalizeMixin:
-    """Post-archive experiment finalization; composed into ``ScanPipeline``."""
-
     executor: TransferExecutor
     filter_engine: FilterEngine
     scan_transfer: ScanTransfer
@@ -47,13 +45,6 @@ class _ExperimentFinalizeMixin:
         subject: DiscoveredEntity,
         exp: DiscoveredEntity,
     ) -> None:
-        """Create an empty experiment on the destination for no-DICOM finalize paths.
-
-        Args:
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            exp: Discovered experiment entity.
-        """
         self.executor.create_experiment(
             dest_project,
             subject.local_label,
@@ -67,20 +58,9 @@ class _ExperimentFinalizeMixin:
         result: TransferResult,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
-        """Complete deferred phases for an experiment after archive is ready.
-
-        Runs Phase 2.5 (XML overlay), Phase 3 (non-DICOM resources),
-        Phase 4 (session resources), and verification.
-
-        Args:
-            ctx: Deferred experiment context.
-            result: Mutable result to update.
-            progress_callback: Optional progress callback.
-        """
         try:
             exp, subject, dest_project = ctx.exp, ctx.subject, ctx.dest_project
 
-            # Phase 2.5: XML metadata overlay
             self._apply_xml_overlay(
                 exp,
                 dest_project,
@@ -90,7 +70,6 @@ class _ExperimentFinalizeMixin:
                 "XML overlay failed for %s",
             )
 
-            # Phase 3: Transfer non-DICOM scan resources
             self.scan_transfer.transfer_scans(
                 ctx.scans,
                 exp,
@@ -103,12 +82,10 @@ class _ExperimentFinalizeMixin:
                 scan_resources_cache=ctx.scan_resources_cache,
             )
 
-            # Phase 4: Transfer session-level resources
             self._transfer_session_resources(
                 exp, dest_project, subject, ctx.work_dir, result, progress_callback
             )
 
-            # Verification
             if self.config.verify_after_transfer:
                 self._verify_and_record_experiment(exp, ctx.sync_id, dest_project, subject, result)
             else:
@@ -123,7 +100,6 @@ class _ExperimentFinalizeMixin:
                     status=EntityStatus.SYNCED,
                 )
 
-            # Save experiment ID mapping for future reconciliation
             self._save_experiment_mapping(exp, dest_project)
         finally:
             ctx.work_dir_handle.cleanup()
@@ -137,26 +113,12 @@ class _ExperimentFinalizeMixin:
         result: TransferResult,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
-        """Full pipeline for experiments with no DICOM resources.
-
-        Runs XML overlay, non-DICOM resources, session resources, and
-        verification. Uses a fresh temp directory with context-manager scope.
-
-        Args:
-            exp: Discovered experiment entity.
-            sync_id: Current sync run ID.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            result: Mutable result to update.
-            progress_callback: Optional progress callback.
-        """
         with tempfile.TemporaryDirectory() as work_dir_str:
             work_dir = Path(work_dir_str)
 
             scans = self.executor.discover_scans(exp.local_id)
             scan_resources_cache: dict[str, list[dict[str, Any]]] = {}
 
-            # XML overlay
             self._apply_xml_overlay(
                 exp,
                 dest_project,
@@ -166,7 +128,6 @@ class _ExperimentFinalizeMixin:
                 "XML overlay failed for %s",
             )
 
-            # Non-DICOM resources
             self.scan_transfer.transfer_scans(
                 scans,
                 exp,
@@ -180,12 +141,10 @@ class _ExperimentFinalizeMixin:
                 create_missing_scans=True,
             )
 
-            # Session-level resources
             self._transfer_session_resources(
                 exp, dest_project, subject, work_dir, result, progress_callback
             )
 
-        # Verification
         if self.config.verify_after_transfer:
             self._verify_and_record_experiment(exp, sync_id, dest_project, subject, result)
         else:
@@ -200,7 +159,6 @@ class _ExperimentFinalizeMixin:
                 status=EntityStatus.SYNCED,
             )
 
-        # Save experiment ID mapping for future reconciliation
         self._save_experiment_mapping(exp, dest_project)
 
     def _save_experiment_mapping(
@@ -208,12 +166,6 @@ class _ExperimentFinalizeMixin:
         exp: DiscoveredEntity,
         dest_project: str,
     ) -> None:
-        """Save experiment ID mapping after successful transfer.
-
-        Args:
-            exp: Transferred experiment entity.
-            dest_project: Destination project ID.
-        """
         dest_exp_id = self.executor.check_experiment_exists(dest_project, exp.local_label)
         if dest_exp_id:
             self.state_store.save_id_mapping(
@@ -235,17 +187,6 @@ class _ExperimentFinalizeMixin:
         applied_message: str,
         failed_message: str,
     ) -> None:
-        """Apply the XML metadata overlay if enabled; a failure is non-fatal.
-
-        Args:
-            exp: Experiment entity.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            progress_callback: Optional progress callback.
-            applied_message: Progress message reported on success.
-            failed_message: ``%s``-experiment_label warning logged (with
-                exc_info) on failure.
-        """
         if not self.config.transfer_xml_metadata:
             return
         try:
@@ -269,16 +210,6 @@ class _ExperimentFinalizeMixin:
         result: TransferResult,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
-        """Transfer session-level resources for an experiment.
-
-        Args:
-            exp: Experiment entity.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            work_dir: Temporary working directory.
-            result: Mutable result to update.
-            progress_callback: Optional progress callback.
-        """
         xsi_type = exp.xsi_type or ""
 
         try:
@@ -326,15 +257,6 @@ class _ExperimentFinalizeMixin:
         subject: DiscoveredEntity,
         result: TransferResult,
     ) -> None:
-        """Verify an experiment transfer and record status.
-
-        Args:
-            exp: Experiment entity.
-            sync_id: Current sync run ID.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            result: Mutable result to update.
-        """
         src_path = f"/data/experiments/{quote_path_segment(exp.local_id)}"
         dst_path = (
             f"/data/projects/{quote_path_segment(dest_project)}"

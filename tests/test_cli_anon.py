@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI `anon` commands."""
-
 from __future__ import annotations
 
 from conftest import AuthenticatedCLI, make_response
@@ -8,8 +6,6 @@ PROJECT_EXISTS_RESPONSE = {"ResultSet": {"Result": [{"ID": "PROJ01"}]}}
 
 
 class TestAnonShow:
-    """Tests for `anon show`."""
-
     def test_show_site(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get.return_value = make_response(
             text='version "6.1"', content_type="text/plain"
@@ -23,9 +19,6 @@ class TestAnonShow:
         assert "6.1" in result.output
 
     def test_show_project(self, authenticated_cli: AuthenticatedCLI) -> None:
-        # get_project_script() checks project existence then reads the script;
-        # project_enabled() independently re-checks project existence -- four
-        # client.get() calls total for this command in the "has a script" path.
         authenticated_cli.client.get.side_effect = [
             make_response(PROJECT_EXISTS_RESPONSE),
             make_response(text='version "6.1"', content_type="text/plain"),
@@ -42,10 +35,10 @@ class TestAnonShow:
         from xnatctl.core.exceptions import ResourceNotFoundError
 
         authenticated_cli.client.get.side_effect = [
-            make_response(PROJECT_EXISTS_RESPONSE),  # project exists (get_project_script)
-            make_response(text="", content_type="text/plain", status_code=204),  # unset
-            ResourceNotFoundError("resource", "path"),  # no config row -- never set
-            make_response(PROJECT_EXISTS_RESPONSE),  # project exists (project_enabled)
+            make_response(PROJECT_EXISTS_RESPONSE),
+            make_response(text="", content_type="text/plain", status_code=204),
+            ResourceNotFoundError("resource", "path"),
+            make_response(PROJECT_EXISTS_RESPONSE),
         ]
         authenticated_cli.client.get_json.return_value = False
 
@@ -56,8 +49,6 @@ class TestAnonShow:
 
 
 class TestAnonSet:
-    """Tests for `anon set` -- happy path, declined confirmation, dry-run diff."""
-
     def test_set_site_from_file(self, authenticated_cli: AuthenticatedCLI, tmp_path) -> None:
         script_file = tmp_path / "script.dicomedit"
         script_file.write_text('version "6.1"')
@@ -145,8 +136,6 @@ class TestAnonSet:
 
 
 class TestAnonEnableDisable:
-    """Tests for `anon enable`/`anon disable`."""
-
     def test_enable_site(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.put.return_value = make_response(
             text="", content_type="application/json"

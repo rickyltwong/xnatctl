@@ -43,7 +43,6 @@ POSIX_PERMISSIONS = os.name == "posix"
 
 
 def _private_opener(path: str, flags: int) -> int:
-    """``open()`` opener that creates files with :data:`PRIVATE_FILE_MODE`."""
     return os.open(path, flags, PRIVATE_FILE_MODE)
 
 
@@ -98,10 +97,6 @@ def ensure_private_dir(path: Path) -> None:
     try:
         os.chmod(path, PRIVATE_DIR_MODE)
     except OSError as e:
-        # NOTE: os.chmod is largely a no-op on Windows, where the equivalent
-        # protection is an ACL. Windows semantics are unaudited; warn
-        # rather than fail, since an over-permissive directory is not worth
-        # aborting a login over.
         logger.warning("Could not restrict permissions on %s: %s", path, e)
 
 
@@ -123,5 +118,4 @@ def atomic_private_write(path: Path) -> Iterator[TextIO]:
             yield handle
         os.replace(tmp, path)
     finally:
-        # A successful replace consumed tmp; this only bites on the error path.
         tmp.unlink(missing_ok=True)

@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI config commands."""
-
 from __future__ import annotations
 
 import re
@@ -17,18 +15,15 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _strip_ansi(text: str) -> str:
-    """Drop Rich's colour codes so assertions can see the literal message."""
     return _ANSI_RE.sub("", text)
 
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with profiles."""
     return Config(
         default_profile="default",
         profiles={
@@ -46,8 +41,6 @@ def _mock_config() -> Config:
 
 
 class TestConfigInit:
-    """Tests for config init command."""
-
     def test_config_init_new(self, runner: CliRunner, tmp_path: Path) -> None:
         config_file = tmp_path / "config.yaml"
 
@@ -105,8 +98,6 @@ class TestConfigInit:
 
 
 class TestConfigShow:
-    """Tests for config show command."""
-
     def test_config_show_table(self, runner: CliRunner) -> None:
         cfg = _mock_config()
 
@@ -126,7 +117,6 @@ class TestConfigShow:
         assert "xnat.example.org" in result.output
 
     def test_config_show_tsv(self, runner: CliRunner) -> None:
-        """`-o tsv` emits a per-profile TSV table, not the Rich key-value view."""
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
@@ -157,7 +147,6 @@ class TestConfigShow:
         assert result.exit_code != 0
 
     def test_config_show_filter_by_profile(self, runner: CliRunner) -> None:
-        """``-p NAME`` restricts profile-detail sections to that single profile."""
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
@@ -165,14 +154,11 @@ class TestConfigShow:
                 result = runner.invoke(cli, ["config", "show", "-p", "dev"])
 
         assert result.exit_code == 0
-        # The selected profile name appears in the per-profile section.
         assert "dev" in result.output
-        # The non-selected profile's URL does NOT appear in the output.
         assert "xnat.example.org" not in result.output
         assert "xnat-dev.example.org" in result.output
 
     def test_config_show_filter_by_profile_json(self, runner: CliRunner) -> None:
-        """``-p NAME -o json`` narrows ``profiles`` and ``profile_details``."""
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
@@ -187,7 +173,6 @@ class TestConfigShow:
         assert list(payload["profile_details"].keys()) == ["dev"]
 
     def test_config_show_unknown_profile_errors(self, runner: CliRunner) -> None:
-        """Unknown ``-p NAME`` exits non-zero and lists available profiles."""
         cfg = _mock_config()
 
         with patch("xnatctl.cli.config_cmd.Config.load", return_value=cfg):
@@ -196,14 +181,11 @@ class TestConfigShow:
 
         assert result.exit_code != 0
         assert "nonexist" in result.output
-        # Available profiles are listed.
         assert "default" in result.output
         assert "dev" in result.output
 
 
 class TestConfigUseContext:
-    """Tests for config use-context command."""
-
     def test_use_context_success(self, runner: CliRunner) -> None:
         cfg = _mock_config()
 
@@ -225,8 +207,6 @@ class TestConfigUseContext:
 
 
 class TestConfigCurrentContext:
-    """Tests for config current-context command."""
-
     def test_current_context(self, runner: CliRunner) -> None:
         cfg = _mock_config()
 
@@ -238,8 +218,6 @@ class TestConfigCurrentContext:
 
 
 class TestConfigAddProfile:
-    """Tests for config add-profile command."""
-
     def test_add_profile_success(self, runner: CliRunner) -> None:
         cfg = _mock_config()
 
@@ -299,8 +277,6 @@ class TestConfigAddProfile:
 
 
 class TestConfigRemoveProfile:
-    """Tests for config remove-profile command."""
-
     def test_remove_profile_success(self, runner: CliRunner) -> None:
         cfg = _mock_config()
 
@@ -337,13 +313,6 @@ class TestConfigRemoveProfile:
 
 
 class TestConfigSetPassword:
-    """Tests for `config set-password`.
-
-    The command exists because nothing else could put a password into a
-    profile: `add-profile` has no password option and `auth login` only caches
-    a session token, so before this the only route was hand-editing the YAML.
-    """
-
     def _config(self) -> Config:
         return Config(
             default_profile="prod",
@@ -372,7 +341,6 @@ class TestConfigSetPassword:
         assert cfg.profiles["prod"].password is None
 
     def test_inline_password_is_dropped_on_migration(self, runner: CliRunner) -> None:
-        """The migration path for a profile that already holds plaintext."""
         cfg = self._config()
         cfg.profiles["prod"].password = "old-plaintext"
 
@@ -409,9 +377,6 @@ class TestConfigSetPassword:
         assert "not found" in result.output
 
     def test_keychain_write_failure_does_not_rewrite_the_config(self, runner: CliRunner) -> None:
-        """A failed keychain write must not leave the profile claiming its
-        password lives somewhere it does not.
-        """
         cfg = self._config()
         fake_keyring = MagicMock()
         fake_keyring.set_password.side_effect = RuntimeError("no backend available")
@@ -430,9 +395,6 @@ class TestConfigSetPassword:
         assert cfg.profiles["prod"].password_source is None
 
     def test_password_is_never_accepted_as_an_argument(self, runner: CliRunner) -> None:
-        """Prompt-only by design, so it cannot reach shell history or the
-        process table (the remaining argv password flags are likewise refused).
-        """
         with core_config_seam(self._config()):
             result = runner.invoke(cli, ["config", "set-password", "prod", "--password", "s3cret"])
 
@@ -441,13 +403,6 @@ class TestConfigSetPassword:
 
 
 class TestConfigInitGuidedLogin:
-    """`config init` continues into a login.
-
-    Stopping after writing the profile would leave onboarding as two
-    commands with a cliff between them: the natural next command would fail
-    with a profile-not-found error that pointed nowhere.
-    """
-
     def test_login_is_invoked_with_the_new_profile(self, runner: CliRunner, tmp_path: Path) -> None:
         config_file = tmp_path / "config.yaml"
         login = MagicMock(return_value={"status": "authenticated", "username": "admin"})
@@ -487,9 +442,6 @@ class TestConfigInitGuidedLogin:
         assert "auth login" in result.output
 
     def test_non_tty_does_not_prompt(self, runner: CliRunner, tmp_path: Path) -> None:
-        """An unanswered prompt in a pipeline is a hang, so the prompt only
-        appears on a real terminal.
-        """
         config_file = tmp_path / "config.yaml"
         login = MagicMock()
 
@@ -507,9 +459,6 @@ class TestConfigInitGuidedLogin:
     def test_failed_login_keeps_the_profile_and_exits_zero(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
-        """The profile was written and is valid; only the login failed. Saying
-        `config init` failed would be wrong, and would invite a rerun.
-        """
         from xnatctl.core.exceptions import AuthenticationError
 
         config_file = tmp_path / "config.yaml"

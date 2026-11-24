@@ -23,14 +23,6 @@ from .projects import ProjectService
 
 
 def _expect_list(data: Any, path: str) -> list[dict[str, Any]]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``[]``.
-
-    A server that answers 200 with something other than a JSON array is not
-    "no results" -- it is a shape xnatctl does not understand, and printing
-    an empty table for it hides a real failure. See ``get_json``: it maps
-    non-2xx statuses to typed exceptions already, so anything reaching here
-    is a 2xx body.
-    """
     if not isinstance(data, list):
         raise XNATCtlError(
             f"Unexpected response from GET {path}: expected a JSON array, "
@@ -40,7 +32,6 @@ def _expect_list(data: Any, path: str) -> list[dict[str, Any]]:
 
 
 def _expect_dict(data: Any, path: str) -> dict[str, Any]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``{}``. See :func:`_expect_list`."""
     if not isinstance(data, dict):
         raise XNATCtlError(
             f"Unexpected response from GET {path}: expected a JSON object, "
@@ -50,41 +41,6 @@ def _expect_dict(data: Any, path: str) -> dict[str, Any]:
 
 
 def _drop_stale_wrapper_ids(current: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    """Strip ``id`` from any ``xnat[]`` entry in ``payload`` that isn't identical to a current one.
-
-    See :meth:`CommandService.update_command` for the live-verified failure
-    this works around: reusing a wrapper's existing numeric ``id`` on an
-    entry whose content has changed makes the server's ``POST
-    /xapi/commands/{id}`` answer a Hibernate identity-conflict 500. Matching
-    is by ``id`` first, then exact dict equality -- a wrapper that is
-    byte-for-byte unchanged from what :meth:`CommandService.get_command`
-    just returned keeps its id (stable references for anything scoped to
-    that numeric id, e.g. ``wrapper enable``/``config set``); anything else
-    -- a modified wrapper reusing an old id, or a genuinely new one -- has
-    its id stripped so the server mints a fresh one instead of colliding
-    with the one already loaded for this command in the same request.
-
-    A payload may also legitimately contain the SAME wrapper id more than
-    once (e.g. a hand-edited command.json that duplicated an entry, or an id
-    that actually belongs to a different command and so isn't in
-    ``current`` at all). Only the FIRST occurrence of an id that matches
-    ``current`` byte-for-byte keeps it; every later occurrence of that same
-    id has its id stripped regardless of content, so two payload entries
-    never reach the server carrying the same id -- exactly the identity
-    conflict this function exists to prevent.
-
-    Args:
-        current: The command's current definition, as returned by
-            :meth:`CommandService.get_command`.
-        payload: The full replacement command definition about to be sent.
-
-    Returns:
-        ``payload`` unchanged if it carries no ``xnat`` key (an intentional
-        wrapper wipe needs no id handling); otherwise a shallow copy with a
-        rebuilt ``xnat`` list. Non-dict entries are passed through as-is and
-        left for the server to reject -- this function only knows how to
-        compare wrapper objects.
-    """
     if "xnat" not in payload:
         return payload
 
@@ -252,24 +208,9 @@ class CommandService(BaseService):
 
     @staticmethod
     def _wrappers_of(command: dict[str, Any]) -> list[dict[str, Any]]:
-        """Extract one command's embedded wrapper rows, tagged with its ``command-id``.
-
-        Thin wrapper over :func:`wrappers_of`, kept as a method so the
-        service's own call sites read naturally.
-
-        Raises:
-            XNATCtlError: If ``xnat`` is not a shape this client understands.
-        """
         return wrappers_of(command)
 
     def _check_project_exists(self, project: str) -> None:
-        """Raise ``ResourceNotFoundError`` if ``project`` does not exist.
-
-        The project-scoped enable/disable routes answer 200 for a
-        nonexistent project (verified live -- see :meth:`enable_wrapper`),
-        so this is the only thing standing between a typo'd ``-P`` and a
-        confident "success" message that changed nothing.
-        """
         ProjectService(self.client).get(project)
 
     def get_wrapper(self, command_id: int, wrapper_id: int) -> dict[str, Any]:

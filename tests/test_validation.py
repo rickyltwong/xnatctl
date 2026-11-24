@@ -1,5 +1,3 @@
-"""Tests for xnatctl.core.validation module."""
-
 from __future__ import annotations
 
 import re
@@ -35,10 +33,6 @@ from xnatctl.core.validation import (
     validate_xnat_identifier,
 )
 
-# =============================================================================
-# URL Validation Tests
-# =============================================================================
-
 
 @pytest.mark.parametrize(
     ("url", "expected"),
@@ -67,7 +61,7 @@ def test_validate_server_url_valid(url: str, expected: str) -> None:
 )
 def test_validate_server_url_invalid(url: str | None, match: str | None) -> None:
     with pytest.raises(InvalidURLError, match=match):
-        validate_server_url(url)  # type: ignore[arg-type]
+        validate_server_url(url)
 
 
 @pytest.mark.parametrize(
@@ -88,11 +82,6 @@ def test_validate_url_or_none(url: str | None, expected: str | None) -> None:
         assert result == expected
 
 
-# =============================================================================
-# Port Validation Tests
-# =============================================================================
-
-
 @pytest.mark.parametrize(
     ("port", "expected"), [(8080, 8080), (1, 1), (65535, 65535), ("8080", 8080)]
 )
@@ -108,11 +97,6 @@ def test_validate_port_none_with_allow_none() -> None:
 def test_validate_port_invalid(port: int | str | None) -> None:
     with pytest.raises(InvalidPortError):
         validate_port(port)
-
-
-# =============================================================================
-# XNAT Identifier Validation Tests
-# =============================================================================
 
 
 @pytest.mark.parametrize("value", ["PROJECT01", "my_project", "test-123"])
@@ -170,11 +154,6 @@ def test_validate_project_id_invalid() -> None:
         validate_project_id("project with spaces")
 
 
-# =============================================================================
-# Resource Label Validation Tests
-# =============================================================================
-
-
 @pytest.mark.parametrize("value", ["DICOM", "NIFTI", "my-resource_01"])
 def test_validate_resource_label_valid(value: str) -> None:
     assert validate_resource_label(value) == value
@@ -194,11 +173,6 @@ def test_validate_resource_label_invalid(value: str, match: str | None) -> None:
         validate_resource_label(value)
 
 
-# =============================================================================
-# DICOM Validation Tests
-# =============================================================================
-
-
 @pytest.mark.parametrize("value", ["XNAT", "DICOM_STORE", "1234567890123456"])
 def test_validate_ae_title_valid(value: str) -> None:
     assert validate_ae_title(value) == value
@@ -212,11 +186,6 @@ def test_validate_ae_title_valid(value: str) -> None:
 def test_validate_ae_title_invalid(value: str, match: str) -> None:
     with pytest.raises(InvalidIdentifierError, match=match):
         validate_ae_title(value)
-
-
-# =============================================================================
-# Path Validation Tests
-# =============================================================================
 
 
 def test_validate_path_exists_file(temp_dir: Path) -> None:
@@ -253,13 +222,6 @@ def test_validate_path_writable_valid(temp_dir: Path) -> None:
 def test_validate_path_writable_nonexistent_parent_raises(temp_dir: Path) -> None:
     with pytest.raises(PathValidationError, match="parent directory does not exist"):
         validate_path_writable(temp_dir / "nonexistent" / "file.txt")
-
-
-# =============================================================================
-# Configuration Validation Tests (timeout + workers share a shape: both take
-# an int/str/None value and a ConfigurationError min/max, so their cases are
-# tabulated together)
-# =============================================================================
 
 
 @pytest.mark.parametrize(
@@ -307,12 +269,6 @@ def test_validate_regex_pattern_valid() -> None:
 def test_validate_regex_pattern_invalid(pattern: str, match: str) -> None:
     with pytest.raises(ConfigurationError, match=match):
         validate_regex_pattern(pattern)
-
-
-# =============================================================================
-# Batch Input Validation Tests (scan-IDs and project-list parsers share a
-# shape: comma-split + per-item validate, "" -> InvalidIdentifierError)
-# =============================================================================
 
 
 @pytest.mark.parametrize(

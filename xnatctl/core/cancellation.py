@@ -66,10 +66,6 @@ class CancellationToken:
         return self._event.wait(seconds)
 
 
-#: A token that is never cancelled, for call sites that do not opt in.
-#:
-#: Lets worker functions take ``cancel_token`` unconditionally instead of
-#: threading ``None`` checks through every loop.
 NULL_TOKEN = CancellationToken()
 
 
@@ -103,8 +99,6 @@ def cancellable_pool(
         yield executor, token
     except BaseException:
         token.cancel()
-        # Before the join below: this is what drops the not-yet-started
-        # backlog. Reversing the order would wait for all of it first.
         executor.shutdown(wait=False, cancel_futures=True)
         raise
     finally:

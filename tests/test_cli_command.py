@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI `command` commands."""
-
 from __future__ import annotations
 
 import json
@@ -25,8 +23,6 @@ NEW_COMMAND_PAYLOAD = {
 
 
 class TestCommandList:
-    """Tests for `command list`."""
-
     def test_list_requests_expected_path(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = [SAMPLE_COMMAND]
 
@@ -43,7 +39,6 @@ class TestCommandList:
 
         assert result.exit_code == 0
         assert '"id": 12' in result.output
-        # Computed client-side from "xnat", not part of the raw server row.
         assert '"wrapper_count": 1' in result.output
 
     def test_list_quiet(self, authenticated_cli: AuthenticatedCLI) -> None:
@@ -56,8 +51,6 @@ class TestCommandList:
 
 
 class TestCommandShow:
-    """Tests for `command show`."""
-
     def test_show_requests_expected_path(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = SAMPLE_COMMAND
 
@@ -77,8 +70,6 @@ class TestCommandShow:
 
 
 class TestCommandCreate:
-    """Tests for `command create` -- happy path, declined confirmation, dry-run."""
-
     def test_create_from_file(self, authenticated_cli: AuthenticatedCLI, tmp_path) -> None:
         payload_file = tmp_path / "command.json"
         payload_file.write_text(json.dumps(NEW_COMMAND_PAYLOAD))
@@ -107,7 +98,6 @@ class TestCommandCreate:
     def test_create_stdin_without_yes_or_dry_run_rejected(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """FILE - can't be read AND leave stdin for a confirmation prompt."""
         result = authenticated_cli.invoke(
             ["command", "create", "-"], input=json.dumps(NEW_COMMAND_PAYLOAD)
         )
@@ -152,8 +142,6 @@ class TestCommandCreate:
 
 
 class TestCommandUpdate:
-    """Tests for `command update` -- happy path, declined confirmation, dry-run diff."""
-
     def test_update_from_file(self, authenticated_cli: AuthenticatedCLI, tmp_path) -> None:
         payload_file = tmp_path / "command.json"
         payload_file.write_text(json.dumps(NEW_COMMAND_PAYLOAD))
@@ -194,19 +182,9 @@ class TestCommandUpdate:
 
         assert result.exit_code == 0
         authenticated_cli.client.post.assert_not_called()
-        # A unified diff, not "[DRY-RUN] Would ..." alone.
         assert "---" in result.output
         assert "+++" in result.output
         assert "new-tool" in result.output
-        # ``update_command`` is a full replace: NEW_COMMAND_PAYLOAD omits
-        # "xnat" entirely, so this update would silently wipe every wrapper
-        # registered on the command. The whole point of the dry-run diff is
-        # to make that removal visible -- assert the wrapper deletion is
-        # actually there as removed ("-") lines, not just that the diff has
-        # *some* markers and mentions the new name. A regression that
-        # filtered "xnat" out of the comparison (e.g. diffing the payload
-        # against itself, or dropping "xnat" before diffing) would still
-        # satisfy the assertions above while hiding this exact danger.
         removed_lines = [
             line
             for line in result.output.splitlines()
@@ -218,21 +196,6 @@ class TestCommandUpdate:
     def test_update_dry_run_previews_the_stale_id_stripping_execution_performs(
         self, authenticated_cli: AuthenticatedCLI, tmp_path
     ) -> None:
-        """The preview must show the body execution actually sends, ids included.
-
-        Execution runs the payload through the stale-wrapper-id stripping
-        (a MODIFIED wrapper that reuses its old id makes the server answer
-        a Hibernate identity conflict, so its id is dropped and the server
-        mints a new one). A dry-run that diffed the RAW payload instead
-        would show a renamed wrapper keeping its id while execution
-        silently replaces it -- invalidating anything scoped to that id,
-        such as
-        `wrapper enable` or `wrapper config set`.
-
-        This exercises the CLI path specifically. The service-level test of
-        ``prepare_update_body`` cannot catch a regression here: if the CLI
-        went back to diffing the raw payload, that test would still pass.
-        """
         renamed_wrapper = {**SAMPLE_COMMAND["xnat"][0], "name": "renamed-scan"}
         payload = {**SAMPLE_COMMAND, "xnat": [renamed_wrapper]}
         payload_file = tmp_path / "command.json"
@@ -245,17 +208,8 @@ class TestCommandUpdate:
 
         assert result.exit_code == 0
         authenticated_cli.client.post.assert_not_called()
-        # The rename is visible...
         assert "renamed-scan" in result.output
 
-        # ...and so is the id REMOVAL that comes with it. This has to assert
-        # on a "-" line, not on the absence of a "+" line: if the preview
-        # regressed to diffing the raw payload, the wrapper's id would be
-        # identical on both sides and difflib would emit it as unchanged
-        # CONTEXT -- so "no added line carries the id" is true in both the
-        # fixed and the broken case, and would pin nothing. The id showing
-        # up as removed is the thing that is only true once the preview runs
-        # the same stale-id stripping the request does.
         removed_lines = [
             line
             for line in result.output.splitlines()
@@ -266,8 +220,6 @@ class TestCommandUpdate:
 
 
 class TestCommandDelete:
-    """Tests for `command delete` -- happy path, declined confirmation, dry-run."""
-
     def test_delete(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = SAMPLE_COMMAND
         authenticated_cli.client.delete.return_value = MagicMock(status_code=204)
@@ -286,15 +238,6 @@ class TestCommandDelete:
     def test_delete_dry_run_checks_existence_no_delete(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """Dry-run must run the same existence check execution does, but never DELETE.
-
-        A dry-run that returns before any GET would report "would delete"
-        for an unknown command_id -- execution's own preflight
-        (delete_command()'s get_command() call) is what stands between a
-        typo and DELETE's silent 204-even-if-missing no-op, and a dry-run
-        diverging from it would hide that from a caller running dry-run
-        first.
-        """
         authenticated_cli.client.get_json.return_value = SAMPLE_COMMAND
 
         result = authenticated_cli.invoke(["command", "delete", "12", "--dry-run"])
@@ -307,7 +250,6 @@ class TestCommandDelete:
     def test_delete_dry_run_unknown_command_refused(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """Dry-run must refuse an unknown command_id the same way execution does."""
         from xnatctl.core.exceptions import ResourceNotFoundError
 
         authenticated_cli.client.get_json.side_effect = ResourceNotFoundError(
@@ -318,7 +260,4 @@ class TestCommandDelete:
 
         assert result.exit_code != 0
         authenticated_cli.client.delete.assert_not_called()
-        # The generic "[DRY-RUN] Preview mode" banner still prints (it's part
-        # of the confirmation flow, ahead of the command body); what must NOT
-        # appear is the per-command success line reporting "would delete".
         assert "Would delete" not in result.output

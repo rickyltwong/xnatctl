@@ -1,5 +1,3 @@
-"""Tests for session upload-exam CLI behavior."""
-
 from __future__ import annotations
 
 import time
@@ -14,8 +12,6 @@ from xnatctl.models.progress import UploadSummary
 
 
 class FakeClient:
-    """Minimal authenticated client stub."""
-
     is_authenticated = True
 
     def whoami(self) -> dict[str, str]:
@@ -85,8 +81,6 @@ def test_session_upload_exam_only_dicoms_does_not_resolve_experiment_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class UploadServiceSpy:
-        """Spy UploadService to avoid network and force success."""
-
         last_instance: UploadServiceSpy | None = None
         last_files_len: int | None = None
 
@@ -149,8 +143,6 @@ def test_session_upload_exam_wait_for_archive_default_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class UploadServiceStub:
-        """Stub UploadService to avoid network and force success."""
-
         def __init__(self, client: FakeClient) -> None:
             self.client = client
 
@@ -174,8 +166,6 @@ def test_session_upload_exam_wait_for_archive_default_succeeds(
             )
 
     class ResourceServiceSpy:
-        """Spy ResourceService to record resource attachment calls."""
-
         calls: list[tuple[str, dict[str, object]]] = []
 
         def __init__(self, client: FakeClient) -> None:
@@ -241,10 +231,6 @@ def test_session_upload_exam_wait_for_archive_default_succeeds(
     resolved_experiment_id = "EXPT_123"
 
     def fake_get_json(path: str, *, params: dict[str, object] | None = None) -> object:
-        # The hierarchy fallback added in B01 issues a project listing query
-        # when the direct experiment GET fails to resolve. Return an empty
-        # ResultSet so the fallback miss path raises ResourceNotFoundError
-        # again, preserving the legacy "no resolved id yet" signal.
         if path == "/data/projects/P/experiments":
             return {"ResultSet": {"Result": []}}
 
@@ -314,8 +300,6 @@ def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class UploadServiceStub:
-        """Stub UploadService to avoid network and force success."""
-
         def __init__(self, client: FakeClient) -> None:
             self.client = client
 
@@ -350,9 +334,6 @@ def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
     monkeypatch.setattr("xnatctl.services.exam_upload.time.monotonic", fake_monotonic)
 
     def fake_get_json(path: str, *, params: dict[str, object] | None = None) -> object:
-        # The hierarchy fallback (B01) issues a project listing when the
-        # direct experiment GET fails. Return an empty ResultSet so the
-        # fallback miss path re-raises ResourceNotFoundError as before.
         if path == "/data/projects/P/experiments":
             return {"ResultSet": {"Result": []}}
         if path != "/data/projects/P/experiments/E":
@@ -394,9 +375,6 @@ def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
         )
 
         assert "No such option" not in result.output
-        # Wait-timeout must not hard-abort: the successful DICOM upload is kept
-        # and the unattached resources are reported with an actionable
-        # --attach-only re-run command instead of being silently dropped.
         assert result.exit_code == 0
         assert "ResourceNotFoundError" not in result.output
         assert "Timed out waiting for archived experiment ID" not in result.output

@@ -1,5 +1,3 @@
-"""Tests for SQLite transfer state store."""
-
 from __future__ import annotations
 
 import stat
@@ -14,7 +12,6 @@ from xnatctl.core.state import EntityStatus, SyncStatus, TransferStateStore
 
 @pytest.fixture
 def store(tmp_path) -> Iterator[TransferStateStore]:
-    """Create a TransferStateStore backed by a temporary database."""
     db_path = tmp_path / "transfer.db"
     store = TransferStateStore(db_path)
     try:
@@ -46,13 +43,6 @@ class TestStateStoreInit:
     reason="POSIX permission bits don't mean anything on Windows (see SECURITY.md)",
 )
 class TestStateStorePermissions:
-    """The transfer database can hold subject/session labels and server URLs.
-
-    Same secrets-adjacent treatment as the session cache and audit log:
-    created 0600, not left at whatever the process umask would otherwise
-    apply.
-    """
-
     def test_db_file_is_private(self, store: TransferStateStore) -> None:
         mode = stat.S_IMODE(store.db_path.stat().st_mode)
         assert mode == 0o600

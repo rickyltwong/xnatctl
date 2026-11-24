@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI pipeline commands."""
-
 from __future__ import annotations
 
 import json
@@ -15,12 +13,10 @@ from xnatctl.core.config import Config, Profile
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with a default profile."""
     return Config(
         default_profile="default",
         profiles={
@@ -35,7 +31,6 @@ def _mock_config() -> Config:
 
 
 def _mock_client() -> MagicMock:
-    """Build a mock XNATClient."""
     client = MagicMock()
     client.is_authenticated = True
     client.base_url = "https://xnat.example.org"
@@ -44,8 +39,6 @@ def _mock_client() -> MagicMock:
 
 
 class TestPipelineList:
-    """Tests for pipeline list command."""
-
     def test_pipeline_list(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -113,8 +106,6 @@ class TestPipelineList:
 
 
 class TestPipelineRun:
-    """Tests for pipeline run command."""
-
     def test_pipeline_run(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -215,8 +206,6 @@ class TestPipelineRun:
 
 
 class TestPipelineStatus:
-    """Tests for pipeline status command."""
-
     def test_pipeline_status(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -264,8 +253,6 @@ class TestPipelineStatus:
 
 
 class TestPipelineCancel:
-    """Tests for pipeline cancel command."""
-
     def test_cancel_with_yes(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -301,8 +288,6 @@ class TestPipelineCancel:
 
 
 class TestPipelineJobs:
-    """Tests for pipeline jobs command."""
-
     def test_pipeline_jobs(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -376,25 +361,6 @@ class TestPipelineJobs:
     def test_pipeline_jobs_filter_sort_limit_sees_beyond_the_server_window(
         self, runner: CliRunner
     ) -> None:
-        """--filter must not be composed AFTER a small server-side --limit,
-        and the full filter -> sort -> limit pipeline must run in that
-        order end-to-end.
-
-        Regression: fetching the server's small default/explicit --limit
-        window FIRST and filtering it SECOND silently drops any match
-        outside that window. Five matches are scattered beyond a small
-        server window, in an order that requires --sort-by to reorder, and
-        --limit (3) is smaller than the number of matches (5) -- so a
-        composition bug (wrong fetch window, missing filter, or missing
-        sort) each produce a different, wrong, ordered id list.
-
-        The non-matching rows all sort BEFORE every match ("A..." < "C...")
-        -- if --filter were silently skipped but fetch/sort/limit still ran
-        correctly on the full unbounded set, the result would be the first
-        three "A..." rows, not C1/C2/C3. A prior version of this test used
-        "OTHER..." ids, which sort AFTER "C...", so a skipped filter would
-        have coincidentally produced the same (correct-looking) answer.
-        """
         client = _mock_client()
         mock_service = MagicMock()
 
@@ -402,9 +368,6 @@ class TestPipelineJobs:
             experiment_id=None, project=None, status=None, limit=None
         ) -> list[dict[str, str]]:
             if limit is None:
-                # Full set: 5 matches (ids C3, C1, C5, C2, C4 -- out of sort
-                # order) interspersed with 150 non-matching rows that all
-                # sort ahead of every match.
                 return [
                     self._job("C3", "Complete"),
                     *(self._job(f"A{i:03d}", "Running") for i in range(30)),
@@ -417,7 +380,6 @@ class TestPipelineJobs:
                     self._job("C4", "Complete"),
                     *(self._job(f"A{i:03d}", "Running") for i in range(120, 150)),
                 ]
-            # The server-truncated window never contains any match.
             return [self._job(f"A{i:03d}", "Running") for i in range(limit)]
 
         mock_service.list_jobs.side_effect = fake_list_jobs
@@ -446,20 +408,10 @@ class TestPipelineJobs:
                         )
 
         assert result.exit_code == 0
-        # A disabled-TLS warning (verify_ssl=False in _mock_config) shares
-        # stdout with the JSON in CliRunner's merged output; skip past it.
         rows = json.loads(result.output[result.output.index("[") :])
         assert [r["id"] for r in rows] == ["C1", "C2", "C3"]
 
     def test_pipeline_jobs_sort_only_still_fetches_unbounded(self, runner: CliRunner) -> None:
-        """--sort-by ALONE (no --filter) must also bypass the server window.
-
-        The truncated (numeric-limit) fetch here returns an entirely
-        different id namespace ("X...") than the full set ("001".."150"),
-        so sorting the wrong (truncated) page would never produce the true
-        smallest ids -- this only passes if --sort-by alone (no --filter)
-        still triggers an unbounded fetch.
-        """
         client = _mock_client()
         mock_service = MagicMock()
 

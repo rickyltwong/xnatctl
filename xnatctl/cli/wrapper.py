@@ -47,8 +47,6 @@ def wrapper_list(ctx: Context, command_id: int | None) -> None:
     service = CommandService(ctx.get_client())
     rows = service.list_wrappers(command_id=command_id)
 
-    # Only table/TSV rendering may collapse the contexts list to a display
-    # string -- a JSON consumer must get the real array back untouched.
     if ctx.output_format in (OutputFormat.TABLE, OutputFormat.TSV):
         rows = [
             dict(row, contexts=", ".join(str(c) for c in row["contexts"]))
@@ -73,7 +71,6 @@ def wrapper_list(ctx: Context, command_id: int | None) -> None:
 
 
 def _scope_label(project: str | None) -> str:
-    """Human-readable description of an enable/disable/config-set scope."""
     return f"project {project}" if project is not None else "site-wide"
 
 
@@ -103,10 +100,6 @@ def wrapper_enable(
     service = CommandService(ctx.get_client())
 
     if dry_run:
-        # Same preflight `enable_wrapper` runs before its PUT -- checked
-        # here too so `--dry-run` reports the same refusal execution would
-        # for an unknown wrapper or, for a project-scoped call, an unknown
-        # project (which the PUT itself would silently accept).
         service.check_wrapper_scope(command_id, wrapper_id, project=project)
         click.echo(
             f"[DRY-RUN] Would enable wrapper {wrapper_id} on command {command_id} "
@@ -145,10 +138,6 @@ def wrapper_disable(
     service = CommandService(ctx.get_client())
 
     if dry_run:
-        # Same preflight `disable_wrapper` runs before its PUT -- checked
-        # here too so `--dry-run` reports the same refusal execution would
-        # for an unknown wrapper or, for a project-scoped call, an unknown
-        # project (which the PUT itself would silently accept).
         service.check_wrapper_scope(command_id, wrapper_id, project=project)
         click.echo(
             f"[DRY-RUN] Would disable wrapper {wrapper_id} on command {command_id} "
@@ -234,23 +223,10 @@ def wrapper_config_set(
     service = CommandService(ctx.get_client())
 
     if dry_run:
-        # Same preflight `set_wrapper_config` runs before its POST: confirms
-        # the (command_id, wrapper_id) pair exists and reads the wrapper's
-        # current enabled state. A config write silently re-enables a
-        # disabled wrapper if `enable` is left to the server's default
-        # (verified live -- see CommandService.set_wrapper_config), so the
-        # preview must show the same enabled state execution will carry
-        # forward, not just the config diff.
         enabled = service.check_wrapper_config_scope(command_id, wrapper_id, project=project)
         try:
             current = service.get_wrapper_config(wrapper_id, project=project)
         except ResourceNotFoundError:
-            # No configuration exists for this wrapper yet -- execution
-            # never reads current config at all, it just POSTs and the
-            # server 201-creates. The preview must not fail where execution
-            # succeeds, so a missing config renders as an all-additions
-            # diff, the same convention `json_diff` already documents for
-            # `command create`.
             current = {}
         diff = json_diff(current, payload, label=f"wrapper {wrapper_id} config")
         click.echo(

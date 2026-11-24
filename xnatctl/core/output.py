@@ -19,10 +19,6 @@ from rich.table import Table
 
 from xnatctl.core.redact import redact_url_query
 
-# =============================================================================
-# Console Instances
-# =============================================================================
-
 
 def no_color_requested() -> bool:
     """Return True when NO_COLOR or CLICOLOR=0 asks for color to be disabled.
@@ -40,14 +36,6 @@ def no_color_requested() -> bool:
 
 
 def _make_console(*, stderr: bool = False) -> Console:
-    """Build a console with NO_COLOR/CLICOLOR=0 wired in explicitly.
-
-    Passing ``no_color=`` here (rather than leaving it to Rich's own env
-    detection) is what makes the starting state testable and gives
-    :func:`set_no_color` a value to flip later. ``_color_system`` is blanked
-    too when color is disabled from the start -- see :func:`set_no_color` for
-    why ``no_color`` alone is not enough to suppress every ANSI escape.
-    """
     con = Console(stderr=stderr, no_color=no_color_requested())
     if con.no_color:
         _set_color_system(con, no_color=True)
@@ -55,13 +43,6 @@ def _make_console(*, stderr: bool = False) -> Console:
 
 
 def _set_color_system(con: Console, *, no_color: bool) -> None:
-    """Blank or re-detect a console's color system.
-
-    Private Rich API (``_color_system``/``_detect_color_system``), stable
-    across the pinned 13.x-15.x range; if a future Rich moves it, degrade to
-    ``no_color``-only suppression (colors gone, attribute escapes may leak)
-    rather than crashing at startup.
-    """
     try:
         con._color_system = None if no_color else con._detect_color_system()
     except AttributeError:  # pragma: no cover - future-Rich fallback
@@ -93,11 +74,6 @@ def set_no_color(no_color: bool) -> None:
         _set_color_system(con, no_color=no_color)
 
 
-# Module-level header toggle, mutated per invocation exactly like the
-# ``no_color`` state above: commands never pass it through print_output, the
-# CLI's --no-headers plumbing sets it once and every table/TSV render honors
-# it. JSON and quiet output have no header line, so the flag is meaningless
-# there and silently ignored (consistent with --columns).
 _no_headers = False
 
 
@@ -112,11 +88,6 @@ def set_no_headers(no_headers: bool) -> None:
     _no_headers = no_headers
 
 
-# =============================================================================
-# Output Format
-# =============================================================================
-
-
 class OutputFormat(Enum):
     """Output format options."""
 
@@ -128,11 +99,6 @@ class OutputFormat(Enum):
     def from_string(cls, value: str) -> OutputFormat:
         """Create from string value."""
         return cls(value.lower())
-
-
-# =============================================================================
-# Table Output
-# =============================================================================
 
 
 def print_table(
@@ -151,20 +117,16 @@ def print_table(
         column_labels: Optional mapping of column keys to display labels.
     """
     if not rows:
-        # Stderr so an empty `-o table` pipe stays clean. Scripts
-        # should use `-o json` for emptiness checks, not parse this line.
         err_console.print("[dim]No results[/dim]")
         return
 
     table = Table(title=title, show_header=not _no_headers, header_style="bold")
 
-    # Add columns with optional custom labels
     labels = column_labels or {}
     for col in columns:
         label = labels.get(col, col.replace("_", " ").title())
         table.add_column(label)
 
-    # Add rows
     for row in rows:
         values = []
         for col in columns:
@@ -212,33 +174,10 @@ def print_key_value(
         console.print(f"  {label:<{max_key_len}}  {value}")
 
 
-# =============================================================================
-# TSV Output
-# =============================================================================
-
-
-# Every C0 control character (0x00-0x1f) plus DEL (0x7f), EXCEPT tab/LF/CR --
-# those three are handled first, by collapsing to a space rather than being
-# dropped outright, so a value that happened to contain a newline still reads
-# as prose. Everything else in this range (ESC included, for stray ANSI/CSI
-# sequences) is stripped entirely: a script piping ``-o tsv`` into a terminal
-# or a log file must never receive a raw control byte.
 _TSV_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def _tsv_cell(value: Any) -> str:
-    """Render one value as a single, control-byte-free TSV field.
-
-    Scalars use the same tokens ``-o json`` would (``true``/``false`` for
-    booleans, empty for ``None``, compact JSON for nested lists/dicts), so a
-    script moving between the two formats greps for the same strings --
-    deliberately NOT the table's ``Yes``/``No`` presentation. Embedded tabs,
-    newlines, and carriage returns each collapse to a single space so one
-    record is always exactly one line with exactly one tab per field boundary.
-    Every other C0 control character and DEL (e.g. a stray ``\\x1b[31m`` ANSI
-    escape in upstream data) is stripped outright, not collapsed to a space --
-    see :data:`_TSV_CONTROL_RE`.
-    """
     if value is None:
         text = ""
     elif isinstance(value, bool):
@@ -276,22 +215,6 @@ def print_tsv(rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> None:
 
 
 def _print_tsv_output(data: Any, columns: Sequence[str] | None) -> None:
-    """Dispatch arbitrary command data to :func:`print_tsv`.
-
-    Shape decisions (all deliberate; see also :func:`print_output`):
-
-    - A list without ``columns`` derives them from the union of row keys in
-      first-seen order. The table branch falls back to JSON here, but TSV
-      exists precisely to be line/field-parseable, so it must always emit
-      TSV rather than silently switching formats.
-    - A single dict prints one header plus one data row -- NOT key/value
-      lines -- so the shape ("line 1 = field names, one record per line")
-      is identical whether a command returns one record or many, and
-      ``cut -f2`` means the same thing either way.
-    - A list containing non-dict items, or bare scalar data, prints one
-      sanitized value per line with no header (there are no field names to
-      put in one).
-    """
     if isinstance(data, list):
         if all(isinstance(item, dict) for item in data):
             cols = list(columns) if columns else list(dict.fromkeys(k for row in data for k in row))
@@ -305,11 +228,6 @@ def _print_tsv_output(data: Any, columns: Sequence[str] | None) -> None:
         print(_tsv_cell(data))
 
 
-# =============================================================================
-# JSON Output
-# =============================================================================
-
-
 def print_json(data: Any, *, indent: int = 2) -> None:
     """Print data as JSON.
 
@@ -318,11 +236,6 @@ def print_json(data: Any, *, indent: int = 2) -> None:
         indent: Indentation level.
     """
     print(json.dumps(data, indent=indent, default=str))
-
-
-# =============================================================================
-# Unified Output
-# =============================================================================
 
 
 def print_output(
@@ -354,11 +267,9 @@ def print_output(
         id_field: Field to use for IDs in quiet mode.
     """
     if quiet:
-        # Quiet mode: just IDs, one per line
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict):
-                    # Try common ID fields
                     id_val = (
                         item.get(id_field)
                         or item.get("ID")
@@ -386,7 +297,6 @@ def print_output(
         _print_tsv_output(data, columns)
         return
 
-    # Table format
     if isinstance(data, list) and columns:
         print_table(data, columns, title=title, column_labels=column_labels)
     elif isinstance(data, dict):
@@ -395,13 +305,7 @@ def print_output(
         else:
             print_key_value(data, title=title, key_labels=column_labels)
     else:
-        # Fallback to JSON
         print_json(data)
-
-
-# =============================================================================
-# Status Messages
-# =============================================================================
 
 
 def print_error(message: str) -> None:
@@ -447,11 +351,6 @@ def print_success(message: str) -> None:
 def print_info(message: str) -> None:
     """Print info message to stderr (commentary, not data)."""
     err_console.print(f"[blue]Info:[/blue] {escape(message)}")
-
-
-# =============================================================================
-# Progress
-# =============================================================================
 
 
 def create_progress() -> Progress:

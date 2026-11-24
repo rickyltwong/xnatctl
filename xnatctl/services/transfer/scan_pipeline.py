@@ -128,7 +128,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
             )
         finally:
             poller.stop()
-            # Clean up any remaining temp directories
             for ctx in deferred:
                 try:
                     ctx.work_dir_handle.cleanup()
@@ -142,17 +141,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
         dest_project: str,
         result: TransferResult,
     ) -> bool:
-        """Check a previously mapped subject for label conflicts on the destination.
-
-        Args:
-            subject: Discovered subject entity.
-            sync_id: Current sync run ID.
-            dest_project: Destination project ID.
-            result: Mutable result to update.
-
-        Returns:
-            True if the subject conflicts and must be skipped.
-        """
         remote_id = self.state_store.get_remote_id(
             str(self.executor.source.base_url),
             self.config.source_project,
@@ -185,14 +173,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
         sync_id: int,
         dest_project: str,
     ) -> None:
-        """Create the subject on the destination and record its ID mapping.
-
-        Args:
-            subject: Discovered subject entity.
-            sync_id: Current sync run ID.
-            dest_project: Destination project ID.
-        """
-        # Create subject and store ACTUAL remote ID from response
         remote_uri = self.executor.create_subject(dest_project, subject.local_label)
         actual_remote_id = remote_uri.split("/")[-1]
 
@@ -216,14 +196,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
         )
 
     def _discover_filtered_experiments(self, subject: DiscoveredEntity) -> list[DiscoveredEntity]:
-        """List the subject's experiments that pass the filter engine.
-
-        Args:
-            subject: Discovered subject entity.
-
-        Returns:
-            Experiments to transfer, in discovery order.
-        """
         all_experiments = self.discovery.discover_experiments(
             self.config.source_project,
             subject.local_id,
@@ -242,45 +214,25 @@ class ScanPipeline(_ExperimentFinalizeMixin):
         result: TransferResult,
         progress_callback: Callable[[str], None] | None,
     ) -> bool:
-        """Upload each experiment's DICOM, pipelining archive waits via the poller.
-
-        Args:
-            experiments: Filtered experiments to transfer.
-            poller: Background archive poller for this subject.
-            deferred: Queue of deferred experiments (mutated in place).
-            subject: Parent subject entity.
-            sync_id: Current sync run ID.
-            dest_project: Destination project ID.
-            result: Mutable result to update.
-            progress_callback: Optional progress callback.
-
-        Returns:
-            The final pipelining_disabled flag, needed by the post-loop drain.
-        """
         pipelining_disabled = False
         for exp in experiments:
-            # Service prearchive actions from poller signals
             if not pipelining_disabled:
                 service_prearchive_actions(self.executor, deferred)
 
-            # Drain ready experiments before next upload
             drain_ready(
                 self.state_store, self._finalize_experiment, deferred, result, progress_callback
             )
 
-            # Throttle: block if too many pending archives
             pipelining_disabled = self._throttle_pending_archives(
                 poller, deferred, pipelining_disabled, result, progress_callback
             )
 
-            # Upload DICOM phase
             try:
                 ctx = self._upload_dicom_phase(
                     exp, sync_id, dest_project, subject, result, progress_callback
                 )
                 if ctx is not None:
                     if pipelining_disabled:
-                        # No poller: block on archive then finalize immediately
                         self.executor.wait_for_archive(
                             ctx.dest_project,
                             ctx.subject.local_label,
@@ -294,7 +246,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
                         poller.enqueue(ctx)
                         deferred.append(ctx)
                 else:
-                    # No DICOM: finalize immediately
                     self._finalize_experiment_no_dicom(
                         exp, sync_id, dest_project, subject, result, progress_callback
                     )
@@ -322,18 +273,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
         result: TransferResult,
         progress_callback: Callable[[str], None] | None,
     ) -> bool:
-        """Block while too many archives are pending; disable pipelining if the poller dies.
-
-        Args:
-            poller: Background archive poller for this subject.
-            deferred: Queue of deferred experiments.
-            pipelining_disabled: Current pipelining-disabled flag.
-            result: Mutable result to update.
-            progress_callback: Optional progress callback.
-
-        Returns:
-            The (possibly updated) pipelining_disabled flag.
-        """
         while not pipelining_disabled and len(deferred) >= self.config.max_pending_archives:
             service_prearchive_actions(self.executor, deferred)
             drained = drain_ready(
@@ -365,15 +304,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
         result: TransferResult,
         progress_callback: Callable[[str], None] | None,
     ) -> None:
-        """Drain all remaining deferred experiments after the dispatch loop ends.
-
-        Args:
-            poller: Background archive poller for this subject.
-            deferred: Queue of deferred experiments.
-            pipelining_disabled: Whether pipelining was disabled mid-run.
-            result: Mutable result to update.
-            progress_callback: Optional progress callback.
-        """
         if pipelining_disabled:
             drain_all_blocking(
                 self.executor,
@@ -408,7 +338,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
                 )
                 break
 
-            # Wait briefly for any experiment to become ready
             deferred[0].archive_ready.wait(timeout=1.0)
 
     def _upload_dicom_phase(
@@ -420,22 +349,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
         result: TransferResult,
         progress_callback: Callable[[str], None] | None = None,
     ) -> DeferredExperiment | None:
-        """Upload DICOM resources for an experiment (Phase 1).
-
-        Returns DeferredExperiment context if DICOM was uploaded (needs archive
-        wait), or None if experiment has no DICOM (should be finalized immediately).
-
-        Args:
-            exp: Discovered experiment entity.
-            sync_id: Current sync run ID.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            result: Mutable result to update.
-            progress_callback: Optional progress callback.
-
-        Returns:
-            DeferredExperiment if DICOM uploaded, None otherwise.
-        """
         if progress_callback:
             progress_callback(f"  Experiment {exp.local_label}...")
 
@@ -461,7 +374,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
                 work_dir_handle.cleanup()
                 return None
 
-            # Phase 1: Upload DICOM
             dicom_scan_count = self.scan_transfer.transfer_scans(
                 scans,
                 exp,
@@ -475,8 +387,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
             )
 
             if dicom_scan_count == 0:
-                # All DICOM transfers failed or were skipped. Ensure experiment
-                # exists on dest so the no-DICOM finalize path can proceed.
                 if not existing_id:
                     self._create_experiment_shell(dest_project, subject, exp)
                 work_dir_handle.cleanup()
@@ -494,7 +404,7 @@ class ScanPipeline(_ExperimentFinalizeMixin):
                 work_dir_handle=work_dir_handle,
                 archive_timeout_at=time.monotonic() + self.config.archive_wait_timeout,
             )
-        except Exception:  # noqa: BLE001  # cleanup-then-reraise: temp dir must not leak on failure; error not swallowed
+        except Exception:
             work_dir_handle.cleanup()
             raise
 
@@ -504,17 +414,6 @@ class ScanPipeline(_ExperimentFinalizeMixin):
         exp: DiscoveredEntity,
         scan_resources_cache: dict[str, list[dict[str, Any]]],
     ) -> bool:
-        """Report whether none of the experiment's scans have transferable DICOM.
-
-        Args:
-            scans: Discovered scans for the experiment.
-            exp: Discovered experiment entity.
-            scan_resources_cache: Per-scan resource cache (populated as a side
-                effect and reused by later phases).
-
-        Returns:
-            True if no scan has transferable DICOM.
-        """
         return not self.scan_transfer.scans_have_transferable_dicom(
             scans, exp, scan_resources_cache
         )

@@ -1,5 +1,3 @@
-"""Unit tests for PrearchiveService."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -20,7 +18,6 @@ from xnatctl.services.prearchive import PrearchiveService
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """Create a mock XNATClient."""
     client = MagicMock()
     client.base_url = "https://xnat.example.org"
     return client
@@ -28,7 +25,6 @@ def mock_client() -> MagicMock:
 
 @pytest.fixture
 def service(mock_client: MagicMock) -> PrearchiveService:
-    """Create PrearchiveService with mock client."""
     return PrearchiveService(mock_client)
 
 
@@ -43,10 +39,7 @@ SAMPLE_PREARCHIVE = {
 
 
 class TestPrearchiveList:
-    """Tests for PrearchiveService.list."""
-
     def test_list_all(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """List without project uses /data/prearchive."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_PREARCHIVE]}})
 
         result = service.list()
@@ -56,7 +49,6 @@ class TestPrearchiveList:
         assert call_path == "/data/prearchive"
 
     def test_list_by_project(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """List by project uses project-scoped path."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_PREARCHIVE]}})
 
         service.list(project="PROJ01")
@@ -66,10 +58,7 @@ class TestPrearchiveList:
 
 
 class TestPrearchiveGet:
-    """Tests for PrearchiveService.get."""
-
     def test_get(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Get returns prearchive session dict."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_PREARCHIVE]}})
 
         result = service.get("PROJ01", "20240115_120000", "session_01")
@@ -77,14 +66,12 @@ class TestPrearchiveGet:
         assert result["status"] == "READY"
 
     def test_get_not_found(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Get raises ResourceNotFoundError on empty results."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         with pytest.raises(ResourceNotFoundError):
             service.get("PROJ01", "20240115_120000", "missing")
 
     def test_get_404_error(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Get raises ResourceNotFoundError on 404."""
         mock_client.get.side_effect = ResourceNotFoundError("resource", "path")
 
         with pytest.raises(ResourceNotFoundError):
@@ -92,10 +79,7 @@ class TestPrearchiveGet:
 
 
 class TestPrearchiveArchive:
-    """Tests for PrearchiveService.archive."""
-
     def test_archive(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Archive uses the archive service with a prearchive src path."""
         mock_client.post.return_value = make_response(
             "/data/experiments/E001", content_type="text/plain"
         )
@@ -110,7 +94,6 @@ class TestPrearchiveArchive:
         assert "dest" not in post_data
 
     def test_archive_with_options(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Archive passes subject, label, overwrite via archive-service form data."""
         mock_client.post.return_value = make_response("", content_type="text/plain")
 
         service.archive(
@@ -129,7 +112,6 @@ class TestPrearchiveArchive:
     def test_archive_label_without_subject_uses_prearchive_subject(
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
-        """Archive can infer the subject from prearchive metadata when relabeling."""
         mock_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"subject": "SUB01", **SAMPLE_PREARCHIVE}]}}
         )
@@ -148,7 +130,6 @@ class TestPrearchiveArchive:
     def test_archive_encodes_archive_service_segments(
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
-        """Archive service request should encode dot and slash path segments."""
         mock_client.post.return_value = make_response("", content_type="text/plain")
 
         service.archive(
@@ -168,13 +149,6 @@ class TestPrearchiveArchive:
     def test_archive_not_in_prearchive_raises_actionable_error(
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
-        """A 404 from the archive service becomes an idempotency-aware error (issue #20).
-
-        When the prearchive path is gone (typically because the session was
-        already archived), the bare ``resource not found: /data/services/archive``
-        is misleading. The archive must raise an actionable OperationError that
-        names the session and points at how to verify it landed.
-        """
         mock_client.post.side_effect = ResourceNotFoundError("resource", "/data/services/archive")
 
         with pytest.raises(OperationError) as excinfo:
@@ -187,14 +161,6 @@ class TestPrearchiveArchive:
 
 
 class TestPrearchiveRedirectHandling:
-    """Regression tests: XNAT answers move/archive with a 301 to the new location.
-
-    The HTTP client follows redirects (``follow_redirects=True``), so these
-    operations must be reported as success rather than surfacing an httpx
-    'Redirect response 301' error (see issue #19). Uses a real XNATClient over
-    a MockTransport so the redirect is actually exercised end to end.
-    """
-
     def _client(self, handler: object) -> PrearchiveService:
         from xnatctl.core.client import XNATClient
 
@@ -204,7 +170,7 @@ class TestPrearchiveRedirectHandling:
             base_url=client.base_url,
             verify=False,
             follow_redirects=True,
-            transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+            transport=httpx.MockTransport(handler),
         )
         return PrearchiveService(client)
 
@@ -229,20 +195,14 @@ class TestPrearchiveRedirectHandling:
 
 
 class TestPrearchiveDelete:
-    """Tests for PrearchiveService.delete."""
-
     def test_delete(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Delete returns True."""
         mock_client.delete.return_value = make_response("")
 
         assert service.delete("PROJ01", "20240115_120000", "session_01") is True
 
 
 class TestPrearchiveRebuild:
-    """Tests for PrearchiveService.rebuild."""
-
     def test_rebuild(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Rebuild issues POST with rebuild action."""
         mock_client.post.return_value = make_response("", content_type="text/plain")
 
         result = service.rebuild("PROJ01", "20240115_120000", "session_01")
@@ -253,10 +213,7 @@ class TestPrearchiveRebuild:
 
 
 class TestPrearchiveMove:
-    """Tests for PrearchiveService.move."""
-
     def test_move(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """Move issues POST with move action and target project."""
         mock_client.post.return_value = make_response("", content_type="text/plain")
 
         result = service.move("PROJ01", "20240115_120000", "session_01", "PROJ02")
@@ -269,10 +226,7 @@ class TestPrearchiveMove:
 
 
 class TestPrearchiveGetScans:
-    """Tests for PrearchiveService.get_scans."""
-
     def test_get_scans(self, service: PrearchiveService, mock_client: MagicMock) -> None:
-        """get_scans returns raw dicts."""
         rows = [{"ID": "1", "type": "T1w"}]
         mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
@@ -282,14 +236,6 @@ class TestPrearchiveGetScans:
         assert result[0]["type"] == "T1w"
         call_path = mock_client.get.call_args[0][0]
         assert "/scans" in call_path
-
-
-# =============================================================================
-# Response inspection
-#
-# XNAT's prearchive services answer HTTP 200 with an error-shaped body instead
-# of a 4xx, so these verbs must inspect the body, not trust the status code.
-# =============================================================================
 
 
 class TestArchiveResponseInspection:
@@ -349,7 +295,6 @@ class TestArchiveResponseInspection:
     def test_empty_body_is_still_success(
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
-        """Some deployments answer with a bare 200; that must not become a failure."""
         mock_client.post.return_value = make_response("", content_type="text/plain")
 
         result = service.archive("PROJ01", "20240115_120000", "session_01")
@@ -360,7 +305,6 @@ class TestArchiveResponseInspection:
     def test_uri_body_wins_over_incidental_error_word(
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
-        """A success report naming an experiment is not an error, whatever the prose."""
         mock_client.post.return_value = make_response(
             "Archived with 0 errors: /data/experiments/XNAT_E00042",
             content_type="text/plain",
@@ -417,7 +361,6 @@ class TestGetNotFoundScoping:
     def test_unrelated_error_containing_404_propagates_unchanged(
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
-        """Regression: `if "404" in str(e)` also fired on a session labelled SUB404."""
         boom = OperationError("get", "upstream exploded for subject SUB404")
         mock_client.get.side_effect = boom
 
@@ -428,12 +371,6 @@ class TestGetNotFoundScoping:
 
 
 class TestGetRoutingCode:
-    """Tests for PrearchiveService.get_routing_code.
-
-    Verified live against XNAT 1.9.2.1: the response body is a bare
-    integer as text, not JSON.
-    """
-
     def test_get_routing_code_parses_bare_integer_text(
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
@@ -454,13 +391,6 @@ class TestGetRoutingCode:
 
 
 class TestSetRoutingMode:
-    """Tests for PrearchiveService.set_routing_mode.
-
-    Codes verified live against XNAT 1.9.2.1: manual=0, auto-archive=4,
-    auto-archive-overwrite=5, read out of
-    `org.nrg.framework.constants.PrearchiveCode`'s static initializer.
-    """
-
     @pytest.mark.parametrize(
         ("mode", "code"),
         [("manual", 0), ("auto-archive", 4), ("auto-archive-overwrite", 5)],
@@ -477,9 +407,6 @@ class TestSetRoutingMode:
     def test_set_routing_mode_403_reraised_as_site_policy(
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
-        """A 403 here means `project.allow-auto-archive` is disabled site-wide,
-        not that the caller lacks permission -- the re-raised error must say so.
-        """
         mock_client.put.side_effect = PermissionDeniedError("prearchive_code", "set")
 
         with pytest.raises(XNATCtlError, match="site policy"):
@@ -488,13 +415,6 @@ class TestSetRoutingMode:
     def test_set_routing_mode_403_on_manual_not_rewritten_as_site_policy(
         self, service: PrearchiveService, mock_client: MagicMock
     ) -> None:
-        """`mode="manual"` is prearchive_code 0, which `project.allow-auto-archive`
-        does NOT govern -- that site property only blocks NON-ZERO codes, per
-        this method's own docstring. A 403 here means the caller genuinely
-        lacks permission on the project, so it must surface as the ordinary
-        `PermissionDeniedError`, not get misreported as the site policy (which
-        would send the caller to the wrong admin setting).
-        """
         mock_client.put.side_effect = PermissionDeniedError("prearchive_code", "set")
 
         with pytest.raises(PermissionDeniedError):

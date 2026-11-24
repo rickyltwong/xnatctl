@@ -22,7 +22,6 @@ from typing import Any
 from xnatctl.core.validation import quote_path_segment
 from xnatctl.services.base import BaseService
 
-# Single source of truth for the XSync URL templates so tests can pin them.
 _LIST_PATH: str = "/xapi/xsync/projects"
 _SETUP_PATH: str = "/xapi/xsync/setup/projects/{project_id}"
 _STATUS_PATH: str = "/xapi/xsync/status/projects/{project_id}"
@@ -44,8 +43,6 @@ class XsyncService(BaseService):
     service never shells out to the CLI escape hatch and never imports from
     ``xnatctl.cli.*``; the layering rule in ``decisions.md`` is intentional.
     """
-
-    # ----- read endpoints -------------------------------------------------
 
     def list_projects(self) -> Any:
         """List XSync-bound projects.
@@ -79,8 +76,6 @@ class XsyncService(BaseService):
         """
         resp = self.client.get(_PROGRESS_PATH.format(project_id=quote_path_segment(project_id)))
         return resp.text
-
-    # ----- write endpoints ------------------------------------------------
 
     def sync(self, project_id: str) -> Any:
         """Trigger an XSync run for the given project."""
@@ -172,8 +167,6 @@ class XsyncService(BaseService):
         if resp.headers.get("content-type", "").startswith("application/json"):
             return resp.json()
         return resp.text
-
-    # ----- high-level orchestration ---------------------------------------
 
     def refresh_credentials(
         self,

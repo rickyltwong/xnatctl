@@ -12,15 +12,6 @@ from xnatctl.services.base import BaseService
 
 
 def _parse_cutoff(last_sync_time: str | None) -> datetime | None:
-    """Parse an optional ISO 8601 sync-cutoff timestamp.
-
-    ``None`` means "no cutoff" (full discovery) and is the real omitted
-    case. An explicitly-supplied empty/whitespace-only STRING is a
-    different thing: a truthy check would treat it the same as ``None``,
-    silently turning an incremental sync into a full
-    resync of every subject/experiment on the source instead of failing on
-    the caller's malformed timestamp.
-    """
     if last_sync_time is None:
         return None
     if last_sync_time.strip() == "":
@@ -65,14 +56,6 @@ class DiscoveredEntity:
 
 
 def _parse_xnat_timestamp(ts: str) -> datetime:
-    """Parse an XNAT timestamp string into a timezone-aware datetime.
-
-    Args:
-        ts: Timestamp string in XNAT format (e.g. '2026-01-01 10:00:00.941')
-
-    Returns:
-        Timezone-aware UTC datetime
-    """
     base = ts.strip().split(".")[0]
     dt = datetime.strptime(base, "%Y-%m-%d %H:%M:%S")
     return dt.replace(tzinfo=UTC)
@@ -83,16 +66,6 @@ def _classify_change(
     last_modified: datetime,
     cutoff: datetime | None,
 ) -> ChangeType | None:
-    """Classify an entity's change type relative to a sync cutoff.
-
-    Args:
-        insert_date: When the entity was created
-        last_modified: When the entity was last modified
-        cutoff: Last sync timestamp, or None for full sync
-
-    Returns:
-        ChangeType, or None if unchanged since cutoff
-    """
     if cutoff is None:
         return ChangeType.NEW
     if insert_date > cutoff:

@@ -19,7 +19,6 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 
 def _create_tar_archive(files: list[Path], output_path: Path, base_dir: Path) -> int:
-    """Create a TAR archive from files, returning size in bytes."""
     with tarfile.open(output_path, "w") as tf:
         for file_path in files:
             arcname = os.path.relpath(file_path, base_dir)
@@ -28,7 +27,6 @@ def _create_tar_archive(files: list[Path], output_path: Path, base_dir: Path) ->
 
 
 def _create_zip_archive(files: list[Path], output_path: Path, base_dir: Path) -> int:
-    """Create a ZIP archive from files, returning size in bytes."""
     with ZipFile(output_path, "w", compression=ZIP_DEFLATED, allowZip64=True) as zf:
         for file_path in files:
             arcname = os.path.relpath(file_path, base_dir)
@@ -42,20 +40,6 @@ def _create_archive(
     base_dir: Path,
     archive_format: str,
 ) -> int:
-    """Create an archive from files.
-
-    Args:
-        files: List of file paths to include.
-        output_path: Path for the output archive.
-        base_dir: Base directory for relative paths in archive.
-        archive_format: Format ("tar" or "zip").
-
-    Returns:
-        Size of created archive in bytes.
-
-    Raises:
-        ValueError: If archive format is unsupported.
-    """
     if archive_format == "tar":
         return _create_tar_archive(files, output_path, base_dir)
     if archive_format == "zip":
@@ -64,43 +48,19 @@ def _create_archive(
 
 
 def _safe_mtime(date_time: tuple[int, ...]) -> float:
-    """Convert ZIP date_time tuple to timestamp safely.
-
-    Args:
-        date_time: 6-tuple (year, month, day, hour, minute, second)
-
-    Returns:
-        Unix timestamp, defaulting to 0 if conversion fails or date is invalid.
-    """
     try:
         year = date_time[0]
-        # Validate year is in reasonable range (ZIP format supports 1980-2107)
         if year < 1980 or year > 2107:
             return 0.0
-        # mktime wants a full 9-tuple: the ZIP header carries 6 fields, and the
-        # trailing three (weekday, yearday, DST) are filled with 0 -- 0 for DST
-        # rather than -1 so the platform resolves it instead of guessing.
         y, mo, d, h, mi, sec = date_time[:6]
         return time.mktime((y, mo, d, h, mi, sec, 0, 0, 0))
     except (ValueError, OverflowError, OSError):
-        # Invalid date - use epoch
         return 0.0
 
 
 def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
-    """Convert ZIP archive to TAR format.
-
-    Args:
-        archive_path: Source ZIP file
-        tar_path: Destination TAR file
-
-    Raises:
-        zipfile.BadZipFile: If ZIP is corrupted
-        OSError: If file operations fail
-    """
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:
-            # Validate ZIP integrity first
             bad_file = zf.testzip()
             if bad_file:
                 raise zipfile.BadZipFile(f"Corrupted file in archive: {bad_file}")
@@ -123,7 +83,7 @@ def _zip_to_tar(archive_path: Path, tar_path: Path) -> None:
                         tf.addfile(tarinfo, fileobj=src)
     except zipfile.BadZipFile:
         raise
-    except Exception as e:  # noqa: BLE001  # exception-translation boundary: any ZIP->TAR failure becomes documented OSError
+    except Exception as e:
         raise OSError(f"Failed to convert ZIP to TAR: {e}") from e
 
 
@@ -134,13 +94,6 @@ def _should_zip_to_tar(archive_path: Path, zip_to_tar: bool) -> bool:
 def _maybe_zip_to_tar(
     archive_path: Path, zip_to_tar: bool
 ) -> contextlib.AbstractContextManager[Path]:
-    """Yield the path to upload, converting ZIP to TAR when asked.
-
-    A context manager because the converted archive lives in a temporary
-    directory that must outlive the conversion but not the upload. Content type
-    is derived from the yielded path's name by the uploader.
-    """
-
     @contextlib.contextmanager
     def _converter() -> Iterator[Path]:
         if _should_zip_to_tar(archive_path, zip_to_tar):

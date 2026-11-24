@@ -72,7 +72,6 @@ def do_login(
     """
     auth_mgr = ctx.auth_manager
 
-    # Credentials: CLI args > env vars > profile config > prompt.
     env_user, env_pass = auth_mgr.get_credentials()
     user = username or env_user or profile.username
     pwd = password or env_pass or profile.resolve_password()
@@ -82,7 +81,6 @@ def do_login(
     if not pwd:
         pwd = click.prompt("Password", hide_input=True)
 
-    # Progress chatter belongs on stderr so it never contaminates -o json.
     click.echo(f"Authenticating with {profile.url}...", err=True)
 
     client = XNATClient(
@@ -97,8 +95,6 @@ def do_login(
     try:
         token = client.authenticate()
 
-        # Prefer the username the server reports: XNAT may authenticate an
-        # alias to a different account.
         actual_user = user
         try:
             user_info = client.whoami()
@@ -255,10 +251,6 @@ def auth_status(ctx: Context) -> None:
             }
         )
 
-    # Routed through print_output (not a hand-rolled json/print_key_value
-    # fork) so `-o tsv` gets real tab-separated output instead of falling
-    # through to the Rich key-value rendering; table/json stay unchanged
-    # since print_output dispatches those exactly as the old fork did.
     print_output(
         status,
         format=ctx.output_format,
@@ -281,7 +273,6 @@ def auth_test(ctx: Context) -> None:
     profile = config.get_profile(ctx.profile_name)
     auth_mgr = ctx.auth_manager
 
-    # Session token first, then credentials (env vars > profile config).
     session_token = auth_mgr.get_session_token(profile.url)
     env_user, env_pass = auth_mgr.get_credentials()
     user = env_user or profile.username
@@ -321,8 +312,6 @@ def auth_test(ctx: Context) -> None:
         user_info = client.whoami()
 
         if ctx.output_format == OutputFormat.JSON:
-            # model_dump() spreads to the exact keys the whoami dict carried,
-            # keeping this JSON shape byte-identical.
             print_json({"status": "authenticated", "url": profile.url, **user_info.model_dump()})
         else:
             print_success("Authentication successful")

@@ -39,16 +39,6 @@ class ResourceService(BaseService):
         project: str | None,
         parent: HierarchyParentRef | None,
     ) -> HierarchyParentRef:
-        """Return an explicit *parent*, else build one from the legacy triple.
-
-        ``scan_id is not None``, not truthy: ``scan_id=""`` is a caller
-        mistake, not "no scan scope" -- every public method on this service
-        (including ``delete()``, which defaults ``remove_files=True``) goes
-        through this resolver, so silently widening to the SESSION-level
-        parent here would turn an intended scan-scoped delete into a
-        session-scoped one. ``ScanRef``'s own validation rejects the empty
-        string.
-        """
         if parent is not None:
             return parent
         if session_id is None:
@@ -60,7 +50,6 @@ class ResourceService(BaseService):
 
     @staticmethod
     def _parent_key(parent: HierarchyParentRef) -> str:
-        """Return a stable short identifier used for row-normalization fallbacks."""
         if isinstance(parent, ScanRef):
             return f"{parent.experiment.experiment}:{parent.scan_id}"
         if isinstance(parent, ExperimentRef):
@@ -73,29 +62,16 @@ class ResourceService(BaseService):
 
     @staticmethod
     def _collection_path(parent: HierarchyParentRef) -> str:
-        """Return the ``.../resources`` collection path for *parent*."""
         return HierarchyService.build_resource_collection_path(parent)
 
     @staticmethod
     def _resource_path(parent: HierarchyParentRef, resource_label: str, *parts: str) -> str:
-        """Return the ``.../resources/{label}[/parts]`` path for *parent*."""
         return HierarchyService.build_resource_path(
             ResourceRef(parent=parent, resource_label=resource_label), *parts
         )
 
     @staticmethod
     def _parse_optional_int(value: object) -> int | None:
-        """Parse an optional integer from XNAT-ish API values.
-
-        XNAT sometimes returns empty strings or non-numeric strings for numeric
-        fields; those should be treated as missing.
-
-        Args:
-            value: Input value from API.
-
-        Returns:
-            Parsed integer, or None if not parseable.
-        """
         if value is None:
             return None
         if isinstance(value, bool):
@@ -116,15 +92,6 @@ class ResourceService(BaseService):
     def _normalize_resource_row(
         cls, row: Mapping[str, object], session_id: str
     ) -> dict[str, object]:
-        """Normalize a resource row so it is safe to validate with Resource.
-
-        Args:
-            row: Raw row from XNAT ResultSet.
-            session_id: Parent session ID used for stable fallback IDs.
-
-        Returns:
-            Normalized copy of the row.
-        """
         normalized: dict[str, object] = dict(row)
 
         normalized["file_count"] = cls._parse_optional_int(normalized.get("file_count"))
@@ -322,7 +289,6 @@ class ResourceService(BaseService):
         except ClientRequestError as exc:
             if exc.status_code != 409:
                 raise
-            # 409 Conflict means the resource already exists; proceed to return it
         return self.get(resource_label=resource_label, parent=resolved)
 
     def delete(
@@ -392,9 +358,6 @@ class ResourceService(BaseService):
         resolved = self._resolve_parent(session_id, scan_id, project, parent)
         path = self._resource_path(resolved, resource_label, "files", file_path.name)
 
-        # XNAT requires ?inbody=true for a raw-body write to a
-        # /resources/<label>/files/<name> endpoint; without it the file
-        # API rejects the request with an opaque 400/500 (see issue #21).
         params: dict[str, str] = {"inbody": "true"}
         if extract:
             params["extract"] = "true"
@@ -403,7 +366,6 @@ class ResourceService(BaseService):
 
         file_size = file_path.stat().st_size
 
-        # Determine content type
         content_type = "application/octet-stream"
         suffix = file_path.suffix.lower()
         if suffix == ".zip":
@@ -462,7 +424,6 @@ class ResourceService(BaseService):
         if not directory_path.is_dir():
             raise NotADirectoryError(f"Not a directory: {directory_path}")
 
-        # Create temporary ZIP
         with tempfile.TemporaryDirectory() as tmp_dir:
             zip_path = Path(tmp_dir) / f"{directory_path.name}.zip"
             shutil.make_archive(

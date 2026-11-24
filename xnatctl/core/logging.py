@@ -26,28 +26,17 @@ from xnatctl.core.fsutil import (
 )
 from xnatctl.core.redact import redact_session_cookies, redact_url_query
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 AUDIT_LOGGER_NAME = "xnatctl.audit"
 
-# Audit trail. Defined here rather than imported from core.config so
-# this module stays free of the config import chain.
 AUDIT_LOG_FILE = Path.home() / ".config" / "xnatctl" / "audit.log"
 AUDIT_LOG_MAX_BYTES = 10 * 1024 * 1024
 
-# Diagnostics log file (--log-file / XNATCTL_LOG_FILE / config `log_file:`).
-# Same single-generation rotation policy as the audit log -- anything more is
-# a worse logrotate.
 LOG_FILE_MAX_BYTES = 10 * 1024 * 1024
 LOG_FILE_BACKUP_COUNT = 1
 
 DEBUG_ENV_VAR = "XNATCTL_DEBUG"
-# Values that explicitly DISABLE debug output. Any other non-empty value
-# enables it, but the common "falsey" spellings must NOT fail open.
 _DEBUG_OFF_VALUES = frozenset({"", "0", "false", "no", "off"})
 
 
@@ -61,11 +50,6 @@ def debug_env_enabled() -> bool:
     """
     raw = os.environ.get(DEBUG_ENV_VAR)
     return raw is not None and raw.strip().lower() not in _DEBUG_OFF_VALUES
-
-
-# =============================================================================
-# Redaction
-# =============================================================================
 
 
 class RedactionFilter(logging.Filter):
@@ -89,9 +73,6 @@ class RedactionFilter(logging.Filter):
         message = record.getMessage()
         redacted = redact_session_cookies(redact_url_query(message))
         if redacted != message:
-            # Only collapse to the interpolated text when we actually changed
-            # something, so untouched records keep their lazy %-args for any
-            # other handler.
             record.msg = redacted
             record.args = None
         return True
@@ -154,15 +135,7 @@ FILE_ONLY_ATTR = "xnatctl_file_only"
 
 
 class _ExcludeFileOnlyFilter(logging.Filter):
-    """Reject any record marked :data:`FILE_ONLY_ATTR`.
-
-    Attached only to the stderr handler (see :func:`setup_logging`), never to
-    a diagnostics file handler, so a file-only record still reaches the file
-    without ever appearing on stderr -- at any verbosity tier.
-    """
-
     def filter(self, record: logging.LogRecord) -> bool:
-        """Keep every record except one explicitly marked file-only."""
         return not getattr(record, FILE_ONLY_ATTR, False)
 
 
@@ -184,11 +157,6 @@ def install_redaction_filter(logger: logging.Logger | None = None) -> None:
             handler.addFilter(RedactionFilter())
         if not any(isinstance(existing, CorrelationFilter) for existing in handler.filters):
             handler.addFilter(CorrelationFilter())
-
-
-# =============================================================================
-# Logger Setup
-# =============================================================================
 
 
 def setup_logging(
@@ -229,55 +197,23 @@ def setup_logging(
     elif verbose or trace:
         level = logging.DEBUG
 
-    # Configure root logger. Not basicConfig: that is a no-op the moment root
-    # has ANY handler -- including a diagnostics file handler installed
-    # before the first setup_logging() call (the root CLI callback does
-    # exactly that) -- which would leave the process with no stderr handler
-    # at all. Ensure the stderr stream handler exists explicitly instead,
-    # keyed on "no non-file handler present", so call order cannot matter.
     root = logging.getLogger()
     if not any(not isinstance(h, logging.FileHandler) for h in root.handlers):
         stderr_handler = logging.StreamHandler(sys.stderr)
         stderr_handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
         root.addHandler(stderr_handler)
 
-    # Logger level vs. handler level, split on purpose: a diagnostics file
-    # handler (install_log_file) always wants xnatctl's full DEBUG stream,
-    # independent of what stderr is showing. The ROOT logger's level gates
-    # whether a record is generated at all, so it has to drop to DEBUG
-    # whenever a file handler is attached -- regardless of the stderr tier --
-    # or DEBUG-level records (like the per-HTTP-attempt trace) would never
-    # reach any handler to begin with. Each individual HANDLER then re-gates
-    # on its own level, which is what keeps stderr showing only `level` once
-    # root is DEBUG. install_log_file sets root to DEBUG itself too (it may
-    # run after this function, e.g. when activated from config, which loads
-    # after this call in @global_options), so the check here only needs to
-    # avoid a LATER setup_logging() call (verbose merge, a second invocation
-    # in one process) clobbering that back down.
     has_file_handler = any(isinstance(h, _JsonLinesFileHandler) for h in root.handlers)
     root.setLevel(logging.DEBUG if has_file_handler else level)
 
-    # basicConfig created the stderr handler with no level of its own
-    # (NOTSET: it filters solely through the root logger's level). Now
-    # that root's level can sit at DEBUG for a diagnostics file, the stderr
-    # handler needs an explicit level so it does not start showing DEBUG
-    # lines too. Every non-file handler gets this -- there is normally only
-    # the one stderr StreamHandler, but this stays correct if that changes.
-    # It also gets _ExcludeFileOnlyFilter, so a FILE_ONLY_ATTR record (see
-    # cli/common.py's command-outcome logging) never duplicates onto stderr
-    # under -v/XNATCTL_DEBUG, where this handler's own level would otherwise
-    # let it straight through.
     for handler in root.handlers:
         if not isinstance(handler, logging.FileHandler):
             handler.setLevel(level)
             if not any(isinstance(f, _ExcludeFileOnlyFilter) for f in handler.filters):
                 handler.addFilter(_ExcludeFileOnlyFilter())
 
-    # Redaction (and the correlation id) are invariants of the logging path,
-    # not a call-site duty; installed separately and idempotently.
     install_redaction_filter()
 
-    # Library verbosity, tiered as described above.
     if quiet:
         http_level = logging.WARNING
     elif trace:
@@ -304,42 +240,13 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-# =============================================================================
-# Diagnostics Log File
-# =============================================================================
-#
-# ``--log-file`` / ``XNATCTL_LOG_FILE`` / config ``log_file:`` (resolved in
-# ``cli/common.py``/``cli/main.py``) attach one of these to the root logger via
-# :func:`install_log_file`. Reuses the redaction/rotation/permission machinery
-# above and below rather than building a second logging path: the point is a
-# second HANDLER, not a second instrumentation layer.
-
-
 class _JsonLinesFileHandler(logging.handlers.RotatingFileHandler):
-    """A 0600, single-generation-rotation ``RotatingFileHandler``.
-
-    Subclasses the stdlib rotator rather than hand-rolling rotation (as
-    :class:`AuditLogger` does) so the well-tested rename-on-rollover logic is
-    reused; only the *open* step changes. ``_open`` is the stdlib's own seam
-    for this: :class:`logging.FileHandler` calls it both for the initial open
-    and after every rollover, so overriding it once covers both.
-    """
-
     def _open(self) -> Any:
-        """Open the log file 0600, re-tightening a pre-existing file first.
-
-        Mirrors :meth:`AuditLogger._ensure_private`: a file that predates
-        this handler (or was copied in from elsewhere) keeps whatever mode it
-        had until something checks. Checked here -- at initial open and again
-        on every rollover -- rather than per line, which would mean a stat()
-        call per log record for a handler whose whole purpose is to carry a
-        high-volume DEBUG stream.
-        """
         path = Path(self.baseFilename)
         ensure_private_dir(path.parent)
         if path.exists():
             restrict_permissions(path)
-        return open(  # noqa: SIM115 - handed to the base class, not closed here
+        return open(
             self.baseFilename,
             self.mode,
             encoding=self.encoding,
@@ -348,29 +255,7 @@ class _JsonLinesFileHandler(logging.handlers.RotatingFileHandler):
 
 
 class _FileScopeFilter(logging.Filter):
-    """Admit xnatctl's own logger stream to the diagnostics file; reject the rest.
-
-    httpx/httpcore are admitted too, but only when the wire-trace tier is on.
-
-    Root has to sit at DEBUG for the file handler to see anything at DEBUG at
-    all (see :func:`setup_logging`'s logger/handler level split) -- which
-    means every OTHER third-party logger at its own DEBUG level becomes
-    eligible too: pynetdicom's internal association/PDU trace, for one, which
-    ``services/upload/dicom_store.py`` pulls in and which is not vetted the
-    way xnatctl's own log calls are (see ``SECURITY.md``'s PHI-in-logs
-    invariant -- :class:`RedactionFilter` only scrubs secret-shaped URL
-    values, nothing DICOM-shaped). Without this, a third-party dependency's
-    own debug logging could land PHI in a persisted file un-redacted. httpx/
-    httpcore are exempted from the blanket rejection because their OWN logger
-    levels (set right below, in :func:`setup_logging`) already implement the
-    same "wire trace only under XNATCTL_DEBUG" tiering the docs promise --
-    this re-checks it rather than trusting that gate alone, since a filter
-    that silently depended on another function never changing is itself a
-    future drift risk.
-    """
-
     def filter(self, record: logging.LogRecord) -> bool:
-        """Admit xnatctl.* always; admit httpx/httpcore only under the trace tier."""
         name = record.name
         if name == "xnatctl" or name.startswith("xnatctl."):
             return True
@@ -393,12 +278,6 @@ class JsonLinesFormatter(logging.Formatter):
     which keeps freedom to add or rename fields.
     """
 
-    #: ``extra=`` keys the two transport.py call sites may attach; anything
-    #: else a caller puts in ``extra`` is not surfaced (LogRecord absorbs
-    #: arbitrary ``extra`` keys as plain attributes with no marker of intent,
-    #: so an allowlist -- not "every non-standard attribute" -- is what keeps
-    #: this from also emitting unrelated internals some other logger call
-    #: happens to pass as keyword args).
     _EVENT_FIELDS = ("method", "status", "attempt", "duration_ms")
 
     def format(self, record: logging.LogRecord) -> str:
@@ -422,17 +301,6 @@ class JsonLinesFormatter(logging.Formatter):
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
 
-        # The single enforcement point for "nothing secret-shaped reaches the
-        # file": record.getMessage() above is already redacted by
-        # RedactionFilter, and this repeats that (idempotently -- redacting
-        # already-redacted text is a no-op) rather than relying on remembering
-        # it happened upstream. It is also what closes the ONE gap
-        # RedactionFilter's own docstring flags -- a traceback is rendered by
-        # the Formatter after filters run, so `exc` above was never touched --
-        # and it covers any string a future extra= call site adds (`event`,
-        # or a typed field someone passes as a string instead of an int) that
-        # nobody remembered to redact at the call site. Non-string values
-        # (status/attempt/duration_ms are ints) pass through untouched.
         for key, value in payload.items():
             if isinstance(value, str):
                 payload[key] = redact_url_query(value)
@@ -475,32 +343,15 @@ def install_log_file(path: str | Path) -> None:
         mode="a",
         maxBytes=LOG_FILE_MAX_BYTES,
         backupCount=LOG_FILE_BACKUP_COUNT,
-        # Pinned explicitly rather than left to inherit the platform/locale
-        # default: JsonLinesFormatter emits ensure_ascii=True JSON today, so
-        # every byte written happens to be ASCII regardless -- but the file
-        # is documented as UTF-8 (docs/debugging.rst), and this is what makes
-        # that true rather than incidentally true.
         encoding="utf-8",
     )
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(JsonLinesFormatter())
-    # Root has to sit at DEBUG for xnatctl's own DEBUG stream to reach this
-    # handler at all, which -- with no further gate -- would also hand every
-    # OTHER at-DEBUG third-party logger (pynetdicom, etc.) a free pass into a
-    # persisted file. This filter is what keeps the file scoped to xnatctl's
-    # own (redacted) stream, the same way it would appear under -v, plus
-    # httpx/httpcore only under the wire-trace tier. See _FileScopeFilter.
     handler.addFilter(_FileScopeFilter())
     root.addHandler(handler)
 
-    # Independent of whatever setup_logging() last set root to: a file
-    # handler always wants the full stream, and this must hold regardless of
-    # whether install_log_file ran before or after the most recent
-    # setup_logging() call (config-driven activation runs after it, since
-    # config loads after the first setup_logging() call in @global_options).
     root.setLevel(logging.DEBUG)
 
-    # Picks up this new handler (and re-confirms the stderr one, harmlessly).
     install_redaction_filter()
 
 
@@ -530,11 +381,6 @@ def remove_log_file(path: str | Path | None = None) -> None:
         handler.close()
 
 
-# =============================================================================
-# Log Context
-# =============================================================================
-
-
 class LogContext:
     """Context manager for structured logging with context fields."""
 
@@ -544,27 +390,18 @@ class LogContext:
         logger: logging.Logger | None = None,
         **context: Any,
     ):
-        """Initialize log context.
-
-        Args:
-            operation: Name of the operation.
-            logger: Logger instance.
-            **context: Additional context fields.
-        """
         self.operation = operation
         self.logger = logger or get_logger(__name__)
         self.context = context
         self.start_time: datetime | None = None
 
     def __enter__(self) -> LogContext:
-        """Enter context and log start."""
         self.start_time = datetime.now()
         ctx_str = ", ".join(f"{k}={v}" for k, v in self.context.items())
         self.logger.info("Starting %s (%s)", self.operation, ctx_str)
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Exit context and log completion."""
         duration = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
 
         if exc_type:
@@ -627,11 +464,6 @@ def log_context(
         yield ctx
 
 
-# =============================================================================
-# Audit Logger
-# =============================================================================
-
-
 class AuditLogger:
     """Append-only local record of destructive operations.
 
@@ -655,12 +487,6 @@ class AuditLogger:
         log_file: Path | None = None,
         logger: logging.Logger | None = None,
     ):
-        """Initialize audit logger.
-
-        Args:
-            log_file: Destination JSON-lines file.
-            logger: Logger used for write failures (not for the records).
-        """
         self.log_file = log_file if log_file is not None else AUDIT_LOG_FILE
         self.logger = logger or logging.getLogger(AUDIT_LOGGER_NAME)
 
@@ -724,7 +550,6 @@ class AuditLogger:
         self._append(record)
 
     def _append(self, record: dict[str, Any]) -> None:
-        """Write one JSON line, rotating first if the log has grown too large."""
         try:
             self._rotate_if_needed()
             ensure_private_dir(self.log_file.parent)
@@ -732,18 +557,9 @@ class AuditLogger:
                 handle.write(json.dumps(record, default=str) + "\n")
             self._ensure_private()
         except OSError as e:
-            # Never let bookkeeping break the operation being audited.
             self.logger.warning("Could not write the audit log at %s: %s", self.log_file, e)
 
     def _ensure_private(self) -> None:
-        """Tighten a log that others can read.
-
-        ``open_private_append``'s mode only applies to files it creates, so a
-        log written before this code existed -- or copied in from elsewhere --
-        keeps whatever mode it had. An append-only file cannot be swapped in
-        atomically the way the session cache is, so the mode is checked on each
-        write instead: one ``stat``, and only on destructive operations.
-        """
         try:
             mode = self.log_file.stat().st_mode
         except OSError:
@@ -752,11 +568,6 @@ class AuditLogger:
             restrict_permissions(self.log_file)
 
     def _rotate_if_needed(self) -> None:
-        """Roll the log over once it passes :data:`AUDIT_LOG_MAX_BYTES`.
-
-        A single generation is deliberate: anything more is a worse reimple-
-        mentation of logrotate, which is the right tool once a user cares.
-        """
         try:
             size = self.log_file.stat().st_size
         except OSError:
@@ -765,10 +576,6 @@ class AuditLogger:
             return
         rotated = self.log_file.with_name(self.log_file.name + ".1")
         self.log_file.replace(rotated)
-        # The rename preserves the source file's mode, and nothing ever
-        # revisits the rotated generation -- so a log that was looser than
-        # 0600 when it crossed the threshold would stay readable forever.
-        # Tighten it at the one moment it is created.
         try:
             if stat.S_IMODE(rotated.stat().st_mode) & 0o077:
                 restrict_permissions(rotated)
@@ -777,11 +584,6 @@ class AuditLogger:
 
 
 def _redact_value(value: Any) -> Any:
-    """Redact a value destined for the audit log.
-
-    URLs are the realistic leak here -- a server URL with embedded credentials,
-    or a path carrying a query string.
-    """
     return redact_url_query(value) if isinstance(value, str) else value
 
 

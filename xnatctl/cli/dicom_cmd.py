@@ -18,7 +18,6 @@ from xnatctl.core.output import (
 
 
 def _normalize_errors(errors: object) -> list[str]:
-    """Normalize error values to a list of strings."""
     if isinstance(errors, list):
         return [str(err) for err in errors]
     if errors:
@@ -49,16 +48,11 @@ def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom validate /path/to/dicom
         xnatctl dicom validate /path/to/dicom -r
     """
-    # Deferred: cli/main.py always loads this module to register `dicom`, so
-    # a module-scope `import pydicom` would make pydicom's data-dictionary
-    # build cost part of every xnatctl invocation, not just the `dicom`
-    # subcommands (same reasoning at every `import pydicom` in this file).
     import pydicom
 
     path_obj = Path(path)
     results = []
 
-    # Collect files
     if path_obj.is_file():
         files = [path_obj]
     elif recursive:
@@ -73,10 +67,8 @@ def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
 
     for file_path in files:
         try:
-            # Try to read as DICOM
             ds = pydicom.dcmread(str(file_path), stop_before_pixels=True)
 
-            # Basic validation checks
             errors = []
             warnings = []
 
@@ -88,7 +80,6 @@ def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
                 s = str(value)
                 return s.strip() == ""
 
-            # Check required DICOM tags
             required_tags = [
                 ("PatientID", 0x00100020),
                 ("PatientName", 0x00100010),
@@ -105,7 +96,6 @@ def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
                 elif _is_empty_required_value(getattr(elem, "value", None)):
                     errors.append(f"Empty required tag value: {name}")
 
-            # Check for private tags that might cause issues
             private_count = sum(1 for elem in ds if elem.tag.is_private)
             if private_count > 100:
                 warnings.append(f"High number of private tags: {private_count}")
@@ -195,7 +185,6 @@ def dicom_inspect(
         xnatctl dicom inspect /path/to/file.dcm
         xnatctl dicom inspect /path/to/file.dcm --tag PatientID --tag Modality
     """
-    # Deferred: see the comment on the `import pydicom` in dicom_validate above.
     import pydicom
 
     file_path = Path(file)
@@ -205,15 +194,13 @@ def dicom_inspect(
     except pydicom.errors.InvalidDicomError as e:
         print_error(f"Not a valid DICOM file: {file}")
         raise SystemExit(1) from e
-    except Exception as e:  # noqa: BLE001  # pydicom.dcmread parse-failure surface isn't a fixed enumerable set
+    except Exception as e:
         print_error(f"Error reading file: {e}")
         raise SystemExit(1) from e
 
-    # Build header dict
     headers = {}
 
     if tag:
-        # Only show specified tags
         for t in tag:
             if hasattr(ds, t):
                 value = getattr(ds, t)
@@ -221,7 +208,6 @@ def dicom_inspect(
             else:
                 headers[t] = "(not found)"
     else:
-        # Show common tags
         common_tags = [
             "PatientID",
             "PatientName",
@@ -253,7 +239,7 @@ def dicom_inspect(
             for elem in ds:
                 if elem.tag.is_private:
                     tag_str = f"{elem.tag.group:04X},{elem.tag.element:04X}"
-                    headers[tag_str] = str(elem.value)[:100]  # Truncate long values
+                    headers[tag_str] = str(elem.value)[:100]
 
     if output == "json":
         print_json(headers)
@@ -279,7 +265,6 @@ def dicom_list_tags(
     Example:
         xnatctl dicom list-tags /path/to/file.dcm
     """
-    # Deferred: see the comment on the `import pydicom` in dicom_validate above.
     import pydicom
 
     file_path = Path(file)
@@ -289,7 +274,7 @@ def dicom_list_tags(
     except pydicom.errors.InvalidDicomError as e:
         print_error(f"Not a valid DICOM file: {file}")
         raise SystemExit(1) from e
-    except Exception as e:  # noqa: BLE001  # pydicom.dcmread parse-failure surface isn't a fixed enumerable set
+    except Exception as e:
         print_error(f"Error reading file: {e}")
         raise SystemExit(1) from e
 
@@ -301,7 +286,7 @@ def dicom_list_tags(
         tag_str = f"({elem.tag.group:04X},{elem.tag.element:04X})"
         vr = elem.VR if hasattr(elem, "VR") else ""
         name = elem.keyword if hasattr(elem, "keyword") else ""
-        value = str(elem.value)[:50] if elem.value else ""  # Truncate
+        value = str(elem.value)[:50] if elem.value else ""
 
         tags.append(
             {
@@ -343,13 +328,11 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom anonymize input.dcm output.dcm --patient-id ANON001
         xnatctl dicom anonymize /input/dir /output/dir -r --remove-private
     """
-    # Deferred: see the comment on the `import pydicom` in dicom_validate above.
     import pydicom
 
     input_obj = Path(input_path)
     output_obj = Path(output_path)
 
-    # Collect files
     if input_obj.is_file():
         files = [(input_obj, output_obj)]
     elif recursive:
@@ -371,13 +354,11 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
         try:
             ds = pydicom.dcmread(str(in_file))
 
-            # Anonymize
             if patient_id:
                 ds.PatientID = patient_id
             if patient_name:
                 ds.PatientName = patient_name
 
-            # Remove identifying tags
             tags_to_remove = [
                 "PatientBirthDate",
                 "PatientAddress",
@@ -392,7 +373,6 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
                 if hasattr(ds, tag_name):
                     delattr(ds, tag_name)
 
-            # Remove private tags if requested
             if remove_private:
                 ds.remove_private_tags()
 
@@ -417,18 +397,6 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
 
 
 def _parse_tag_pair(raw: str) -> tuple[str, str]:
-    """Parse a KEYWORD=VALUE string into (keyword, value).
-
-    Args:
-        raw: String in the form ``KEYWORD=VALUE``.
-
-    Returns:
-        Tuple of (keyword, value).
-
-    Raises:
-        click.BadParameter: If the string is not in KEYWORD=VALUE form
-            or the keyword part is empty.
-    """
     if "=" not in raw:
         raise click.BadParameter(f"Invalid tag pair '{raw}': expected KEYWORD=VALUE format")
     keyword, value = raw.split("=", 1)
@@ -439,15 +407,6 @@ def _parse_tag_pair(raw: str) -> tuple[str, str]:
 
 
 def _collect_dicom_files(path: Path, recursive: bool) -> list[Path]:
-    """Collect DICOM candidate files from a path.
-
-    Args:
-        path: File or directory path.
-        recursive: Search directories recursively.
-
-    Returns:
-        List of file paths.
-    """
     if path.is_file():
         return [path]
     if recursive:
@@ -493,11 +452,9 @@ def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom modify ./dicoms -r -t PatientID=ANON -t StudyDescription=Demo
         xnatctl dicom modify ./dicoms -r -t PatientID=ANON --backup --dry-run
     """
-    # Deferred: see the comment on the `import pydicom` in dicom_validate above.
     import pydicom
     from pydicom.datadict import tag_for_keyword
 
-    # --- validate all tag keywords upfront --------------------------------
     parsed_tags: list[tuple[str, str]] = []
     for raw in tags:
         keyword, value = _parse_tag_pair(raw)
@@ -549,7 +506,6 @@ def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
             original_mode = file_path.stat().st_mode
             if backup:
                 shutil.copy2(str(file_path), str(file_path) + ".bak")
-            # Atomic write: save to temp file then replace
             fd, tmp_path_str = tempfile.mkstemp(dir=str(file_path.parent), suffix=".dcm.tmp")
             os.close(fd)
             ds.save_as(tmp_path_str)
@@ -563,7 +519,6 @@ def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
                 Path(tmp_path_str).unlink(missing_ok=True)
             results.append({"file": str(file_path), "status": "failed", "changes": [str(e)]})
 
-    # --- output -----------------------------------------------------------
     if output == "json":
         print_json({"modified": modified, "skipped": skipped, "failed": failed, "files": results})
     else:

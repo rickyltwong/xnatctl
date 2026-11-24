@@ -49,45 +49,18 @@ class Verifier:
         self._dest = dest_client
 
     def _get_file_count(self, client: Any, path: str) -> int:
-        """Fetch file listing from an XNAT resource path and return the count.
-
-        Args:
-            client: XNAT client with a ``get`` method.
-            path: REST path to a resource's ``/files`` endpoint.
-
-        Returns:
-            Number of files listed at the path.
-        """
         resp = client.get(path, params={"format": "json"})
         data = resp.json()
         results: list[dict[str, Any]] = data.get("ResultSet", {}).get("Result", [])
         return len(results)
 
     def _get_scan_ids(self, client: Any, experiment_path: str) -> set[str]:
-        """Fetch scan IDs for an experiment.
-
-        Args:
-            client: XNAT client.
-            experiment_path: REST path to the experiment.
-
-        Returns:
-            Set of scan ID strings.
-        """
         resp = client.get(f"{experiment_path}/scans", params={"format": "json"})
         data = resp.json()
         results: list[dict[str, Any]] = data.get("ResultSet", {}).get("Result", [])
         return {r["ID"] for r in results if "ID" in r}
 
     def _get_resource_labels(self, client: Any, scan_path: str) -> list[str]:
-        """Fetch resource labels for a scan.
-
-        Args:
-            client: XNAT client.
-            scan_path: REST path to the scan.
-
-        Returns:
-            List of resource label strings.
-        """
         resp = client.get(f"{scan_path}/resources", params={"format": "json"})
         data = resp.json()
         results: list[dict[str, Any]] = data.get("ResultSet", {}).get("Result", [])
@@ -173,7 +146,6 @@ class Verifier:
         Returns:
             VerificationResult summarizing both tiers.
         """
-        # Tier 1: scan-set comparison
         source_scans = self._get_scan_ids(self._source, source_experiment_path)
         dest_scans = self._get_scan_ids(self._dest, dest_experiment_path)
         missing = source_scans - dest_scans
@@ -189,7 +161,6 @@ class Verifier:
                 missing_scans=tuple(sorted(missing)),
             )
 
-        # Tier 2: per-scan file count comparison (reuse source_scans)
         mismatched: list[tuple[str, str, int, int]] = []
 
         for scan_id in sorted(source_scans):

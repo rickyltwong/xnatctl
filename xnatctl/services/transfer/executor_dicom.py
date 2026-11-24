@@ -25,44 +25,16 @@ logger = logging.getLogger(__name__)
 
 
 def _retryable_import_failure(exc: Exception) -> bool:
-    """Whether a failed import POST is worth another attempt.
-
-    ``dest.post`` goes through ``XNATClient._request``, which raises typed
-    errors -- so what reaches this predicate has already been through the
-    client's own ladder (429/503 for a POST). What this ladder adds:
-
-    * Transient import-race 400s, which the client cannot know about -- only
-      the import service's 400s are retryable, discriminated by body.
-    * Server-side failures the client refuses to repeat for a non-idempotent
-      method (500/502/504) plus exhausted/connection failures. Re-importing
-      the same DICOM ZIP with ``overwrite=append`` re-sends the same SOP
-      instances, so a repeat is safe here even if the first attempt partially
-      ran.
-    * Local file reads (OSError) and any raw httpx failure from a
-      non-XNATClient transport.
-
-    Fail-fast cases: permanent 400s, auth/permission/not-found errors, a ZIP
-    that is missing or unreadable, transport errors that cannot self-heal, and
-    programming errors -- retrying a bug just makes it a slower bug. The
-    connection family is deliberately retried whole even though a slice of it
-    (e.g. a connect timeout the client already declared unrecoverable) is
-    likely permanent: the wrapped cause is not distinguishable by type, and a
-    transfer pipeline prefers a few bounded retries over dropping a scan.
-    """
     if isinstance(exc, ClientRequestError):
         return exc.status_code == 400 and not is_permanent_400(exc.body)
     if isinstance(exc, FileNotFoundError | PermissionError | IsADirectoryError):
-        # The local ZIP is gone or unreadable; no backoff brings it back.
         return False
     if isinstance(exc, PERMANENT_TRANSPORT_ERRORS):
-        # Wrong scheme, malformed URL, redirect loop: same on every attempt.
         return False
     return isinstance(exc, XNATConnectionError | ServerError | httpx.HTTPError | OSError)
 
 
 class _DicomTransferMixin(_ExecutorAttrs):
-    """Download-then-import a scan's DICOM resource from source to destination."""
-
     def download_scan_dicom(
         self,
         source_experiment_id: str,
@@ -70,26 +42,7 @@ class _DicomTransferMixin(_ExecutorAttrs):
         work_dir: Path,
         resource_label: str = "DICOM",
     ) -> Path:
-        """Download and validate a DICOM ZIP from a source scan.
-
-        Args:
-            source_experiment_id: Source experiment accession ID.
-            scan_id: Scan ID to download.
-            work_dir: Temporary working directory for this scan.
-            resource_label: Scan resource label containing DICOM data.
-
-        Returns:
-            Path to the validated ZIP file on disk.
-
-        Raises:
-            ValueError: If ZIP validation fails.
-        """
         work_dir.mkdir(parents=True, exist_ok=True)
-        # Both are server-reported (the source XNAT), not caller input, but
-        # still local-path components -- validated, not mangled: a
-        # character-whitelist substitution (the previous approach here) is
-        # not injective, so two differently-hostile values could still
-        # collide on the same local ZIP name.
         safe_scan_id = validate_local_path_component(scan_id, "scan_id")
         safe_label = validate_local_path_component(resource_label, "resource_label")
         zip_path = work_dir / f"scan_{safe_scan_id}_{safe_label}.zip"
@@ -103,8 +56,6 @@ class _DicomTransferMixin(_ExecutorAttrs):
             params={"format": "zip"},
         )
 
-        # stream_to_file already enforced the Content-Length match; validate_zip
-        # adds the zipfile-integrity check on top.
         if not self.validate_zip(zip_path):
             raise ValueError(
                 f"ZIP validation failed for scan {scan_id}/{resource_label}: "
@@ -122,22 +73,6 @@ class _DicomTransferMixin(_ExecutorAttrs):
         retry_count: int = 3,
         retry_delay: float = 5.0,
     ) -> str:
-        """Import a validated DICOM ZIP to the destination.
-
-        Args:
-            zip_path: Path to the validated DICOM ZIP file.
-            dest_project: Destination project ID.
-            dest_subject: Destination subject label.
-            dest_experiment_label: Destination experiment label.
-            retry_count: Number of import retries.
-            retry_delay: Base delay between retries (exponential backoff).
-
-        Returns:
-            Response text from import (usually URI of imported data).
-
-        Raises:
-            Exception: If all retries exhausted.
-        """
         scan_id = zip_path.stem.removeprefix("scan_").removesuffix("_DICOM")
         params = build_import_params(
             import_handler="DICOM-zip",
@@ -145,15 +80,11 @@ class _DicomTransferMixin(_ExecutorAttrs):
             subject=dest_subject,
             session=dest_experiment_label,
             entity_keys="experiment",
-            # append, never the CLI default "delete": a transfer must not wipe
-            # scans that already arrived in an earlier run of the same session.
             overwrite="append",
             destination="/archive",
         )
 
         def _import() -> str:
-            # Reopened per attempt: a retried POST must not resend an
-            # exhausted file handle.
             with open(zip_path, "rb") as f:
                 resp = self.dest.post(
                     IMPORT_ENDPOINT,
@@ -170,8 +101,7 @@ class _DicomTransferMixin(_ExecutorAttrs):
                 backoff_base=retry_delay,
                 label=f"scan {scan_id} DICOM import",
             )
-        except Exception as e:  # noqa: BLE001  # log-and-reraise: ZIP retained for debugging regardless of failure type, then propagates
-            # Retain ZIP on failure for debugging
+        except Exception as e:
             logger.error(
                 "Scan %s DICOM import failed. ZIP retained at %s for debugging: %s",
                 scan_id,
@@ -194,28 +124,6 @@ class _DicomTransferMixin(_ExecutorAttrs):
         retry_count: int = 3,
         retry_delay: float = 5.0,
     ) -> str:
-        """Download DICOM ZIP from a source scan and import to destination.
-
-        Convenience wrapper that calls :meth:`download_scan_dicom` followed
-        by :meth:`upload_scan_dicom`.
-
-        Args:
-            source_experiment_id: Source experiment accession ID.
-            scan_id: Scan ID to transfer.
-            dest_project: Destination project ID.
-            dest_subject: Destination subject label.
-            dest_experiment_label: Destination experiment label.
-            work_dir: Temporary working directory for this scan.
-            retry_count: Number of import retries.
-            retry_delay: Base delay between retries (exponential backoff).
-
-        Returns:
-            Response text from import (usually URI of imported data).
-
-        Raises:
-            ValueError: If ZIP validation fails.
-            Exception: If all retries exhausted.
-        """
         zip_path = self.download_scan_dicom(source_experiment_id, scan_id, work_dir)
         return self.upload_scan_dicom(
             zip_path,

@@ -45,9 +45,6 @@ def command_list(ctx: Context) -> None:
     rows = service.list_commands()
 
     for row in rows:
-        # Same reader the service uses, deliberately: `len(row.get("xnat", [])
-        # or [])` would count a malformed shape as zero wrappers and print a
-        # convincing, wrong, successful table.
         row["wrapper_count"] = len(wrappers_of(row))
 
     print_output(
@@ -153,11 +150,6 @@ def command_update(
     service = CommandService(ctx.get_client())
 
     if dry_run:
-        # Diff against the SAME body update_command() will POST -- built by
-        # the one shared helper both branches call, not the raw payload.
-        # Execution strips stale wrapper ids (see prepare_update_body's
-        # docstring); diffing the raw payload here would show a modified
-        # wrapper keeping an id execution actually removes.
         current, body = service.prepare_update_body(command_id, payload)
         diff = json_diff(current, body, label=f"command {command_id}")
         click.echo(f"[DRY-RUN] Would replace command {command_id} from {payload_source}:", err=True)
@@ -185,11 +177,6 @@ def command_delete(ctx: Context, command_id: int, dry_run: bool) -> None:
     service = CommandService(ctx.get_client())
 
     if dry_run:
-        # Execution refuses an unknown command_id via delete_command()'s own
-        # get_command() preflight (DELETE answers 204 even for a nonexistent
-        # ID, so that preflight is the only thing standing between a typo
-        # and a silent no-op). Dry-run must run the same check rather than
-        # reporting success for a call execution would refuse.
         service.get_command(command_id)
         click.echo(f"[DRY-RUN] Would delete command {command_id}", err=True)
         return

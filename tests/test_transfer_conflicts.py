@@ -1,5 +1,3 @@
-"""Tests for transfer conflict checker."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -12,7 +10,6 @@ from xnatctl.services.transfer.conflicts import ConflictChecker, ConflictResult
 
 @pytest.fixture
 def mock_dest_client() -> MagicMock:
-    """Mock XNATClient for destination server."""
     client = MagicMock()
     client.base_url = "https://dst.example.org"
     return client
@@ -20,7 +17,6 @@ def mock_dest_client() -> MagicMock:
 
 @pytest.fixture
 def checker(mock_dest_client: MagicMock) -> ConflictChecker:
-    """ConflictChecker wired to mock client."""
     return ConflictChecker(mock_dest_client)
 
 

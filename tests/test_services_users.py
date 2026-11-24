@@ -1,5 +1,3 @@
-"""Unit tests for UserService."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -12,7 +10,6 @@ from xnatctl.services.users import UserService
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """Create a mock XNATClient."""
     client = MagicMock()
     client.base_url = "https://xnat.example.org"
     return client
@@ -20,20 +17,10 @@ def mock_client() -> MagicMock:
 
 @pytest.fixture
 def service(mock_client: MagicMock) -> UserService:
-    """Create UserService with mock client."""
     return UserService(mock_client)
 
 
 class TestList:
-    """Tests for UserService.list.
-
-    The default listing hits ``/xapi/users/profiles``, never the bare
-    ``/xapi/users`` -- confirmed against xnat-web's ``UsersApi``:
-    ``/xapi/users`` returns ``List<String>`` (bare usernames only), which
-    would crash every column this listing renders (email/enabled/verified
-    live only on the ``profiles`` response).
-    """
-
     def test_list_default_hits_profiles_endpoint_not_bare_users(
         self, service: UserService, mock_client: MagicMock
     ) -> None:
@@ -51,10 +38,6 @@ class TestList:
     def test_list_guards_bare_string_elements(
         self, service: UserService, mock_client: MagicMock
     ) -> None:
-        """Regression for the raw /xapi/users shape (List[str]) reaching this method:
-        a non-dict element must be wrapped, never surfaced raw (which would
-        crash any caller doing ``row.get(...)``).
-        """
         mock_client.get_json.return_value = ["jsmith", "adoe"]
 
         result = service.list()
@@ -74,7 +57,6 @@ class TestList:
     def test_list_normalizes_dict_response(
         self, service: UserService, mock_client: MagicMock
     ) -> None:
-        """/xapi/users/active is a Map<String, Map<String, Object>> keyed by username."""
         mock_client.get_json.return_value = {"jsmith": {"email": "j@example.org"}}
 
         result = service.list(active_only=True)

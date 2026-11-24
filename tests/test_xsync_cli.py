@@ -1,5 +1,3 @@
-"""Tests for the ``xnatctl xsync`` Click command group (issue #15)."""
-
 from __future__ import annotations
 
 import json
@@ -18,12 +16,10 @@ SECRET: str = "hunter2-supersecret-NEVER-LOG"
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner that splits stdout and stderr."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with a default profile."""
     return Config(
         default_profile="default",
         profiles={
@@ -39,7 +35,6 @@ def _mock_config() -> Config:
 
 
 def _mock_client_for_refresh() -> MagicMock:
-    """Build a mock XNATClient whose POSTs satisfy the three-step flow."""
     client = MagicMock()
     client.is_authenticated = True
     client.base_url = "https://xnat.example.org"
@@ -89,7 +84,6 @@ def _patched_invoke(
     input_: str | None = None,
     env: dict[str, str] | None = None,
 ):
-    """Invoke the CLI with the mock client + config patched in."""
     with core_config_seam(_mock_config()):
         with config_seam(_mock_config()):
             with patch("xnatctl.cli.common.XNATClient", return_value=client):
@@ -97,8 +91,6 @@ def _patched_invoke(
 
 
 class TestXsyncGroupHelp:
-    """`xsync --help` shape contract."""
-
     def test_root_help_lists_xsync(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
@@ -138,21 +130,12 @@ class TestXsyncGroupHelp:
 
 
 class TestRefreshCredentialsSecretSourcing:
-    """Secret-sourcing priority + argv rejection (decisions.md)."""
-
     def test_argv_password_is_rejected(
         self,
         runner: CliRunner,
         tmp_path: Any,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """`--remote-pass X` is a parse-time UsageError before auth/config.
-
-        Mirrors the Codex B01 reproduction recipe: clean ``HOME`` with no
-        ``~/.config/xnatctl/config.yaml`` and no ``XNAT_*`` env vars. The
-        argv-password guard MUST fire as a Click ``UsageError`` (exit 2)
-        before any decorator, config load, or HTTP client touch.
-        """
         monkeypatch.setenv("HOME", str(tmp_path))
         for var in (
             "XNAT_URL",
@@ -181,25 +164,18 @@ class TestRefreshCredentialsSecretSourcing:
                 ],
             )
 
-        # Click ``UsageError`` exits 2 by convention.
         assert result.exit_code == 2, (
             f"expected UsageError exit 2, got {result.exit_code}; "
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
         )
         combined = result.stdout + result.stderr
-        # Wording comes from the shared reject_argv_password helper in
-        # cli/common.py; assert the invariants, not the
-        # exact sentence.
         assert "Refusing to read --remote-pass from argv" in combined
         assert "--remote-pass-stdin" in combined
-        # Critical: the secret must not appear anywhere in the captured output.
         assert SECRET not in combined
-        # And no HTTP call may have been issued.
         client.post.assert_not_called()
         client.get.assert_not_called()
 
     def test_stdin_password_accepted_and_secret_never_in_output(self, runner: CliRunner) -> None:
-        """`--remote-pass-stdin` reads stdin, runs the flow, never echoes the secret."""
         client = _mock_client_for_refresh()
         result = _patched_invoke(
             runner,
@@ -227,7 +203,6 @@ class TestRefreshCredentialsSecretSourcing:
         combined = result.stdout + result.stderr
         assert SECRET not in combined
 
-        # And the three POSTs went out in the expected order.
         paths = [call.args[0] for call in client.post.call_args_list]
         assert paths == [
             "/xapi/xsync/remoteREST",
@@ -236,7 +211,6 @@ class TestRefreshCredentialsSecretSourcing:
         ]
 
     def test_env_var_password_accepted(self, runner: CliRunner) -> None:
-        """`XNAT_XSYNC_REMOTE_PASS` is consumed when --remote-pass-stdin is absent."""
         client = _mock_client_for_refresh()
         result = _patched_invoke(
             runner,
@@ -260,15 +234,12 @@ class TestRefreshCredentialsSecretSourcing:
         )
 
         assert result.exit_code == 0, result.stderr
-        # Secret never echoed.
         combined = result.stdout + result.stderr
         assert SECRET not in combined
-        # And ended up in the remoteREST request body.
         remote_rest_call = client.post.call_args_list[0]
         assert remote_rest_call.kwargs["json"]["password"] == SECRET
 
     def test_all_iterates_bound_projects(self, runner: CliRunner) -> None:
-        """`--all` enumerates list-projects and refreshes each matching --remote-url."""
         client = _mock_client_for_refresh()
         result = _patched_invoke(
             runner,
@@ -288,16 +259,12 @@ class TestRefreshCredentialsSecretSourcing:
         )
 
         assert result.exit_code == 0, result.stderr
-        # Two bound projects matched the remote URL (PROJ_A, PROJ_B). Each
-        # one triggers three POSTs -> six total, plus the initial GET to
-        # list projects.
         post_paths = [call.args[0] for call in client.post.call_args_list]
         assert post_paths.count("/xapi/xsync/remoteREST") == 2
         assert "/xapi/xsync/credentials/save/projects/PROJ_A" in post_paths
         assert "/xapi/xsync/credentials/save/projects/PROJ_B" in post_paths
         assert "/xapi/xsync/credentials/check/projects/PROJ_A" in post_paths
         assert "/xapi/xsync/credentials/check/projects/PROJ_B" in post_paths
-        # The non-matching project must not be touched.
         assert "/xapi/xsync/credentials/save/projects/PROJ_C" not in post_paths
 
         combined = result.stdout + result.stderr
@@ -305,8 +272,6 @@ class TestRefreshCredentialsSecretSourcing:
 
 
 class TestXsyncSubcommandsRoundTrip:
-    """Quick end-to-end shape tests for read/write subcommands."""
-
     def test_list_quiet_prints_ids(self, runner: CliRunner) -> None:
         client = _mock_client_for_refresh()
         result = _patched_invoke(runner, client, ["xsync", "list", "-q"])
@@ -318,9 +283,6 @@ class TestXsyncSubcommandsRoundTrip:
     def test_list_filter_to_zero_matches_prints_no_results_not_everything(
         self, runner: CliRunner
     ) -> None:
-        """A --filter that matches nothing must yield an empty table, not
-        fall back to reprinting the server's full raw payload.
-        """
         client = _mock_client_for_refresh()
         result = _patched_invoke(runner, client, ["xsync", "list", "--filter", "id:NOPE"])
 
@@ -331,9 +293,6 @@ class TestXsyncSubcommandsRoundTrip:
         assert "No results" in result.stderr
 
     def test_list_filter_to_zero_matches_json_prints_empty_array(self, runner: CliRunner) -> None:
-        """Same, but for -o json: the raw payload must not leak through
-        just because the filter left nothing.
-        """
         client = _mock_client_for_refresh()
         result = _patched_invoke(
             runner, client, ["xsync", "list", "--filter", "id:NOPE", "-o", "json"]
@@ -343,7 +302,6 @@ class TestXsyncSubcommandsRoundTrip:
         assert json.loads(result.stdout) == []
 
     def test_list_columns_affects_table_only_not_json(self, runner: CliRunner) -> None:
-        """--columns narrows table output; -o json always carries every field."""
         client = _mock_client_for_refresh()
 
         table_result = _patched_invoke(runner, client, ["xsync", "list", "--columns", "id"])
@@ -359,10 +317,6 @@ class TestXsyncSubcommandsRoundTrip:
         assert all("host" in row for row in rows), "--columns must not narrow JSON output"
 
     def test_list_negative_limit_is_rejected(self, runner: CliRunner) -> None:
-        """--limit takes a non-negative count; a negative value has slice
-        semantics (-1 == "all but the last") that would silently do the
-        wrong thing rather than raise.
-        """
         client = _mock_client_for_refresh()
         result = _patched_invoke(runner, client, ["xsync", "list", "--limit=-1"])
 

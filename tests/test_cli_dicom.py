@@ -1,13 +1,3 @@
-"""Tests for the shipped ``dicom validate/inspect/list-tags/anonymize`` commands.
-
-These were effectively untested. The pydicom-gated suite never ran in CI --
-every test in it reported "could not import pydicom" and the run stayed green --
-so the whole module sat at 16% while looking covered.
-
-Every test here needs pydicom, which the ``dicom`` extra provides; without it
-they skip, and that skip is what the min-deps CI leg exercises.
-"""
-
 from __future__ import annotations
 
 import json
@@ -32,11 +22,6 @@ def _write_dicom(
     modality: str | None = "MR",
     private_tag: bool = False,
 ) -> None:
-    """Write a minimal valid DICOM file.
-
-    Passing None for a field omits it, which is how the missing-required-tag
-    cases are built.
-    """
     import pydicom
     from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
@@ -76,7 +61,6 @@ class TestValidate:
         assert "Invalid: 0" in result.output
 
     def test_a_missing_required_tag_is_named(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Naming the tag is the point -- "invalid" alone is not actionable."""
         f = tmp_path / "nopatient.dcm"
         _write_dicom(f, patient_id=None)
 
@@ -88,7 +72,6 @@ class TestValidate:
     def test_an_empty_required_value_is_distinguished_from_a_missing_tag(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
-        """A present-but-blank PatientID is a different fault from an absent one."""
         f = tmp_path / "blank.dcm"
         _write_dicom(f, patient_id="   ")
 
@@ -238,7 +221,6 @@ class TestListTags:
 
 class TestAnonymize:
     def test_patient_identifiers_are_replaced(self, runner: CliRunner, tmp_path: Path) -> None:
-        """The whole point of the command: the original must not survive."""
         import pydicom
 
         src = tmp_path / "in.dcm"
@@ -279,7 +261,6 @@ class TestAnonymize:
         assert not dst.exists(), "dry-run wrote the output file"
 
     def test_private_tags_can_be_removed(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Private tags are a common route for identifiers to leak through."""
         import pydicom
 
         src = tmp_path / "in.dcm"

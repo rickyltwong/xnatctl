@@ -32,7 +32,6 @@ def _notify_upload_error(
     progress_callback: Callable[[UploadProgress], None] | None,
     exc: Exception,
 ) -> None:
-    """Emit an ERROR progress event without ever masking the failure."""
     if progress_callback is None:
         return
     with contextlib.suppress(Exception):
@@ -52,23 +51,6 @@ def _build_resource_upload_path(
     scan_id: str | None,
     project: str | None,
 ) -> str:
-    """Build the resource files path for the session/scan and project scoping.
-
-    ``is not None``, not truthy, for both optional scopes: ``scan_id=""`` is a
-    caller mistake, not "no scan scope" -- it must not silently widen the
-    upload to a SESSION-level resource; ``project=""`` likewise must not
-    silently narrow past validation to the flat upload path.
-    quote_path_segment already rejects the empty string.
-
-    Args:
-        session_id: Session ID.
-        resource_label: Resource label.
-        scan_id: Scan ID (for scan-level resources).
-        project: Project ID.
-
-    Returns:
-        The ``/data/...`` files path for the resource.
-    """
     q_session_id = quote_path_segment(session_id)
     q_resource_label = quote_path_segment(resource_label)
     if scan_id is not None:
@@ -90,18 +72,6 @@ def _build_resource_upload_path(
 
 
 def _zip_directory_source(source_path: Path) -> Path:
-    """Zip a directory source into a temp file the caller must remove.
-
-    On a failed archive build the partial temp file is removed here before the
-    error propagates, so the caller is never left owning a path it was not
-    returned.
-
-    Args:
-        source_path: Directory to zip.
-
-    Returns:
-        Path to the finished temp ZIP.
-    """
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
         zip_path = Path(tmp.name)
     try:
@@ -118,17 +88,6 @@ def _do_upload_request(
     path: str,
     params: dict[str, Any],
 ) -> None:
-    """PUT the file to the resource path, retrying per the upload ladder.
-
-    Args:
-        client: Bound XNAT client (source of base URL, token, timeout).
-        source_path: File to upload.
-        path: Resource files path including the target filename.
-        params: Query parameters (extract/overwrite).
-
-    Raises:
-        RuntimeError: If the response is not 200/201.
-    """
     base_url = client.base_url
     session_token = client.session_token
     verify_ssl = client.httpx_verify()
@@ -137,7 +96,7 @@ def _do_upload_request(
 
     with httpx.Client(
         base_url=base_url,
-        timeout=build_httpx_timeout(res_timeout),  # connect fails fast
+        timeout=build_httpx_timeout(res_timeout),
         verify=verify_ssl,
     ) as http:
 
@@ -210,10 +169,6 @@ def upload_resource(
 
         base_path = _build_resource_upload_path(session_id, resource_label, scan_id, project)
 
-        # A directory source is zipped to a temp file that MUST be removed on
-        # every exit path: a leak here leaves a 50 GB zip behind for a 50 GB
-        # resource directory on each invocation, and `session upload-exam`
-        # calls this once per resource directory.
         if source_path.is_dir():
             temp_zip = _zip_directory_source(source_path)
             source_path = temp_zip
@@ -265,16 +220,11 @@ def upload_resource(
         )
 
     except XNATCtlError as e:
-        # Typed failures already carry the right class and exit code; the
-        # notification fires (suppressed if the callback itself raises, so
-        # it can never mask the failure), then the exception propagates
-        # unchanged.
         _notify_upload_error(progress_callback, e)
         raise
-    except Exception as e:  # noqa: BLE001  # translation boundary: wraps failure as typed UploadError (raise ... from e)
+    except Exception as e:
         _notify_upload_error(progress_callback, e)
         raise UploadError(str(e), file_path=str(upload_source)) from e
     finally:
-        # Covers the success return and both raising branches above.
         if temp_zip is not None:
             temp_zip.unlink(missing_ok=True)

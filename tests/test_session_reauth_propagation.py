@@ -1,15 +1,3 @@
-"""Reauth has to reach the shared client, and the cache must not retire live tokens.
-
-Two independent defects, both invisible until a transfer ran long:
-
-* Worker threads refreshed an expired session into their own copy of the token
-  and nothing wrote it back, so the phases that run after an upload went out
-  with the token the command started with.
-* The cached session was declared dead 15 minutes after *creation*, though XNAT
-  retires a JSESSIONID after 15 minutes of *inactivity*. A session in constant
-  use was thrown away while still valid.
-"""
-
 from __future__ import annotations
 
 import json
@@ -25,7 +13,6 @@ from xnatctl.core.auth import SESSION_EXPIRY_MINUTES, AuthManager, CachedSession
 
 class TestSlidingExpiry:
     def test_a_session_in_constant_use_is_not_retired(self) -> None:
-        """The bug: 15 minutes after login, a busy session was declared dead."""
         created = datetime.now() - timedelta(hours=3)
         session = CachedSession(
             token="TOK",
@@ -39,7 +26,6 @@ class TestSlidingExpiry:
         assert session.is_expired() is False
 
     def test_an_idle_session_still_expires(self) -> None:
-        """Sliding must not mean never expiring."""
         idle_since = datetime.now() - timedelta(minutes=SESSION_EXPIRY_MINUTES + 5)
         session = CachedSession(
             token="TOK",
@@ -75,11 +61,6 @@ class TestSlidingExpiry:
         assert session.is_expired() is False
 
     def test_a_cache_written_before_the_field_existed_still_loads(self) -> None:
-        """Old files have no last_used_at; they fall back to created_at.
-
-        That reproduces the previous behaviour for exactly one read, after
-        which the touch on load puts them on the sliding clock.
-        """
         created = datetime.now() - timedelta(minutes=1)
         session = CachedSession.from_dict(
             {
@@ -95,7 +76,6 @@ class TestSlidingExpiry:
         assert session.is_expired() is False
 
     def test_loading_a_session_slides_its_deadline_on_disk(self, tmp_path: Path) -> None:
-        """The window has to move in the file, or it never slides at all."""
         manager = AuthManager(cache_file=tmp_path / ".session")
         manager.save_session("TOK", "https://x", "u")
 
@@ -126,7 +106,6 @@ class TestSlidingExpiry:
     def test_a_read_only_cache_does_not_break_the_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The token in hand is good; a failed cache write is not worth an error."""
         manager = AuthManager(cache_file=tmp_path / ".session")
         manager.save_session("TOK", "https://x", "u")
 
@@ -142,8 +121,6 @@ class TestSlidingExpiry:
 
 
 class TestRefreshPropagation:
-    """A worker's reauth must update the client the later phases use."""
-
     @staticmethod
     def _refresher(owner: object | None, token: str = "OLD"):
         from xnatctl.services.upload.shared import SessionRefresher
@@ -154,17 +131,11 @@ class TestRefreshPropagation:
             token=token,
             username="u",
             password="p",
-            owner=owner,  # type: ignore[arg-type]
+            owner=owner,
         )
 
     @staticmethod
     def _patch_transport(monkeypatch, handler) -> None:
-        """Point the refresher's own httpx.Client at a MockTransport.
-
-        The real class is captured first: ``uploads.httpx`` *is* the httpx
-        module, so patching ``Client`` on it is a global patch, and a
-        replacement that called ``httpx.Client`` would call itself.
-        """
         import xnatctl.services.upload.shared as uploads
 
         real_client = httpx.Client
@@ -175,7 +146,6 @@ class TestRefreshPropagation:
         monkeypatch.setattr(uploads.httpx, "Client", fake_client)
 
     def test_a_refresh_updates_the_owning_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The defect: the client kept its original, long-dead token."""
         client = MagicMock()
         client.session_token = "OLD"
         self._patch_transport(monkeypatch, lambda _r: httpx.Response(200, text="FRESH"))
@@ -187,7 +157,6 @@ class TestRefreshPropagation:
         assert client.session_token == "FRESH", "the owning client kept a dead token"
 
     def test_without_an_owner_nothing_blows_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Owner is optional; the refresher must still work standalone."""
         self._patch_transport(monkeypatch, lambda _r: httpx.Response(200, text="FRESH"))
 
         assert self._refresher(None).refresh("OLD") == "FRESH"
@@ -195,7 +164,6 @@ class TestRefreshPropagation:
     def test_a_failed_refresh_leaves_the_client_alone(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Only a *successful* reauth may overwrite the client's token."""
         client = MagicMock()
         client.session_token = "OLD"
         self._patch_transport(monkeypatch, lambda _r: httpx.Response(500, text="nope"))
@@ -207,7 +175,6 @@ class TestRefreshPropagation:
     def test_a_cache_write_failure_does_not_fail_the_upload(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Cache updates are a courtesy to other processes, not a dependency."""
         client = MagicMock()
         client.session_token = "OLD"
         self._patch_transport(monkeypatch, lambda _r: httpx.Response(200, text="FRESH"))
@@ -225,7 +192,6 @@ class TestRefreshPropagation:
     def test_a_second_thread_reuses_the_first_refresh(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Only the first caller re-authenticates; this must stay true."""
         calls: list[int] = []
 
         def handler(_r: httpx.Request) -> httpx.Response:
@@ -237,24 +203,14 @@ class TestRefreshPropagation:
         refresher = self._refresher(client)
 
         assert refresher.refresh("OLD") == "FRESH"
-        # A second worker arrives holding the same stale token it started with.
         assert refresher.refresh("OLD") == "FRESH"
 
         assert len(calls) == 1, "re-authenticated twice for one expiry"
 
 
 class TestTheBatchPathAlsoReauthenticates:
-    """A 401 mid-upload must not kill the batch.
-
-    XNAT evicts sessions when an account exceeds its concurrent-session
-    limit -- routine when several workers share a service account -- so a
-    long parallel upload that gave up on 401 would fail batch by batch
-    against a healthy server even with credentials in hand.
-    """
-
     @staticmethod
     def _run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, refresher: object | None):
-        """Upload one archive whose first attempt 401s, and report the calls."""
         import httpx
 
         import xnatctl.services.upload.rest_archive as uploads
@@ -325,7 +281,6 @@ class TestTheBatchPathAlsoReauthenticates:
     def test_without_a_refresher_the_old_behaviour_stands(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Credential-only workers log in per batch; there is nothing to refresh."""
         ok, err, posts = self._run(monkeypatch, tmp_path, None)
 
         assert not ok
@@ -338,7 +293,7 @@ class TestTheBatchPathAlsoReauthenticates:
         from unittest.mock import MagicMock
 
         refresher = MagicMock()
-        refresher.refresh.return_value = "STALE"  # reauth got us nowhere
+        refresher.refresh.return_value = "STALE"
 
         ok, _err, posts = self._run(monkeypatch, tmp_path, refresher)
 

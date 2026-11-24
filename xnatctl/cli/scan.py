@@ -102,9 +102,6 @@ def _inspect_experiment(
                 resolved_id = str(rows[0].get("ID") or "") or None
                 resolved_subject = str(rows[0].get("subject_ID") or "") or None
 
-    # Carry project/subject scope forward so nested scan/resource calls stay
-    # on project-scoped URLs (respects project ACLs, matches old behavior).
-    # Use the resolved accession ID as the experiment with experiment_is_label=False.
     subject = experiment_ref.subject
     subject_is_label = experiment_ref.subject_is_label
     # The subject segment is what makes the nested suffix route at all (see the
@@ -133,33 +130,13 @@ def _run_scan_deletes(
     *,
     workers: int,
 ) -> tuple[list[str], list[tuple[str, str]]]:
-    """Delete every scan in ``scan_ids``, returning (deleted, failed).
-
-    Per-scan failures are collected rather than raised so one bad scan
-    cannot abandon the rest of the list. That isolation applies only when
-    there IS a rest of the list: with a single scan the exception
-    propagates, because ``@handle_errors`` needs to see the typed error to
-    pick the right exit code (permission denied is not a generic failure)
-    and to record the real exception class in the audit trail.
-
-    Args:
-        scan_svc: Bound scan service.
-        experiment_ref: Parent experiment the scans hang off.
-        scan_ids: Scans to delete; must be non-empty.
-        workers: Parallel worker ceiling. A single scan, or ``workers <= 1``,
-            runs serially.
-
-    Returns:
-        ``(deleted_ids, [(scan_id, error_message), ...])``.
-    """
     isolate_failures = len(scan_ids) > 1
 
     def delete_scan(scan_id: str) -> tuple[str, bool, str]:
-        """Delete a scan and return status and error message."""
         try:
             resp = scan_svc.delete_scan_ref(ScanRef(experiment=experiment_ref, scan_id=scan_id))
             return scan_id, resp.status_code in (200, 204), ""
-        except Exception as e:  # noqa: BLE001  # per-scan isolation across a multi-scan list
+        except Exception as e:
             if not isolate_failures:
                 raise
             return scan_id, False, str(e)
@@ -187,19 +164,6 @@ def _run_scan_deletes(
 
 
 def _require_scan_addressable(ref: ExperimentRef) -> None:
-    """Refuse to issue a scan request that XNAT would apply to the experiment.
-
-    ``HierarchyService.routable_scan_parent`` rewrites a project-scoped
-    experiment *ID* to the flat form so its ``/scans`` suffix routes. A genuine
-    *label* has no such escape: it cannot drop the project, so the URL stays on
-    the prefix XNAT answers with the experiment document. Failing here beats
-    reporting an empty scan list, or aiming a DELETE at the session.
-
-    Reached only when inspection could not resolve the label to an accession
-    ID -- on the happy path ``_inspect_experiment`` has already done so.
-    """
-    # Unroutable exactly when the builder could not rewrite it to a form
-    # that addresses a scan.
     if ref.project_id and not ref.subject and HierarchyService.routable_scan_parent(ref) == ref:
         raise click.ClickException(
             f"Could not resolve experiment '{ref.experiment}' in project "
@@ -212,19 +176,6 @@ def _require_scan_addressable(ref: ExperimentRef) -> None:
 def _build_experiment_ref(
     project: str | None, subject: str | None, session_id: str
 ) -> ExperimentRef:
-    """Build an experiment reference for scan operations.
-
-    Args:
-        project: Project ID (optional).
-        subject: Subject ID/label (optional, requires project).
-        session_id: Experiment ID or label.
-
-    Returns:
-        Experiment reference.
-
-    Raises:
-        click.ClickException: If subject is given without a resolved project.
-    """
     if subject and not project:
         raise click.ClickException(
             "-S/--subject requires -P/--project (or default_project in profile)"
@@ -298,7 +249,6 @@ def scan_list(
 
     results = hierarchy.list_scan_rows(experiment_ref, session_xsi)
 
-    # Transform for output
     scans = []
     for r in results:
         scans.append(
@@ -381,7 +331,6 @@ def scan_show(
         print_error(f"Scan not found: {scan_id}")
         raise SystemExit(1)
 
-    # Get resources
     try:
         resources = ResourceService(client).list_rows(scan_ref)
     except (XNATCtlError, ValueError) as exc:
@@ -407,25 +356,6 @@ def scan_show(
 
 
 def _resolve_scan_ids(scans: tuple[str, ...], batch_ids: list[str] | None) -> list[str] | None:
-    """Resolve the scan IDs to delete from ``--scans`` or ``--batch``.
-
-    The two are mutually exclusive; ``--batch`` supplies explicit scan IDs
-    (no ``'*'`` wildcard). ``--scans`` is repeatable (``--scans 1 --scans
-    2``) and each occurrence also accepts a comma-separated list (``--scans
-    1,2,3``) or ``'*'`` for all -- the two forms combine freely.
-
-    Returns:
-        Explicit scan IDs, or ``None`` for "all scans" (``--scans '*'`` only).
-
-    Raises:
-        click.UsageError: Neither or both of ``--scans``/``--batch`` were given.
-    """
-    # `batch_ids is not None` is presence ("--batch was given"), not
-    # truthiness of the parsed list -- @batch_option already refuses an
-    # empty-but-given batch, but these checks stay presence-based rather
-    # than relying on that guarantee, so `--scans '*'` can never slip past
-    # mutual exclusion (and fall through to the wildcard) just because the
-    # batch happened to be empty.
     scans_value = ",".join(scans) if scans else None
     if scans_value and batch_ids is not None:
         raise click.UsageError("provide --scans or --batch, not both")
@@ -509,7 +439,6 @@ def scan_delete(
     experiment_ref, session_xsi = _inspect_experiment(hierarchy, source_ref)
     _require_scan_addressable(experiment_ref)
 
-    # If wildcard, get all scan IDs
     if scan_ids is None:
         results = hierarchy.list_scan_rows(experiment_ref, session_xsi)
         scan_ids = [r.get("ID", "") for r in results if r.get("ID")]
@@ -533,9 +462,6 @@ def scan_delete(
 
     if deleted:
         noun = "scan" if len(deleted) == 1 else "scans"
-        # Use highlight=False so Rich does not turn the integer into a
-        # styled token; tests assert on the raw "Deleted N scan(s)" text.
-        # Stderr: status commentary, not data.
         err_console.print(f"[green]✓[/green] Deleted {len(deleted)} {noun}", highlight=False)
 
     if failed:

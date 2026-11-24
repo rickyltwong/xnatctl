@@ -48,7 +48,6 @@ class DICOMStoreSummary:
 
 
 def _get_verification_sop_class() -> Any:
-    """Get VerificationSOPClass with compatibility for pynetdicom versions."""
     from pynetdicom import sop_class as _sop_class
 
     verification_uid = "1.2.840.10008.1.1"
@@ -60,7 +59,6 @@ def _get_verification_sop_class() -> Any:
 
 
 def _get_storage_contexts() -> list[Any]:
-    """Get storage presentation contexts with version compatibility."""
     try:
         from pynetdicom import StoragePresentationContexts
 
@@ -74,11 +72,6 @@ def _get_storage_contexts() -> list[Any]:
 
 
 def _ensure_sop_uids(ds: Any) -> None:
-    """Populate missing SOP UID attributes from file-meta.
-
-    Args:
-        ds: pydicom Dataset object.
-    """
     if not getattr(ds, "SOPClassUID", None):
         uid = getattr(ds.file_meta, "MediaStorageSOPClassUID", None)
         if uid:
@@ -91,13 +84,6 @@ def _ensure_sop_uids(ds: Any) -> None:
 
 
 def _tls_kwargs(tls_context: ssl.SSLContext | None, host: str) -> dict[str, Any]:
-    """Association kwargs for TLS, or nothing at all when plaintext.
-
-    ``host`` is passed as the TLS ``server_hostname`` rather than the ``None``
-    the pynetdicom examples use: with ``check_hostname`` on, omitting it means
-    the certificate is never matched against the host being talked to, which
-    removes most of the protection.
-    """
     if tls_context is None:
         return {}
     return {"tls_args": (tls_context, host)}
@@ -133,8 +119,6 @@ def build_dicom_tls_context(
         UploadError: If the certificate material cannot be loaded.
     """
     context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_bundle)
-    # create_default_context already sets these; asserted rather than assigned
-    # so a future edit that weakens them fails loudly here.
     context.verify_mode = ssl.CERT_REQUIRED
     context.check_hostname = True
 
@@ -158,18 +142,6 @@ def _c_echo(
     called_aet: str,
     tls_context: ssl.SSLContext | None = None,
 ) -> bool:
-    """Send a C-ECHO to verify connectivity and AE titles.
-
-    Args:
-        host: DICOM SCP host.
-        port: DICOM SCP port.
-        calling_aet: Our AE title.
-        called_aet: Remote AE title.
-        tls_context: When given, the association is encrypted.
-
-    Returns:
-        True if C-ECHO succeeded.
-    """
     from pynetdicom import AE
 
     ae = AE(ae_title=calling_aet)
@@ -195,21 +167,6 @@ def _send_dicom_batch(
     log_dir: Path,
     tls_context: ssl.SSLContext | None = None,
 ) -> tuple[int, int]:
-    """Send a batch of DICOM files over a single association.
-
-    Args:
-        batch_id: Identifier for this batch (for logging).
-        files: List of DICOM file paths.
-        host: DICOM SCP host.
-        port: DICOM SCP port.
-        calling_aet: Our AE title.
-        called_aet: Remote AE title.
-        log_dir: Directory for batch log files.
-        tls_context: When given, the association is encrypted.
-
-    Returns:
-        Tuple of (sent_count, failed_count).
-    """
     import pydicom
     from pydicom.errors import InvalidDicomError
     from pynetdicom import AE
@@ -311,8 +268,6 @@ def upload_dicom_store(
     log_dir = workspace / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Shared with _run_batches_in_parallel so the finally's cleanup condition
-    # sees partial failure tallies even if a batch worker raises mid-loop.
     tally = _StoreTally()
 
     try:
@@ -355,27 +310,8 @@ def _setup_tls_and_log(
     host: str,
     port: int,
 ) -> ssl.SSLContext | None:
-    """Build the TLS context if requested and log the encryption decision.
-
-    Args:
-        tls: Encrypt the associations.
-        tls_ca_bundle: PEM file of CAs to trust (default: system store).
-        tls_cert: Client certificate, for SCPs requiring mutual TLS.
-        tls_key: Its private key.
-        host: DICOM SCP host.
-        port: DICOM SCP port.
-
-    Returns:
-        The TLS context, or None for a cleartext association.
-
-    Raises:
-        UploadError: If TLS material is requested but cannot be loaded.
-    """
     tls_context = build_dicom_tls_context(tls_ca_bundle, tls_cert, tls_key) if tls else None
     if tls_context is None:
-        # Informational, not alarming: plenty of sites run C-STORE on a
-        # segregated network on purpose. But it should be a decision
-        # someone made, not one they never knew they had.
         logger.info(
             "DICOM C-STORE to %s:%s is unencrypted; use --tls if the server supports it",
             host,
@@ -393,18 +329,6 @@ def _preflight_c_echo(
     called_aet: str,
     tls_context: ssl.SSLContext | None,
 ) -> None:
-    """Verify SCP connectivity with C-ECHO before any C-STORE starts.
-
-    Args:
-        host: DICOM SCP host.
-        port: DICOM SCP port.
-        calling_aet: Our AE title.
-        called_aet: Remote AE title.
-        tls_context: When given, the association is encrypted.
-
-    Raises:
-        RuntimeError: If the C-ECHO fails.
-    """
     logger.info(
         "Pre-flight C-ECHO %s -> %s @ %s:%s",
         calling_aet,
@@ -421,12 +345,6 @@ def _preflight_c_echo(
 
 @dataclass
 class _StoreTally:
-    """Mutable sent/failed counters shared across the batch loop.
-
-    Mutated in place per completed batch so the caller's workspace-cleanup
-    condition sees partial tallies even when a batch worker raises.
-    """
-
     sent: int = 0
     failed: int = 0
 
@@ -441,18 +359,6 @@ def _run_batches_in_parallel(
     tls_context: ssl.SSLContext | None,
     tally: _StoreTally,
 ) -> None:
-    """Send every batch over its own parallel C-STORE association.
-
-    Args:
-        batches: Per-association file batches.
-        host: DICOM SCP host.
-        port: DICOM SCP port.
-        calling_aet: Our AE title.
-        called_aet: Remote AE title.
-        log_dir: Directory for batch log files.
-        tls_context: When given, associations are encrypted.
-        tally: Counters mutated in place per completed batch.
-    """
     with cancellable_pool(len(batches)) as (pool, _cstore_token):
         futures = {
             pool.submit(

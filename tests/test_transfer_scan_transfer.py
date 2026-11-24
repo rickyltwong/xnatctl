@@ -1,5 +1,3 @@
-"""Tests for ScanTransfer: two-phase download-then-upload of scan resources."""
-
 from __future__ import annotations
 
 import tempfile
@@ -64,7 +62,6 @@ class TestTwoPhaseTransferScans:
         self,
         scan_transfer: ScanTransfer,
     ) -> None:
-        """dicom_only=True only transfers DICOM resources."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
@@ -106,7 +103,6 @@ class TestTwoPhaseTransferScans:
         self,
         scan_transfer: ScanTransfer,
     ) -> None:
-        """DICOM import uses the discovered label when format is DICOM."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
@@ -151,7 +147,6 @@ class TestTwoPhaseTransferScans:
         self,
         scan_transfer: ScanTransfer,
     ) -> None:
-        """dicom_only=False only transfers non-DICOM resources."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
@@ -193,7 +188,6 @@ class TestTwoPhaseTransferScans:
         self,
         scan_transfer: ScanTransfer,
     ) -> None:
-        """Existing-session sync creates scans before generic resource upload."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
@@ -248,7 +242,6 @@ class TestTwoPhaseTransferScans:
         self,
         scan_transfer: ScanTransfer,
     ) -> None:
-        """DICOM-format resources are not uploaded as generic resources."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
@@ -285,7 +278,6 @@ class TestTwoPhaseTransferScans:
         self,
         scan_transfer: ScanTransfer,
     ) -> None:
-        """A DICOM-format alias obeys filters configured for DICOM."""
         scan_transfer.filter_engine.should_include_scan_resource = MagicMock(
             side_effect=lambda _xsi, label: label != "DICOM"
         )
@@ -302,7 +294,6 @@ class TestTwoPhaseTransferScans:
         self,
         scan_transfer: ScanTransfer,
     ) -> None:
-        """Shared scan_resources_cache reuses phase 1 results in phase 3."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
@@ -356,14 +347,12 @@ class TestTwoPhaseTransferScans:
                 scan_resources_cache=cache,
             )
 
-        # discover_scan_resources called once (phase 1), reused in phase 3
         scan_transfer.executor.discover_scan_resources.assert_called_once()
 
     def test_all_downloads_complete_before_any_upload(
         self,
         scan_transfer: ScanTransfer,
     ) -> None:
-        """All downloads finish before any upload begins (two-phase ordering)."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
@@ -395,7 +384,6 @@ class TestTwoPhaseTransferScans:
         scan_transfer.executor.upload_scan_dicom = MagicMock(side_effect=track_upload)
 
         result = TransferResult()
-        # Force single-threaded to get deterministic ordering
         scan_transfer.config.scan_workers = 1
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -403,7 +391,6 @@ class TestTwoPhaseTransferScans:
                 scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=True
             )
 
-        # All downloads must appear before any upload
         download_indices = [i for i, c in enumerate(call_order) if c.startswith("download")]
         upload_indices = [i for i, c in enumerate(call_order) if c == "upload"]
         assert download_indices, "Expected at least one download"
@@ -416,7 +403,6 @@ class TestTwoPhaseTransferScans:
         self,
         scan_transfer: ScanTransfer,
     ) -> None:
-        """Failed download is recorded; upload phase proceeds for other scans."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
@@ -454,7 +440,7 @@ class TestTwoPhaseTransferScans:
                 scans, exp, "DST", subject, Path(tmpdir), result, dicom_only=True
             )
 
-        assert processed == 1  # Only scan 2 succeeded
+        assert processed == 1
         assert result.scans_failed == 1
         assert result.scans_synced == 1
         assert len(result.errors) == 1

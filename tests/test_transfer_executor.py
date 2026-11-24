@@ -1,5 +1,3 @@
-"""Tests for transfer executor."""
-
 from __future__ import annotations
 
 import tempfile
@@ -22,7 +20,6 @@ from xnatctl.services.transfer.executor import TransferExecutor, _retryable_impo
 
 
 def _make_valid_zip() -> bytes:
-    """Create minimal valid ZIP bytes in memory."""
     import io
 
     buf = io.BytesIO()
@@ -37,20 +34,6 @@ def _make_nested_zip(
     resource_label: str = "SNAPSHOTS",
     filenames: list[str] | None = None,
 ) -> bytes:
-    """Create a ZIP with XNAT's nested directory structure.
-
-    XNAT serves ZIPs with paths like:
-    ``experiment_label/scans/scan_id/resources/label/files/filename``
-
-    Args:
-        experiment_label: Experiment label for directory prefix.
-        scan_id: Scan ID for directory prefix.
-        resource_label: Resource label for directory prefix.
-        filenames: Leaf filenames to include.
-
-    Returns:
-        ZIP bytes with nested directory hierarchy.
-    """
     import io
 
     if filenames is None:
@@ -65,7 +48,6 @@ def _make_nested_zip(
 
 
 def _mock_stream_download(source_client: MagicMock, data: bytes) -> None:
-    """Configure source_client.stream() to yield ``data`` for stream_to_file."""
     stream_ctx = MagicMock()
     stream_resp = MagicMock()
     stream_resp.headers = {"content-length": str(len(data))}
@@ -78,7 +60,6 @@ def _mock_stream_download(source_client: MagicMock, data: bytes) -> None:
 
 @pytest.fixture
 def source_client() -> MagicMock:
-    """Mock XNATClient for source server."""
     client = MagicMock()
     client.base_url = "https://src.example.org"
     return client
@@ -86,7 +67,6 @@ def source_client() -> MagicMock:
 
 @pytest.fixture
 def dest_client() -> MagicMock:
-    """Mock XNATClient for destination server."""
     client = MagicMock()
     client.base_url = "https://dst.example.org"
     return client
@@ -94,7 +74,6 @@ def dest_client() -> MagicMock:
 
 @pytest.fixture
 def executor(source_client: MagicMock, dest_client: MagicMock) -> TransferExecutor:
-    """TransferExecutor wired to mock clients."""
     return TransferExecutor(source_client, dest_client)
 
 
@@ -234,7 +213,6 @@ class TestTransferScanDicom:
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
 
-        # First import fails transiently, second succeeds
         dest_client.post.side_effect = [
             ServerError(502, "POST", "/data/services/import"),
             make_response(text="/data/experiments/E999"),
@@ -276,7 +254,6 @@ class TestTransferScanDicom:
                     retry_count=1,
                     retry_delay=0.01,
                 )
-            # ZIP should be retained for debugging
             assert (Path(tmpdir) / "scan_1_DICOM.zip").exists()
 
     def test_raises_on_invalid_zip(
@@ -284,7 +261,6 @@ class TestTransferScanDicom:
         executor: TransferExecutor,
         source_client: MagicMock,
     ) -> None:
-        # Download non-ZIP data
         _mock_stream_download(source_client, b"not a zip file at all")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -346,7 +322,6 @@ class TestTransferResource:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Nested XNAT ZIP hierarchy is flattened before upload."""
         nested_zip = _make_nested_zip(
             experiment_label="SRC_EXP",
             scan_id="4",
@@ -364,7 +339,6 @@ class TestTransferResource:
                 work_dir=Path(tmpdir),
             )
 
-        # Verify the uploaded ZIP contains only flat filenames
         call_args = dest_client.put.call_args
         uploaded_data = call_args[1]["data"]
 
@@ -392,14 +366,11 @@ class TestTransferResource:
 
 
 class TestDownloadScanDicom:
-    """Tests for download_scan_dicom (download + validate only)."""
-
     def test_returns_zip_path(
         self,
         executor: TransferExecutor,
         source_client: MagicMock,
     ) -> None:
-        """Returns path to validated ZIP on disk."""
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
 
@@ -417,7 +388,6 @@ class TestDownloadScanDicom:
         executor: TransferExecutor,
         source_client: MagicMock,
     ) -> None:
-        """DICOM data may be stored under a non-DICOM resource label."""
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
 
@@ -438,7 +408,6 @@ class TestDownloadScanDicom:
         executor: TransferExecutor,
         source_client: MagicMock,
     ) -> None:
-        """Raises ValueError if downloaded data is not a valid ZIP."""
         _mock_stream_download(source_client, b"not a zip")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -455,7 +424,6 @@ class TestDownloadScanDicom:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Download step does not contact the destination."""
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
 
@@ -470,14 +438,11 @@ class TestDownloadScanDicom:
 
 
 class TestUploadScanDicom:
-    """Tests for upload_scan_dicom (import only)."""
-
     def test_imports_zip_to_dest(
         self,
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """POSTs the ZIP to /data/services/import and returns response text."""
         dest_client.post.return_value = make_response(text="/data/experiments/E999")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -499,7 +464,6 @@ class TestUploadScanDicom:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """ZIP is deleted after successful import."""
         dest_client.post.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -520,7 +484,6 @@ class TestUploadScanDicom:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """ZIP is retained for debugging after all retries fail."""
         dest_client.post.side_effect = RuntimeError("boom")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -544,7 +507,6 @@ class TestUploadScanDicom:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """The shared params builder must not change what goes on the wire."""
         dest_client.post.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -575,7 +537,6 @@ class TestUploadScanDicom:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """A bug must fail on attempt one, not after three backoffs."""
         dest_client.post.side_effect = RuntimeError("boom")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -598,7 +559,6 @@ class TestUploadScanDicom:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """XNAT's import-race 400s clear on their own, so they earn a retry."""
         dest_client.post.side_effect = [
             ClientRequestError(
                 400, "POST", "/data/services/import", body="Session processing in progress"
@@ -626,7 +586,6 @@ class TestUploadScanDicom:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """A misconfigured destination says the same thing after every backoff."""
         dest_client.post.side_effect = ClientRequestError(
             400, "POST", "/data/services/import", body="Unable to identify destination project"
         )
@@ -648,15 +607,13 @@ class TestUploadScanDicom:
 
 
 class TestRetryableImportFailurePredicate:
-    """Classification table for the transfer import's retry predicate."""
-
     def test_transient_conditions_are_retryable(self) -> None:
         import httpx
 
         path = "/data/services/import"
         for exc in [
             ClientRequestError(400, "POST", path, body="Session processing in progress"),
-            ClientRequestError(400, "POST", path, body=""),  # unrecognised 400: retried
+            ClientRequestError(400, "POST", path, body=""),
             ServerError(502, "POST", path),
             RetryExhaustedError("request", 4),
             NetworkError("https://x", "socket died"),
@@ -682,14 +639,11 @@ class TestRetryableImportFailurePredicate:
 
 
 class TestDownloadResource:
-    """Tests for download_resource (download + validate + flatten)."""
-
     def test_returns_flat_zip_and_size(
         self,
         executor: TransferExecutor,
         source_client: MagicMock,
     ) -> None:
-        """Returns flattened ZIP path and total bytes downloaded."""
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
 
@@ -709,7 +663,6 @@ class TestDownloadResource:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Download step does not contact the destination."""
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
 
@@ -727,7 +680,6 @@ class TestDownloadResource:
         executor: TransferExecutor,
         source_client: MagicMock,
     ) -> None:
-        """Original (unflattened) ZIP is deleted after flattening."""
         zip_data = _make_valid_zip()
         _mock_stream_download(source_client, zip_data)
 
@@ -745,7 +697,6 @@ class TestDownloadResource:
         executor: TransferExecutor,
         source_client: MagicMock,
     ) -> None:
-        """Raises ValueError if downloaded data is not a valid ZIP."""
         _mock_stream_download(source_client, b"not a zip")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -758,14 +709,11 @@ class TestDownloadResource:
 
 
 class TestUploadResource:
-    """Tests for upload_resource (upload flat ZIP only)."""
-
     def test_puts_flat_zip(
         self,
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """PUTs the flat ZIP with extract=true."""
         dest_client.put.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -786,7 +734,6 @@ class TestUploadResource:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """Flat ZIP is deleted after successful upload."""
         dest_client.put.return_value = make_response(text="OK")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -803,7 +750,6 @@ class TestUploadResource:
 
 class TestFlattenZip:
     def test_strips_xnat_prefix(self, tmp_path: Path) -> None:
-        """XNAT prefix up to files/ is stripped, leaf filenames preserved."""
         src = tmp_path / "nested.zip"
         dst = tmp_path / "flat.zip"
         with zipfile.ZipFile(src, "w") as zf:
@@ -818,7 +764,6 @@ class TestFlattenZip:
             assert zf.read("b.gif") == b"bbb"
 
     def test_preserves_subdirs_under_files(self, tmp_path: Path) -> None:
-        """Subdirectory structure within files/ is preserved."""
         src = tmp_path / "nested.zip"
         dst = tmp_path / "flat.zip"
         with zipfile.ZipFile(src, "w") as zf:
@@ -831,7 +776,6 @@ class TestFlattenZip:
             assert sorted(zf.namelist()) == ["dataset_description.json", "sub-01/anat/T1w.nii"]
 
     def test_skips_directory_entries(self, tmp_path: Path) -> None:
-        """Directory-only entries in the ZIP are excluded."""
         src = tmp_path / "nested.zip"
         dst = tmp_path / "flat.zip"
         with zipfile.ZipFile(src, "w") as zf:
@@ -844,7 +788,6 @@ class TestFlattenZip:
             assert zf.namelist() == ["file.txt"]
 
     def test_raises_on_duplicate_paths(self, tmp_path: Path) -> None:
-        """Duplicate relative paths from different prefixes raise ValueError."""
         src = tmp_path / "dup.zip"
         dst = tmp_path / "flat.zip"
         with zipfile.ZipFile(src, "w") as zf:
@@ -855,7 +798,6 @@ class TestFlattenZip:
             TransferExecutor._flatten_zip(src, dst)
 
     def test_already_flat_zip_unchanged(self, tmp_path: Path) -> None:
-        """ZIP with no directory structure passes through unchanged."""
         src = tmp_path / "flat_in.zip"
         dst = tmp_path / "flat_out.zip"
         with zipfile.ZipFile(src, "w") as zf:
@@ -884,20 +826,11 @@ class TestValidateZip:
 
     @pytest.mark.parametrize("compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
     def test_corrupt_member_payload_fails(self, tmp_path: Path, compression: int) -> None:
-        """A structurally parseable archive with a corrupt member is rejected.
-
-        Structure-only checks pass this file; only ``testzip()`` catches it,
-        and without that a same-length corrupt archive gets imported. A
-        STORED member fails its CRC; a DEFLATED one raises from the
-        decompressor (``zlib.error``) -- both must come back False.
-        """
         payload = bytes(range(256)) * 16
         zip_path = tmp_path / "test.zip"
         with zipfile.ZipFile(zip_path, "w", compression=compression) as zf:
             zf.writestr("scan.dcm", payload)
         raw = bytearray(zip_path.read_bytes())
-        # Locate the member data by slicing between the local header and the
-        # central directory, then flip bytes in its middle.
         start = raw.find(b"scan.dcm") + len("scan.dcm")
         end = raw.rfind(b"PK\x01\x02")
         assert 0 < start < end
@@ -1038,14 +971,9 @@ class TestWaitForArchive:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """No prearchive entry + scans already in archive -> immediate return."""
-        # find_prearchive_entry returns None (no entry)
-        # count_dest_scans returns 5
         dest_client.get.side_effect = [
-            make_response(json_data={"ResultSet": {"Result": []}}),  # prearchive
-            make_response(  # scan count
-                json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}}
-            ),
+            make_response(json_data={"ResultSet": {"Result": []}}),
+            make_response(json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}}),
         ]
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5)
         assert actual == 5
@@ -1058,9 +986,7 @@ class TestWaitForArchive:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """Prearchive entry READY -> archive it -> next poll finds scans."""
         dest_client.get.side_effect = [
-            # Poll 1: find_prearchive_entry -> READY
             make_response(
                 json_data={
                     "ResultSet": {
@@ -1070,16 +996,14 @@ class TestWaitForArchive:
                     }
                 }
             ),
-            # Poll 2: find_prearchive_entry -> empty (archived)
             make_response(json_data={"ResultSet": {"Result": []}}),
-            # Poll 2: count_dest_scans -> 3
             make_response(json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(3)]}}),
         ]
         dest_client.post.return_value = make_response(text="OK")
 
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 3, timeout=60, interval=0.01)
         assert actual == 3
-        dest_client.post.assert_called_once()  # archive_prearchive called
+        dest_client.post.assert_called_once()
 
     @patch("xnatctl.services.transfer.executor_archive.time.monotonic")
     @patch("xnatctl.services.transfer.executor_archive.time.sleep")
@@ -1090,13 +1014,9 @@ class TestWaitForArchive:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """Timeout exceeded -> return whatever count is available."""
-        # monotonic calls: (1) deadline=0+10=10, (2) check=5 < 10 -> not timed out,
-        # (3) deadline check on second loop=15 >= 10 -> timed out
         mock_monotonic.side_effect = [0.0, 5.0, 15.0]
 
         dest_client.get.side_effect = [
-            # Loop 1: find_prearchive_entry -> RECEIVING
             make_response(
                 json_data={
                     "ResultSet": {
@@ -1104,7 +1024,6 @@ class TestWaitForArchive:
                     }
                 }
             ),
-            # Loop 2: find_prearchive_entry -> still RECEIVING
             make_response(
                 json_data={
                     "ResultSet": {
@@ -1112,7 +1031,6 @@ class TestWaitForArchive:
                     }
                 }
             ),
-            # Timeout branch: count_dest_scans -> 1
             make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
 
@@ -1126,9 +1044,7 @@ class TestWaitForArchive:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """CONFLICT prearchive entry -> archive with overwrite=append."""
         dest_client.get.side_effect = [
-            # Poll 1: find_prearchive_entry -> CONFLICT
             make_response(
                 json_data={
                     "ResultSet": {
@@ -1142,21 +1058,16 @@ class TestWaitForArchive:
                     }
                 }
             ),
-            # Poll 2: find_prearchive_entry -> empty (archived)
             make_response(json_data={"ResultSet": {"Result": []}}),
-            # Poll 2: count_dest_scans -> 5
             make_response(json_data={"ResultSet": {"Result": [{"ID": str(i)} for i in range(5)]}}),
         ]
         dest_client.post.return_value = make_response(text="OK")
 
         actual = executor.wait_for_archive("DST", "SUB001", "EXP001", 5, timeout=60, interval=0.01)
         assert actual == 5
-        # Verify archive_prearchive was called with overwrite=append
         call_args = dest_client.post.call_args
         assert call_args[1]["data"]["overwrite"] == "append"
 
-
-# -- Sample XNAT experiment XML for XML overlay tests --
 
 _SAMPLE_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1236,19 +1147,16 @@ class TestApplyXmlOverlay:
             dest_experiment_label="EXP001",
         )
 
-        # Verify source XML was fetched
         source_client.get.assert_called_once_with(
             "/data/experiments/XNAT_E001",
             params={"format": "xml"},
         )
 
-        # Verify PUT was called with text/xml content type
         dest_client.put.assert_called_once()
         call_args = dest_client.put.call_args
         assert "/data/projects/DST/subjects/SUB001/experiments/EXP001" in call_args[0][0]
         assert call_args[1]["headers"]["Content-Type"] == "text/xml"
 
-        # Verify the XML was cleaned, ID and project rewritten
         put_data = call_args[1]["data"]
         root = ET.fromstring(put_data)
         assert root.attrib["ID"] == "XNAT_E999"
@@ -1260,7 +1168,6 @@ class TestApplyXmlOverlay:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """When dest experiment not found, ID is preserved from source."""
         source_client.get.return_value = make_response(text=_SAMPLE_XML)
         dest_client.get.return_value = make_response(json_data={"ResultSet": {"Result": []}})
         dest_client.put.return_value = make_response(text="OK")
@@ -1274,13 +1181,11 @@ class TestApplyXmlOverlay:
 
         put_data = dest_client.put.call_args[1]["data"]
         root = ET.fromstring(put_data)
-        # ID not rewritten when check_experiment_exists returns None
         assert root.attrib["ID"] == "XNAT_E001"
 
 
 class TestListPrearchiveEntries:
     def test_returns_all_entries(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
-        """Returns full list of prearchive entries."""
         dest_client.get.return_value = make_response(
             json_data={
                 "ResultSet": {
@@ -1311,7 +1216,6 @@ class TestListPrearchiveEntries:
         )
 
     def test_returns_empty_list(self, executor: TransferExecutor, dest_client: MagicMock) -> None:
-        """Returns empty list when no prearchive entries exist."""
         dest_client.get.return_value = make_response(json_data={"ResultSet": {"Result": []}})
         entries = executor.list_prearchive_entries("DST")
         assert entries == []
@@ -1325,9 +1229,7 @@ class TestWaitForArchiveFolderName:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """archive_prearchive uses folderName, not name, as session_name."""
         dest_client.get.side_effect = [
-            # find_prearchive_entry -> READY; name matches label but folderName differs
             make_response(
                 json_data={
                     "ResultSet": {
@@ -1342,9 +1244,7 @@ class TestWaitForArchiveFolderName:
                     }
                 }
             ),
-            # After archive: no prearchive entry
             make_response(json_data={"ResultSet": {"Result": []}}),
-            # count_dest_scans
             make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
         dest_client.post.return_value = make_response(text="OK")
@@ -1361,9 +1261,7 @@ class TestWaitForArchiveFolderName:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """CONFLICT branch also uses folderName for session_name."""
         dest_client.get.side_effect = [
-            # find_prearchive_entry -> CONFLICT; name matches label but folderName differs
             make_response(
                 json_data={
                     "ResultSet": {
@@ -1378,9 +1276,7 @@ class TestWaitForArchiveFolderName:
                     }
                 }
             ),
-            # After archive: no prearchive entry
             make_response(json_data={"ResultSet": {"Result": []}}),
-            # count_dest_scans
             make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
         dest_client.post.return_value = make_response(text="OK")
@@ -1398,9 +1294,7 @@ class TestWaitForArchiveFolderName:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """Falls back to name when folderName is absent."""
         dest_client.get.side_effect = [
-            # find_prearchive_entry -> READY; matched by name, no folderName key
             make_response(
                 json_data={
                     "ResultSet": {
@@ -1414,9 +1308,7 @@ class TestWaitForArchiveFolderName:
                     }
                 }
             ),
-            # After archive: no prearchive entry
             make_response(json_data={"ResultSet": {"Result": []}}),
-            # count_dest_scans
             make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
         dest_client.post.return_value = make_response(text="OK")
@@ -1435,7 +1327,6 @@ class TestWaitForArchiveExceptionGuard:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """READY archive failures should surface immediately."""
         dest_client.get.return_value = make_response(
             json_data={
                 "ResultSet": {"Result": [{"name": "EXP001", "status": "READY", "timestamp": "ts"}]}
@@ -1453,13 +1344,9 @@ class TestWaitForArchiveExceptionGuard:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """Transient error in poll cycle is caught and retried."""
         dest_client.get.side_effect = [
-            # First cycle: find_prearchive_entry raises
             RuntimeError("network error"),
-            # Second cycle: no prearchive entry
             make_response(json_data={"ResultSet": {"Result": []}}),
-            # count_dest_scans
             make_response(json_data={"ResultSet": {"Result": [{"ID": "1"}]}}),
         ]
 
@@ -1475,14 +1362,10 @@ class TestWaitForArchiveExceptionGuard:
         executor: TransferExecutor,
         dest_client: MagicMock,
     ) -> None:
-        """Timeout check fires even when every poll cycle errors."""
-        # monotonic calls: (1) deadline=0+10=10, (2) check=5<10, (3) check=15>=10
         mock_monotonic.side_effect = [0.0, 5.0, 15.0]
 
         dest_client.get.side_effect = [
-            # First cycle: error
             RuntimeError("network error"),
-            # Timeout branch: count_dest_scans -> 0
             make_response(json_data={"ResultSet": {"Result": []}}),
         ]
 

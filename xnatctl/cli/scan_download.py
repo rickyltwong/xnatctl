@@ -147,7 +147,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     if not scans:
         raise click.UsageError("Missing option '--scans'.")
 
-    # Map extract/keep_zips to internal unzip/cleanup
     unzip = extract or keep_zips
     cleanup = extract and not keep_zips
 
@@ -159,16 +158,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     if not project:
         project = default_project_from_context(ctx)
 
-    # `--name` (when given) is validated by validate_local_path_option_cb, an
-    # eager Click callback that runs at argument-parsing time -- before
-    # @require_auth -- so a malformed --name fails without needing a valid
-    # session. Without --name, the output directory falls back to the raw
-    # session_id (see below); that fallback isn't known until here (it
-    # depends on -E), so it's still validated in the command body, and goes
-    # through validate_session_id's URL-safety check rather than a
-    # local-filesystem check, so a label like "CON" (a legal session ID, but
-    # a reserved Windows device name) would otherwise reach the filesystem
-    # unvalidated. Mirrors session download's own fallback.
     if name is None:
         try:
             validate_local_path_component(session_id, "session_id (as the output directory name)")
@@ -181,7 +170,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
     else:
         scan_ids = scan_ids_input
 
-    # Validate resource option (only one value supported)
     if len(resource) > 1:
         raise click.ClickException(
             "Only one --resource value is supported per invocation. "
@@ -217,9 +205,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
 
     session_output = output_dir / (name or session_id)
     session_output.mkdir(parents=True, exist_ok=True)
-    # Deferred: tests patch xnatctl.services.downloads.DownloadService to
-    # intercept the lookup; a module-scope import would bind the real class
-    # before the patch runs (see tests/test_cli_scan.py).
     from xnatctl.services.downloads import DownloadService
 
     service = DownloadService(client)
@@ -232,10 +217,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
 
     download_start = time.time()
 
-    # One ZIP request covers the whole spec (XNAT's comma-separated batch
-    # download) -- it succeeds or fails atomically, so it is exactly one
-    # item, identified by what was asked for, not by the individual IDs in
-    # it (there is no per-scan outcome to report).
     spec_id = "ALL" if use_all_keyword else ",".join(scan_ids)
     requested_scan_count = None if use_all_keyword else len(scan_ids)
 
@@ -270,7 +251,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
         raise SystemExit(1) from None
 
     if not ctx.quiet:
-        # Terminate the \r progress line above, which also lives on stderr.
         click.echo(err=True)
 
     download_succeeded = summary.success
@@ -289,14 +269,10 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
                 scan_ids=None if use_all_keyword else scan_ids,
                 resource_filter=resource_filter,
                 local_root=verify_local_root,
-                # `_safe_extract_zip` preserves a raw ZIP member's own
-                # session/experiment-label wrapper unstripped under this
-                # extraction root -- always wrapped, never session download's
-                # unwrapped shape.
                 local_root_wrapped=True,
                 zip_paths=verify_zip_paths,
             )
-        except Exception as exc:  # noqa: BLE001  # emits JSON failure summary before re-raising unchanged
+        except Exception as exc:
             if ctx.output_format == OutputFormat.JSON:
                 TransferSummary(
                     operation="download",
@@ -304,8 +280,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
                     project=project,
                     output_dir=summary.output_path,
                     scans=requested_scan_count,
-                    # The download itself succeeded (this block only runs
-                    # when it did); only verification blew up.
                     files=summary.total_files,
                     bytes=round(summary.total_size_mb * 1024 * 1024),
                     duration_seconds=round(time.time() - download_start, 3),
@@ -322,16 +296,11 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
                     f"{len(verification.collisions)} colliding file(s)"
                 )
             elif verification.unverifiable:
-                # Nothing mismatched or missing, but nothing matched either --
-                # every checked file landed in unverifiable, so the server had
-                # no checksums on record for anything the command downloaded.
                 verification_error = (
                     "the server provided no checksums for any downloaded file "
                     f"({len(verification.unverifiable)} unverifiable); nothing was verified"
                 )
             else:
-                # The manifest listed nothing at all for a scope that has
-                # files on disk -- nothing was verified.
                 verification_error = (
                     "the server manifest listed none of the "
                     f"{len(verification.missing_remote)} in-scope local file(s); "
@@ -359,9 +328,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
             project=project,
             output_dir=summary.output_path,
             scans=requested_scan_count,
-            # Gated on the download itself succeeding, not the (possibly
-            # verify-combined) final `summary.success`: files that landed
-            # and then failed checksum verification were still transferred.
             files=summary.total_files if download_succeeded else None,
             bytes=round(summary.total_size_mb * 1024 * 1024) if download_succeeded else None,
             duration_seconds=round(time.time() - download_start, 3),
@@ -404,14 +370,11 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
                         err=True,
                     )
         elif download_succeeded:
-            # The download itself succeeded; only verification failed -- say
-            # so, rather than the misleading "Download failed".
             print_error(f"Verification failed: {verification_error}")
         else:
             print_error(
                 f"Download failed: {summary.errors[0] if summary.errors else 'Unknown error'}"
             )
 
-    # Format-independent failure exit: -o json must also return nonzero.
     if not summary.success:
         raise SystemExit(1)

@@ -1,5 +1,3 @@
-"""Tests for xnatctl.core.config module."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,14 +7,8 @@ import pytest
 from xnatctl.core.config import Config, Profile
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
-# =============================================================================
-# Profile Tests
-# =============================================================================
-
 
 class TestProfile:
-    """Tests for Profile dataclass."""
-
     def test_default_values(self):
         profile = Profile(url="https://xnat.example.org")
         assert profile.url == "https://xnat.example.org"
@@ -38,7 +30,6 @@ class TestProfile:
         assert profile.default_project == "MYPROJ"
 
     def test_credentials_in_profile(self):
-        """Test that username/password can be stored in profile."""
         profile = Profile(
             url="https://xnat.example.org",
             username="testuser",
@@ -48,14 +39,12 @@ class TestProfile:
         assert profile.password == "testpass"
 
     def test_to_dict_excludes_none_credentials(self):
-        """Test that to_dict excludes None username/password."""
         profile = Profile(url="https://xnat.example.org")
         data = profile.to_dict()
         assert "username" not in data
         assert "password" not in data
 
     def test_to_dict_includes_credentials_when_set(self):
-        """Test that to_dict includes username/password when set."""
         profile = Profile(
             url="https://xnat.example.org",
             username="testuser",
@@ -66,7 +55,6 @@ class TestProfile:
         assert data["password"] == "testpass"
 
     def test_from_dict_with_credentials(self):
-        """Test that from_dict loads username/password."""
         data = {
             "url": "https://xnat.example.org",
             "username": "testuser",
@@ -79,7 +67,6 @@ class TestProfile:
         assert profile.password == "testpass"
 
     def test_from_dict_without_credentials(self):
-        """Test that from_dict handles missing credentials."""
         data = {
             "url": "https://xnat.example.org",
             "verify_ssl": True,
@@ -90,14 +77,7 @@ class TestProfile:
         assert profile.password is None
 
 
-# =============================================================================
-# Config Tests
-# =============================================================================
-
-
 class TestConfig:
-    """Tests for Config class."""
-
     def test_default_config(self):
         config = Config()
         assert config.default_profile == "default"
@@ -127,7 +107,6 @@ class TestConfig:
         assert config.profiles == {}
 
     def test_load_with_credentials(self, temp_dir: Path, sample_config_with_credentials_yaml: str):
-        """Test that credentials are loaded from config file."""
         config_path = temp_dir / "config.yaml"
         config_path.write_text(sample_config_with_credentials_yaml)
 
@@ -166,7 +145,6 @@ class TestConfig:
 
         assert config_path.exists()
 
-        # Reload and verify
         loaded = Config.load(config_path)
         assert loaded.default_profile == "myprofile"
         assert loaded.output_format == "json"
@@ -182,16 +160,13 @@ class TestConfig:
             },
         )
 
-        # Get by name
         profile = config.get_profile("prod")
         assert profile.url == "https://prod.example.org"
 
-        # Get default
         profile = config.get_profile()
         assert profile.url == "https://test.example.org"
 
     def test_get_profile_not_found(self):
-        """A named profile that is missing from a populated config."""
         from xnatctl.core.exceptions import ProfileNotFoundError
 
         config = Config(profiles={"default": Profile(url="https://xnat.example.org")})
@@ -200,9 +175,6 @@ class TestConfig:
             config.get_profile("nonexistent")
 
     def test_empty_config_reports_the_first_run_state(self):
-        """With nothing configured, "profile 'default' not found" would send
-        the user hunting for a typo that does not exist.
-        """
         from xnatctl.core.exceptions import NoConfigurationError
 
         config = Config(profiles={})
@@ -213,7 +185,6 @@ class TestConfig:
         assert "xnatctl config init" in (exc_info.value.hint or "")
 
     def test_env_var_override(self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch):
-        # Set environment variable
         monkeypatch.setenv("XNAT_URL", "https://env-override.example.org")
         monkeypatch.setenv("XNAT_VERIFY_SSL", "false")
 
@@ -234,16 +205,8 @@ class TestConfig:
         assert nested_path.parent.exists()
 
 
-# =============================================================================
-# Integration Tests
-# =============================================================================
-
-
 class TestConfigIntegration:
-    """Integration tests for config loading scenarios."""
-
     def test_roundtrip_save_load(self, temp_dir: Path):
-        """Test that saving and loading preserves all data."""
         original = Config(
             default_profile="production",
             output_format="json",
@@ -280,7 +243,6 @@ class TestConfigIntegration:
             assert loaded_profile.default_project == orig_profile.default_project
 
     def test_roundtrip_save_load_with_credentials(self, temp_dir: Path):
-        """Test that saving and loading preserves credentials."""
         original = Config(
             default_profile="production",
             output_format="json",

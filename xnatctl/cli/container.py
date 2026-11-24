@@ -22,31 +22,14 @@ from xnatctl.core.exceptions import InputValidationError
 from xnatctl.core.output import OutputFormat, print_output, print_success
 from xnatctl.services.containers import ContainerService
 
-#: Placeholder shown when no started-time field is present on a container
-#: row -- see _started_display().
 _UNKNOWN = "-"
 
-#: Container statuses treated as terminal by `container launch --wait` and
-#: `container logs --follow`. NOT verified live -- this integration stack's
-#: Docker-less server never lets a container reach any of these (see
-#: services/containers.py's module docstring). Chosen from XNAT Container
-#: Service's publicly documented status vocabulary, following the same
-#: unverified-but-necessary precedent as PipelineService.wait's own
-#: hardcoded terminal_states set (xnatctl/services/pipelines.py).
 _TERMINAL_CONTAINER_STATUSES = frozenset({"Complete", "Failed", "Killed", "Died"})
 
-#: Poll interval for `--wait` and `--follow`, in seconds.
 _POLL_INTERVAL_SECONDS = 5.0
 
 
 def _parsed_instant(raw: str) -> datetime | None:
-    """Parse a Container Service timestamp, or ``None`` if it is not one.
-
-    The DTO serializes ``yyyy-MM-dd'T'HH:mm:ss.SSSZ`` -- an ISO-ish string
-    whose UTC offset is written without a colon (``-0400``).
-    ``fromisoformat`` accepts that form on the Python versions this project
-    supports; ``strptime`` is the backstop for anything it rejects.
-    """
     try:
         return datetime.fromisoformat(raw)
     except ValueError:
@@ -186,29 +169,6 @@ def _follow_logs(
     sink: IO[bytes],
     interval: float,
 ) -> None:
-    """Poll the plain logs endpoint and print only newly-appeared bytes.
-
-    Container Service 3.7.2 does have a ``logSince/{file}`` route (verified
-    live: it reaches its handler and 404s cleanly for an unknown
-    container), but its ``since`` parameter's CONTENT semantics -- what
-    subset of a real, running container's log it actually returns -- could
-    not be verified: this integration stack has no reachable Docker daemon
-    (see ``services/containers.py``'s module docstring), so no container
-    here has ever produced log output to probe against. What WAS verified
-    live about ``since``: it takes an ISO-8601 timestamp with a ``Z`` or
-    colon-delimited offset suffix (Python's ``datetime.isoformat()`` on a
-    tz-aware value works directly), and rejects both epoch numbers and the
-    compact, colon-less offset the DTOs themselves use for ``status-time``/
-    ``time-recorded`` -- but that says nothing about what log content comes
-    back for a given ``since``. Rather than build ``--follow`` on that
-    unverified assumption, this re-fetches the full log each interval via
-    the already-verified plain ``logs/{stream}`` endpoint and writes out
-    only the suffix bytes not already printed -- a documented simpler
-    mechanism instead of a guessed clever one.
-
-    Stops when the container reaches a terminal status (see
-    ``_TERMINAL_CONTAINER_STATUSES``) or on ``KeyboardInterrupt``.
-    """
     seen = 0
     try:
         while True:
@@ -245,9 +205,6 @@ def _follow_logs(
 )
 @click.option(
     "--interval",
-    # Strictly positive: the follow loop issues two requests per pass (log
-    # fetch + status), so `--interval 0` is not "poll fast", it is an
-    # unthrottled loop against XNAT for as long as the container runs.
     type=click.FloatRange(min=0, min_open=True),
     default=_POLL_INTERVAL_SECONDS,
     show_default=True,
@@ -294,21 +251,6 @@ def container_logs(
 
 
 def _parse_params(pairs: tuple[str, ...]) -> dict[str, str]:
-    """Parse repeated ``--param KEY=VALUE`` options into a dict.
-
-    Args:
-        pairs: Raw ``--param`` values, one per occurrence.
-
-    Returns:
-        Dict of key to value. A value may itself contain ``=`` -- only the
-        first ``=`` in each raw string is treated as the separator.
-
-    Raises:
-        InputValidationError: If a value has no ``=``, an empty key, or a
-            key repeated across more than one ``--param``. Silently letting
-            the last one win would hide a launch-parameter typo -- exactly
-            the sort of mistake this flag exists to make explicit.
-    """
     params: dict[str, str] = {}
     for raw in pairs:
         if "=" not in raw:
@@ -336,23 +278,6 @@ def _locate_launched_container(
     workflow_id: str,
     known_ids: set[str],
 ) -> str | None:
-    """Find the container id a launch produced, or ``None`` if it hasn't appeared yet.
-
-    See :func:`_wait_for_launch` for the correlation strategy and its
-    verified-vs-assumed parts.
-
-    The ``matches_new`` fallback identifies a container only as "not in the
-    pre-launch snapshot, and running the wrapper we launched". That is all
-    the server gives us when the launch response carries the placeholder
-    workflow-id, and it is not a unique key: if somebody else launches the
-    same wrapper in the same project and their container appears first,
-    this picks theirs and follows it to completion. Waiting would then
-    report a status that is not ours. Nothing here can close that -- the
-    correlating id simply does not exist yet at this point -- so it is a
-    documented limit of ``--wait``, not an oversight. ``matches_workflow``,
-    the path taken whenever the server does return a real workflow-id, has
-    no such ambiguity.
-    """
     for row in service.list(project=project):
         row_id = str(row.get("id"))
         matches_workflow = str(row.get("workflow-id")) == workflow_id
@@ -376,41 +301,6 @@ def _wait_for_launch(
     known_ids: set[str],
     timeout: int,
 ) -> dict[str, Any]:
-    """Poll for the container a launch produced, then wait for a terminal status.
-
-    There is no container id in the launch response: verified from the
-    plugin's own ``LaunchReport.Success`` DTO (see
-    ``services/containers.py``'s module docstring) that it carries
-    ``status``/``params``/``command-id``/``wrapper-id``/``workflow-id`` and
-    nothing else. This correlates on that response's ``workflow-id``
-    against each listed container's own ``workflow-id`` field (a real,
-    bytecode-verified Container DTO field -- see the same module
-    docstring). When the response instead carries the literal placeholder
-    ``"To be assigned"`` -- verified live to happen whenever the async
-    launch has not resolved by response time, which is the common case --
-    there is no id to match on, so this falls back to the first NEW
-    container for this wrapper that was not present in ``known_ids``, a
-    snapshot the caller must take immediately before calling
-    ``service.launch()``. Taking the snapshot after the launch instead
-    breaks the fallback: the launched container has often already appeared
-    in the listing by then, landing it in ``known_ids`` and permanently
-    excluding it from its own "new" match -- and since a container's real,
-    resolved ``workflow-id`` never equals the literal string ``"To be
-    assigned"``, the workflow-id path never fires either, so ``--wait``
-    polls to timeout on a container that is sitting in every listing the
-    whole time.
-
-    Neither path could be exercised against a real daemon-backed launch in
-    this project's integration stack: it has no reachable Docker daemon
-    (see AGENTS.md), so ``GET /xapi/containers`` never showed a resulting
-    container no matter how long this project waited after a launch. This
-    is a best-effort, code-grounded mechanism, not a verified one -- a
-    surprise here on a real server is expected until proven otherwise.
-
-    Raises:
-        click.ClickException: On a ``timeout`` with no matching container
-            found, or with one found but stuck at a non-terminal status.
-    """
     workflow_id = str(launch_result.get("workflow-id"))
     deadline = time.monotonic() + timeout
 
@@ -543,23 +433,12 @@ def container_launch(
             err=True,
         )
 
-    # The --wait correlation snapshot has to be taken before the launch
-    # fires, not after: the launched container is often already present in
-    # the listing by the time a post-launch snapshot would run, which used
-    # to poison the "first NEW container" fallback by pre-marking it known.
-    # See _wait_for_launch's docstring.
     known_ids = (
         {str(row.get("id")) for row in service.list(project=resolved_project)} if wait else set()
     )
 
     result = service.launch(resolved_project, wrapper_id, launch_params)
 
-    # LaunchReport.Failure is declared on the plugin's own DTO (see
-    # services/containers.py's module docstring) but was never observed
-    # live -- every launch this project sent queued as "success" regardless
-    # of validity. Still, treating a declared failure as a queued launch
-    # would exit 0 and, with --wait, poll forever for a workflow-id of
-    # "None".
     if str(result.get("status", "")).lower() == "failure":
         message = result.get("message") or "no message returned"
         raise click.ClickException(f"Launch failed: {message}")
@@ -606,11 +485,6 @@ def container_kill(ctx: Context, container_id: str, dry_run: bool) -> None:
     service = ContainerService(ctx.get_client())
 
     if dry_run:
-        # The same existence check `kill_container`'s own POST would
-        # surface as a 404 -- run here too so `--dry-run` reports the
-        # identical refusal for an unknown container id that execution
-        # would (verified live: POST .../kill 404s cleanly for a bad id,
-        # see ContainerService.kill_container).
         service.get(container_id)
         click.echo(f"[DRY-RUN] Would kill container {container_id}", err=True)
         return

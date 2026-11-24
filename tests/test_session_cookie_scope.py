@@ -1,16 +1,3 @@
-"""The JSESSIONID cookie reaches the configured XNAT host and nothing else.
-
-Both clients follow redirects, and httpx rebuilds a redirected request's
-cookies from the client's cookie jar. A JSESSIONID stored without a domain
-matched every host, so a 302 from the server (an open redirect, a
-misconfigured proxy) handed a live session to whichever host it named.
-
-Every test drives real redirect hops through ``httpx.MockTransport``, so the
-assertions cover httpx's own redirect and cookie-jar logic, not a stand-in.
-The dotless and IP host cases guard the other direction: scoping the cookie
-must not stop it reaching ``localhost`` or an IP-addressed server.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -29,8 +16,6 @@ Handler = Callable[[httpx.Request], httpx.Response]
 
 
 def _redirect_once(location: str) -> Handler:
-    """302 the first request to ``location``; answer everything else 200."""
-
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/data/projects":
             return httpx.Response(302, headers={"Location": location})
@@ -50,7 +35,6 @@ def _carries_token(request: httpx.Request) -> bool:
 async def _calls(
     mode: str, base_url: str, handler: Handler, *, stream: bool = False
 ) -> list[httpx.Request]:
-    """GET /data/projects with a session token; return every request sent."""
     calls: list[httpx.Request] = []
 
     def record(request: httpx.Request) -> httpx.Response:
@@ -106,7 +90,6 @@ async def test_cross_host_redirect_does_not_carry_session(mode: str) -> None:
 
 @MODES
 async def test_subdomain_redirect_does_not_carry_session(mode: str) -> None:
-    """Host-only means exact host: Python's default policy would match subdomains."""
     calls = await _calls(
         mode, "https://xnat.example.org", _redirect_once("https://evil.xnat.example.org/steal")
     )
@@ -137,7 +120,6 @@ async def test_https_session_is_not_sent_over_a_plain_http_redirect(mode: str) -
 
 @MODES
 async def test_stream_redirect_does_not_carry_session(mode: str) -> None:
-    """stream() sends an explicit Cookie header; httpx rebuilds it on redirect."""
     calls = await _calls(
         mode,
         "https://xnat.example.org",
@@ -156,8 +138,6 @@ async def test_stream_redirect_does_not_carry_session(mode: str) -> None:
     ids=["other-host", "subdomain"],
 )
 async def test_server_set_session_cookie_does_not_follow_redirect(mode: str, location: str) -> None:
-    """XNAT's own Set-Cookie: JSESSIONID is a live session too."""
-
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/data/projects":
             return httpx.Response(
@@ -174,7 +154,6 @@ async def test_server_set_session_cookie_does_not_follow_redirect(mode: str, loc
 
 @MODES
 async def test_http_to_https_upgrade_on_same_host_keeps_session(mode: str) -> None:
-    """The one cross-origin hop httpx itself trusts with Authorization."""
     calls = await _calls(
         mode, "http://xnat.example.org", _redirect_once("https://xnat.example.org/data/x")
     )

@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI prearchive commands."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -14,12 +12,10 @@ from xnatctl.core.config import Config, Profile
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with a default profile."""
     return Config(
         default_profile="default",
         profiles={
@@ -34,7 +30,6 @@ def _mock_config() -> Config:
 
 
 def _mock_client() -> MagicMock:
-    """Build a mock XNATClient."""
     client = MagicMock()
     client.is_authenticated = True
     client.base_url = "https://xnat.example.org"
@@ -43,8 +38,6 @@ def _mock_client() -> MagicMock:
 
 
 class TestPrearchiveList:
-    """Tests for prearchive list command."""
-
     def test_prearchive_list(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -88,15 +81,6 @@ class TestPrearchiveList:
         mock_service.list.assert_called_once_with(project="PROJ1")
 
     def test_prearchive_list_filter_and_sort(self, runner: CliRunner) -> None:
-        """--filter and --sort-by narrow AND order the prearchive listing,
-        client-side.
-
-        Rows are deliberately NOT in scan_date order: if --sort-by were
-        ignored, the surviving (filtered) rows would print in their
-        original relative order (SessionB, SessionA, SessionC) instead of
-        date order (SessionA, SessionC, SessionB), so a bypassed --sort-by
-        would be caught, not just a bypassed --filter.
-        """
         client = _mock_client()
         mock_service = MagicMock()
         mock_service.list.return_value = [
@@ -155,9 +139,6 @@ class TestPrearchiveList:
                         )
 
         assert result.exit_code == 0
-        # A disabled-TLS warning (verify_ssl=False in _mock_config) shares
-        # stdout with quiet output in CliRunner's merged output; only the
-        # "PROJ1/<timestamp>/<name>" lines are this command's actual output.
         names_in_order = [
             line.split("/")[-1] for line in result.output.splitlines() if line.startswith("PROJ1/")
         ]
@@ -192,8 +173,6 @@ class TestPrearchiveList:
 
 
 class TestPrearchiveArchive:
-    """Tests for prearchive archive command."""
-
     def test_archive_success(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -296,8 +275,6 @@ class TestPrearchiveArchive:
 
 
 class TestPrearchiveDelete:
-    """Tests for prearchive delete command."""
-
     def test_delete_with_yes(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -353,8 +330,6 @@ class TestPrearchiveDelete:
 
 
 class TestPrearchiveRebuild:
-    """Tests for prearchive rebuild command."""
-
     def test_rebuild_success(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -382,8 +357,6 @@ class TestPrearchiveRebuild:
 
 
 class TestPrearchiveMove:
-    """Tests for prearchive move command."""
-
     def test_move_success(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -413,8 +386,6 @@ class TestPrearchiveMove:
 
 
 class TestPrearchiveSettings:
-    """Tests for `prearchive settings` -- get/set, dry-run, declined confirmation, 403."""
-
     def test_get_shows_recognized_mode(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get.return_value = make_response(
             text="4", content_type="text/plain"
@@ -436,7 +407,6 @@ class TestPrearchiveSettings:
         result = authenticated_cli.invoke(["prearchive", "settings"])
 
         assert result.exit_code == 0
-        # authenticated_cli's default profile carries default_project=TESTPROJ.
         authenticated_cli.client.get.assert_called_once_with(
             "/data/projects/TESTPROJ/prearchive_code"
         )
@@ -455,9 +425,6 @@ class TestPrearchiveSettings:
         assert "9" in result.output
 
     def test_set_typo_rejected_client_side(self, authenticated_cli: AuthenticatedCLI) -> None:
-        """The server accepts (and stores) any integer silently (verified live)
-        -- a typo'd --set value must never reach the network.
-        """
         result = authenticated_cli.invoke(
             ["prearchive", "settings", "-P", "PROJ1", "--set", "bogus-mode", "--yes"]
         )

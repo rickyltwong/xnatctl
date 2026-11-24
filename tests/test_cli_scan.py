@@ -1,5 +1,3 @@
-"""Tests for xnatctl scan CLI commands."""
-
 from __future__ import annotations
 
 import json
@@ -17,13 +15,7 @@ from xnatctl.models.progress import DownloadSummary, VerificationReport
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
-
-
-# =============================================================================
-# Scan List
-# =============================================================================
 
 
 def _exp_metadata(
@@ -32,13 +24,6 @@ def _exp_metadata(
     experiment_id: str | None = "XNAT_E00001",
     subject_id: str | None = "XNAT_S00001",
 ) -> dict[str, Any]:
-    """Build an experiment metadata response.
-
-    Real XNAT experiment documents always carry ``ID`` and ``subject_ID``. Both
-    matter: the accession ID makes nested calls canonical, and the subject is
-    what makes the nested URL route at all under a project (see
-    ``TestScanNestedUrlRouting``). Pass ``None`` to model a sparse response.
-    """
     row: dict[str, Any] = {"xsiType": xsi_type}
     if experiment_id:
         row["ID"] = experiment_id
@@ -48,15 +33,11 @@ def _exp_metadata(
 
 
 def _scan_results(scans: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Build a scan listing response."""
     return {"ResultSet": {"Result": scans or []}}
 
 
 class TestScanList:
-    """Tests for `scan list` command."""
-
     def test_scan_list_happy_path(self, runner: CliRunner) -> None:
-        """List scans for a session returns table output."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:mrSessionData"),
@@ -90,15 +71,6 @@ class TestScanList:
         assert "T2w" in result.output
 
     def test_scan_list_filter_and_sort(self, runner: CliRunner) -> None:
-        """--filter and --sort-by narrow AND order the scan listing,
-        client-side.
-
-        Three "usable" scans survive the filter, deliberately out of ID
-        order (3, 4, 2): if --sort-by were ignored they would print in that
-        original relative order instead of sorted (2, 3, 4), so a bypassed
-        --sort-by is caught, not just a bypassed --filter. The unusable scan
-        is placed first so a bypassed --filter is caught too.
-        """
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
@@ -134,7 +106,6 @@ class TestScanList:
         assert [r["id"] for r in rows] == ["2", "3", "4"]
 
     def test_scan_list_with_project(self, runner: CliRunner) -> None:
-        """List scans with -P scopes to project endpoint."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
@@ -155,7 +126,6 @@ class TestScanList:
         )
 
     def test_scan_list_without_project_uses_direct_endpoint(self, runner: CliRunner) -> None:
-        """Without -P uses /data/experiments endpoint."""
         ctx, mock_client = make_authenticated_context(default_project=None)
         mock_client.get_json.side_effect = [
             _exp_metadata(),
@@ -170,16 +140,8 @@ class TestScanList:
         assert "/data/experiments/XNAT_E00001/scans" in scan_call_url
 
     def test_scan_list_inspect_swallows_only_404(self, runner: CliRunner) -> None:
-        """Non-404 errors from the experiment inspect probe propagate to the user.
-
-        The legacy ``except Exception`` in ``_inspect_experiment`` masked every
-        failure as "no experiment metadata", which produced a misleading "No
-        results" downstream. Only ``ResourceNotFoundError`` should be swallowed.
-        """
         from xnatctl.core.exceptions import NetworkError, ResourceNotFoundError
 
-        # Case A: ResourceNotFoundError on the inspect probe is swallowed; the
-        # scan list call still runs and returns the same output as before.
         ctx, mock_client = make_authenticated_context(default_project=None)
         mock_client.get_json.side_effect = [
             ResourceNotFoundError("session", "XNAT_E00001"),
@@ -190,10 +152,8 @@ class TestScanList:
             result = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result.exit_code == 0
-        # The scan list call still ran after the swallowed 404.
         assert mock_client.get_json.call_count == 2
 
-        # Case B: a non-404 (network) error must propagate, not be swallowed.
         ctx2, mock_client2 = make_authenticated_context(default_project=None)
         mock_client2.get_json.side_effect = NetworkError("upstream timeout")
 
@@ -201,11 +161,9 @@ class TestScanList:
             result2 = runner.invoke(cli, ["scan", "list", "-E", "XNAT_E00001"])
 
         assert result2.exit_code != 0
-        # Only the inspect probe ran; the scan list call was never issued.
         assert mock_client2.get_json.call_count == 1
 
     def test_scan_list_default_project_fallback(self, runner: CliRunner) -> None:
-        """Falls back to profile default_project for label resolution."""
         ctx, mock_client = make_authenticated_context(default_project="FALLBACK")
         mock_client.get_json.side_effect = [
             _exp_metadata(),
@@ -220,7 +178,6 @@ class TestScanList:
         assert "/data/projects/FALLBACK/" in scan_call_url
 
     def test_scan_list_json_output(self, runner: CliRunner) -> None:
-        """JSON output returns scan data."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
@@ -245,7 +202,6 @@ class TestScanList:
         assert "T1w" in result.output
 
     def test_scan_list_quiet(self, runner: CliRunner) -> None:
-        """Quiet mode outputs IDs only."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
@@ -270,12 +226,11 @@ class TestScanList:
         assert "1" in result.output
 
     def test_scan_list_empty(self, runner: CliRunner) -> None:
-        """A session with genuinely no scans does not error (fallback also empty)."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
-            _scan_results(),  # unfiltered listing empty
-            _scan_results(),  # xsiType fallback also empty
+            _scan_results(),
+            _scan_results(),
         ]
 
         with authenticated_seams(ctx, mock_client):
@@ -284,14 +239,6 @@ class TestScanList:
         assert result.exit_code == 0
 
     def test_scan_list_opt_session_lists_other_dicom_scans(self, runner: CliRunner) -> None:
-        """Regression for issue #16: xnat:otherDicomScanData scans are listed.
-
-        An ``xnat:optSessionData`` session holds ``xnat:otherDicomScanData``
-        scans, which cannot be derived from the session xsiType. ``scan list``
-        must therefore query unfiltered rather than filtering on a guessed scan
-        xsiType (which would drop every scan). The unfiltered listing returns
-        all three scans and no fallback call is needed.
-        """
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:optSessionData"),
@@ -311,13 +258,11 @@ class TestScanList:
         assert "Angiography" in result.output
         assert "Macular Cube" in result.output
         assert "Optic Disc Cube" in result.output
-        # Experiment metadata + exactly one unfiltered scans call (no fallback).
         assert mock_client.get_json.call_count == 2
         scan_call_kwargs = mock_client.get_json.call_args_list[1][1]
         assert "xsiType" not in scan_call_kwargs.get("params", {})
 
     def test_scan_list_mr_session_lists_unfiltered(self, runner: CliRunner) -> None:
-        """Imaging (MR) sessions list scans without a guessed xsiType filter."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:mrSessionData"),
@@ -331,22 +276,15 @@ class TestScanList:
 
         assert result.exit_code == 0
         assert "MPRAGE" in result.output
-        # Exactly two calls: experiment metadata + one unfiltered scan listing.
         assert mock_client.get_json.call_count == 2
         scan_call_kwargs = mock_client.get_json.call_args_list[1][1]
         assert "xsiType" not in scan_call_kwargs.get("params", {})
 
     def test_scan_list_eeg_session_falls_back_to_xsi_type(self, runner: CliRunner) -> None:
-        """Non-imaging (EEG) sessions that list empty unfiltered fall back to the scan xsiType.
-
-        Some non-imaging session types return an empty ResultSet on an unfiltered
-        ``/scans`` request; for those, ``scan list`` retries with the matching
-        scan xsiType (``xnat:eegScanData``) rather than reporting no scans.
-        """
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata("xnat:eegSessionData"),
-            _scan_results(),  # unfiltered listing returns nothing
+            _scan_results(),
             _scan_results([{"ID": "1", "type": "EEG", "series_description": "", "quality": ""}]),
         ]
 
@@ -355,23 +293,14 @@ class TestScanList:
 
         assert result.exit_code == 0
         assert "EEG" in result.output
-        # Primary scans call is unfiltered; the fallback carries the eeg scan xsiType.
         primary_call_kwargs = mock_client.get_json.call_args_list[1][1]
         assert "xsiType" not in primary_call_kwargs.get("params", {})
         fallback_call_kwargs = mock_client.get_json.call_args_list[2][1]
         assert fallback_call_kwargs["params"]["xsiType"] == "xnat:eegScanData"
 
 
-# =============================================================================
-# Scan Show
-# =============================================================================
-
-
 class TestScanShow:
-    """Tests for `scan show` command."""
-
     def test_scan_show_happy_path(self, runner: CliRunner) -> None:
-        """Show scan details by scan ID."""
         ctx, mock_client = make_authenticated_context()
 
         def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
@@ -400,7 +329,6 @@ class TestScanShow:
         assert result.exit_code == 0
 
     def test_scan_show_items_response(self, runner: CliRunner) -> None:
-        """Show scan details from an `items[]` response shape."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             {
@@ -443,7 +371,6 @@ class TestScanShow:
         assert '"id": "12"' in result.output
 
     def test_scan_show_with_project(self, runner: CliRunner) -> None:
-        """Show scan with -P resolves to the canonical experiment ID for nested calls."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             {
@@ -491,12 +418,6 @@ class TestScanShow:
         )
 
     def test_scan_show_resources_listing_failure_is_not_silent(self, runner: CliRunner) -> None:
-        """A resource-listing failure must be visible, not indistinguishable from "no resources".
-
-        A bare ``except Exception: resources = []`` around the resources
-        fetch would render a transient 500 identically -- silently -- to a
-        scan that genuinely has no resources.
-        """
         ctx, mock_client = make_authenticated_context()
 
         def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
@@ -526,7 +447,6 @@ class TestScanShow:
         assert "Warning: could not list resources" in result.output
 
     def test_scan_show_not_found(self, runner: CliRunner) -> None:
-        """Non-existent scan prints error and exits 1."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
@@ -536,16 +456,8 @@ class TestScanShow:
         assert result.exit_code == 1
 
 
-# =============================================================================
-# Scan Delete
-# =============================================================================
-
-
 class TestScanDelete:
-    """Tests for `scan delete` command."""
-
     def test_scan_delete_dry_run(self, runner: CliRunner) -> None:
-        """Dry run lists scans to delete without deleting."""
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -568,7 +480,6 @@ class TestScanDelete:
         mock_client.delete.assert_not_called()
 
     def test_scan_delete_with_confirmation(self, runner: CliRunner) -> None:
-        """Delete scans with -y skips prompt."""
         ctx, mock_client = make_authenticated_context()
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -592,7 +503,6 @@ class TestScanDelete:
         assert mock_client.delete.call_count == 2
 
     def test_scan_delete_wildcard_dry_run(self, runner: CliRunner) -> None:
-        """Wildcard '*' fetches all scan IDs in dry run."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(),
@@ -618,13 +528,6 @@ class TestScanDelete:
         assert "3 scans" in result.output
 
     def test_scan_delete_with_project(self, runner: CliRunner) -> None:
-        """Delete with -P targets the scan under its subject, not the experiment.
-
-        ``/data/projects/{P}/experiments/{E}/scans/1`` does not address a scan:
-        XNAT ignores the suffix and the URL resolves to the experiment itself,
-        so a DELETE there risks removing the whole session. The subject segment
-        is what makes it address the scan.
-        """
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = _exp_metadata()
         mock_response = MagicMock()
@@ -653,11 +556,9 @@ class TestScanDelete:
             "/data/projects/TESTPROJ/subjects/XNAT_S00001/experiments/XNAT_E00001/scans/1"
             in delete_url
         )
-        # The unrouted prefix must not be what gets DELETEd.
         assert "/data/projects/TESTPROJ/experiments/" not in delete_url
 
     def test_scan_delete_failure(self, runner: CliRunner) -> None:
-        """Failed delete reports error and exits 1."""
         ctx, mock_client = make_authenticated_context()
         mock_client.delete.side_effect = Exception("Server error")
 
@@ -678,7 +579,6 @@ class TestScanDelete:
         assert result.exit_code == 1
 
     def test_scan_delete_partial_failure(self, runner: CliRunner) -> None:
-        """Mixed success/failure reports both and exits 1."""
         ctx, mock_client = make_authenticated_context()
         mock_ok = MagicMock()
         mock_ok.status_code = 200
@@ -705,8 +605,6 @@ class TestScanDelete:
 
 
 class TestScanDeleteBatch:
-    """Tests for `scan delete --batch`."""
-
     def test_batch_stdin_deletes_each_scan(self, runner: CliRunner) -> None:
         ctx, mock_client = make_authenticated_context()
         mock_response = MagicMock()
@@ -832,10 +730,6 @@ class TestScanDeleteBatch:
     def test_batch_empty_file_does_not_fall_through_to_wildcard(
         self, runner: CliRunner, tmp_path: Any
     ) -> None:
-        """An empty --batch file, given alongside --scans '*', must not read
-        as "no --batch given" and fall through to the wildcard, deleting
-        every scan in the session.
-        """
         batch_file = tmp_path / "empty.txt"
         batch_file.write_text("")
         ctx, mock_client = make_authenticated_context()
@@ -858,20 +752,11 @@ class TestScanDeleteBatch:
 
         assert result.exit_code != 0
         mock_client.delete.assert_not_called()
-        # The wildcard must never even be resolved against the server.
         mock_client.get_json.assert_not_called()
 
 
-# =============================================================================
-# Scan Download
-# =============================================================================
-
-
 class TestScanDownload:
-    """Tests for `scan download` command."""
-
     def test_scan_download_dry_run(self, runner: CliRunner, tmp_path) -> None:
-        """Dry run previews download without fetching data."""
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -895,7 +780,6 @@ class TestScanDownload:
         assert "2 scans" in result.output
 
     def test_scan_download_dry_run_all(self, runner: CliRunner, tmp_path) -> None:
-        """Dry run with '*' shows 'all scans'."""
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -919,7 +803,6 @@ class TestScanDownload:
         assert "all scans" in result.output
 
     def test_scan_download_dry_run_with_resource(self, runner: CliRunner, tmp_path) -> None:
-        """Dry run with --resource shows resource type."""
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -944,7 +827,6 @@ class TestScanDownload:
         assert "DICOM" in result.output
 
     def test_scan_download_name_with_path_separator(self, runner: CliRunner, tmp_path) -> None:
-        """Name with path separator is rejected."""
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -968,12 +850,6 @@ class TestScanDownload:
         assert "path separator" in result.output
 
     def test_scan_download_name_empty_string_is_rejected(self, runner: CliRunner, tmp_path) -> None:
-        """An explicit ``--name ""`` must fail validation, not silently fall
-        back to the session_id -- a truthy `if name:` check would skip
-        validation entirely for an empty string and let ``name or
-        session_id`` pick the fallback without ever reporting the caller's
-        bad input.
-        """
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -999,12 +875,6 @@ class TestScanDownload:
     def test_scan_download_reserved_session_id_fallback_is_rejected(
         self, runner: CliRunner, tmp_path
     ) -> None:
-        """Without --name, the raw session_id becomes the local output
-        directory -- "CON" passes validate_session_id (a legal XNAT
-        accession/label) but is a reserved Windows device name, so it must
-        still be rejected before being used as a directory name. Mirrors
-        session download's own fallback validation.
-        """
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -1026,7 +896,6 @@ class TestScanDownload:
         assert "reserved" in result.output.lower()
 
     def test_scan_download_multiple_resources_rejected(self, runner: CliRunner, tmp_path) -> None:
-        """Multiple --resource values are rejected."""
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -1052,7 +921,6 @@ class TestScanDownload:
         assert "Only one --resource" in result.output
 
     def test_scan_download_happy_path(self, runner: CliRunner, tmp_path) -> None:
-        """Successful download produces success message."""
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
@@ -1089,7 +957,6 @@ class TestScanDownload:
         assert "Downloaded" in result.output
 
     def test_scan_download_verify_clean_exits_zero(self, runner: CliRunner, tmp_path) -> None:
-        """--verify with a clean comparison exits 0 and reports what was verified."""
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
@@ -1131,7 +998,6 @@ class TestScanDownload:
     def test_scan_download_verify_mismatch_fails_the_command(
         self, runner: CliRunner, tmp_path
     ) -> None:
-        """A mismatch found by --verify must fail the command and name the file."""
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
@@ -1170,15 +1036,10 @@ class TestScanDownload:
         assert result.exit_code == 1
         assert "MISMATCH" in result.stderr
         assert "scans/1/resources/DICOM/0001.dcm" in result.stderr
-        # The download itself succeeded; only verification failed -- the
-        # message must say so, not the misleading "Download failed".
         assert "Verification failed" in result.stderr
         assert "Download failed" not in result.stderr
 
     def test_scan_download_verify_all_unverifiable_fails(self, runner: CliRunner, tmp_path) -> None:
-        """The server had no checksums for anything downloaded -- must not
-        pass silently just because nothing mismatched.
-        """
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
@@ -1220,9 +1081,6 @@ class TestScanDownload:
         assert "no checksums" in result.stderr.lower()
 
     def test_scan_download_verify_empty_manifest_fails(self, runner: CliRunner, tmp_path) -> None:
-        """An empty server manifest over files on disk must fail, not read as
-        'Verified 0 files'.
-        """
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
@@ -1267,9 +1125,6 @@ class TestScanDownload:
     def test_scan_download_verify_reports_files_absent_from_manifest(
         self, runner: CliRunner, tmp_path
     ) -> None:
-        """Manifest-uncovered files do not fail a run that matched something,
-        but must be reported rather than staying silent.
-        """
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
@@ -1354,7 +1209,6 @@ class TestScanDownload:
         assert "scans/1/resources/DICOM/0001.dcm" in result.stderr
 
     def test_scan_download_failure(self, runner: CliRunner, tmp_path) -> None:
-        """Failed download exits 1."""
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=False,
@@ -1391,7 +1245,6 @@ class TestScanDownload:
         assert result.exit_code == 1
 
     def test_scan_download_failure_json_exits_nonzero(self, runner: CliRunner, tmp_path) -> None:
-        """A failed download must exit 1 under -o json, not just table."""
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=False,
@@ -1429,10 +1282,9 @@ class TestScanDownload:
 
         assert result.exit_code == 1
         payload = json.loads(result.stdout)
-        assert payload["status"] == "failed"  # JSON summary still emitted
+        assert payload["status"] == "failed"
 
     def test_scan_download_json_output(self, runner: CliRunner, tmp_path) -> None:
-        """JSON output includes structured download summary."""
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
@@ -1475,30 +1327,20 @@ class TestScanDownload:
         assert payload["bytes"] == 10 * 1024 * 1024
 
 
-# =============================================================================
-# Scan Help
-# =============================================================================
-
-
 class TestScanHelp:
-    """Tests for scan subcommand help texts."""
-
     def test_scan_list_help(self, runner: CliRunner) -> None:
-        """Scan list --help shows expected options."""
         result = runner.invoke(cli, ["scan", "list", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
         assert "--project" in result.output
 
     def test_scan_show_help(self, runner: CliRunner) -> None:
-        """Scan show --help shows expected options."""
         result = runner.invoke(cli, ["scan", "show", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
         assert "SCAN_ID" in result.output
 
     def test_scan_delete_help(self, runner: CliRunner) -> None:
-        """Scan delete --help shows expected options."""
         result = runner.invoke(cli, ["scan", "delete", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
@@ -1507,7 +1349,6 @@ class TestScanHelp:
         assert "--yes" in result.output
 
     def test_scan_download_help(self, runner: CliRunner) -> None:
-        """Scan download --help shows expected options."""
         result = runner.invoke(cli, ["scan", "download", "--help"])
         assert result.exit_code == 0
         assert "--experiment" in result.output
@@ -1518,27 +1359,8 @@ class TestScanHelp:
         assert "--extract" in result.output
 
 
-# =============================================================================
-# Nested URL routing
-# =============================================================================
-
-
 class TestScanNestedUrlRouting:
-    """Regression tests for the URL prefix used by nested scan calls.
-
-    XNAT does not route sub-resource suffixes on
-    ``/data/projects/{P}/experiments/{E}``. It answers ``/scans`` -- or any
-    other suffix, including nonsense ones -- with the parent experiment
-    document. ``extract_rows`` finds no ``ResultSet`` there and returns an empty
-    list, so ``scan list -P`` reported "no scans" for sessions that had them,
-    ``scan show -P`` printed session fields under a scan heading, and
-    ``scan delete -P`` aimed a DELETE at the experiment.
-
-    Routing the call through the subject fixes all three at once.
-    """
-
     def test_project_scoped_listing_goes_through_the_subject(self, runner: CliRunner) -> None:
-        """With -P, the scans URL carries the subject from the experiment doc."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(subject_id="XNAT_S00042"),
@@ -1553,7 +1375,6 @@ class TestScanNestedUrlRouting:
         assert "/subjects/XNAT_S00042/" in scan_url
 
     def test_explicit_subject_is_not_overwritten(self, runner: CliRunner) -> None:
-        """A user-supplied -S wins over the subject_ID in the experiment doc."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(subject_id="XNAT_S00042"),
@@ -1571,11 +1392,6 @@ class TestScanNestedUrlRouting:
         assert "XNAT_S00042" not in scan_url
 
     def test_no_project_keeps_the_flat_experiment_url(self, runner: CliRunner) -> None:
-        """Without a project there is no subject segment to add.
-
-        ``/data/experiments/{E}/scans`` routes correctly on its own, and XNAT
-        rejects a subject segment outside a project.
-        """
         ctx, mock_client = make_authenticated_context(default_project=None)
         mock_client.get_json.side_effect = [
             _exp_metadata(subject_id="XNAT_S00042"),
@@ -1591,9 +1407,6 @@ class TestScanNestedUrlRouting:
         assert "/subjects/" not in scan_url
 
     def test_missing_subject_id_falls_back_to_the_flat_url(self, runner: CliRunner) -> None:
-        """With no subject to insert, the URL drops the project rather than
-        keeping the prefix XNAT refuses to route.
-        """
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             _exp_metadata(subject_id=None),
@@ -1608,7 +1421,6 @@ class TestScanNestedUrlRouting:
         assert scan_url == "/data/experiments/XNAT_E00001/scans"
 
     def test_items_response_subject_is_carried_forward(self, runner: CliRunner) -> None:
-        """The subject is read from an `items[]` experiment document too."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.side_effect = [
             {
@@ -1636,13 +1448,6 @@ class TestScanNestedUrlRouting:
         assert "/subjects/XNAT_S00042/" in scan_url
 
     def test_unresolvable_label_refuses_rather_than_guessing(self, runner: CliRunner) -> None:
-        """A label that inspection cannot resolve fails closed on every verb.
-
-        The URL would stay on the prefix XNAT answers with the experiment
-        document, so a listing would report no scans and a DELETE would target
-        the session. `-E` here is label-shaped, so the flat form is not an
-        option.
-        """
         from xnatctl.core.exceptions import ResourceNotFoundError
 
         for argv in (
@@ -1658,5 +1463,4 @@ class TestScanNestedUrlRouting:
 
             assert result.exit_code != 0, argv
             assert "SESS_LABEL" in result.output
-            # Nothing was issued against the unrouted URL.
             mock_client.delete.assert_not_called()

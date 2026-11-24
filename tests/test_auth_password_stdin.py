@@ -1,12 +1,3 @@
-"""Argv-password rejection for auth login and --dest-pass.
-
-A password on argv is visible in ``ps``, ``/proc/*/cmdline``, and shell
-history. ``auth login --password`` and the hidden ``--dest-pass`` on the
-transfer commands refuse one at parse time and offer a ``--*-stdin`` flag
-instead, following docker login's pattern. The shared rejection helper lives
-in ``cli/common.py`` and also covers ``--remote-pass``.
-"""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -44,7 +35,6 @@ class TestAuthLoginPassword:
         assert "Refusing to read --password from argv" in result.output
         assert "--password-stdin" in result.output
         assert SECRET not in result.output
-        # is_eager: the refusal fires at parse time, before config is touched.
         load.assert_not_called()
 
     def test_password_stdin_authenticates(self, runner: CliRunner) -> None:
@@ -82,7 +72,6 @@ class TestAuthLoginPassword:
         assert "stdin was empty" in result.output
 
     def test_env_and_prompt_fallbacks_survive(self, runner: CliRunner) -> None:
-        """The rejection must not break the paths that were already safe."""
         login = MagicMock(
             return_value={
                 "status": "authenticated",
@@ -101,8 +90,6 @@ class TestAuthLoginPassword:
             result = runner.invoke(cli, ["auth", "login", "-u", "admin"])
 
         assert result.exit_code == 0
-        # No stdin flag: the command passes None and do_login's own
-        # env/profile/prompt chain takes over, unchanged.
         assert login.call_args.kwargs["password"] is None
 
 
@@ -156,13 +143,6 @@ class TestDestPassOption:
 
 
 class TestSessionUploadPassword:
-    """The third argv-password site, found during the docs walkthrough.
-
-    `session upload` kept its own hidden `--password` after the fix closed
-    auth login and --dest-pass -- hidden from --help, but just as visible in
-    ps. Same treatment: refuse argv, offer --password-stdin.
-    """
-
     def test_argv_password_is_rejected(self, tmp_path) -> None:
         src = tmp_path / "archive.zip"
         src.write_bytes(b"PK")
@@ -215,7 +195,6 @@ class TestSessionUploadPassword:
         assert upload.call_args.kwargs["password"] == SECRET
 
     def test_no_flags_means_no_explicit_password(self, tmp_path) -> None:
-        """Without the stdin flag the downstream env/prompt chain takes over."""
         src = tmp_path / "dicom_dir"
         src.mkdir()
         (src / "a.dcm").write_bytes(b"DICM")
@@ -241,10 +220,6 @@ class TestSessionUploadPassword:
 
 
 def test_no_command_accepts_a_password_value_on_argv() -> None:
-    """Sweep the whole CLI tree: any option whose name says password/pass must
-    either be a flag (…-stdin) or carry the argv-rejection callback. This is
-    the guard that keeps a fourth leak site from appearing.
-    """
     import click as click_mod
 
     from xnatctl.cli.main import cli as root

@@ -8,7 +8,6 @@ from xnatctl.cli.subject import _apply_template, _load_patterns_file, _projects_
 
 
 def test_patterns_file_load_and_apply_template() -> None:
-    # Create a temporary patterns file with fake project IDs (no production identifiers).
     patterns = {
         "patterns": [
             {

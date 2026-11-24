@@ -1,11 +1,3 @@
-"""Unit tests for ContainerService.
-
-The container object could not be captured live (no Docker daemon in the
-integration stack), but its field names ARE verified -- read out of the
-shipped plugin jar's compiled DTOs (see services/containers.py's module
-docstring). The sample row here uses a subset of that real field set.
-"""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -34,24 +26,20 @@ SAMPLE_WRAPPER = {
 
 
 class TestInit:
-    """Tests for ContainerService's CommandService composition."""
-
     def test_defaults_to_fresh_command_service(self, fake_client) -> None:
         service = ContainerService(fake_client)
 
-        assert isinstance(service._commands, CommandService)  # noqa: SLF001
+        assert isinstance(service._commands, CommandService)
 
     def test_accepts_injected_command_service(self, fake_client) -> None:
         injected = CommandService(fake_client)
 
         service = ContainerService(fake_client, command_service=injected)
 
-        assert service._commands is injected  # noqa: SLF001
+        assert service._commands is injected
 
 
 class TestList:
-    """Tests for ContainerService.list."""
-
     def test_list_site_wide(self, fake_client) -> None:
         fake_client.get_json.return_value = [SAMPLE_CONTAINER]
         service = ContainerService(fake_client)
@@ -79,7 +67,6 @@ class TestList:
         assert result == [running]
 
     def test_list_filters_by_status_legitimate_empty_match(self, fake_client) -> None:
-        """Rows carry `status`, none match -- a real empty result, not an error."""
         fake_client.get_json.return_value = [SAMPLE_CONTAINER]
         service = ContainerService(fake_client)
 
@@ -90,7 +77,6 @@ class TestList:
     def test_list_filters_by_status_raises_when_field_absent_from_every_row(
         self, fake_client
     ) -> None:
-        """No row carries a `status` key at all -- distinguishable from a legitimate empty match."""
         fake_client.get_json.return_value = [{"id": "501"}, {"id": "502"}]
         service = ContainerService(fake_client)
 
@@ -98,7 +84,6 @@ class TestList:
             service.list(status="Running")
 
     def test_list_filters_by_status_no_containers_is_not_an_error(self, fake_client) -> None:
-        """An empty site has no rows to inspect for a `status` key -- not the same failure."""
         fake_client.get_json.return_value = []
         service = ContainerService(fake_client)
 
@@ -113,8 +98,6 @@ class TestList:
 
 
 class TestGet:
-    """Tests for ContainerService.get -- container_id is a str (not always numeric)."""
-
     def test_get_numeric_id(self, fake_client) -> None:
         fake_client.get_json.return_value = SAMPLE_CONTAINER
         service = ContainerService(fake_client)
@@ -125,7 +108,6 @@ class TestGet:
         fake_client.get_json.assert_called_once_with("/xapi/containers/501")
 
     def test_get_docker_id_string(self, fake_client) -> None:
-        """Container routes also accept the Docker container ID string."""
         fake_client.get_json.return_value = SAMPLE_CONTAINER
         service = ContainerService(fake_client)
 
@@ -149,8 +131,6 @@ class TestGet:
 
 
 class TestStreamLogs:
-    """Tests for ContainerService.stream_logs -- returns the client's streaming context manager."""
-
     def _stream_ctx(self, chunks: list[bytes]) -> MagicMock:
         resp = MagicMock()
         resp.iter_bytes.return_value = iter(chunks)
@@ -196,11 +176,6 @@ class TestStreamLogs:
     def test_logs_nonexistent_container_raises_not_found_without_calling_stream(
         self, fake_client
     ) -> None:
-        """A bad ID is caught by the existence check (GET /xapi/containers/{id},
-        which genuinely answers 404) before ever hitting the logs route --
-        verified live, logs/stdout answers 500 for a nonexistent container,
-        which would otherwise walk the retry ladder.
-        """
         fake_client.get_json.side_effect = ResourceNotFoundError("container", "999")
         service = ContainerService(fake_client)
 
@@ -211,8 +186,6 @@ class TestStreamLogs:
 
 
 class TestResolveWrapper:
-    """ContainerService.resolve_wrapper is a thin passthrough to CommandService."""
-
     def test_delegates_to_command_service(self, fake_client) -> None:
         injected = MagicMock()
         injected.resolve_wrapper.return_value = (34, SAMPLE_WRAPPER)
@@ -225,8 +198,6 @@ class TestResolveWrapper:
 
 
 class TestBuildLaunchParams:
-    """ContainerService.build_launch_params -- pure, no HTTP calls."""
-
     def test_no_experiment_returns_params_unchanged(self, fake_client) -> None:
         service = ContainerService(fake_client)
 
@@ -281,8 +252,6 @@ class TestBuildLaunchParams:
 
 
 class TestPreflightLaunch:
-    """ContainerService.preflight_launch -- the shared dry-run/execution preflight."""
-
     def test_checks_project_exists_then_builds_params(self, fake_client, response_factory) -> None:
         fake_client.get.return_value = response_factory(
             {"ResultSet": {"Result": [{"ID": "PROJ01"}]}}
@@ -303,8 +272,6 @@ class TestPreflightLaunch:
 
 
 class TestLaunch:
-    """ContainerService.launch -- verified live: POST .../wrappers/{id}/launch, JSON body."""
-
     def test_launch_posts_params_as_json_body(self, fake_client, response_factory) -> None:
         fake_client.post.return_value = response_factory(
             {
@@ -333,8 +300,6 @@ class TestLaunch:
 
 
 class TestKillContainer:
-    """ContainerService.kill_container -- verified live: POST .../containers/{id}/kill."""
-
     def test_kill_posts_expected_path(self, fake_client, response_factory) -> None:
         fake_client.post.return_value = response_factory(status_code=200)
         service = ContainerService(fake_client)

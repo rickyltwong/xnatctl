@@ -1,11 +1,3 @@
-"""Tests for the generic retry primitive in ``core/retry.py``.
-
-The status-code sets, backoff helpers, and the upload response ladder that
-also live there are covered where their consumers are tested
-(``test_core_client_retry.py``, ``test_uploaders_common.py``,
-``test_upload_400_policy.py``); this file covers ``retry_call`` itself.
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -15,7 +7,6 @@ from xnatctl.core.retry import retry_call
 
 @pytest.fixture
 def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Record backoff sleeps and return immediately."""
     recorded: list[float] = []
     monkeypatch.setattr("xnatctl.core.retry.time.sleep", lambda s: recorded.append(s))
     return recorded
@@ -91,6 +82,5 @@ class TestRetryCall:
 
     @pytest.mark.parametrize("bad_base", [-1.0, float("nan"), float("inf")])
     def test_rejects_a_nonsensical_backoff_base(self, bad_base: float) -> None:
-        """A bad delay must fail loudly up front, not mask the real exception."""
         with pytest.raises(ValueError, match="backoff_base"):
             retry_call(lambda: 1, retryable=_retry_transient, backoff_base=bad_base)

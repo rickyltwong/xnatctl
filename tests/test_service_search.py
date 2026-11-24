@@ -1,11 +1,3 @@
-"""Unit tests for SearchService.
-
-Fixture shapes are the real ones observed live against XNAT 1.9.2.1: a
-``ResultSet`` envelope (not a bare array) from the listing, XML-only from the
-definition route (its ``?format=json`` 404s even for a real search), and a
-dynamic ``ResultSet.Columns``/``Result`` shape from running a saved search.
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -38,8 +30,6 @@ SAMPLE_DEFINITION_XML = (
 
 
 class TestListSearches:
-    """Tests for SearchService.list_searches."""
-
     def test_list_searches(self, fake_client) -> None:
         fake_client.get_json.return_value = {
             "ResultSet": {"Result": [SAMPLE_ROW], "title": "Stored Searches"}
@@ -60,10 +50,6 @@ class TestListSearches:
         assert service.list_searches() == []
 
     def test_list_searches_malformed_body_raises(self, fake_client) -> None:
-        # A 200 with no 'ResultSet' key at all (e.g. a plugin-disabled body)
-        # must not be coerced into "no saved searches" -- before the fix,
-        # ResultSetEnvelope's default_factory silently validated this to an
-        # empty list and list_searches() returned [] here too.
         fake_client.get_json.return_value = {"message": "plugin disabled"}
         service = SearchService(fake_client)
 
@@ -72,8 +58,6 @@ class TestListSearches:
 
 
 class TestGetDefinition:
-    """Tests for SearchService.get_definition."""
-
     def test_get_definition_requests_xml_format(self, fake_client, response_factory) -> None:
         fake_client.get.return_value = response_factory(
             text=SAMPLE_DEFINITION_XML, content_type="application/xml"
@@ -83,17 +67,12 @@ class TestGetDefinition:
         result = service.get_definition("xnatctl_test_search")
 
         assert result == SAMPLE_DEFINITION_XML
-        # This route has NO JSON representation (verified live: ?format=json
-        # 404s for a real, existing search) -- format=xml is requested
-        # explicitly, never format=json.
         fake_client.get.assert_called_once_with(
             "/data/search/saved/xnatctl_test_search", params={"format": "xml"}
         )
 
 
 class TestRun:
-    """Tests for SearchService.run."""
-
     def test_run_extracts_dynamic_rows(self, fake_client) -> None:
         fake_client.get_json.return_value = {
             "ResultSet": {
@@ -120,8 +99,6 @@ class TestRun:
         assert service.run("xnatctl_test_search") == []
 
     def test_run_malformed_body_raises(self, fake_client) -> None:
-        # Same defect class as list_searches: a 200 with no 'ResultSet' key
-        # must raise, not read as "this search returned nothing".
         fake_client.get_json.return_value = {"message": "plugin disabled"}
         service = SearchService(fake_client)
 
@@ -130,8 +107,6 @@ class TestRun:
 
 
 class TestDelete:
-    """Tests for SearchService.delete."""
-
     def test_delete(self, fake_client, response_factory) -> None:
         fake_client.get.return_value = response_factory(
             text=SAMPLE_DEFINITION_XML, content_type="application/xml"
@@ -147,11 +122,6 @@ class TestDelete:
         fake_client.delete.assert_called_once_with("/data/search/saved/xnatctl_test_search")
 
     def test_delete_unknown_id_raises_and_does_not_delete(self, fake_client) -> None:
-        # DELETE itself answers 200 even for an unknown id (verified live),
-        # so the only thing that can catch a typo is the get_definition()
-        # preflight. Before the fix, delete() skipped straight to
-        # client.delete() and reported success for a search that never
-        # existed.
         fake_client.get.side_effect = ResourceNotFoundError("saved search", "bad_id")
         service = SearchService(fake_client)
 

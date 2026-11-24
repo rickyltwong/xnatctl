@@ -164,10 +164,6 @@ def event_delete(ctx: Context, subscription_id: int, dry_run: bool) -> None:
     service = EventService(ctx.get_client())
 
     if dry_run:
-        # Execution's own DELETE already 404s cleanly on an unknown id (see
-        # EventService.delete_subscription), but dry-run must not mutate to
-        # find that out -- this runs the identical existence check as a
-        # plain read.
         service.get_subscription(subscription_id)
         click.echo(f"[DRY-RUN] Would delete event subscription {subscription_id}", err=True)
         return
@@ -193,8 +189,6 @@ def event_enable(ctx: Context, subscription_id: int, dry_run: bool) -> None:
     service = EventService(ctx.get_client())
 
     if dry_run:
-        # Same preflight activate_subscription() would otherwise 404 on
-        # (see EventService) -- run it as a plain read here instead.
         service.get_subscription(subscription_id)
         click.echo(f"[DRY-RUN] Would enable event subscription {subscription_id}", err=True)
         return

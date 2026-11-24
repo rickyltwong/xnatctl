@@ -1,14 +1,3 @@
-"""Tests for the single /data/services/import request builder.
-
-Each expected dict below is the literal querystring its call site sent
-*before* construction was centralized -- the builder must reproduce the exact
-key set and values, because XNAT's importer is sensitive to both the key
-convention and which keys are present at all. Key *order* is not pinned: the
-sites historically disagreed on it (gradual-DICOM led with ``inbody``, the
-archive path ended with it) and querystring parameter order carries no meaning
-to XNAT's servlet parsing.
-"""
-
 from __future__ import annotations
 
 from xnatctl.services.import_service import (
@@ -32,7 +21,6 @@ class TestArchiveDestinationParams:
 
 class TestBuildImportParams:
     def test_archive_upload_site(self) -> None:
-        """The batch/single-archive upload path (session key convention)."""
         params = build_import_params(
             import_handler="DICOM-zip",
             project="PROJ",
@@ -63,7 +51,6 @@ class TestBuildImportParams:
         }
 
     def test_gradual_dicom_site(self) -> None:
-        """The per-file gradual-DICOM path (experiment key convention)."""
         params = build_import_params(
             import_handler="gradual-DICOM",
             project="PROJ",
@@ -83,7 +70,6 @@ class TestBuildImportParams:
         }
 
     def test_transfer_executor_site(self) -> None:
-        """The cross-server transfer path: append + literal /archive destination."""
         params = build_import_params(
             import_handler="DICOM-zip",
             project="DST",
@@ -103,7 +89,6 @@ class TestBuildImportParams:
         }
 
     def test_none_omits_keys_entirely(self) -> None:
-        """An absent key and an explicit default differ to XNAT; None sends nothing."""
         params = build_import_params(
             import_handler="DICOM-zip",
             project="P",

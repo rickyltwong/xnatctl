@@ -17,33 +17,13 @@ from xnatctl.core.config import CONFIG_DIR, ENV_PASS, ENV_TOKEN, ENV_USER
 from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir, restrict_permissions
 from xnatctl.core.redact import redact_url_query
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 logger = logging.getLogger(__name__)
 
-# Every log line in this module reports the *source* or *presence* of a
-# credential, never its value. "Which credential did xnatctl actually use?" is
-# the question `-v` has to answer here; the answer must not be the secret
-# itself.
 
 SESSION_CACHE_FILE = CONFIG_DIR / ".session"
 SESSION_EXPIRY_MINUTES = 15  # XNAT JSESSION expires after 15 minutes of inactivity by default
 
-# Session cache payload version. Unlike config.yaml, there is no migration
-# table: a cached token is disposable, so any mismatch (older, newer, wrong
-# type, or unparseable) just discards the cache and forces a fresh login --
-# simpler and just as safe as migrating a value that carries no user data. A
-# *missing* version is the one non-mismatch: it predates the field and is
-# treated as version 1, same as an explicit `"version": 1`, so an old cache
-# keeps loading (see CachedSession.from_dict).
 SESSION_CACHE_VERSION = 1
-
-
-# =============================================================================
-# Session Cache
-# =============================================================================
 
 
 @dataclass
@@ -129,31 +109,15 @@ class CachedSession:
             expires_at=(
                 datetime.fromisoformat(data["expires_at"]) if data.get("expires_at") else None
             ),
-            # Caches written before this field existed fall back to creation
-            # time.
             last_used_at=datetime.fromisoformat(last_used) if last_used else created_at,
         )
-
-
-# =============================================================================
-# AuthManager
-# =============================================================================
 
 
 class AuthManager:
     """Manages authentication credentials and session tokens."""
 
     def __init__(self, cache_file: Path | None = None):
-        """Initialize auth manager.
-
-        Args:
-            cache_file: Path to session cache file.
-        """
         self.cache_file = cache_file or SESSION_CACHE_FILE
-
-    # =========================================================================
-    # Credential Access
-    # =========================================================================
 
     def get_credentials(self) -> tuple[str | None, str | None]:
         """Get credentials from environment variables.
@@ -179,10 +143,6 @@ class AuthManager:
             Token if set.
         """
         return os.getenv(ENV_TOKEN)
-
-    # =========================================================================
-    # Session Cache
-    # =========================================================================
 
     def save_session(
         self,
@@ -211,17 +171,11 @@ class AuthManager:
             expires_at=now + timedelta(minutes=expiry_minutes),
         )
 
-        # Ensure the directory exists and is owner-only.
         ensure_private_dir(self.cache_file.parent)
 
-        # Write through a private temp file so the token is never observable
-        # under the process umask, not even for the duration of the write.
         with atomic_private_write(self.cache_file) as f:
             json.dump(session.to_dict(), f)
 
-        # The replace already carries the temp file's 0600 mode; this is
-        # belt-and-braces for filesystems that do not, and it warns rather than
-        # silently leaving the token readable.
         restrict_permissions(self.cache_file)
 
         logger.debug(
@@ -234,12 +188,6 @@ class AuthManager:
         return session
 
     def _persist_touch(self, session: CachedSession) -> None:
-        """Write back a slid expiry, best-effort.
-
-        A cache that cannot be refreshed is not worth failing a command over:
-        the token in hand is still valid, and the worst case is the next
-        invocation seeing a staler deadline and logging in again.
-        """
         try:
             with atomic_private_write(self.cache_file) as f:
                 json.dump(session.to_dict(), f)
@@ -265,7 +213,6 @@ class AuthManager:
 
             session = CachedSession.from_dict(data)
 
-            # Check URL match
             if url and session.url != url:
                 logger.debug(
                     "Session cache miss: cached for %s, wanted %s",
@@ -274,7 +221,6 @@ class AuthManager:
                 )
                 return None
 
-            # Check expiry
             if session.is_expired():
                 logger.debug(
                     "Session cache expired at %s; clearing",
@@ -283,9 +229,6 @@ class AuthManager:
                 self.clear_session()
                 return None
 
-            # Handing the token out counts as activity, so restart the idle
-            # clock. Without this the "sliding" window would never actually
-            # slide -- the file would keep its original deadline.
             session.touch()
             self._persist_touch(session)
 
@@ -293,7 +236,6 @@ class AuthManager:
             return session
 
         except (json.JSONDecodeError, KeyError, ValueError) as e:
-            # Invalid cache file
             logger.debug("Session cache unreadable (%s); clearing", type(e).__name__)
             self.clear_session()
             return None
@@ -308,8 +250,6 @@ class AuthManager:
             self.cache_file.unlink()
             return True
         except FileNotFoundError:
-            # Nothing cached, or another process cleared it first -- either
-            # way the goal state (no cache file) holds; not a warning.
             return False
         except OSError as e:
             logger.warning("Could not clear cached session at %s: %s", self.cache_file, e)
@@ -327,10 +267,6 @@ class AuthManager:
         session = self.load_session(url)
         return session is not None and not session.is_expired()
 
-    # =========================================================================
-    # Convenience Methods
-    # =========================================================================
-
     def get_session_token(self, url: str | None = None) -> str | None:
         """Get session token from cache or environment.
 
@@ -344,12 +280,10 @@ class AuthManager:
         Returns:
             Session token if available.
         """
-        # Check environment first
         if token := self.get_token_from_env():
             logger.debug("Using session token from %s", ENV_TOKEN)
             return token
 
-        # Check cache
         if session := self.load_session(url):
             return session.token
 

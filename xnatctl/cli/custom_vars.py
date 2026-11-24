@@ -52,14 +52,6 @@ _VARS_COLUMN_LABELS = {"name": "Name", "value": "Value"}
 
 
 def _parse_pairs(pairs: tuple[str, ...]) -> dict[str, str]:
-    """Parse ``KEY=VALUE`` arguments into a dict, in order.
-
-    Raises:
-        click.UsageError: A pair has no ``=``, an empty key, or a key that
-            repeats one already seen in this call -- collapsing ``key=one
-            key=two`` to a silent ``{"key": "two"}`` would send only the
-            last value with no indication the first was dropped.
-    """
     fields: dict[str, str] = {}
     for pair in pairs:
         key, sep, value = pair.partition("=")
@@ -72,7 +64,6 @@ def _parse_pairs(pairs: tuple[str, ...]) -> dict[str, str]:
 
 
 def _print_vars(ctx: Context, rows: list[dict[str, str]]) -> None:
-    """Render custom-variable rows the same way for subject and session."""
     print_output(
         rows,
         format=ctx.output_format,
@@ -103,19 +94,11 @@ def _print_vars(ctx: Context, rows: list[dict[str, str]]) -> None:
 
 
 class _DefaultGroup(click.Group):
-    """A click.Group that falls back to one subcommand when dispatch would fail.
-
-    Only used where a group's primary action takes a positional argument
-    that would otherwise be swallowed by Click's own param parsing before
-    subcommand resolution runs (see the module comment above).
-    """
-
     default_cmd_name = "_read"
 
     def resolve_command(
         self, ctx: click.Context, args: list[str]
     ) -> tuple[str | None, click.Command | None, list[str]]:
-        """Dispatch normally; fall back to the default command on a bad name."""
         try:
             return super().resolve_command(ctx, args)
         except click.UsageError:
@@ -181,17 +164,6 @@ def subject_vars_set(
         xnatctl subject list -P MYPROJ -q | xnatctl subject vars set \\
             --batch - studytag=phase1 -P MYPROJ --yes
     """
-    # A single `nargs=-1` ARGS, split here into subject_id + pairs, rather
-    # than two separate Click Arguments (one optional SUBJECT_ID, one
-    # nargs=-1 for the pairs): Click distributes tokens across positional
-    # Arguments by declared order regardless of content, so with two
-    # Arguments `--batch file.txt studytag=phase1` assigns the string
-    # "studytag=phase1" to the optional SUBJECT_ID slot (it's declared
-    # first) rather than to the pairs slot -- verified directly against
-    # Click's parser. One Argument sidesteps that entirely: with --batch,
-    # every token in ARGS is a KEY=VALUE pair (SUBJECT_ID came from the
-    # batch file instead); without it, the first token is SUBJECT_ID and
-    # the rest are pairs.
     ids: list[str] | None
     if batch_ids is not None:
         ids = batch_ids
@@ -210,9 +182,6 @@ def subject_vars_set(
         raise click.UsageError("provide at least one KEY=VALUE pair")
 
     fields = _parse_pairs(pairs)
-    # Validate every field name exactly as SubjectService.set_vars will --
-    # dry-run must reject what execution rejects, not report success for
-    # input the real command later refuses.
     for name in fields:
         _validate_subject_field_name(name)
     project = validate_project_id(require_project_from_context(ctx, project))
@@ -220,18 +189,6 @@ def subject_vars_set(
     service = SubjectService(ctx.get_client())
     names = ", ".join(fields)
 
-    # Every subject must still be CONFIRMED TO EXIST under --dry-run --
-    # skipping only the final `set_vars` call -- so a dry run reports the
-    # same not-found failure execution would, instead of approving a
-    # typo'd subject ID. `SubjectService.set_vars` writes through the same
-    # create-or-update route `SubjectService.create` uses, and a
-    # nonexistent subject answers 201 there, not 404 (verified live
-    # against XNAT 1.9.2.1) -- a plain PUT silently creates an empty
-    # subject instead of failing, and a dry run that skipped this check
-    # would "approve" that typo too.
-    #
-    # Isolation only matters when there IS a rest of the batch to protect --
-    # see subject_delete for the identical reasoning.
     isolate_failures = len(validated_ids) > 1
     failed: list[tuple[str, str]] = []
     for sid in validated_ids:
@@ -240,7 +197,7 @@ def subject_vars_set(
                 service.get(sid, project=project)
             else:
                 service.set_vars(sid, fields, project=project)
-        except Exception as e:  # noqa: BLE001  # per-subject isolation across a multi-subject batch
+        except Exception as e:
             if not isolate_failures:
                 raise
             failed.append((sid, str(e)))
@@ -259,15 +216,6 @@ def subject_vars_set(
         for sid, error in failed:
             click.echo(f"  - {sid}: {error}", err=True)
         raise SystemExit(1)
-
-
-# =============================================================================
-# session vars / session vars set
-#
-# -E is an option, not a positional argument, so there's no dispatch
-# conflict here -- the plain `admin plugins`-style default-listing group
-# works unmodified.
-# =============================================================================
 
 
 @session.group("vars", invoke_without_command=True)
@@ -324,18 +272,6 @@ def session_vars(ctx: Context, session_id: str | None, project: str | None) -> N
 def _resolve_session_for_vars(
     hierarchy: HierarchyService, session_id: str, project: str | None
 ) -> tuple[str, str, str, str] | None:
-    """Resolve one session to (project, subject, experiment_id, xsi_type).
-
-    Returns ``None`` (rather than raising) when the session isn't found, so
-    a multi-ID batch can isolate the failure the same way
-    ``_run_scan_deletes`` does -- see ``session_vars_set`` below.
-
-    Raises:
-        click.ClickException: The session resolved, but its project or
-            subject could not be determined -- ``SessionService.set_vars``
-            cannot build a working write path without both (see its
-            docstring for why the flat route silently no-ops).
-    """
     ref = ExperimentRef(
         experiment=session_id, project_id=project, experiment_is_label=project is not None
     )
@@ -397,9 +333,6 @@ def session_vars_set(
         raise click.UsageError("provide at least one KEY=VALUE pair")
 
     fields = _parse_pairs(pairs)
-    # Validate every field name exactly as SessionService.set_vars will --
-    # dry-run must reject what execution rejects, not report success for
-    # input the real command later refuses.
     for name in fields:
         _validate_session_field_name(name)
     validated_ids = [validate_session_id(raw_id) for raw_id in ids]
@@ -411,11 +344,6 @@ def session_vars_set(
     service = SessionService(client)
     names = ", ".join(fields)
 
-    # Every session must still be RESOLVED under --dry-run -- skipping only
-    # the final `set_vars` call -- so a dry run reports the same refusal
-    # execution would for a session that doesn't exist or can't be resolved,
-    # instead of returning before resolution ever ran and reporting success
-    # for input the real command later refuses.
     isolate_failures = len(validated_ids) > 1
     failed: list[tuple[str, str]] = []
     for sid in validated_ids:
@@ -432,7 +360,7 @@ def session_vars_set(
                     xsi_type=xsi_type,
                     fields=fields,
                 )
-        except Exception as e:  # noqa: BLE001  # per-session isolation across a multi-session batch
+        except Exception as e:
             if not isolate_failures:
                 raise
             failed.append((sid, str(e)))

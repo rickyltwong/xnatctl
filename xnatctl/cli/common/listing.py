@@ -43,9 +43,6 @@ def apply_filter(rows: list[dict[str, Any]], expr: str | None) -> list[dict[str,
             f"Invalid --filter '{expr}': expected 'field:glob' syntax, e.g. --filter 'label:SUB*'"
         )
     if rows:
-        # Rows are not required to be uniform (xsync's payload varies by
-        # deployment), so "known fields" is the union across every row, not
-        # just the first.
         available = dict.fromkeys(key for row in rows for key in row)
         if field not in available:
             raise click.UsageError(
@@ -56,8 +53,7 @@ def apply_filter(rows: list[dict[str, Any]], expr: str | None) -> list[dict[str,
 
 
 def _numeric_or_none(value: Any) -> float | None:
-    """Parse *value* as a float, or ``None`` if it isn't numeric-looking."""
-    if isinstance(value, bool):  # bool is an int subclass; not a "numeric column" value
+    if isinstance(value, bool):
         return None
     if isinstance(value, int | float):
         return float(value)
@@ -118,7 +114,7 @@ def apply_sort_limit(
         if all_numeric:
             numeric_pairs: list[tuple[float, dict[str, Any]]] = []
             for numeric_value, row in zip(numeric_values, with_value, strict=True):
-                assert numeric_value is not None  # guaranteed by all_numeric, above
+                assert numeric_value is not None
                 numeric_pairs.append((numeric_value, row))
             with_value = [
                 row for _, row in sorted(numeric_pairs, key=lambda pair: pair[0], reverse=reverse)
@@ -132,7 +128,7 @@ def apply_sort_limit(
 
         rows = with_value + missing
 
-    if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+    if limit is not None:
         rows = rows[:limit]
 
     return rows
@@ -214,7 +210,6 @@ def list_options(_func: F | None = None, *, include_limit: bool = True) -> F | C
     """
 
     def decorator(f: F) -> F:
-        """Attach the shared list-control options to *f*."""
         f = click.option(
             "--columns", help="Comma-separated columns to display (table output only)"
         )(f)

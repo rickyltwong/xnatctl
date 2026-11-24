@@ -1,10 +1,3 @@
-"""Tests for the one-call library facade: build_client_from_profile + accessors.
-
-Covers the credential-resolution precedence the CLI relies on (extracted from
-``Context.get_client``), the ``XNATClient.from_profile`` classmethod, the
-lazily-cached service accessors, and the context-manager login behaviour.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -41,8 +34,6 @@ class _FakeSession:
 
 @dataclass
 class _FakeAuthManager:
-    """Stand-in for AuthManager with controllable token/session resolution."""
-
     env_token: str | None = None
     session: _FakeSession | None = None
 
@@ -55,7 +46,6 @@ class _FakeAuthManager:
 
 @pytest.fixture(autouse=True)
 def _clear_credential_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No ambient XNAT_* variable may leak into resolution under test."""
     for var in ("XNAT_URL", "XNAT_USER", "XNAT_PASS", "XNAT_TOKEN", "XNAT_PROFILE"):
         monkeypatch.delenv(var, raising=False)
 
@@ -75,19 +65,9 @@ def _write_config(tmp_path: Path, *, verify_ssl: bool = True, timeout: int = 42)
     return path
 
 
-# =============================================================================
-# Credential-resolution precedence
-# =============================================================================
-
-
 def test_all_sources_present_resolves_the_full_param_dict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With env creds, profile creds, an env token, AND a cached session all
-    present at once, the complete resolved dict follows the precedence rules:
-    env creds beat profile creds, the env token beats the cached token, and the
-    env username (not the cached session's) is the hint.
-    """
     from xnatctl.core.connect import resolve_client_params
 
     monkeypatch.setenv("XNAT_USER", "env-user")
@@ -124,9 +104,7 @@ def test_cached_session_wins_over_profile_password(tmp_path: Path) -> None:
     )
 
     assert client.session_token == "CACHED"
-    # The cached username backfills the hint; the profile password stays wired
-    # so a mid-operation reauth can still self-heal.
-    assert client.username == "alice"  # profile username takes precedence over session
+    assert client.username == "alice"
     assert client.password == "profile-pw"
 
 
@@ -152,11 +130,6 @@ def test_session_username_backfills_when_profile_has_none(tmp_path: Path) -> Non
     assert client.username == "cached-user"
 
 
-# =============================================================================
-# Profile lookup + from_profile threading
-# =============================================================================
-
-
 def test_missing_profile_raises_with_hint(tmp_path: Path) -> None:
     auth = _FakeAuthManager()
     with pytest.raises(ProfileNotFoundError) as exc:
@@ -174,11 +147,6 @@ def test_from_profile_reads_profile_fields(tmp_path: Path) -> None:
     assert client.timeout == 99
     assert client.verify_ssl is False
     assert client.auto_reauth is True
-
-
-# =============================================================================
-# Service accessors
-# =============================================================================
 
 
 @pytest.mark.parametrize(
@@ -204,13 +172,7 @@ def test_accessor_returns_type_and_caches(attr: str, service_type: type) -> None
     service = getattr(client, attr)
     assert isinstance(service, service_type)
     assert service.client is client
-    # Cached: a second access returns the very same object.
     assert getattr(client, attr) is service
-
-
-# =============================================================================
-# Context-manager authentication
-# =============================================================================
 
 
 def _login_transport(calls: list[httpx.Request]) -> httpx.MockTransport:

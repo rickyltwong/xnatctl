@@ -1,9 +1,3 @@
-"""Error-path tests: expected failures must never surface a Python traceback.
-
-Covers the no-raw-traceback contract: bad profile, first-run/no-config, unreachable
-server, and the last-resort ``main()`` guard.
-"""
-
 from __future__ import annotations
 
 from typing import Any, cast
@@ -30,7 +24,6 @@ def _config_with(profiles: dict[str, Profile], default: str = "default") -> Conf
 
 
 def test_unknown_profile_no_traceback(runner: CliRunner) -> None:
-    """`--profile nonexistent` renders one friendly line, no traceback."""
     cfg = _config_with({"default": Profile(url="https://xnat.example.org")})
 
     with patch.object(Config, "load", return_value=cfg):
@@ -43,7 +36,6 @@ def test_unknown_profile_no_traceback(runner: CliRunner) -> None:
 
 
 def test_no_config_first_run_no_traceback(runner: CliRunner) -> None:
-    """First run with an empty config prints a friendly hint, not a traceback."""
     with patch.object(Config, "load", return_value=_config_with({})):
         result = runner.invoke(cli, ["project", "list"])
 
@@ -53,7 +45,6 @@ def test_no_config_first_run_no_traceback(runner: CliRunner) -> None:
 
 
 def test_unreachable_server_no_traceback(runner: CliRunner) -> None:
-    """A network failure during the pre-flight check is rendered, not dumped."""
     cfg = _config_with({"default": Profile(url="https://xnat.example.org")})
 
     class FakeClient:
@@ -79,7 +70,6 @@ def test_unreachable_server_no_traceback(runner: CliRunner) -> None:
 
 
 def test_main_guard_catches_xnatctl_error() -> None:
-    """The top-level ``main()`` guard turns a stray XNATCtlError into exit 1."""
     with (
         patch.object(Config, "load", side_effect=ConfigurationError("Failed to load config: boom")),
         patch("sys.argv", ["xnatctl", "project", "list"]),

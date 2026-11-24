@@ -1,5 +1,3 @@
-"""Tests for core HTTP client authentication behavior."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -52,9 +50,6 @@ def test_request_auto_reauth_retries_once_on_401(monkeypatch):
     client.authenticate.assert_called_once()
     assert mock_httpx.request.call_count == 2
 
-    # The session cookie is now set on the client instance each iteration
-    # (httpx 0.28 deprecates per-request cookies=), so the reauth token is
-    # picked up on the retry. Assert the cookie was refreshed old -> new.
     cookie_sets = [
         c.args for c in mock_httpx.cookies.set.call_args_list if c.args[:1] == ("JSESSIONID",)
     ]
@@ -176,8 +171,6 @@ def test_whoami_uses_current_username_endpoint_and_preserves_username_hint(monke
 
     result = client.whoami()
 
-    # model_dump() is the shape the whoami dict always had -- pinned so the
-    # typed return keeps rendering identically downstream.
     assert result.model_dump() == {
         "username": "Ricky_Wong",
         "firstname": "Ricky",
@@ -188,10 +181,6 @@ def test_whoami_uses_current_username_endpoint_and_preserves_username_hint(monke
 
 
 def test_whoami_normalizes_explicit_null_name_and_email_fields(monkeypatch):
-    """XNAT sends explicit null firstName/lastName/email for service/API
-    accounts that never had a name set -- normal output, not malformed. The
-    real `enabled` value must survive, not get discarded/reinvented.
-    """
     client = XNATClient(
         base_url="https://example.org",
         username="svc_account",
@@ -229,10 +218,6 @@ def test_whoami_normalizes_explicit_null_name_and_email_fields(monkeypatch):
 
 
 def test_whoami_missing_payload_username_falls_back_without_losing_other_fields(monkeypatch):
-    """A payload with a missing/null `username` must not be discarded
-    wholesale: the already-resolved username fills in, and the payload's
-    real name fields still come through.
-    """
     client = XNATClient(
         base_url="https://example.org",
         username="jdoe",
@@ -265,11 +250,6 @@ def test_whoami_missing_payload_username_falls_back_without_losing_other_fields(
 
 
 def test_whoami_defaults_enabled_to_false_for_a_genuinely_unusable_payload(monkeypatch):
-    """When `enabled` itself is unparseable (the one case the field
-    validators can't absorb), the fallback must pick a defensible default
-    rather than inventing `enabled=True` for an account nothing confirms is
-    active.
-    """
     client = XNATClient(
         base_url="https://example.org",
         username="jdoe",
@@ -286,8 +266,6 @@ def test_whoami_defaults_enabled_to_false_for_a_genuinely_unusable_payload(monke
             return {
                 "username": "jdoe",
                 "firstName": "Jane",
-                # Not bool-coercible -- forces ValidationError even after
-                # the name/email field validators absorb everything else.
                 "enabled": {"unexpected": "shape"},
             }
         raise AssertionError(f"unexpected path: {path}")
@@ -311,9 +289,6 @@ def test_whoami_falls_back_to_username_hint_when_current_user_endpoints_unavaila
     )
 
     def fake_get(path: str, **kwargs):
-        # get()'s documented contract is that only XNATCtlError subtypes ever
-        # escape it -- a real "endpoints unavailable" failure looks like this,
-        # not a raw RuntimeError.
         raise NetworkError("https://example.org", "connection refused")
 
     monkeypatch.setattr(client, "get", fake_get)

@@ -1,5 +1,3 @@
-"""Tests for the ``session normalize-labels`` CLI command."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -9,7 +7,6 @@ from conftest import AuthenticatedCLI
 
 
 def _wire(client: MagicMock, rows: Any) -> None:
-    """Serve the experiment listing, then rename confirmations, from one fake."""
     landed: dict[str, int] = {}
 
     def put(path: str, **_: object) -> None:
@@ -125,9 +122,6 @@ class TestSessionNormalizeLabels:
     def test_malformed_body_fails_instead_of_renamed_zero(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        # A 200 with no 'ResultSet' key must surface as an error, not read
-        # as "nothing needed doing" -- before the fix this printed "Renamed
-        # 0 experiment label(s), skipped 0".
         authenticated_cli.client.get_json.return_value = {"message": "plugin disabled"}
 
         result = authenticated_cli.invoke(["session", "normalize-labels", "-P", "PROJ", "--yes"])

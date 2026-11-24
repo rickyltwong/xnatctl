@@ -38,8 +38,6 @@ logger = logging.getLogger(__name__)
 
 
 class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
-    """Mixin providing single-resource and single/multi-scan download methods."""
-
     def download_resource(
         self,
         session_id: str,
@@ -83,8 +81,6 @@ class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
         output_dir = Path(output_dir)
 
         def notify_error(exc: Exception) -> None:
-            # The notification must never mask the failure it reports, so a
-            # raising callback is suppressed.
             if progress_callback is None:
                 return
             with contextlib.suppress(Exception):
@@ -106,30 +102,12 @@ class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
                     project=project,
                 )
             except AuthenticationError:
-                # Covers SessionExpiredError and PermissionDeniedError too --
-                # an auth failure here will just fail again on the fallback
-                # path, so surfacing it directly is more honest than masking
-                # it with a doomed retry.
                 raise
             except (ResourceNotFoundError, ValueError):
-                # A definitive 404 or a malformed response means the
-                # identifier itself is bad, not that resolution merely
-                # hiccuped -- it must not be swallowed by the fallback below.
                 raise
             except XNATCtlError:
-                # Any other typed failure (network, server, retry-exhausted)
-                # is deliberately discarded: resolution is best-effort
-                # normalization, and a transient hiccup here must not doom an
-                # otherwise-valid accession ID. The fallback retries via the
-                # direct /data/experiments/{id} path -- if that also fails,
-                # ITS error is the one that propagates under this method's
-                # contract.
                 resolved_experiment_ref = ExperimentRef(experiment=session_id)
 
-            # Build path - always use /data/experiments/{id}/... for reliable ZIP downloads.
-            # `is not None`, not truthy: `scan_id=""` is a caller mistake, not
-            # "no scan scope" -- it must not silently widen to a session-level
-            # resource. ScanRef's own validation rejects the empty string.
             if scan_id is not None:
                 path = HierarchyService.build_resource_path(
                     ResourceRef(
@@ -146,11 +124,6 @@ class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
 
             params = {"format": "zip"}
 
-            # `resource_label` reaches Windows path handling raw wherever it
-            # is joined onto a local path below (e.g. "C:escape" is
-            # drive-relative, discarding the base entirely) unless validated
-            # first -- validate_xnat_resource_label above only covers URL
-            # safety, not local-filesystem safety.
             safe_resource_label = validate_local_path_component(resource_label, "resource_label")
             zip_path = _safe_output_path(output_dir, zip_filename, f"{safe_resource_label}.zip")
 
@@ -176,10 +149,6 @@ class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
             skipped: list[str] = []
             if extract:
                 extract_dir = output_dir / safe_resource_label
-                # A pre-existing symlink at exactly this path would resolve
-                # OUTSIDE output_dir -- _safe_extract_zip's own containment
-                # check then anchors to that escaped location. Verified one
-                # level up, against the true caller-supplied root.
                 verify_directory_contained_in(extract_dir, output_dir, "extraction directory")
                 skipped = _safe_extract_zip(zip_path, extract_dir)
                 if skipped:
@@ -206,11 +175,6 @@ class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
             )
 
         except XNATCtlError as e:
-            # Typed failures already carry the right class and exit code -- an
-            # expired session, a permission denial, a 404, or the DownloadError
-            # stream_to_file raises on a short read. Passing them through is the
-            # whole point: a caller can distinguish them instead of reading a
-            # stringified summary.
             notify_error(e)
             raise
         except Exception as e:
@@ -331,29 +295,15 @@ class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
         except AuthenticationError:
             raise
         except (ResourceNotFoundError, ValueError):
-            # A definitive 404 or a malformed response means the identifier
-            # itself is bad; do not paper over it with the fallback below.
             raise
         except XNATCtlError:
-            # Best-effort normalization -- see the sibling try/except in
-            # download_resource for the full rationale.
             resolved_experiment_ref = ExperimentRef(experiment=session_id)
 
-        # XNAT's own comma-delimited multi-scan syntax (`/scans/1,2,3/files`) --
-        # NOT a single opaque path segment, so it cannot go through ScanRef +
-        # the normal builder chain the way one scan ID does: that would quote
-        # the whole joined string as one segment, percent-encoding the very
-        # commas that make it a batch spec (and double-encoding any ID that
-        # itself needed escaping). Each ID is quoted on its own instead, then
-        # rejoined with a literal comma.
         scans_suffix = ",".join(quote_path_segment(scan_id) for scan_id in scan_ids)
         scans_base_path = HierarchyService.build_experiment_path(
             HierarchyService.routable_scan_parent(resolved_experiment_ref), "scans"
         )
 
-        # `is not None`, not truthy: `resource=""` is a caller mistake, not
-        # "no resource filter" -- it must not silently widen to all
-        # resources. validate_xnat_resource_label rejects it explicitly.
         if resource is not None:
             resource = validate_xnat_resource_label(resource)
             path = (
@@ -389,9 +339,6 @@ class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
             skipped: list[str] = []
             if extract:
                 extract_dir = output_dir / "scans"
-                # "scans" is a fixed literal, not identifier-derived, but the
-                # same symlink risk applies to any pre-existing entry at this
-                # path -- verified against the true caller-supplied root.
                 verify_directory_contained_in(extract_dir, output_dir, "extraction directory")
                 skipped = _safe_extract_zip(zip_path, extract_dir)
                 if skipped:

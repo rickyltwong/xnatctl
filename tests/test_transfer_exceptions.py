@@ -1,5 +1,3 @@
-"""Tests for transfer-specific exceptions."""
-
 from __future__ import annotations
 
 from xnatctl.core.exceptions import (
@@ -13,11 +11,6 @@ from xnatctl.core.exceptions import (
 
 class TestTransferExceptions:
     def test_transfer_error_is_operation_error(self) -> None:
-        """str() is the message alone; details survive for verbose output.
-
-        Appending the details dict to every message would make user-facing
-        errors restate themselves as debug noise.
-        """
         err = TransferError("something broke")
         assert str(err) == "something broke"
         assert err.details.get("operation") == "transfer"

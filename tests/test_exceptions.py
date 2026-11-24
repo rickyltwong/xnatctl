@@ -1,13 +1,3 @@
-"""Error-rendering contract for the exception hierarchy.
-
-Two changes are pinned here. ``str(exc)`` is now the message alone -- it used
-to append the details dict, so users saw
-``Profile not found: prod (field=profile, value='prod')`` where the suffix only
-restated the message. And exceptions with a clear next step now carry a
-``hint``, rendered as a dimmed ``Try:`` line instead of being hand-written at
-whichever call site happened to think of it.
-"""
-
 from __future__ import annotations
 
 import re
@@ -31,13 +21,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def plain(text: str) -> str:
-    """Strip Rich colour codes and soft-wrap newlines."""
     return _ANSI_RE.sub("", text).replace("\n", " ")
-
-
-# =============================================================================
-# str() is the message, nothing else
-# =============================================================================
 
 
 def test_profile_not_found_has_no_details_suffix() -> None:
@@ -49,9 +33,6 @@ def test_resource_not_found_has_no_details_suffix() -> None:
 
 
 def test_session_expired_does_not_repeat_the_url() -> None:
-    """It read `Authentication failed for https://x: Session expired ... (url=https://x)`
-    -- the URL twice, once as noise.
-    """
     message = str(SessionExpiredError("https://xnat.example.org"))
 
     assert message.count("https://xnat.example.org") == 1
@@ -59,7 +40,6 @@ def test_session_expired_does_not_repeat_the_url() -> None:
 
 
 def test_details_survive_for_verbose_output() -> None:
-    """Dropping the suffix must not drop the data behind it."""
     error = ProfileNotFoundError("nonexistent")
 
     assert error.details == {"field": "profile", "value": "'nonexistent'"}
@@ -69,11 +49,6 @@ def test_message_attribute_and_str_agree() -> None:
     error = InputValidationError("bad input", field="name", value="x")
 
     assert str(error) == error.message == "bad input"
-
-
-# =============================================================================
-# Hints
-# =============================================================================
 
 
 @pytest.mark.parametrize(
@@ -93,7 +68,6 @@ def test_hint_names_a_next_step(error: XNATCtlError, expected: str) -> None:
 
 
 def test_errors_without_a_clear_next_step_have_no_hint() -> None:
-    """A vague hint is worse than none, so the default stays None."""
     assert XNATCtlError("something went wrong").hint is None
     assert ConfigurationError("malformed YAML").hint is None
     assert NetworkError("https://x.example.org", "connection reset").hint is None
@@ -107,11 +81,6 @@ def test_instance_can_override_the_class_hint() -> None:
 
 def test_session_expired_hint_is_more_specific_than_its_parent() -> None:
     assert SessionExpiredError("https://x").hint != AuthenticationError("https://x").hint
-
-
-# =============================================================================
-# Rendering
-# =============================================================================
 
 
 def test_error_and_hint_are_two_clean_lines(capsys: pytest.CaptureFixture[str]) -> None:
@@ -159,7 +128,6 @@ def test_hintless_error_renders_only_the_message(capsys: pytest.CaptureFixture[s
 
 
 def test_hint_is_redacted(capsys: pytest.CaptureFixture[str]) -> None:
-    """Hints are ordinary strings and could carry a URL."""
     from xnatctl.core.output import print_hint
 
     print_hint("Retry against https://xnat.example.org/x?token=s3cret")
@@ -167,11 +135,6 @@ def test_hint_is_redacted(capsys: pytest.CaptureFixture[str]) -> None:
     err = plain(capsys.readouterr().err)
     assert "s3cret" not in err
     assert "token=***" in err
-
-
-# =============================================================================
-# Deprecated stdlib-shadowing aliases
-# =============================================================================
 
 
 def test_deprecated_connection_error_warns_and_subclasses_canonical() -> None:
@@ -202,7 +165,6 @@ def test_deprecated_validation_error_warns_and_subclasses_canonical() -> None:
 
 
 def test_internal_connection_errors_are_not_the_deprecated_alias() -> None:
-    """The deprecation's whole point: raised errors do not match ``except ConnectionError``."""
     from xnatctl.core.exceptions import ConnectionError as DeprecatedConnectionError
 
     assert not isinstance(NetworkError("https://x"), DeprecatedConnectionError)

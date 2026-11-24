@@ -26,34 +26,16 @@ from xnatctl.models.progress import VerificationReport
 
 _HASH_CHUNK_SIZE = 1024 * 1024
 
-# `_extract_scan_zip` renames a freshly downloaded file to `X__dup1` (then
-# `__dup2`, ...) when `X` already exists on disk -- a purely local disk
-# collision-avoidance step the server knows nothing about, so the server's
-# manifest references the un-renamed name UNLESS a server file is genuinely
-# named that way (rare, but real -- see `_fold_local_dups`).
 _DUP_SUFFIX_RE = re.compile(r"^(?P<stem>.*)__dup(?P<n>\d+)(?P<suffix>\.[^./]*)?$")
 
 
 def _scan_tree_key(parts: tuple[str, ...]) -> str | None:
-    """(a) Anchored at position 0: ``scans/{scan_id}/resources/{label}/files/{name...}``.
-
-    This is the shape a session download's extracted scan tree uses
-    (``session_dir`` is the root), and -- after skipping one leading
-    wrapper segment -- the shape a scan ZIP's own members use too; see
-    :func:`scan_source_key`.
-    """
     if len(parts) > 5 and parts[0] == "scans" and parts[2] == "resources" and parts[4] == "files":
         return f"scans/{parts[1]}/resources/{parts[3]}/{'/'.join(parts[5:])}"
     return None
 
 
 def _scan_tree_prescoped_key(parts: tuple[str, ...], resource_label: str) -> str | None:
-    """The pre-scoped shape a single-resource download's server ZIP may use.
-
-    ``scans/{scan_id}/files/{name}`` or ``scans/{scan_id}/{label}/files/{name}``,
-    anchored at position 0 -- the ``resources/{label}`` marker omitted (the
-    live shape is unconfirmed, so both are accepted).
-    """
     if len(parts) < 3 or parts[0] != "scans":
         return None
     rest = parts[2:]
@@ -192,10 +174,6 @@ def key_from_uri(parts: Sequence[str]) -> str | None:
 
 
 def _canonical_key_and_rank(key: str) -> tuple[str, int]:
-    """Strip an `_extract_scan_zip`-style ``__dupN`` marker from a key's final segment.
-
-    Returns ``(key, 0)`` unchanged when there is no such marker.
-    """
     head, _, name = key.rpartition("/")
     match = _DUP_SUFFIX_RE.match(name)
     if match is None:
@@ -208,14 +186,6 @@ def _canonical_key_and_rank(key: str) -> tuple[str, int]:
 def _fold_local_dups(
     local_index: dict[str, Path], manifest: dict[str, str | None], collisions: set[str]
 ) -> dict[str, Path]:
-    """Fold local ``__dupN`` keys the manifest doesn't know about onto their canonical key.
-
-    A literal ``X__dupN`` key present in the *manifest* is a real server
-    file -- left indexed under its own name, untouched. Otherwise it can only
-    be `_extract_scan_zip`'s local rename of a fresh re-download of ``X``, so
-    it is folded onto canonical key ``X``, keeping whichever dup has the
-    highest rank (the file the most recent download actually produced).
-    """
     folded = dict(local_index)
     dup_candidates: dict[str, list[tuple[int, Path]]] = {}
     for key, path in local_index.items():
@@ -254,14 +224,6 @@ def _md5_zip_member(zf: zipfile.ZipFile, member: str) -> str:
 def _index_local_tree(
     root: Path, *, resource_label: str | None, wrapped: bool
 ) -> tuple[dict[str, Path], list[str]]:
-    """Index an extracted scan tree by :func:`scan_source_key`.
-
-    Two different, unrelated files mapping to the same key are reported as
-    collisions and excluded from the index (never silently last-write-wins).
-    ``__dupN`` folding is deliberately NOT done here: it needs the server
-    manifest to tell a real dup-named server file from a local rename
-    artifact, so it happens in :func:`verify_manifest` instead.
-    """
     raw: dict[str, list[Path]] = {}
     for path in root.rglob("*"):
         if not path.is_file():
@@ -308,18 +270,6 @@ def _index_scan_zip(
 def _index_session_resource_zip(
     zip_path: Path, *, label: str, manifest: dict[str, str | None]
 ) -> tuple[dict[str, tuple[Path, str]], list[str]]:
-    """Index a session-resource ZIP's members by :func:`session_resource_zip_member_keys`.
-
-    Each member's candidate keys are resolved against *manifest* (ground
-    truth): the first candidate the manifest actually knows about wins. When
-    more than one candidate matches a manifest entry, this member's true
-    name can't be told apart from the manifest alone -- reported as a
-    collision on every key it ambiguously matched, rather than picked
-    arbitrarily. When no candidate matches anything in the manifest (e.g. a
-    genuinely extra local-only file, or a unit test manifest keyed by the
-    expected shape directly), the highest-priority candidate is used, same
-    as before this resolution existed.
-    """
     raw: dict[str, list[str]] = {}
     ambiguous: set[str] = set()
     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -342,12 +292,6 @@ def _index_session_resource_zip(
     return index, collisions
 
 
-#: A ZIP to index. A bare path is a scan-level archive (indexed with the
-#: shared *resource_label*); a ``(path, label)`` pair is a session-resource
-#: ZIP scoped to exactly that one label -- e.g. each
-#: ``resources_{label}.zip`` is a different resource than the scan-level
-#: archive/tree, and is keyed with no marker search at all (see
-#: :func:`session_resource_zip_member_keys`).
 ZipSource = Path | tuple[Path, str]
 
 
@@ -515,16 +459,9 @@ class ManifestCollector:
             self._record(key, row.get("digest"), uri or key)
 
     def _record(self, key: str, digest: object, identity: str) -> None:
-        # A key that has already collided stays collided permanently: without
-        # this, a later row whose fingerprint happens to match one of the
-        # (already-evicted) prior entries would look like a first insertion
-        # and quietly repopulate the manifest.
         if key in self.collisions:
             return
         digest_value = digest if isinstance(digest, str) and digest else None
-        # Lowercased before comparing so two rows reporting the identical
-        # file with differently-cased hex digests are recognized as the same
-        # file, not flagged as a collision.
         fingerprint = (identity, digest_value.lower() if digest_value else None)
         if key in self._fingerprints and self._fingerprints[key] != fingerprint:
             self.collisions.add(key)

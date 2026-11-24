@@ -1,5 +1,3 @@
-"""Tests for project transfer CLI commands."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -14,7 +12,6 @@ from xnatctl.services.transfer.orchestrator import TransferResult
 
 
 def _server_info() -> ServerInfo:
-    """A healthy ping result for transfer-check mocks."""
     return ServerInfo(url="https://xnat.example.org", status="ok", version="1.8.5", latency_ms=5)
 
 
