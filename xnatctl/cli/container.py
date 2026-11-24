@@ -328,12 +328,36 @@ def _parse_params(pairs: tuple[str, ...]) -> dict[str, str]:
     return params
 
 
+_PLACEHOLDER_WORKFLOW_ID = "To be assigned"
+
+
+def _raw_inputs(row: dict[str, Any]) -> dict[Any, Any]:
+    """A container row's ``raw`` inputs as ``{name: value}``: the params its launch was sent.
+
+    Verified live on Container Service 3.7.3: a container row's ``inputs``
+    is a list of ``{"type", "name", "value"}`` objects, and the ``raw``
+    entries carry the launch request's own keys and values (a session
+    launched with ``{"session": "/archive/experiments/E1"}`` lists exactly
+    that). Any other shape yields ``{}``, which matches no launch that sent
+    a param.
+    """
+    inputs = row.get("inputs")
+    if not isinstance(inputs, list):
+        return {}
+    return {
+        i.get("name"): i.get("value")
+        for i in inputs
+        if isinstance(i, dict) and i.get("type") == "raw"
+    }
+
+
 def _locate_launched_container(
     service: ContainerService,
     *,
     project: str,
     wrapper_id: int,
     workflow_id: str,
+    launch_params: dict[str, str],
     known_ids: set[str],
 ) -> str | None:
     """Find the container id a launch produced, or ``None`` if it hasn't appeared yet.
@@ -341,27 +365,31 @@ def _locate_launched_container(
     See :func:`_wait_for_launch` for the correlation strategy and its
     verified-vs-assumed parts.
 
-    The ``matches_new`` fallback identifies a container only as "not in the
-    pre-launch snapshot, and running the wrapper we launched". That is all
-    the server gives us when the launch response carries the placeholder
-    workflow-id, and it is not a unique key: if somebody else launches the
-    same wrapper in the same project and their container appears first,
-    this picks theirs and follows it to completion. Waiting would then
-    report a status that is not ours. Nothing here can close that -- the
-    correlating id simply does not exist yet at this point -- so it is a
-    documented limit of ``--wait``, not an oversight. ``matches_workflow``,
-    the path taken whenever the server does return a real workflow-id, has
-    no such ambiguity.
+    A real workflow-id is matched exactly and nothing else is considered.
+    The placeholder is never compared as an id: an older row that still
+    carries it would otherwise match every placeholder launch.
+
+    With the placeholder, the fallback takes a container that is not in
+    the pre-launch snapshot, runs the wrapper we launched, and whose
+    ``raw`` inputs carry every param we sent (see :func:`_raw_inputs`).
+    The inputs are what tell our container from a neighbour's when several
+    people launch the same wrapper in one project at once, each on their
+    own scan. Two launches of the same wrapper with identical params at the
+    same moment are still indistinguishable -- either container ran the
+    same request -- and that remains a documented limit of ``--wait``.
     """
     for row in service.list(project=project):
         row_id = str(row.get("id"))
-        matches_workflow = str(row.get("workflow-id")) == workflow_id
-        matches_new = (
-            workflow_id == "To be assigned"
-            and row.get("wrapper-id") == wrapper_id
+        if workflow_id != _PLACEHOLDER_WORKFLOW_ID:
+            if str(row.get("workflow-id")) == workflow_id:
+                return row_id
+            continue
+        raw_inputs = _raw_inputs(row)
+        if (
+            row.get("wrapper-id") == wrapper_id
             and row_id not in known_ids
-        )
-        if matches_workflow or matches_new:
+            and all(raw_inputs.get(key) == value for key, value in launch_params.items())
+        ):
             return row_id
     return None
 
@@ -372,6 +400,7 @@ def _wait_for_launch(
     *,
     project: str,
     wrapper_id: int,
+    launch_params: dict[str, str],
     launch_result: dict[str, Any],
     known_ids: set[str],
     timeout: int,
@@ -389,8 +418,9 @@ def _wait_for_launch(
     ``"To be assigned"`` -- verified live to happen whenever the async
     launch has not resolved by response time, which is the common case --
     there is no id to match on, so this falls back to the first NEW
-    container for this wrapper that was not present in ``known_ids``, a
-    snapshot the caller must take immediately before calling
+    container for this wrapper whose raw inputs carry ``launch_params``
+    (see :func:`_locate_launched_container`) and that was not present in
+    ``known_ids``, a snapshot the caller must take immediately before calling
     ``service.launch()``. Taking the snapshot after the launch instead
     breaks the fallback: the launched container has often already appeared
     in the listing by then, landing it in ``known_ids`` and permanently
@@ -424,6 +454,7 @@ def _wait_for_launch(
             project=project,
             wrapper_id=wrapper_id,
             workflow_id=workflow_id,
+            launch_params=launch_params,
             known_ids=known_ids,
         )
         if container_id is not None:
@@ -594,6 +625,7 @@ def container_launch(
             service,
             project=resolved_project,
             wrapper_id=wrapper_id,
+            launch_params=launch_params,
             launch_result=result,
             known_ids=known_ids,
             timeout=timeout,

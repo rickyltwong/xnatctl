@@ -18,6 +18,13 @@ All notable changes to this project will be documented in this file.
 
 **Fixes**
 
+- `container launch --wait` follows the container its own launch started.
+  When the server answers with the placeholder workflow-id, it used to take
+  the first new container for the same wrapper in the project, which was
+  often someone else's when several people launch the same pipeline at
+  once. It now also requires the container's recorded launch inputs to
+  match the ones it sent, and no longer treats an older container that
+  still carries the placeholder as a match.
 - A command no longer runs twice when one of its own requests is refused
   with 401 or 403. With a cached session and a stored password, the login
   check logged in again and re-ran the whole command, so for example

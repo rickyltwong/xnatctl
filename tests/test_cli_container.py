@@ -890,3 +890,97 @@ class TestContainerLaunchScan:
         assert result.exit_code != 0
         assert SCAN_WRAPPER_LABEL in " ".join(result.output.split())
         authenticated_cli.client.post.assert_not_called()
+
+
+def _scan_container(container_id: str, scan_uri: str, *, workflow_id: str = "1") -> dict[str, Any]:
+    """A container row for wrapper 117, its `inputs` shaped as verified live (type/name/value)."""
+    return {
+        "id": container_id,
+        "wrapper-id": 117,
+        "status": "Complete",
+        "workflow-id": workflow_id,
+        "user-id": "someone",
+        "inputs": [
+            {"type": "raw", "name": "scan", "value": scan_uri},
+            {"type": "wrapper-external", "name": "scan", "value": scan_uri},
+        ],
+    }
+
+
+class TestContainerLaunchWaitCorrelation:
+    """`--wait` after a placeholder workflow-id must follow OUR container, not a neighbour's.
+
+    In a room where everyone launches the same wrapper in the same project,
+    "the first new container for this wrapper" is often someone else's.
+    """
+
+    OURS = "/archive/experiments/XNAT_E00001/scans/5"
+
+    def _run(self, cli: AuthenticatedCLI, before: list[Any], after: list[Any]) -> Any:
+        post_has_fired = False
+        get_json = dict(SCAN_LAUNCH_GET_JSON)
+        details = {f"/xapi/containers/{row['id']}": row for row in before + after}
+
+        def get_json_dispatch(path: str, **_kwargs: Any) -> Any:
+            if path == "/xapi/projects/TESTPROJ/containers":
+                return after if post_has_fired else before
+            if path in details:
+                return details[path]
+            if path in get_json:
+                return get_json[path]
+            raise AssertionError(f"unexpected get_json call: {path}")
+
+        def post_dispatch(_path: str, **_kwargs: Any) -> Any:
+            nonlocal post_has_fired
+            post_has_fired = True
+            return make_response(
+                {
+                    "status": "success",
+                    "params": {"scan": self.OURS},
+                    "command-id": 108,
+                    "wrapper-id": 117,
+                    "workflow-id": "To be assigned",
+                }
+            )
+
+        cli.client.get.side_effect = _dispatch_get(SCAN_LAUNCH_GET)
+        cli.client.get_json.side_effect = get_json_dispatch
+        cli.client.post.side_effect = post_dispatch
+        return cli.invoke(
+            [
+                "container",
+                "launch",
+                SCAN_WRAPPER_LABEL,
+                "-E",
+                "TESTPROJ_S1_MR",
+                "--scan",
+                "5",
+                "--wait",
+                "--timeout",
+                "5",
+                "-o",
+                "json",
+            ]
+        )
+
+    def test_follows_the_new_container_with_our_inputs(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        neighbour = _scan_container("801", "/archive/experiments/XNAT_E00002/scans/5")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[neighbour, ours])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_placeholder_workflow_id_on_an_old_row_is_not_a_match(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        stale = _scan_container("700", self.OURS, workflow_id="To be assigned")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[stale], after=[stale, ours])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
