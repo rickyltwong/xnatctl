@@ -18,6 +18,14 @@ All notable changes to this project will be documented in this file.
 
 **Fixes**
 
+- A command no longer runs twice when one of its own requests is refused
+  with 401 or 403. With a cached session and a stored password, the login
+  check logged in again and re-ran the whole command, so for example
+  `container launch --wait` denied while polling sent its launch a second
+  time; without a stored password it reported "Session expired" instead
+  of the refusal. Only the session check before the command can now lead
+  to a new login, so a session that expires part-way through a command
+  stops it with that error instead of restarting it.
 - The Windows release's checksum file (`xnatctl-windows-amd64.zip.sha256`)
   ends in a plain newline, so `sha256sum -c` accepts it. Through
   0.6.3 it ended in CRLF, and `sha256sum -c` read the CR as part of the
