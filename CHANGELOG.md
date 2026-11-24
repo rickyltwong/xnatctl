@@ -22,17 +22,21 @@ All notable changes to this project will be documented in this file.
   When the server answers with the placeholder workflow-id, it used to take
   the first new container for the same wrapper in the project, which was
   often someone else's when several people launch the same pipeline at
-  once. It now also requires the container's recorded launch inputs to
-  match the ones it sent, and no longer treats an older container that
-  still carries the placeholder as a match.
+  once. It now takes only a new container whose recorded launch inputs
+  equal the ones it sent. When two containers match (the same wrapper
+  launched with identical inputs), it says so and stops instead of
+  guessing, and a timeout lists any new containers of the wrapper that
+  did not match. A missing, null or placeholder workflow-id is no longer
+  compared as an id, so an older container carrying one is not a match.
 - A command no longer runs twice when one of its own requests is refused
   with 401 or 403. With a cached session and a stored password, the login
   check logged in again and re-ran the whole command, so for example
   `container launch --wait` denied while polling sent its launch a second
   time; without a stored password it reported "Session expired" instead
   of the refusal. Only the session check before the command can now lead
-  to a new login, so a session that expires part-way through a command
-  stops it with that error instead of restarting it.
+  to a new login and a fresh start of the command. A single request that
+  the client itself retries after logging in again is unchanged; what no
+  longer happens is the whole command starting over.
 - The Windows release's checksum file (`xnatctl-windows-amd64.zip.sha256`)
   ends in a plain newline, so `sha256sum -c` accepts it. Through
   0.6.3 it ended in CRLF, and `sha256sum -c` read the CR as part of the

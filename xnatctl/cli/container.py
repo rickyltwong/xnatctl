@@ -331,67 +331,95 @@ def _parse_params(pairs: tuple[str, ...]) -> dict[str, str]:
 _PLACEHOLDER_WORKFLOW_ID = "To be assigned"
 
 
-def _raw_inputs(row: dict[str, Any]) -> dict[Any, Any]:
+def _real_workflow_id(value: Any) -> str | None:
+    """A workflow-id that identifies one workflow, as text; ``None`` for anything else.
+
+    The launch response's placeholder, a missing or JSON-null value, an empty
+    string and a boolean all name no workflow. Stringifying them blindly
+    would make ``"None"`` or ``"To be assigned"`` look like an id that some
+    older container row also carries.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value.strip() and value != _PLACEHOLDER_WORKFLOW_ID:
+        return value
+    return None
+
+
+def _raw_inputs(row: dict[str, Any]) -> dict[str, Any] | None:
     """A container row's ``raw`` inputs as ``{name: value}``: the params its launch was sent.
 
     Verified live on Container Service 3.7.3: a container row's ``inputs``
     is a list of ``{"type", "name", "value"}`` objects, and the ``raw``
     entries carry the launch request's own keys and values (a session
     launched with ``{"session": "/archive/experiments/E1"}`` lists exactly
-    that). Any other shape yields ``{}``, which matches no launch that sent
-    a param.
+    that). Returns ``None`` when ``inputs`` is a list holding a ``raw``
+    entry whose name is not a string -- a shape this cannot compare -- and
+    ``{}`` when the row records no raw inputs at all.
     """
     inputs = row.get("inputs")
     if not isinstance(inputs, list):
         return {}
-    return {
-        i.get("name"): i.get("value")
-        for i in inputs
-        if isinstance(i, dict) and i.get("type") == "raw"
-    }
+    raw: dict[str, Any] = {}
+    for entry in inputs:
+        if not isinstance(entry, dict) or entry.get("type") != "raw":
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str):
+            return None
+        raw[name] = entry.get("value")
+    return raw
 
 
-def _locate_launched_container(
+def _launch_candidates(
     service: ContainerService,
     *,
     project: str,
     wrapper_id: int,
-    workflow_id: str,
+    workflow_id: str | None,
     launch_params: dict[str, str],
     known_ids: set[str],
-) -> str | None:
-    """Find the container id a launch produced, or ``None`` if it hasn't appeared yet.
+) -> tuple[list[str], list[str]]:
+    """List the containers that could be this launch's, and the other new ones of its wrapper.
 
     See :func:`_wait_for_launch` for the correlation strategy and its
     verified-vs-assumed parts.
 
-    A real workflow-id is matched exactly and nothing else is considered.
-    The placeholder is never compared as an id: an older row that still
-    carries it would otherwise match every placeholder launch.
+    With a real workflow-id (see :func:`_real_workflow_id`) a container
+    matches when its own real workflow-id is the same, and nothing else is
+    considered.
 
-    With the placeholder, the fallback takes a container that is not in
-    the pre-launch snapshot, runs the wrapper we launched, and whose
-    ``raw`` inputs carry every param we sent (see :func:`_raw_inputs`).
-    The inputs are what tell our container from a neighbour's when several
-    people launch the same wrapper in one project at once, each on their
-    own scan. Two launches of the same wrapper with identical params at the
-    same moment are still indistinguishable -- either container ran the
-    same request -- and that remains a documented limit of ``--wait``.
+    Without one, a container matches when it is not in the pre-launch
+    snapshot, runs the wrapper we launched, and its ``raw`` inputs equal
+    the params we sent -- all of them and nothing more (see
+    :func:`_raw_inputs`). The inputs are what tell our container from a
+    neighbour's when several people launch the same wrapper in one project
+    at once, each on their own scan. Two launches of the same wrapper with
+    identical params are still indistinguishable; the caller refuses to
+    guess between them.
+
+    Returns:
+        ``(matching ids, other new ids of this wrapper)``. The second list is
+        only for explaining a timeout: containers that appeared but did not
+        record this launch's inputs.
     """
+    matches: list[str] = []
+    others: list[str] = []
     for row in service.list(project=project):
         row_id = str(row.get("id"))
-        if workflow_id != _PLACEHOLDER_WORKFLOW_ID:
-            if str(row.get("workflow-id")) == workflow_id:
-                return row_id
+        if workflow_id is not None:
+            if _real_workflow_id(row.get("workflow-id")) == workflow_id:
+                matches.append(row_id)
             continue
-        raw_inputs = _raw_inputs(row)
-        if (
-            row.get("wrapper-id") == wrapper_id
-            and row_id not in known_ids
-            and all(raw_inputs.get(key) == value for key, value in launch_params.items())
-        ):
-            return row_id
-    return None
+        if row.get("wrapper-id") != wrapper_id or row_id in known_ids:
+            continue
+        if _raw_inputs(row) == launch_params:
+            matches.append(row_id)
+        else:
+            others.append(row_id)
+    return matches, others
 
 
 def _wait_for_launch(
@@ -417,9 +445,9 @@ def _wait_for_launch(
     docstring). When the response instead carries the literal placeholder
     ``"To be assigned"`` -- verified live to happen whenever the async
     launch has not resolved by response time, which is the common case --
-    there is no id to match on, so this falls back to the first NEW
-    container for this wrapper whose raw inputs carry ``launch_params``
-    (see :func:`_locate_launched_container`) and that was not present in
+    there is no id to match on, so this falls back to the one NEW
+    container for this wrapper whose raw inputs equal ``launch_params``
+    (see :func:`_launch_candidates`) and that was not present in
     ``known_ids``, a snapshot the caller must take immediately before calling
     ``service.launch()``. Taking the snapshot after the launch instead
     breaks the fallback: the launched container has often already appeared
@@ -439,17 +467,23 @@ def _wait_for_launch(
 
     Raises:
         click.ClickException: On a ``timeout`` with no matching container
-            found, or with one found but stuck at a non-terminal status.
+            found, or with one found but stuck at a non-terminal status; or
+            when more than one container matches, which ``--wait`` will not
+            guess between.
     """
-    workflow_id = str(launch_result.get("workflow-id"))
+    workflow_id = _real_workflow_id(launch_result.get("workflow-id"))
     deadline = time.monotonic() + timeout
 
     if not ctx.quiet:
-        click.echo(f"Waiting for a container matching workflow-id {workflow_id}...", err=True)
+        target = (
+            f"workflow-id {workflow_id}"
+            if workflow_id is not None
+            else f"wrapper {wrapper_id} and this launch's inputs"
+        )
+        click.echo(f"Waiting for a container matching {target}...", err=True)
 
-    container_id: str | None = None
-    while container_id is None:
-        container_id = _locate_launched_container(
+    while True:
+        matches, others = _launch_candidates(
             service,
             project=project,
             wrapper_id=wrapper_id,
@@ -457,12 +491,25 @@ def _wait_for_launch(
             launch_params=launch_params,
             known_ids=known_ids,
         )
-        if container_id is not None:
+        if len(matches) == 1:
+            container_id = matches[0]
             break
+        if len(matches) > 1:
+            raise click.ClickException(
+                f"The launch was queued, but containers {', '.join(matches)} all match it "
+                f"(wrapper {wrapper_id}, the same inputs), so --wait cannot tell which one "
+                "is this launch. Follow one with 'xnatctl container show <id>'."
+            )
         if time.monotonic() >= deadline:
+            unmatched = (
+                f" {len(others)} new container(s) for wrapper {wrapper_id} appeared "
+                f"({', '.join(others)}), but none recorded this launch's inputs."
+                if others
+                else ""
+            )
             raise click.ClickException(
                 f"--wait timed out after {timeout}s: no container matching this launch "
-                f"appeared under project {project!r}."
+                f"appeared under project {project!r}.{unmatched}"
             )
         time.sleep(_POLL_INTERVAL_SECONDS)
 
@@ -601,7 +648,7 @@ def container_launch(
     # The --wait correlation snapshot has to be taken before the launch
     # fires, not after: the launched container is often already present in
     # the listing by the time a post-launch snapshot would run, which used
-    # to poison the "first NEW container" fallback by pre-marking it known.
+    # to poison the "new container" fallback by pre-marking it known.
     # See _wait_for_launch's docstring.
     known_ids = (
         {str(row.get("id")) for row in service.list(project=resolved_project)} if wait else set()
