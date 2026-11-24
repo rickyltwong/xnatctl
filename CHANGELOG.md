@@ -28,8 +28,9 @@ All notable changes to this project will be documented in this file.
   for only after the launch, and only when the response has no real
   workflow-id; if the server does not confirm it, or the lookup had to log
   in again, `--wait` says the launch was queued and stops, rather than trust
-  a configured username. A failed lookup keeps its own exit code, and the
-  time it takes counts against `--timeout`. The one case it still cannot settle is one user launching the same
+  a configured username. An authentication or permission error in the
+  lookup keeps its exit code, and the time it takes counts against
+  `--timeout`. The one case it still cannot settle is one user launching the same
   pipeline with identical inputs twice at once: when both containers are
   visible it stops and lists them instead of guessing. A timeout lists
   the new containers of the wrapper that did not match. A missing, null
