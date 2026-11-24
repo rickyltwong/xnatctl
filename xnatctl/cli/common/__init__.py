@@ -466,12 +466,17 @@ def require_auth(f: F) -> F:
         profile_name = ctx.profile_name or (ctx.config.default_profile if ctx.config else "default")
 
         if client.is_authenticated:
+            # Only the session check may lead to a re-login. The command runs
+            # outside this try: an AuthenticationError it raises (a 403 is one)
+            # may come after it already changed something, and running it
+            # again from the top would repeat that change.
             try:
                 client.whoami()
-                return f(ctx, *args, **kwargs)
             except AuthenticationError:
                 ctx.auth_manager.clear_session(profile_name)
                 client.session_token = None
+            else:
+                return f(ctx, *args, **kwargs)
 
         profile = None
         if ctx.config is not None:

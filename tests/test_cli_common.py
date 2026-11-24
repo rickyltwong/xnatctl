@@ -19,7 +19,7 @@ from xnatctl.cli.common import (
     resolve_columns,
 )
 from xnatctl.core.config import Config, Profile
-from xnatctl.core.exceptions import AuthenticationError
+from xnatctl.core.exceptions import AuthenticationError, PermissionDeniedError
 
 
 def _protected_command(ctx: Context) -> str:
@@ -104,6 +104,45 @@ def test_require_auth_raises_when_session_expired_and_no_creds(monkeypatch):
     message = str(excinfo.value)
     assert "Session expired" in message
     assert "xnatctl auth login" in message
+
+
+@pytest.mark.parametrize("has_credentials", [True, False], ids=["credentials", "no-credentials"])
+def test_require_auth_runs_the_command_once_when_a_later_request_is_denied(
+    monkeypatch, has_credentials: bool
+):
+    """Only the session check may trigger a re-login; the command itself runs once.
+
+    A command that already POSTed a launch and is then denied while polling
+    must not be logged in again and re-run from the top -- that would send
+    the POST a second time -- nor be reported as an expired session.
+    """
+    monkeypatch.delenv("XNAT_USER", raising=False)
+    monkeypatch.delenv("XNAT_PASS", raising=False)
+    ctx = Context()
+    ctx.config = Config(profiles={"default": Profile(url="https://example.org")})
+    if has_credentials:
+        ctx.config.profiles["default"].username = "user"
+        ctx.config.profiles["default"].password = "pass"
+
+    client = MagicMock()
+    client.base_url = "https://example.org"
+    client.is_authenticated = True
+    client.authenticate.return_value = "new-token"
+    ctx.client = cast(Any, client)
+    ctx.auth_manager = MagicMock()
+
+    runs: list[str] = []
+
+    def launch_then_poll(ctx: Context) -> str:
+        runs.append("POST")
+        raise PermissionDeniedError("https://example.org", "403 on GET /xapi/containers/1")
+
+    with pytest.raises(PermissionDeniedError):
+        require_auth(launch_then_poll)(ctx)
+
+    assert runs == ["POST"]
+    client.authenticate.assert_not_called()
+    ctx.auth_manager.clear_session.assert_not_called()
 
 
 def test_get_client_uses_cached_session_username_as_hint():

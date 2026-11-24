@@ -686,7 +686,7 @@ class XNATClient:
         Raises:
             AuthenticationError: If not authenticated.
         """
-        current_username = self._get_current_username()
+        current_username = self.current_username()
         if current_username:
             display_username = self._apply_username_hint(current_username)
             details = self._get_user_details(current_username)
@@ -699,8 +699,12 @@ class XNATClient:
 
         return UserInfo(username="unknown", enabled=False)
 
-    def _get_current_username(self) -> str | None:
-        """Resolve the authenticated username from server endpoints.
+    def current_username(self) -> str | None:
+        """Return the login the server reports for this session, or ``None``.
+
+        Unlike :meth:`whoami`, this never falls back to the configured
+        username and applies no display casing: it is the server's own login,
+        as Container Service records it in a container's ``user-id``.
 
         Some XNAT deployments return a full user listing from `/data/user`,
         which is not a reliable whoami source. Prefer dedicated current-user
