@@ -9,7 +9,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_forwarding_alias_cb,
     apply_filter,
     apply_sort_limit,
     default_project_from_context,
@@ -456,6 +455,17 @@ def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
     )
 
 
+def _reject_empty_output_file(ctx: click.Context, param: click.Parameter, value: str) -> str:
+    """Refuse ``--output-file ""`` while parsing, before any login.
+
+    Only the empty string: a name made of spaces is a valid POSIX filename.
+    """
+    del ctx, param
+    if value == "":
+        raise click.BadParameter("cannot be empty")
+    return value
+
+
 @resource.command("download")
 @click.option("--project", "-P", "project_id", help="Download a project-scope resource")
 @click.option("--subject", "-S", help="Download a subject-scope resource (requires --project)")
@@ -466,14 +476,9 @@ def resource_refresh(ctx: Context, uri: str, options: tuple[str, ...]) -> None:
     "-f",
     "out",
     type=click.Path(),
+    required=True,
+    callback=_reject_empty_output_file,
     help="Output file path",
-)
-@click.option(
-    "--file",
-    "legacy_file_flag",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("--file", "out"),
 )
 @click.option("--scan", help="Download from scan resource (requires a session)")
 @global_options
@@ -485,7 +490,7 @@ def resource_download(
     subject: str | None,
     session_id: str | None,
     resource_label: str | None,
-    out: str | None,
+    out: str,
     scan: str | None,
 ) -> None:
     """Download a resource as ZIP from any hierarchy level.
@@ -497,15 +502,6 @@ def resource_download(
         xnatctl resource download -P MYPROJ TEMPLATEFLOW -f ./tf.zip
         xnatctl resource download -P MYPROJ -S SUB01 QC -f ./qc.zip
     """
-    # `--output-file` is not required=True at the Click level: the
-    # deprecated `--file` alias forwards into this same param via a
-    # callback that runs after Click's own required-check would already
-    # have fired (Click checks each option's own parsed value, not
-    # ctx.params), so required=True here would reject a bare `--file`.
-    # Enforced by hand instead.
-    if not out:
-        raise click.UsageError("Missing option '--output-file' / '-f'.")
-
     # Only one positional supplied -> it is the RESOURCE_LABEL; the parent comes
     # from --project/--subject (project- or subject-scope resources).
     if resource_label is None:

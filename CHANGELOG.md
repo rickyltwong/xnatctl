@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+**Breaking**
+
+- The flags deprecated in 0.5.0 are removed, as their warnings announced.
+  Each now fails with "No such option"; use the replacement instead:
+  - `-e` -> `-E` / `--experiment` on `pipeline run`, `pipeline jobs` and
+    `admin refresh-catalogs`
+  - `resource download --file` -> `--output-file` / `-f`
+  - `api post -f` and `api put -f` -> `--file`
+  - `container logs -f` -> `--follow`
+  - `scan delete -s` and `scan download -s` -> `--scans`
+
+  `pipeline run --experiment`, `scan download --scans` and
+  `resource download --output-file` are now required by Click itself, so
+  leaving one out is reported before login instead of after it, with the
+  same message and exit code 2. An empty or whitespace-only `--experiment`,
+  and an empty `--output-file`, are also refused before login with exit
+  code 2.
+
 **Features**
 
 - `container launch -E SESSION --scan SCAN_ID` runs a scan-level pipeline on

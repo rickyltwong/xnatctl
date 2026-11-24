@@ -91,7 +91,7 @@ has a numeric ID (assigned by the scanner or XNAT) and a series description.
 .. code-block:: console
 
    $ xnatctl scan list -E XNAT_E00001
-   $ xnatctl scan download -E XNAT_E00001 -s 1,2,3 --out ./data
+   $ xnatctl scan download -E XNAT_E00001 --scans 1,2,3 --out ./data
 
 
 Resources
