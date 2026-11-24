@@ -206,7 +206,9 @@ xnatctl authenticates with your XNAT server using session tokens. When you run
 ``auth login``, xnatctl sends your credentials to the server and receives a
 **JSESSIONID** token -- a temporary key that proves your identity for subsequent
 requests. This token is cached locally at ``~/.config/xnatctl/.session`` (with
-restricted file permissions) and reused automatically for subsequent commands.
+restricted file permissions), one per profile, and reused automatically by later
+commands that use the same profile, as long as that profile still names the same
+server and user.
 
 Session tokens expire after a period of inactivity (15 minutes by default). When
 xnatctl detects an expired session, it re-authenticates using your stored credentials

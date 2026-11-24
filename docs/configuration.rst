@@ -325,10 +325,16 @@ credentials to the XNAT REST API and receives a JSESSION token in return.
    $ xnatctl auth login
 
 xnatctl caches the resulting session token at ``~/.config/xnatctl/.session`` with
-file permissions set to ``0600`` (owner read/write only). The cache stores the token,
-the server URL, the username, and an expiry timestamp. XNAT sessions expire after
-15 minutes of inactivity by default, and xnatctl respects this window -- once the
-cached token passes its expiry time, it is discarded automatically.
+file permissions set to ``0600`` (owner read/write only). The cache holds one session
+per profile, each with the token, the server URL, the username, and an expiry
+timestamp. A command uses its profile's session only while the profile still has
+the same server URL and the same user (``XNAT_USER``, else the profile's
+``username``). Two profiles on one server with different users therefore never run
+as each other, and switching between them does not log either one out. A
+``.session.lock`` file beside the cache keeps concurrent commands from
+overwriting each other's changes to it. XNAT sessions expire after 15 minutes
+of inactivity by default, and xnatctl respects this window -- once the cached
+token passes its expiry time, it is discarded automatically.
 
 If a command encounters an expired session, the ``@require_auth`` decorator
 re-authenticates transparently using your stored credentials or environment variables.
@@ -341,11 +347,12 @@ use the ``whoami`` command:
 
    $ xnatctl whoami
 
-You can also explicitly clear your session at any time:
+You can also explicitly end a profile's session at any time. Other profiles'
+sessions are left alone:
 
 .. code-block:: console
 
-   $ xnatctl auth logout
+   $ xnatctl auth logout --profile myserver
 
 .. warning::
 
@@ -389,12 +396,13 @@ without breaking files written by an older xnatctl:
   produce one warning listing them and are otherwise ignored -- never a
   hard error, so a config edited by a newer xnatctl keeps working with an
   older one.
-- The session cache has no version field predating it, and no migration
-  table: a missing ``version`` key is simply version 1, and loads
-  normally. Any other mismatch (older, newer, or unparseable) discards the
-  cached token and falls through to a normal re-authentication instead of
+- The session cache has no migration table. A file with any version but
+  the current one (older, newer, missing, or unparseable) is discarded, and
+  the command falls through to a normal re-authentication instead of
   migrating it. There is no user data at stake in a cache entry -- forcing
   a fresh login is always safe, and simpler than a migration would be.
+  Version 2, which keeps one session per profile, replaced the
+  single-session version 1 that way.
 
 The rule for future changes: **any change to the config file format ships
 a migration function keyed off the version field**, and old files keep
