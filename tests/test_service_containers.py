@@ -8,13 +8,14 @@ docstring). The sample row here uses a subset of that real field set.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError, XNATCtlError
 from xnatctl.services.commands import CommandService
-from xnatctl.services.containers import ContainerService
+from xnatctl.services.containers import ContainerService, ScanLaunch
 
 SAMPLE_CONTAINER = {
     "id": "501",
@@ -300,6 +301,263 @@ class TestPreflightLaunch:
 
         with pytest.raises(ResourceNotFoundError):
             service.preflight_launch("BADPROJ", SAMPLE_WRAPPER, {})
+
+
+AVAILABLE_PATH = "/xapi/projects/PROJ01/commands/available"
+SCAN_LABEL = "DICOM to NIfTI (KCNI default)"
+
+
+def _available_row(
+    wrapper_id: int,
+    label: str,
+    *,
+    name: str | None = None,
+    enabled: bool = True,
+    root: str = "scan",
+) -> dict[str, Any]:
+    """One ``GET .../commands/available`` row, using the key set verified live on CS 3.7.3."""
+    return {
+        "command-id": 108,
+        "command-name": "nipop-convert",
+        "wrapper-id": wrapper_id,
+        "wrapper-name": name or f"wrapper-{wrapper_id}",
+        "wrapper-label": label,
+        "wrapper-description": "Convert this scan",
+        "wrapper-contexts": ["xnat:mrScanData"],
+        "enabled": enabled,
+        "root-element-name": root,
+    }
+
+
+def _dispatch(mapping: dict[str, Any]):
+    """A ``get``/``get_json`` side_effect that routes by exact path, failing on anything else."""
+
+    def _route(path: str, **_kwargs: Any) -> Any:
+        if path not in mapping:
+            raise AssertionError(f"unexpected call: {path}")
+        value = mapping[path]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    return _route
+
+
+class TestAvailableWrappers:
+    """ContainerService.available_wrappers -- the Run menu's own source, Read access only."""
+
+    def test_gets_project_scoped_route_for_the_type(self, fake_client) -> None:
+        rows = [_available_row(117, SCAN_LABEL)]
+        fake_client.get_json.return_value = rows
+        service = ContainerService(fake_client)
+
+        result = service.available_wrappers("PROJ01", "xnat:mrScanData")
+
+        assert result == rows
+        fake_client.get_json.assert_called_once_with(
+            AVAILABLE_PATH, params={"xsiType": "xnat:mrScanData"}
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"not": "a list"},
+            [None],
+            [{k: v for k, v in _available_row(117, SCAN_LABEL).items() if k != "enabled"}],
+            [dict(_available_row(117, SCAN_LABEL), enabled="true")],
+            [dict(_available_row(117, SCAN_LABEL), **{"wrapper-id": "117"})],
+        ],
+        ids=["not-a-list", "null-row", "no-enabled", "string-enabled", "string-wrapper-id"],
+    )
+    def test_unexpected_shape_raises(self, fake_client, body: Any) -> None:
+        fake_client.get_json.return_value = body
+        service = ContainerService(fake_client)
+
+        with pytest.raises(XNATCtlError, match="commands/available"):
+            service.available_wrappers("PROJ01", "xnat:mrScanData")
+
+
+class TestResolveAvailableWrapper:
+    """ContainerService.resolve_available_wrapper -- match among wrappers enabled in the project."""
+
+    @pytest.mark.parametrize(
+        "ref",
+        [SCAN_LABEL, "nipop-scan", "117"],
+        ids=["run-menu-label", "wrapper-name", "wrapper-id"],
+    )
+    def test_matches_label_name_or_id(self, fake_client, ref: str) -> None:
+        row = _available_row(117, SCAN_LABEL, name="nipop-scan")
+        fake_client.get_json.return_value = [_available_row(21, "Other"), row]
+        service = ContainerService(fake_client)
+
+        assert service.resolve_available_wrapper("PROJ01", "xnat:mrScanData", ref) == row
+
+    def test_digits_are_a_wrapper_id_never_a_label(self, fake_client) -> None:
+        """Otherwise the ID the ambiguity error suggests could itself be ambiguous."""
+        by_id = _available_row(117, "Convert")
+        fake_client.get_json.return_value = [_available_row(42, "117", name="117"), by_id]
+        service = ContainerService(fake_client)
+
+        assert service.resolve_available_wrapper("PROJ01", "xnat:mrScanData", "117") == by_id
+
+    def test_disabled_wrapper_with_same_label_is_not_a_conflict(self, fake_client) -> None:
+        enabled = _available_row(117, SCAN_LABEL)
+        fake_client.get_json.return_value = [_available_row(99, SCAN_LABEL, enabled=False), enabled]
+        service = ContainerService(fake_client)
+
+        assert service.resolve_available_wrapper("PROJ01", "xnat:mrScanData", SCAN_LABEL) == enabled
+
+    def test_only_disabled_match_is_not_found_and_lists_enabled(self, fake_client) -> None:
+        fake_client.get_json.return_value = [
+            _available_row(99, "Old converter", enabled=False),
+            _available_row(117, SCAN_LABEL),
+        ]
+        service = ContainerService(fake_client)
+
+        with pytest.raises(ResourceNotFoundError, match="Old converter") as excinfo:
+            service.resolve_available_wrapper("PROJ01", "xnat:mrScanData", "Old converter")
+
+        assert excinfo.value.hint is not None
+        assert SCAN_LABEL in excinfo.value.hint
+
+    def test_nothing_enabled_says_so(self, fake_client) -> None:
+        fake_client.get_json.return_value = [_available_row(99, "Old", enabled=False)]
+        service = ContainerService(fake_client)
+
+        with pytest.raises(ResourceNotFoundError) as excinfo:
+            service.resolve_available_wrapper("PROJ01", "xnat:mrScanData", "Old")
+
+        assert excinfo.value.hint is not None
+        assert "No pipeline is enabled" in excinfo.value.hint
+
+    def test_two_enabled_matches_are_ambiguous(self, fake_client) -> None:
+        fake_client.get_json.return_value = [
+            _available_row(75, "dcm2bids - session"),
+            _available_row(96, "dcm2bids - session"),
+        ]
+        service = ContainerService(fake_client)
+
+        with pytest.raises(InputValidationError, match=r"ambiguous.*75.*96"):
+            service.resolve_available_wrapper("PROJ01", "xnat:mrScanData", "dcm2bids - session")
+
+
+SESSION_PATH = "/data/projects/PROJ01/experiments/PROJ01_S1_CT"
+SCAN_PATH = "/data/experiments/XNAT_E00001/scans/7"
+PROJECT_FOUND_BODY = {"ResultSet": {"Result": [{"ID": "PROJ01"}]}}
+SESSION_BODY = {
+    "items": [
+        {
+            "meta": {"xsi:type": "xnat:ctSessionData"},
+            "data_fields": {"ID": "XNAT_E00001", "label": "PROJ01_S1_CT", "project": "PROJ01"},
+        }
+    ]
+}
+# Deliberately not the mrScanData / "scan" pair of the workshop wrapper, so
+# neither the scan type nor the wrapper's input name can be hard-coded.
+SCAN_BODY = {
+    "items": [{"meta": {"xsi:type": "xnat:ctScanData"}, "data_fields": {"ID": "7", "type": "CT"}}]
+}
+SCAN_URI = "/archive/experiments/XNAT_E00001/scans/7"
+
+
+class TestPlanScanLaunch:
+    """ContainerService.plan_scan_launch -- session label + scan ID to a launchable request."""
+
+    def _service(self, fake_client, response_factory, *, scan_body: Any = SCAN_BODY):
+        fake_client.get.side_effect = _dispatch(
+            {
+                "/data/projects/PROJ01": response_factory(PROJECT_FOUND_BODY),
+                SESSION_PATH: response_factory(SESSION_BODY),
+            }
+        )
+        fake_client.get_json.side_effect = _dispatch(
+            {
+                SCAN_PATH: scan_body,
+                AVAILABLE_PATH: [_available_row(117, SCAN_LABEL, root="image")],
+            }
+        )
+        return ContainerService(fake_client)
+
+    def test_builds_scan_uri_under_the_wrappers_own_input_name(
+        self, fake_client, response_factory
+    ) -> None:
+        service = self._service(fake_client, response_factory)
+
+        plan = service.plan_scan_launch(
+            "PROJ01", SCAN_LABEL, {}, experiment="PROJ01_S1_CT", scan="7"
+        )
+
+        assert plan == ScanLaunch(
+            wrapper_id=117, wrapper_label=SCAN_LABEL, params={"image": SCAN_URI}
+        )
+
+    def test_looks_up_wrappers_for_the_scans_own_type(self, fake_client, response_factory) -> None:
+        service = self._service(fake_client, response_factory)
+
+        service.plan_scan_launch("PROJ01", SCAN_LABEL, {}, experiment="PROJ01_S1_CT", scan="7")
+
+        fake_client.get_json.assert_any_call(AVAILABLE_PATH, params={"xsiType": "xnat:ctScanData"})
+
+    def test_keeps_other_params(self, fake_client, response_factory) -> None:
+        service = self._service(fake_client, response_factory)
+
+        plan = service.plan_scan_launch(
+            "PROJ01", SCAN_LABEL, {"deface": "false"}, experiment="PROJ01_S1_CT", scan="7"
+        )
+
+        assert plan.params == {"deface": "false", "image": SCAN_URI}
+
+    def test_param_for_the_scan_input_conflicts(self, fake_client, response_factory) -> None:
+        service = self._service(fake_client, response_factory)
+
+        with pytest.raises(InputValidationError, match="image"):
+            service.plan_scan_launch(
+                "PROJ01", SCAN_LABEL, {"image": "/x"}, experiment="PROJ01_S1_CT", scan="7"
+            )
+
+    def test_missing_scan_raises_not_found(self, fake_client, response_factory) -> None:
+        service = self._service(
+            fake_client, response_factory, scan_body=ResourceNotFoundError("scan", "7")
+        )
+
+        with pytest.raises(ResourceNotFoundError, match="PROJ01_S1_CT/7"):
+            service.plan_scan_launch("PROJ01", SCAN_LABEL, {}, experiment="PROJ01_S1_CT", scan="7")
+
+    @pytest.mark.parametrize(
+        "scan_body",
+        [{"items": None}, {"items": []}, {"items": [{"meta": {}}]}, ["not", "an", "object"]],
+        ids=["null-items", "no-items", "no-xsi-type", "not-an-object"],
+    )
+    def test_unexpected_scan_document_raises(
+        self, fake_client, response_factory, scan_body: Any
+    ) -> None:
+        service = self._service(fake_client, response_factory, scan_body=scan_body)
+
+        with pytest.raises(XNATCtlError, match="scans/7"):
+            service.plan_scan_launch("PROJ01", SCAN_LABEL, {}, experiment="PROJ01_S1_CT", scan="7")
+
+    @pytest.mark.parametrize("scan", ["7 1", "7/1", ""], ids=["space", "slash", "empty"])
+    def test_invalid_scan_id_rejected_before_any_request(self, fake_client, scan: str) -> None:
+        service = ContainerService(fake_client)
+
+        with pytest.raises(InputValidationError):
+            service.plan_scan_launch("PROJ01", SCAN_LABEL, {}, experiment="PROJ01_S1_CT", scan=scan)
+
+        fake_client.get.assert_not_called()
+        fake_client.get_json.assert_not_called()
+
+    def test_nonexistent_project_raises_before_session_lookup(
+        self, fake_client, response_factory
+    ) -> None:
+        fake_client.get.side_effect = _dispatch(
+            {"/data/projects/BADPROJ": response_factory({"ResultSet": {"Result": []}})}
+        )
+        service = ContainerService(fake_client)
+
+        with pytest.raises(ResourceNotFoundError):
+            service.plan_scan_launch("BADPROJ", SCAN_LABEL, {}, experiment="S", scan="7")
+
+        fake_client.get_json.assert_not_called()
 
 
 class TestLaunch:

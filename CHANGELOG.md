@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+**Features**
+
+- `container launch -E SESSION --scan SCAN_ID` runs a scan-level pipeline on
+  one scan by the name XNAT's Run menu shows, for example
+  `xnatctl container launch "DICOM to NIfTI" -P MYPROJ -E MYPROJ_S01_MR --scan 5`.
+  The session can be its label or its accession ID. The pipeline is matched
+  by label, name or ID among those the project has enabled for that scan's
+  type, and the scan's `/archive/experiments/.../scans/...` address and the
+  wrapper's input name are filled in, so no wrapper ID or `--param` is
+  needed. It reads the same route as the Run menu, which a project member
+  can call, and refuses a name that two enabled pipelines share.
+
 **Fixes**
 
 - The Windows release's checksum file (`xnatctl-windows-amd64.zip.sha256`)

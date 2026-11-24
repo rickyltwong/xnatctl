@@ -720,3 +720,173 @@ class TestContainerLaunch:
 
         assert result.exit_code != 0
         authenticated_cli.client.post.assert_not_called()
+
+
+SCAN_WRAPPER_LABEL = "DICOM to NIfTI (KCNI default)"
+SCAN_LAUNCH_GET = {
+    "/data/projects/TESTPROJ": PROJECT_FOUND,
+    "/data/projects/TESTPROJ/experiments/TESTPROJ_S1_MR": {
+        "items": [
+            {
+                "meta": {"xsi:type": "xnat:mrSessionData"},
+                "data_fields": {"ID": "XNAT_E00001", "label": "TESTPROJ_S1_MR"},
+            }
+        ]
+    },
+}
+SCAN_LAUNCH_GET_JSON = {
+    "/data/experiments/XNAT_E00001/scans/5": {
+        "items": [{"meta": {"xsi:type": "xnat:mrScanData"}, "data_fields": {"ID": "5"}}]
+    },
+    "/xapi/projects/TESTPROJ/commands/available": [
+        {
+            "wrapper-id": 117,
+            "wrapper-name": SCAN_WRAPPER_LABEL,
+            "wrapper-label": SCAN_WRAPPER_LABEL,
+            "enabled": True,
+            "root-element-name": "scan",
+        }
+    ],
+}
+
+
+def _dispatch_get(mapping: dict[str, Any]):
+    """A `client.get` side_effect that routes by exact path to a JSON response."""
+
+    def _dispatch(path: str, **_kwargs: Any) -> Any:
+        if path not in mapping:
+            raise AssertionError(f"unexpected get call: {path}")
+        return make_response(mapping[path])
+
+    return _dispatch
+
+
+class TestContainerLaunchScan:
+    """`container launch --scan`: what a project Member sees in the UI is all it needs.
+
+    The wrapper is matched among those the project has enabled for the
+    scan's own type, through the Run menu's own route (`commands/available`,
+    Read access) -- never `GET /xapi/commands`, which the dispatchers here
+    would reject as an unexpected call.
+    """
+
+    def _arrange(self, cli: AuthenticatedCLI) -> None:
+        cli.client.get.side_effect = _dispatch_get(SCAN_LAUNCH_GET)
+        cli.client.get_json.side_effect = _dispatch_get_json(SCAN_LAUNCH_GET_JSON)
+        cli.client.post.return_value = make_response(
+            {
+                "status": "success",
+                "params": {"scan": "/archive/experiments/XNAT_E00001/scans/5"},
+                "command-id": 108,
+                "wrapper-id": 117,
+                "workflow-id": "To be assigned",
+            }
+        )
+
+    def test_launch_by_run_menu_label_and_session_label(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        self._arrange(authenticated_cli)
+
+        result = authenticated_cli.invoke(
+            ["container", "launch", SCAN_WRAPPER_LABEL, "-E", "TESTPROJ_S1_MR", "--scan", "5"]
+        )
+
+        assert result.exit_code == 0, result.output
+        authenticated_cli.client.post.assert_called_once_with(
+            "/xapi/projects/TESTPROJ/wrappers/117/launch",
+            json={"scan": "/archive/experiments/XNAT_E00001/scans/5"},
+        )
+
+    def test_dry_run_names_the_wrapper_without_posting(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        self._arrange(authenticated_cli)
+
+        result = authenticated_cli.invoke(
+            [
+                "container",
+                "launch",
+                SCAN_WRAPPER_LABEL,
+                "-E",
+                "TESTPROJ_S1_MR",
+                "--scan",
+                "5",
+                "--dry-run",
+            ]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "DRY-RUN" in result.output
+        assert "117" in result.output
+        assert SCAN_WRAPPER_LABEL in result.output
+        authenticated_cli.client.post.assert_not_called()
+
+    def test_accession_id_works_as_the_session(self, authenticated_cli: AuthenticatedCLI) -> None:
+        self._arrange(authenticated_cli)
+        by_accession = dict(SCAN_LAUNCH_GET)
+        by_accession["/data/projects/TESTPROJ/experiments/XNAT_E00001"] = by_accession.pop(
+            "/data/projects/TESTPROJ/experiments/TESTPROJ_S1_MR"
+        )
+        authenticated_cli.client.get.side_effect = _dispatch_get(by_accession)
+
+        result = authenticated_cli.invoke(
+            ["container", "launch", SCAN_WRAPPER_LABEL, "-E", "XNAT_E00001", "--scan", "5"]
+        )
+
+        assert result.exit_code == 0, result.output
+        authenticated_cli.client.post.assert_called_once_with(
+            "/xapi/projects/TESTPROJ/wrappers/117/launch",
+            json={"scan": "/archive/experiments/XNAT_E00001/scans/5"},
+        )
+
+    def test_dry_run_with_wait_previews_params_and_touches_no_container(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        """The dispatchers reject the container routes --wait would poll."""
+        self._arrange(authenticated_cli)
+
+        result = authenticated_cli.invoke(
+            [
+                "container",
+                "launch",
+                SCAN_WRAPPER_LABEL,
+                "-E",
+                "TESTPROJ_S1_MR",
+                "--scan",
+                "5",
+                "--dry-run",
+                "--wait",
+            ]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "{'scan': '/archive/experiments/XNAT_E00001/scans/5'}" in " ".join(
+            result.output.split()
+        )
+        authenticated_cli.client.post.assert_not_called()
+
+    def test_scan_without_experiment_is_a_usage_error(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        result = authenticated_cli.invoke(
+            ["container", "launch", SCAN_WRAPPER_LABEL, "--scan", "5"]
+        )
+
+        assert result.exit_code == 2
+        assert "-E" in result.output
+        authenticated_cli.client.get.assert_not_called()
+        authenticated_cli.client.post.assert_not_called()
+
+    def test_unknown_pipeline_rejected_before_post(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        self._arrange(authenticated_cli)
+
+        result = authenticated_cli.invoke(
+            ["container", "launch", "No such pipeline", "-E", "TESTPROJ_S1_MR", "--scan", "5"]
+        )
+
+        assert result.exit_code != 0
+        assert SCAN_WRAPPER_LABEL in " ".join(result.output.split())
+        authenticated_cli.client.post.assert_not_called()

@@ -463,7 +463,15 @@ def _wait_for_launch(
     "--experiment",
     "-E",
     help="Session accession ID or label, mapped to the wrapper's single Session-typed "
-    "external input. Requires the wrapper to have exactly one -- see --param otherwise.",
+    "external input. Requires the wrapper to have exactly one -- see --param otherwise. "
+    "With --scan, the session that holds the scan instead.",
+)
+@click.option(
+    "--scan",
+    "scan",
+    metavar="SCAN_ID",
+    help="Run a scan-level pipeline on this scan of the -E session. WRAPPER is then the "
+    "name shown in XNAT's Run menu, matched among pipelines enabled in the project.",
 )
 @click.option(
     "--param",
@@ -491,6 +499,7 @@ def container_launch(
     wrapper_ref: str,
     project: str | None,
     experiment: str | None,
+    scan: str | None,
     params_raw: tuple[str, ...],
     wait: bool,
     timeout: int,
@@ -501,6 +510,12 @@ def container_launch(
     WRAPPER is a numeric wrapper ID or a wrapper name (see
     ``xnatctl wrapper list``); a name matched by wrappers on more than one
     command is rejected -- pass the numeric ID instead.
+
+    With ``--scan``, WRAPPER is the pipeline's name as XNAT's Run menu
+    shows it (its label), its wrapper name, or its ID, matched only among
+    the pipelines the project has enabled for that scan's type. The scan's
+    address and the wrapper's input name are filled in from the session
+    and scan, so nothing from ``wrapper list`` is needed.
 
     The Container Service launch route does not validate the wrapper,
     project scope, or required inputs before queueing the launch -- it
@@ -515,22 +530,32 @@ def container_launch(
     \b
     Example:
         xnatctl container launch dcm2niix-scan -P MYPROJ -E XNAT_E00001
+        xnatctl container launch "DICOM to NIfTI" -P MYPROJ -E MYPROJ_S01_MR --scan 5
         xnatctl container launch 34 -P MYPROJ --param greeting=hello
         xnatctl container launch 34 -P MYPROJ -E XNAT_E00001 --wait
         xnatctl container launch 34 -P MYPROJ --dry-run
     """
+    if scan is not None and experiment is None:
+        raise click.UsageError("--scan needs -E/--experiment: the session that holds the scan.")
     resolved_project = require_project_from_context(ctx, project)
     params = _parse_params(params_raw)
 
     service = ContainerService(ctx.get_client())
-    wrapper_id, wrapper = service.resolve_wrapper(wrapper_ref)
-    launch_params = service.preflight_launch(
-        resolved_project, wrapper, params, experiment=experiment
-    )
+    if scan is not None and experiment is not None:
+        plan = service.plan_scan_launch(
+            resolved_project, wrapper_ref, params, experiment=experiment, scan=scan
+        )
+        wrapper_id, wrapper_name, launch_params = plan
+    else:
+        wrapper_id, wrapper = service.resolve_wrapper(wrapper_ref)
+        wrapper_name = str(wrapper.get("name"))
+        launch_params = service.preflight_launch(
+            resolved_project, wrapper, params, experiment=experiment
+        )
 
     if dry_run:
         click.echo(
-            f"[DRY-RUN] Would launch wrapper {wrapper_id} ({wrapper.get('name')}) in "
+            f"[DRY-RUN] Would launch wrapper {wrapper_id} ({wrapper_name}) in "
             f"project {resolved_project} with params: {launch_params}",
             err=True,
         )
@@ -538,8 +563,7 @@ def container_launch(
 
     if not ctx.quiet:
         click.echo(
-            f"Launching wrapper {wrapper_id} ({wrapper.get('name')}) in project "
-            f"{resolved_project}...",
+            f"Launching wrapper {wrapper_id} ({wrapper_name}) in project {resolved_project}...",
             err=True,
         )
 
