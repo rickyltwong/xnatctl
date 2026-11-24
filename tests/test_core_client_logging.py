@@ -215,17 +215,17 @@ def test_session_cache_miss_is_logged(tmp_path: Path, caplog: pytest.LogCaptureF
     manager = AuthManager(cache_file=tmp_path / ".session")
 
     with caplog.at_level(logging.DEBUG, logger=AUTH_LOGGER):
-        assert manager.load_session() is None
+        assert manager.load_session("prod", "https://xnat.example.org", "alice") is None
 
     assert any("cache miss" in m for m in messages(caplog))
 
 
 def test_session_cache_hit_is_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     manager = AuthManager(cache_file=tmp_path / ".session")
-    manager.save_session("TOK", "https://xnat.example.org", "alice")
+    manager.save_session("prod", "TOK", "https://xnat.example.org", "alice")
 
     with caplog.at_level(logging.DEBUG, logger=AUTH_LOGGER):
-        manager.load_session()
+        manager.load_session("prod", "https://xnat.example.org", "alice")
 
     joined = " ".join(messages(caplog))
     assert "cache hit" in joined
@@ -235,12 +235,25 @@ def test_session_cache_hit_is_logged(tmp_path: Path, caplog: pytest.LogCaptureFi
 
 def test_url_mismatch_is_logged_as_a_miss(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     manager = AuthManager(cache_file=tmp_path / ".session")
-    manager.save_session("TOK", "https://a.example.org", "alice")
+    manager.save_session("prod", "TOK", "https://a.example.org", "alice")
 
     with caplog.at_level(logging.DEBUG, logger=AUTH_LOGGER):
-        assert manager.load_session("https://b.example.org") is None
+        assert manager.load_session("prod", "https://b.example.org", "alice") is None
 
     assert any("wanted https://b.example.org" in m for m in messages(caplog))
+
+
+def test_user_mismatch_is_logged_as_a_miss(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A profile now resolving to another user ignores its old session; -v says why."""
+    manager = AuthManager(cache_file=tmp_path / ".session")
+    manager.save_session("prod", "TOK", "https://xnat.example.org", "alice")
+
+    with caplog.at_level(logging.DEBUG, logger=AUTH_LOGGER):
+        assert manager.load_session("prod", "https://xnat.example.org", "bob") is None
+
+    assert any("cached for user alice, wanted bob" in m for m in messages(caplog))
 
 
 @pytest.mark.usefixtures("clean_root")

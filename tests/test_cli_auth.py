@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import base64
+import functools
 import json
+import re
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
 from xnatctl.cli.main import cli
+from xnatctl.core.client import XNATClient
 from xnatctl.core.config import Config, Profile
 from xnatctl.core.exceptions import AuthenticationError
 from xnatctl.models.info import UserInfo
@@ -376,3 +382,120 @@ class TestAuthTestJsonShapePin:
             result.output
             == "Testing with cached session...\n" + json.dumps(expected, indent=2) + "\n"
         )
+
+
+# =============================================================================
+# Profiles sharing a server (issue #54), through the real CLI and cache
+# =============================================================================
+
+
+class TestProfilesSharingAServer:
+    """`-p` decides who a command runs as, even with both profiles logged in.
+
+    Only the HTTP transport is fake: a stand-in XNAT that mints a token per
+    user and reports, for each request, the user its token belongs to. The
+    config, the session cache, and the CLI's credential resolution are real.
+    """
+
+    URL = "https://xnat.example.org"
+
+    @pytest.fixture
+    def server(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
+        seen: dict[str, list[str]] = {"logins": [], "token_users": []}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/data/JSESSION" and request.method == "POST":
+                scheme, _, encoded = request.headers["authorization"].partition(" ")
+                assert scheme == "Basic"
+                user = base64.b64decode(encoded).decode().split(":", 1)[0]
+                seen["logins"].append(user)
+                return httpx.Response(200, text=f"TOKEN-{user}")
+            match = re.search(r"JSESSIONID=TOKEN-(\w+)", request.headers.get("cookie", ""))
+            if match is None:
+                return httpx.Response(401)
+            user = match.group(1)
+            seen["token_users"].append(user)
+            if request.url.path == "/xapi/users/username":
+                return httpx.Response(200, text=user)
+            if request.url.path == f"/xapi/users/{user}":
+                return httpx.Response(200, json={"username": user, "enabled": True})
+            return httpx.Response(200, text="")
+
+        server_client = functools.partial(XNATClient, transport=httpx.MockTransport(handler))
+        monkeypatch.setattr("xnatctl.cli.common.XNATClient", server_client)
+        monkeypatch.setattr("xnatctl.cli.auth.XNATClient", server_client)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "default_profile: admin-profile\n"
+            "profiles:\n"
+            "  admin-profile:\n"
+            f"    url: {self.URL}\n"
+            "    username: admin_user\n"
+            "  user-profile:\n"
+            f"    url: {self.URL}\n"
+            "    username: non_admin_user\n"
+        )
+        monkeypatch.setattr("xnatctl.core.config.CONFIG_FILE", config_file)
+        for var in ("XNAT_URL", "XNAT_USER", "XNAT_TOKEN", "XNAT_PROFILE"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("XNAT_PASS", "pw")
+        return seen
+
+    @staticmethod
+    def _whoami(profile: str) -> str:
+        result = CliRunner().invoke(cli, ["whoami", "-p", profile, "-o", "json"])
+        assert result.exit_code == 0, result.output
+        return str(json.loads(result.stdout)["username"])
+
+    @staticmethod
+    def _invoke(*args: str) -> None:
+        result = CliRunner().invoke(cli, list(args))
+        assert result.exit_code == 0, result.output
+
+    def test_the_issue_sequence_runs_each_profile_as_its_own_user(
+        self, server: dict[str, list[str]]
+    ) -> None:
+        self._invoke("auth", "login", "-p", "admin-profile")
+        assert self._whoami("admin-profile") == "admin_user"
+
+        server["token_users"].clear()
+        assert self._whoami("user-profile") == "non_admin_user"
+        assert "admin_user" not in server["token_users"], "ran on the admin session"
+
+    def test_both_profiles_keep_their_sessions_across_switches(
+        self, server: dict[str, list[str]]
+    ) -> None:
+        self._invoke("auth", "login", "-p", "admin-profile")
+        self._invoke("auth", "login", "-p", "user-profile")
+        server["logins"].clear()
+
+        assert self._whoami("admin-profile") == "admin_user"
+        assert self._whoami("user-profile") == "non_admin_user"
+        assert self._whoami("admin-profile") == "admin_user"
+
+        assert server["logins"] == [], "a profile switch evicted the other profile's session"
+
+    def test_logout_ends_only_the_named_profiles_session(
+        self, server: dict[str, list[str]], isolate_session_cache: Path
+    ) -> None:
+        self._invoke("auth", "login", "-p", "admin-profile")
+        self._invoke("auth", "login", "-p", "user-profile")
+
+        self._invoke("auth", "logout", "-p", "user-profile")
+
+        sessions = json.loads(isolate_session_cache.read_text())["sessions"]
+        assert set(sessions) == {"admin-profile"}
+
+    def test_login_as_a_user_the_profile_does_not_name_warns(
+        self, server: dict[str, list[str]]
+    ) -> None:
+        result = CliRunner().invoke(
+            cli, ["auth", "login", "-p", "user-profile", "-u", "admin_user"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "will not use this session" in result.stderr
+        server["token_users"].clear()
+        assert self._whoami("user-profile") == "non_admin_user"
+        assert "admin_user" not in server["token_users"]

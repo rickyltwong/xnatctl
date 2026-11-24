@@ -14,13 +14,17 @@ than it looks:
   half-written token.
 
 :func:`atomic_private_write` closes all three by writing a fresh 0600 temp file
-and ``os.replace``-ing it over the destination.
+and ``os.replace``-ing it over the destination. :func:`exclusive_lock` lets a
+caller hold a read-modify-write of such a file against other processes.
 """
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
+import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -119,3 +123,78 @@ def atomic_private_write(path: Path) -> Iterator[TextIO]:
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+# =============================================================================
+# Interprocess lock
+# =============================================================================
+
+#: How often a caller waiting on a held lock tries again.
+_LOCK_POLL_SECONDS = 0.05
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _try_lock(fd: int) -> bool:
+        """Take the lock without waiting; False while another handle holds it."""
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EDEADLOCK):
+                return False
+            raise
+        return True
+
+    def _unlock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _try_lock(fd: int) -> bool:
+        """Take the lock without waiting; False while another handle holds it."""
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                return False
+            raise
+        return True
+
+    def _unlock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextmanager
+def exclusive_lock(path: Path, timeout: float) -> Iterator[None]:
+    """Hold an exclusive advisory lock on ``path`` for the duration of the block.
+
+    The lock belongs to the open file, so it excludes other processes and other
+    threads of this one alike, and the OS releases it when the holder exits or
+    dies: there is never a stale lock to clean up. ``path`` is created 0600 when
+    missing and never deleted, because deleting it while another process waits
+    on the old file would let two holders in at once.
+
+    Args:
+        path: The lock file. It holds no data.
+        timeout: Seconds to wait for another holder before giving up.
+
+    Raises:
+        TimeoutError: If another holder keeps the lock for ``timeout`` seconds.
+        OSError: If ``path`` cannot be opened, or the filesystem refuses locks.
+    """
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, PRIVATE_FILE_MODE)
+    try:
+        deadline = time.monotonic() + timeout
+        while not _try_lock(fd):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out after {timeout:g}s waiting for the lock on {path}")
+            time.sleep(_LOCK_POLL_SECONDS)
+        try:
+            yield
+        finally:
+            _unlock(fd)
+    finally:
+        os.close(fd)

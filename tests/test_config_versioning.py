@@ -13,7 +13,7 @@ from conftest import core_config_seam
 
 import xnatctl.core.config as config_module
 from xnatctl.cli.main import cli
-from xnatctl.core.auth import AuthManager, CachedSession
+from xnatctl.core.auth import SESSION_CACHE_VERSION, AuthManager, CachedSession
 from xnatctl.core.config import Config, Profile
 from xnatctl.core.exceptions import ConfigurationError
 
@@ -326,76 +326,50 @@ class TestConfigVersioning:
 
 
 class TestSessionCacheVersioning:
-    def test_versionless_cache_loads(self, tmp_path: Path) -> None:
-        cache_file = tmp_path / ".session"
+    @staticmethod
+    def _payload() -> dict[str, object]:
         session = CachedSession(
             token="tok",
             url="https://xnat.example.org",
             username="alice",
             created_at=datetime.now(),
         )
-        payload = session.to_dict()
-        del payload["version"]
-        cache_file.write_text(json.dumps(payload))
+        return {"version": SESSION_CACHE_VERSION, "sessions": {"prod": session.to_dict()}}
 
-        manager = AuthManager(cache_file=cache_file)
-        loaded = manager.load_session(url="https://xnat.example.org")
+    def _load(self, cache_file: Path, payload: dict[str, object]) -> CachedSession | None:
+        cache_file.write_text(json.dumps(payload))
+        return AuthManager(cache_file=cache_file).load_session(
+            "prod", "https://xnat.example.org", "alice"
+        )
+
+    def test_current_version_loads(self, tmp_path: Path) -> None:
+        loaded = self._load(tmp_path / ".session", self._payload())
 
         assert loaded is not None
         assert loaded.token == "tok"
 
-    def test_unknown_version_discards_cache(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "version",
+        [
+            pytest.param(None, id="missing"),
+            pytest.param(1, id="older"),
+            pytest.param(999, id="newer"),
+            # JSON `2.0` equals 2 under `==`; the check has to be type-strict.
+            pytest.param(2.0, id="float"),
+        ],
+    )
+    def test_any_other_version_discards_cache(self, tmp_path: Path, version: object) -> None:
+        """A cache this build did not write is discarded, not crashed on -- the
+        caller falls through to a normal re-auth.
+        """
         cache_file = tmp_path / ".session"
-        session = CachedSession(
-            token="tok",
-            url="https://xnat.example.org",
-            username="alice",
-            created_at=datetime.now(),
-        )
-        payload = session.to_dict()
-        payload["version"] = 999
-        cache_file.write_text(json.dumps(payload))
+        payload = self._payload()
+        if version is None:
+            del payload["version"]
+        else:
+            payload["version"] = version
 
-        manager = AuthManager(cache_file=cache_file)
-        loaded = manager.load_session(url="https://xnat.example.org")
-
-        assert loaded is None
-        assert not cache_file.exists()
-
-    def test_boolean_version_discards_cache(self, tmp_path: Path) -> None:
-        cache_file = tmp_path / ".session"
-        session = CachedSession(
-            token="tok",
-            url="https://xnat.example.org",
-            username="alice",
-            created_at=datetime.now(),
-        )
-        payload = session.to_dict()
-        payload["version"] = True
-        cache_file.write_text(json.dumps(payload))
-
-        manager = AuthManager(cache_file=cache_file)
-        loaded = manager.load_session(url="https://xnat.example.org")
-
-        assert loaded is None
-        assert not cache_file.exists()
-
-    def test_float_version_discards_cache(self, tmp_path: Path) -> None:
-        cache_file = tmp_path / ".session"
-        session = CachedSession(
-            token="tok",
-            url="https://xnat.example.org",
-            username="alice",
-            created_at=datetime.now(),
-        )
-        payload = session.to_dict()
-        payload["version"] = 1.0
-        cache_file.write_text(json.dumps(payload))
-
-        manager = AuthManager(cache_file=cache_file)
-        loaded = manager.load_session(url="https://xnat.example.org")
-
-        assert loaded is None
+        assert self._load(cache_file, payload) is None
         assert not cache_file.exists()
 
 

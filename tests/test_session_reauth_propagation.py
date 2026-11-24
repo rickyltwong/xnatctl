@@ -77,44 +77,46 @@ class TestSlidingExpiry:
 
     def test_loading_a_session_slides_its_deadline_on_disk(self, tmp_path: Path) -> None:
         manager = AuthManager(cache_file=tmp_path / ".session")
-        manager.save_session("TOK", "https://x", "u")
+        manager.save_session("prod", "TOK", "https://x", "u")
 
         stale = datetime.now() - timedelta(minutes=SESSION_EXPIRY_MINUTES - 1)
         raw = json.loads((tmp_path / ".session").read_text())
-        raw["last_used_at"] = stale.isoformat()
-        raw["expires_at"] = (stale + timedelta(minutes=SESSION_EXPIRY_MINUTES)).isoformat()
+        raw["sessions"]["prod"]["last_used_at"] = stale.isoformat()
+        raw["sessions"]["prod"]["expires_at"] = (
+            stale + timedelta(minutes=SESSION_EXPIRY_MINUTES)
+        ).isoformat()
         (tmp_path / ".session").write_text(json.dumps(raw))
 
-        loaded = manager.load_session("https://x")
+        loaded = manager.load_session("prod", "https://x", "u")
         assert loaded is not None
 
         after = json.loads((tmp_path / ".session").read_text())
-        assert datetime.fromisoformat(after["last_used_at"]) > stale
+        assert datetime.fromisoformat(after["sessions"]["prod"]["last_used_at"]) > stale
 
     def test_an_expired_cache_is_still_cleared_on_load(self, tmp_path: Path) -> None:
         manager = AuthManager(cache_file=tmp_path / ".session")
-        manager.save_session("TOK", "https://x", "u")
+        manager.save_session("prod", "TOK", "https://x", "u")
 
         dead = datetime.now() - timedelta(minutes=SESSION_EXPIRY_MINUTES * 2)
         raw = json.loads((tmp_path / ".session").read_text())
-        raw["last_used_at"] = dead.isoformat()
-        raw["expires_at"] = dead.isoformat()
+        raw["sessions"]["prod"]["last_used_at"] = dead.isoformat()
+        raw["sessions"]["prod"]["expires_at"] = dead.isoformat()
         (tmp_path / ".session").write_text(json.dumps(raw))
 
-        assert manager.load_session("https://x") is None
+        assert manager.load_session("prod", "https://x", "u") is None
 
     def test_a_read_only_cache_does_not_break_the_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         manager = AuthManager(cache_file=tmp_path / ".session")
-        manager.save_session("TOK", "https://x", "u")
+        manager.save_session("prod", "TOK", "https://x", "u")
 
         def boom(*_a: object, **_k: object) -> None:
             raise OSError("read-only filesystem")
 
         monkeypatch.setattr("xnatctl.core.auth.atomic_private_write", boom)
 
-        loaded = manager.load_session("https://x")
+        loaded = manager.load_session("prod", "https://x", "u")
 
         assert loaded is not None
         assert loaded.token == "TOK"
@@ -171,6 +173,23 @@ class TestRefreshPropagation:
         self._refresher(client).refresh("OLD")
 
         assert client.session_token == "OLD"
+
+    def test_a_refresh_renews_only_the_cached_session_it_was_using(
+        self, monkeypatch: pytest.MonkeyPatch, isolate_session_cache: Path
+    ) -> None:
+        """Other processes on this profile get the fresh token; a profile that
+        logged in on its own as the same account keeps its own session.
+        """
+        manager = AuthManager()
+        manager.save_session("mine", "OLD", "https://x", "u")
+        manager.save_session("same-account", "OWN", "https://x", "u")
+        self._patch_transport(monkeypatch, lambda _r: httpx.Response(200, text="FRESH"))
+
+        self._refresher(None).refresh("OLD")
+
+        sessions = json.loads(isolate_session_cache.read_text())["sessions"]
+        assert sessions["mine"]["token"] == "FRESH"
+        assert sessions["same-account"]["token"] == "OWN"
 
     def test_a_cache_write_failure_does_not_fail_the_upload(
         self, monkeypatch: pytest.MonkeyPatch

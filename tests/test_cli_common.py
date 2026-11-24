@@ -58,9 +58,10 @@ def test_require_auth_reauthenticates_on_stale_session():
     result = decorated(ctx)
 
     assert result == "ok"
-    ctx.auth_manager.clear_session.assert_called_once_with()
+    ctx.auth_manager.clear_session.assert_called_once_with("default")
     assert mock_client.authenticate_calls == 1
     ctx.auth_manager.save_session.assert_called_once_with(
+        "default",
         token="new-token",
         url="https://example.org",
         username="user",

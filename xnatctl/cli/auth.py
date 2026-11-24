@@ -49,7 +49,8 @@ def do_login(
     profile: Profile,
     username: str | None = None,
     password: str | None = None,
-    profile_name: str | None = None,
+    *,
+    profile_name: str,
 ) -> dict[str, object]:
     """Authenticate against ``profile`` and cache the session.
 
@@ -62,7 +63,8 @@ def do_login(
         profile: Profile to authenticate against.
         username: Explicit username, else env vars, else the profile, else prompt.
         password: Explicit password, else env vars, else the profile, else prompt.
-        profile_name: Name of the profile, for messages.
+        profile_name: Name of the profile. The session is cached under it,
+            and the result reports it.
 
     Returns:
         A summary dict describing the established session.
@@ -73,7 +75,9 @@ def do_login(
     auth_mgr = ctx.auth_manager
 
     env_user, env_pass = auth_mgr.get_credentials()
-    user = username or env_user or profile.username
+    # Who the profile's commands authenticate as; only they can use the session.
+    profile_user = env_user or profile.username
+    user = username or profile_user
     pwd = password or env_pass or profile.resolve_password()
 
     if not user:
@@ -103,9 +107,19 @@ def do_login(
         except (AuthenticationError, SessionExpiredError, PermissionDeniedError):
             pass
 
-        session = auth_mgr.save_session(token=token, url=profile.url, username=actual_user)
+        # Cached under the name it logged in with, not actual_user: commands
+        # look the session up by the name the profile resolves to, which an
+        # alias the server reports differently would never match.
+        session = auth_mgr.save_session(profile_name, token=token, url=profile.url, username=user)
     finally:
         client.close()
+
+    if profile_user and user != profile_user:
+        print_warning(
+            f"Profile '{profile_name}' authenticates as {profile_user}, so its commands "
+            f"will not use this session for {user}. To run them as {user}, set "
+            f"XNAT_USER={user} or change the profile's username."
+        )
 
     return {
         "status": "authenticated",
@@ -195,9 +209,11 @@ def auth_logout(ctx: Context) -> None:
     """
     config = ctx.config or Config.load()
     profile = config.get_profile(ctx.profile_name)
+    profile_name = ctx.profile_name or config.default_profile
     auth_mgr = ctx.auth_manager
 
-    session = auth_mgr.load_session(profile.url)
+    # Whichever user the profile's session belongs to, logging out ends it.
+    session = auth_mgr.load_session(profile_name, profile.url, None)
     if session:
         client = XNATClient(
             base_url=profile.url,
@@ -208,7 +224,7 @@ def auth_logout(ctx: Context) -> None:
         client.invalidate_session()
         client.close()
 
-    if auth_mgr.clear_session():
+    if auth_mgr.clear_session(profile_name):
         print_success("Logged out")
     else:
         print_warning("No cached session found")
@@ -229,9 +245,11 @@ def auth_status(ctx: Context) -> None:
     profile = config.get_profile(ctx.profile_name)
     auth_mgr = ctx.auth_manager
 
-    session_info = auth_mgr.get_session_info(profile.url)
     env_user, env_pass = auth_mgr.get_credentials()
     env_token = auth_mgr.get_token_from_env()
+    session_info = auth_mgr.get_session_info(
+        ctx.profile_name or config.default_profile, profile.url, env_user or profile.username
+    )
 
     status: dict[str, object] = {
         "url": profile.url,
@@ -273,10 +291,12 @@ def auth_test(ctx: Context) -> None:
     profile = config.get_profile(ctx.profile_name)
     auth_mgr = ctx.auth_manager
 
-    session_token = auth_mgr.get_session_token(profile.url)
     env_user, env_pass = auth_mgr.get_credentials()
     user = env_user or profile.username
     pwd = env_pass or profile.resolve_password()
+    session_token = auth_mgr.get_session_token(
+        ctx.profile_name or config.default_profile, profile.url, user
+    )
 
     if session_token:
         click.echo("Testing with cached session...", err=True)

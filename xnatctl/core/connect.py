@@ -33,8 +33,9 @@ def resolve_client_params(
 
     Reproduces the CLI's credential resolution exactly: environment variables
     win over profile config for username/password, an ``XNAT_TOKEN`` env var or
-    a cached session token authenticates without a password prompt, and the
-    cached session's username backfills the current-user hint when the profile
+    the profile's cached session token (when it still matches the profile's
+    URL and user) authenticates without a password prompt, and the cached
+    session's username backfills the current-user hint when the profile
     supplies none.
 
     ``auto_reauth`` is always ``True`` in the result. That is part of the
@@ -65,8 +66,15 @@ def resolve_client_params(
 
     profile = config.get_profile(profile_name)
 
+    # Credentials: env vars > profile config. The cached session is this
+    # profile's own, and only while it still belongs to the user resolved here:
+    # a session matched by URL alone let one profile run as another profile's
+    # user on the same server. A cached session keeps its username as a hint for
+    # current-user lookups on servers where /data/user returns a user listing.
     username, password = get_credentials(profile)
-    session = auth_manager.load_session(profile.url)
+    session = auth_manager.load_session(
+        profile_name or config.default_profile, profile.url, username
+    )
     token = auth_manager.get_token_from_env() or (session.token if session else None)
     username_hint = username or (session.username if session else None)
 

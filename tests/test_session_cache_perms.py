@@ -41,7 +41,7 @@ def group_writable_umask() -> Iterator[int]:
 @pytest.mark.usefixtures("loose_umask")
 def test_session_cache_is_owner_only_under_loose_umask(tmp_path: Path) -> None:
     cache = tmp_path / "cfgdir" / ".session"
-    AuthManager(cache_file=cache).save_session("TOK", "https://x.example.org", "u")
+    AuthManager(cache_file=cache).save_session("prod", "TOK", "https://x.example.org", "u")
 
     assert mode_of(cache) == 0o600
 
@@ -52,7 +52,7 @@ def test_session_cache_is_owner_only_under_loose_umask(tmp_path: Path) -> None:
 @pytest.mark.usefixtures("group_writable_umask")
 def test_session_cache_is_owner_only_under_group_writable_umask(tmp_path: Path) -> None:
     cache = tmp_path / "cfgdir" / ".session"
-    AuthManager(cache_file=cache).save_session("TOK", "https://x.example.org", "u")
+    AuthManager(cache_file=cache).save_session("prod", "TOK", "https://x.example.org", "u")
 
     assert mode_of(cache) == 0o600
 
@@ -63,7 +63,7 @@ def test_session_cache_is_owner_only_under_group_writable_umask(tmp_path: Path) 
 @pytest.mark.usefixtures("loose_umask")
 def test_created_parent_directory_is_owner_only(tmp_path: Path) -> None:
     parent = tmp_path / "cfgdir"
-    AuthManager(cache_file=parent / ".session").save_session("TOK", "https://x", "u")
+    AuthManager(cache_file=parent / ".session").save_session("prod", "TOK", "https://x", "u")
 
     assert mode_of(parent) == 0o700
 
@@ -76,7 +76,7 @@ def test_existing_parent_directory_permissions_are_left_alone(tmp_path: Path) ->
     parent.mkdir(mode=0o755)
     os.chmod(parent, 0o755)
 
-    AuthManager(cache_file=parent / ".session").save_session("TOK", "https://x", "u")
+    AuthManager(cache_file=parent / ".session").save_session("prod", "TOK", "https://x", "u")
 
     assert mode_of(parent) == 0o755
 
@@ -89,7 +89,7 @@ def test_rewriting_a_world_readable_cache_tightens_it(tmp_path: Path) -> None:
     cache.write_text("{}")
     os.chmod(cache, 0o644)
 
-    AuthManager(cache_file=cache).save_session("TOK", "https://x", "u")
+    AuthManager(cache_file=cache).save_session("prod", "TOK", "https://x", "u")
 
     assert mode_of(cache) == 0o600
 
@@ -97,9 +97,9 @@ def test_rewriting_a_world_readable_cache_tightens_it(tmp_path: Path) -> None:
 def test_saved_session_round_trips(tmp_path: Path) -> None:
     cache = tmp_path / ".session"
     manager = AuthManager(cache_file=cache)
-    manager.save_session("TOK", "https://x.example.org", "alice")
+    manager.save_session("prod", "TOK", "https://x.example.org", "alice")
 
-    loaded = manager.load_session()
+    loaded = manager.load_session("prod", "https://x.example.org", "alice")
     assert loaded is not None
     assert loaded.token == "TOK"
     assert loaded.username == "alice"
@@ -107,9 +107,10 @@ def test_saved_session_round_trips(tmp_path: Path) -> None:
 
 def test_no_temp_file_is_left_behind(tmp_path: Path) -> None:
     cache = tmp_path / ".session"
-    AuthManager(cache_file=cache).save_session("TOK", "https://x", "u")
+    AuthManager(cache_file=cache).save_session("prod", "TOK", "https://x", "u")
 
-    assert sorted(p.name for p in tmp_path.iterdir()) == [".session"]
+    # The cache and its interprocess lock file, and no atomic-write temp file.
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".session", ".session.lock"]
 
 
 @pytest.mark.skipif(
@@ -122,7 +123,7 @@ def test_cache_mode_does_not_depend_on_chmod_succeeding(
     cache = tmp_path / ".session"
     monkeypatch.setattr(os, "chmod", lambda *a, **k: None)
 
-    AuthManager(cache_file=cache).save_session("TOK", "https://x", "u")
+    AuthManager(cache_file=cache).save_session("prod", "TOK", "https://x", "u")
 
     assert mode_of(cache) == 0o600
 
@@ -141,7 +142,7 @@ def test_failing_chmod_warns_instead_of_passing_silently(
     monkeypatch.setattr(os, "chmod", failing_chmod)
 
     with caplog.at_level(logging.WARNING, logger="xnatctl.core.fsutil"):
-        AuthManager(cache_file=cache).save_session("TOK", "https://x", "u")
+        AuthManager(cache_file=cache).save_session("prod", "TOK", "https://x", "u")
 
     assert any("Could not restrict permissions" in r.message for r in caplog.records)
 
@@ -151,7 +152,7 @@ def test_failing_unlink_warns_instead_of_passing_silently(
 ) -> None:
     cache = tmp_path / ".session"
     manager = AuthManager(cache_file=cache)
-    manager.save_session("TOK", "https://x", "u")
+    manager.save_session("prod", "TOK", "https://x", "u")
 
     def failing_unlink(self: Path, *args: object, **kwargs: object) -> None:
         raise OSError(1, "Operation not permitted")
@@ -159,7 +160,7 @@ def test_failing_unlink_warns_instead_of_passing_silently(
     monkeypatch.setattr(Path, "unlink", failing_unlink)
 
     with caplog.at_level(logging.WARNING, logger="xnatctl.core.auth"):
-        result = manager.clear_session()
+        result = manager.clear_session("prod")
 
     assert result is False
     assert any("Could not clear cached session" in r.message for r in caplog.records)

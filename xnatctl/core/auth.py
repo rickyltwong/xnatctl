@@ -8,13 +8,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from xnatctl.core.config import CONFIG_DIR, ENV_PASS, ENV_TOKEN, ENV_USER
-from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir, restrict_permissions
+from xnatctl.core.fsutil import (
+    atomic_private_write,
+    ensure_private_dir,
+    exclusive_lock,
+    restrict_permissions,
+)
 from xnatctl.core.redact import redact_url_query
 
 logger = logging.getLogger(__name__)
@@ -23,7 +29,21 @@ logger = logging.getLogger(__name__)
 SESSION_CACHE_FILE = CONFIG_DIR / ".session"
 SESSION_EXPIRY_MINUTES = 15  # XNAT JSESSION expires after 15 minutes of inactivity by default
 
-SESSION_CACHE_VERSION = 1
+# Session cache payload version. Unlike config.yaml, there is no migration
+# table: a cached token is disposable, so any mismatch (older, newer, missing,
+# wrong type, or unparseable) just discards the cache and forces a fresh login --
+# simpler and just as safe as migrating a value that carries no user data.
+#
+# Version 2 holds one session per profile. Version 1 held a single session
+# matched by server URL alone, so two profiles on one server with different
+# users ran as whichever user logged in last; discarding a version-1 file is
+# the whole transition.
+SESSION_CACHE_VERSION = 2
+
+# How long a cache operation waits for another xnatctl process to finish its
+# own. Each holds the lock for one small file read and write, so a wait this
+# long means that process is stuck.
+SESSION_CACHE_LOCK_TIMEOUT_SECONDS = 10
 
 
 @dataclass
@@ -71,7 +91,6 @@ class CachedSession:
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
-            "version": SESSION_CACHE_VERSION,
             "token": self.token,
             "url": self.url,
             "username": self.username,
@@ -84,21 +103,11 @@ class CachedSession:
     def from_dict(cls, data: dict[str, Any]) -> CachedSession:
         """Create from dictionary.
 
-        A missing ``version`` key means the cache predates the field and is
-        version 1.
-
         Raises:
-            ValueError: If the payload's version is not exactly the int
-                ``SESSION_CACHE_VERSION``. Callers (``AuthManager.load_session``)
-                treat this like any other unreadable cache: discard it and
-                fall through to a fresh login. The type check matters: JSON
-                ``true`` and ``1.0`` both equal ``1`` under ``==``, and a
-                cache is not meant to survive on a coincidence like that.
+            KeyError: If a required field is missing.
+            TypeError: If a field has the wrong type.
+            ValueError: If a timestamp does not parse.
         """
-        version = data.get("version", 1)
-        if type(version) is not int or version != SESSION_CACHE_VERSION:
-            raise ValueError(f"Unsupported session cache version: {version!r}")
-
         created_at = datetime.fromisoformat(data["created_at"])
         last_used = data.get("last_used_at")
         return cls(
@@ -144,19 +153,94 @@ class AuthManager:
         """
         return os.getenv(ENV_TOKEN)
 
+    def _lock(self) -> AbstractContextManager[None]:
+        """The interprocess lock held across each read-modify-write of the cache.
+
+        Every write replaces the whole file from the copy its process read, so
+        without the lock two overlapping commands drop each other's change: a
+        touch could restore a profile another process just logged out, or one
+        of two concurrent logins could vanish. Entering it raises
+        ``TimeoutError`` (an ``OSError``) after
+        :data:`SESSION_CACHE_LOCK_TIMEOUT_SECONDS`.
+        """
+        return exclusive_lock(
+            self.cache_file.with_name(self.cache_file.name + ".lock"),
+            SESSION_CACHE_LOCK_TIMEOUT_SECONDS,
+        )
+
+    def _read_cache(self) -> dict[str, CachedSession]:
+        """Return the cached sessions, keyed by profile name.
+
+        Call with :meth:`_lock` held.
+
+        A cache that cannot be read as the current version -- bad JSON, a
+        missing field, or a version this build does not write -- is deleted
+        and reads as empty: the caller then logs in again.
+        """
+        if not self.cache_file.exists():
+            return {}
+
+        try:
+            with open(self.cache_file) as f:
+                data = json.load(f)
+            if not isinstance(data, dict) or not isinstance(data.get("sessions"), dict):
+                raise ValueError("Session cache is not a version-2 payload")
+            # The type check matters: JSON ``true`` and ``2.0`` both equal 2
+            # under ``==``, and a cache is not meant to survive on that.
+            version = data.get("version")
+            if type(version) is not int or version != SESSION_CACHE_VERSION:
+                raise ValueError(f"Unsupported session cache version: {version!r}")
+            return {
+                name: CachedSession.from_dict(entry) for name, entry in data["sessions"].items()
+            }
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            logger.debug("Session cache unreadable (%s); clearing", type(e).__name__)
+            try:
+                self.cache_file.unlink(missing_ok=True)
+            except OSError as unlink_error:
+                logger.warning(
+                    "Could not clear cached session at %s: %s", self.cache_file, unlink_error
+                )
+            return {}
+
+    def _write_cache(self, sessions: dict[str, CachedSession]) -> None:
+        """Replace the cache with *sessions*; delete the file once none is left.
+
+        Call with :meth:`_lock` held, inside the same hold as the read that
+        produced *sessions*.
+
+        Raises:
+            OSError: If the file cannot be written or deleted.
+        """
+        if not sessions:
+            self.cache_file.unlink(missing_ok=True)
+            return
+        with atomic_private_write(self.cache_file) as f:
+            json.dump(
+                {
+                    "version": SESSION_CACHE_VERSION,
+                    "sessions": {name: s.to_dict() for name, s in sessions.items()},
+                },
+                f,
+            )
+
     def save_session(
         self,
+        profile: str,
         token: str,
         url: str,
         username: str,
         expiry_minutes: int = SESSION_EXPIRY_MINUTES,
     ) -> CachedSession:
-        """Save session token to cache.
+        """Cache a session token for one profile, leaving other profiles' alone.
 
         Args:
+            profile: Name of the profile the session was created for.
             token: Session token (JSESSIONID).
             url: XNAT server URL.
-            username: Username used for authentication.
+            username: The name the session logged in with -- the one the
+                profile resolves to, not a server-reported alias, so that
+                :meth:`load_session` can compare like with like.
             expiry_minutes: Minutes until session is considered expired.
 
         Returns:
@@ -172,33 +256,38 @@ class AuthManager:
         )
 
         ensure_private_dir(self.cache_file.parent)
-
-        with atomic_private_write(self.cache_file) as f:
-            json.dump(session.to_dict(), f)
+        with self._lock():
+            sessions = self._read_cache()
+            sessions[profile] = session
+            self._write_cache(sessions)
 
         restrict_permissions(self.cache_file)
 
         logger.debug(
-            "Cached session for %s at %s (expires %s)",
+            "Cached session for %s (profile %s) at %s (expires %s)",
             username,
+            profile,
             self.cache_file,
             session.expires_at.isoformat() if session.expires_at else "never",
         )
 
         return session
 
-    def _persist_touch(self, session: CachedSession) -> None:
-        try:
-            with atomic_private_write(self.cache_file) as f:
-                json.dump(session.to_dict(), f)
-        except OSError as e:
-            logger.debug("Could not refresh session cache expiry: %s", e)
+    def load_session(self, profile: str, url: str, username: str | None) -> CachedSession | None:
+        """Load a profile's cached session, if it still belongs to that profile.
 
-    def load_session(self, url: str | None = None) -> CachedSession | None:
-        """Load cached session token.
+        The session is used only while it matches who the profile resolves
+        to now: the same server URL and, when *username* is given, the same
+        user. A profile edited to another URL or user, or an ``XNAT_USER``
+        override, therefore misses rather than running as the old account.
 
         Args:
-            url: Optional URL to match. If provided, only returns session for that URL.
+            profile: Profile name the session was cached under.
+            url: The profile's server URL.
+            username: Who the profile authenticates as (env vars > profile
+                config). ``None`` when neither names a user: the only session
+                such a profile can have is one ``auth login`` created for it,
+                and that one is used.
 
         Returns:
             Cached session if valid, None otherwise.
@@ -206,76 +295,139 @@ class AuthManager:
         if not self.cache_file.exists():
             logger.debug("Session cache miss: %s does not exist", self.cache_file)
             return None
-
         try:
-            with open(self.cache_file) as f:
-                data = json.load(f)
-
-            session = CachedSession.from_dict(data)
-
-            if url and session.url != url:
-                logger.debug(
-                    "Session cache miss: cached for %s, wanted %s",
-                    redact_url_query(session.url),
-                    redact_url_query(url),
-                )
-                return None
-
-            if session.is_expired():
-                logger.debug(
-                    "Session cache expired at %s; clearing",
-                    session.expires_at.isoformat() if session.expires_at else "unknown",
-                )
-                self.clear_session()
-                return None
-
-            session.touch()
-            self._persist_touch(session)
-
-            logger.debug("Session cache hit for %s (user %s)", session.url, session.username)
-            return session
-
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logger.debug("Session cache unreadable (%s); clearing", type(e).__name__)
-            self.clear_session()
+            with self._lock():
+                return self._load_locked(profile, url, username)
+        except OSError as e:
+            # The cache only saves a login; failing to read it is not worth
+            # failing the command over.
+            logger.warning(
+                "Could not read the session cache at %s (%s); logging in without it",
+                self.cache_file,
+                e,
+            )
             return None
 
-    def clear_session(self) -> bool:
-        """Clear cached session.
+    def _load_locked(self, profile: str, url: str, username: str | None) -> CachedSession | None:
+        """:meth:`load_session`'s lookup, run with the cache lock held."""
+        sessions = self._read_cache()
+        session = sessions.get(profile)
+        if session is None:
+            logger.debug(
+                "Session cache miss: nothing cached for profile %s in %s", profile, self.cache_file
+            )
+            return None
+
+        if session.url != url:
+            logger.debug(
+                "Session cache miss: profile %s cached for %s, wanted %s",
+                profile,
+                redact_url_query(session.url),
+                redact_url_query(url),
+            )
+            return None
+
+        if username and session.username != username:
+            logger.debug(
+                "Session cache miss: profile %s cached for user %s, wanted %s",
+                profile,
+                session.username,
+                username,
+            )
+            return None
+
+        if session.is_expired():
+            logger.debug(
+                "Session cache expired at %s; clearing",
+                session.expires_at.isoformat() if session.expires_at else "unknown",
+            )
+            del sessions[profile]
+            try:
+                self._write_cache(sessions)
+            except OSError as e:
+                logger.warning("Could not clear cached session at %s: %s", self.cache_file, e)
+            return None
+
+        # Handing the token out counts as activity, so restart the idle
+        # clock. Without this the "sliding" window would never actually
+        # slide -- the file would keep its original deadline. Best-effort: the
+        # token in hand is still valid, and the worst case is the next
+        # invocation seeing a staler deadline and logging in again.
+        session.touch()
+        try:
+            self._write_cache(sessions)
+        except OSError as e:
+            logger.debug("Could not refresh session cache expiry: %s", e)
+
+        logger.debug(
+            "Session cache hit for profile %s: %s (user %s)",
+            profile,
+            redact_url_query(session.url),
+            session.username,
+        )
+        return session
+
+    def replace_token(self, old_token: str, new_token: str) -> None:
+        """Swap a renewed session's new token into the entry that held the old one.
+
+        For a re-login made outside a profile lookup, such as a long upload's
+        worker refresh: a concurrent process using that profile then skips a
+        login. Only the entry holding *old_token* changes. A profile that logged
+        in on its own, even as the same account, keeps its own session, so
+        logging one of them out never revokes the other.
+
+        Raises:
+            OSError: If the cache cannot be locked or written.
+        """
+        if not self.cache_file.exists():
+            return
+        with self._lock():
+            sessions = self._read_cache()
+            renewed = [name for name, s in sessions.items() if s.token == old_token]
+            if not renewed:
+                return
+            now = datetime.now()
+            for name in renewed:
+                old = sessions[name]
+                sessions[name] = CachedSession(
+                    token=new_token,
+                    url=old.url,
+                    username=old.username,
+                    created_at=now,
+                    expires_at=now + timedelta(minutes=SESSION_EXPIRY_MINUTES),
+                )
+            self._write_cache(sessions)
+
+    def clear_session(self, profile: str) -> bool:
+        """Remove one profile's cached session.
 
         Returns:
-            True if cache was cleared.
+            True if a session was cached for the profile and is now gone.
         """
-        try:
-            self.cache_file.unlink()
-            return True
-        except FileNotFoundError:
+        if not self.cache_file.exists():
             return False
+        try:
+            with self._lock():
+                sessions = self._read_cache()
+                if sessions.pop(profile, None) is None:
+                    return False
+                self._write_cache(sessions)
         except OSError as e:
             logger.warning("Could not clear cached session at %s: %s", self.cache_file, e)
             return False
+        return True
 
-    def has_valid_session(self, url: str | None = None) -> bool:
-        """Check if there's a valid cached session.
-
-        Args:
-            url: Optional URL to match.
-
-        Returns:
-            True if valid session exists.
-        """
-        session = self.load_session(url)
-        return session is not None and not session.is_expired()
-
-    def get_session_token(self, url: str | None = None) -> str | None:
+    def get_session_token(self, profile: str, url: str, username: str | None) -> str | None:
         """Get session token from cache or environment.
 
         Priority:
         1. Environment variable (XNAT_TOKEN)
-        2. Cached session
+        2. The profile's cached session (see :meth:`load_session`)
 
         Args:
-            url: Optional URL to match for cached session.
+            profile: Profile name.
+            url: The profile's server URL.
+            username: Who the profile authenticates as, or None.
 
         Returns:
             Session token if available.
@@ -284,21 +436,25 @@ class AuthManager:
             logger.debug("Using session token from %s", ENV_TOKEN)
             return token
 
-        if session := self.load_session(url):
+        if session := self.load_session(profile, url, username):
             return session.token
 
         return None
 
-    def get_session_info(self, url: str | None = None) -> dict[str, Any] | None:
+    def get_session_info(
+        self, profile: str, url: str, username: str | None
+    ) -> dict[str, Any] | None:
         """Get session information for display.
 
         Args:
-            url: Optional URL to match.
+            profile: Profile name.
+            url: The profile's server URL.
+            username: Who the profile authenticates as, or None.
 
         Returns:
             Dict with session info or None.
         """
-        session = self.load_session(url)
+        session = self.load_session(profile, url, username)
         if not session:
             return None
 

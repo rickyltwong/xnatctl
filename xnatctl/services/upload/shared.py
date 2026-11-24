@@ -92,15 +92,23 @@ class SessionRefresher:
         self._owner = owner
         self._lock = threading.Lock()
 
-    def _publish(self, token: str) -> None:
+    def _publish(self, stale_token: str | None, token: str) -> None:
+        """Push a fresh token to the owning client and the on-disk cache.
+
+        Called with the lock held. In the cache, only the entry that held
+        *stale_token* -- the session this upload was using -- gets the new one.
+        Both writes are best-effort: a worker that just re-authenticated has a
+        usable token in hand, and failing the upload because a *cache* could not
+        be updated would be absurd.
+        """
         if self._owner is not None:
             self._owner.session_token = token
 
         try:
             from xnatctl.core.auth import AuthManager
 
-            if self._username:
-                AuthManager().save_session(token, self._base_url, self._username)
+            if stale_token:
+                AuthManager().replace_token(stale_token, token)
         except Exception as e:  # noqa: BLE001  # best-effort cache write (see docstring): failing the upload over an uncached token would be absurd
             logger.debug("Could not update the session cache after refresh: %s", e)
 
@@ -143,7 +151,9 @@ class SessionRefresher:
                     )
                     if resp.status_code == 200 and "<html" not in resp.text.lower():
                         self._token = resp.text.strip()
-                        self._publish(self._token)
+                        # self._token was stale_token until this line (checked
+                        # above, under the same lock).
+                        self._publish(stale_token, self._token)
                         logger.info("Session refreshed successfully")
                     else:
                         logger.error("Session refresh failed: HTTP %d", resp.status_code)
