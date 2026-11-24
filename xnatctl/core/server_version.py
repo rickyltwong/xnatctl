@@ -35,6 +35,12 @@ ServerVersion = tuple[int, int, int]
 
 PROBE_TIMEOUT_SECONDS = 5
 
+# Matched against the whole stripped body with `fullmatch`, never searched for
+# inside it: a search would read the "1.1" in an "HTTP/1.1 404 Not Found" page
+# (say, from a proxy in front of a misconfigured buildInfo endpoint) as XNAT
+# 1.1.0 and wrongly block a good upload. Each numeric component is capped at 4
+# digits and each suffix token at 20 characters, so a garbage or adversarial
+# body can never hand int() an oversized digit string.
 _VERSION_PREFIX = r"(?:[A-Za-z][A-Za-z ]*\s+)?"
 _VERSION_SUFFIX = r"(?:[.\-][A-Za-z0-9]{1,20})*"
 _VERSION_RE = re.compile(

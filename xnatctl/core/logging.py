@@ -255,6 +255,20 @@ class _JsonLinesFileHandler(logging.handlers.RotatingFileHandler):
 
 
 class _FileScopeFilter(logging.Filter):
+    """Admit xnatctl's own log stream to the diagnostics file; reject the rest.
+
+    httpx/httpcore are admitted too, but only when the wire-trace tier is on.
+
+    This allowlist is a PHI boundary, not a noise filter. Root has to sit at
+    DEBUG for the file handler to see xnatctl's DEBUG records, which makes
+    every other third-party logger's DEBUG output eligible too, such as
+    pynetdicom's association and PDU trace. That output is not vetted the way
+    xnatctl's own log calls are (see ``SECURITY.md``, "PHI in logs and
+    errors"), and :class:`RedactionFilter` scrubs secret-shaped URL values and
+    session cookies, nothing DICOM-shaped. Without this filter a dependency's debug
+    logging could write patient identifiers to a persisted file.
+    """
+
     def filter(self, record: logging.LogRecord) -> bool:
         name = record.name
         if name == "xnatctl" or name.startswith("xnatctl."):

@@ -169,6 +169,19 @@ def _follow_logs(
     sink: IO[bytes],
     interval: float,
 ) -> None:
+    """Poll the plain logs endpoint and print only newly-appeared bytes.
+
+    Container Service 3.7.2 has a ``logSince/{file}`` route (verified live:
+    it reaches its handler), but what log content it returns for a given
+    ``since`` could not be verified, because the integration stack has no
+    Docker daemon and so no container with log output. Rather than build
+    ``--follow`` on that unverified behaviour, this re-fetches the full log
+    each interval from the verified ``logs/{stream}`` endpoint and writes
+    only the bytes not already printed.
+
+    Stops when the container reaches a terminal status (see
+    ``_TERMINAL_CONTAINER_STATUSES``) or on ``KeyboardInterrupt``.
+    """
     seen = 0
     try:
         while True:

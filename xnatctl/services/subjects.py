@@ -651,6 +651,12 @@ class SubjectService(_SubjectSharingMixin):
             for name, value in fields.items()
         }
 
+        # Existence preflight. Verified live against XNAT 1.9.2.1, this PUT for
+        # a nonexistent subject_id answers 201 and creates an empty subject, so
+        # reject a typo with get()'s clean 404 before any write. It narrows the
+        # window rather than closing it: a subject deleted between this GET and
+        # the PUT is still recreated empty. The except below does not guard that
+        # race (it ends in a 201); it handles a missing project, which does 404.
         self.get(subject_id, project=project)
 
         try:

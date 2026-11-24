@@ -80,6 +80,8 @@ class _DicomTransferMixin(_ExecutorAttrs):
             subject=dest_subject,
             session=dest_experiment_label,
             entity_keys="experiment",
+            # append, never the CLI default "delete": a transfer must not wipe
+            # scans that already arrived in an earlier run of the same session.
             overwrite="append",
             destination="/archive",
         )

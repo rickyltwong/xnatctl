@@ -113,6 +113,11 @@ class _SessionDownloadMixin(BaseService):
         for sid in scan_ids:
             check_no_casefold_collision(sid, seen_scan_dirs, "scan_id")
 
+        # Created once here, before any worker starts, not left to each worker.
+        # On Windows, Path.resolve() canonicalizes only the deepest existing
+        # ancestor, so two workers racing to create scans/ could resolve the
+        # same scan_base differently and fail the containment check below on a
+        # safe directory.
         (session_dir / "scans").mkdir(parents=True, exist_ok=True)
 
         if on_start is not None:

@@ -469,8 +469,13 @@ class SessionService(BaseService):
     ) -> httpx.Response:
         """Set one or more custom variables on a session in a single request.
 
-        Requires the resolved project, subject, and xsiType -- see the class
-        docstring above for why the flat experiment route silently no-ops.
+        Requires the resolved project, subject, and xsiType. Verified live:
+        XNAT answers HTTP 200 and persists nothing if the PUT goes to the flat
+        ``/data/experiments/{id}`` route, if the field keys lack the
+        experiment's xsiType prefix (``xnat:mrSessionData/fields/...``), or
+        if the request has no explicit ``xsiType`` parameter. Only the
+        subject-scoped route with prefixed keys and ``xsiType`` applies the
+        write.
         Each name is validated against a plain-identifier shape before
         building the request -- see :func:`_validate_field_name`.
 

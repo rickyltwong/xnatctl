@@ -112,6 +112,11 @@ def config_init(
             print_error(f"Profile '{profile}' already exists. Use --force to overwrite.")
             raise SystemExit(1)
     else:
+        # --force deliberately never loads or checks the existing file: it exists
+        # to recover a config.yaml this build cannot parse, so the old file must
+        # not make it refuse. It only warns, best-effort, before overwriting a
+        # config from a newer xnatctl. The fresh Config() still goes through
+        # ensure_saveable() when it is saved.
         if force and CONFIG_FILE.exists():
             _warn_if_forcing_over_newer_version(CONFIG_FILE)
         cfg = Config()

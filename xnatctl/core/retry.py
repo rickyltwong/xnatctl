@@ -77,6 +77,13 @@ UPLOAD_ONLY_RETRYABLE_STATUS_CODES = {
 }
 UPLOAD_RETRYABLE_STATUS_CODES = RETRYABLE_STATUS_CODES | UPLOAD_ONLY_RETRYABLE_STATUS_CODES
 
+# Harvested 2026-08-04 from the messages compiled into a deployed XNAT 1.9.2.1
+# (org.nrg.xnat.archive.PrearcSessionArchiver, PrearcUtils,
+# restlet.services.Importer) and cross-checked against a real ClientException
+# in that server's prearchive.log: read off the running server, not guessed.
+# Re-check them there when a newer XNAT changes its wording. The transient ones
+# are all concurrency (two uploads meeting in one session); the permanent ones
+# are configuration or data errors that no wait fixes.
 TRANSIENT_400_SIGNATURES = (
     "session processing in progress",
     "concurrent modification is discouraged",
