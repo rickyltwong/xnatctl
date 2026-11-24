@@ -4,8 +4,47 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+**Features**
+
+- `container launch -E SESSION --scan SCAN_ID` runs a scan-level pipeline on
+  one scan by the name XNAT's Run menu shows, for example
+  `xnatctl container launch "DICOM to NIfTI" -P MYPROJ -E MYPROJ_S01_MR --scan 5`.
+  The session can be its label or its accession ID. The pipeline is matched
+  by label, name or ID among those the project has enabled for that scan's
+  type, and the scan's `/archive/experiments/.../scans/...` address and the
+  wrapper's input name are filled in, so no wrapper ID or `--param` is
+  needed. It reads the same route as the Run menu, which a project member
+  can call, and refuses a name that two enabled pipelines share.
+
 **Fixes**
 
+- `container launch --wait` follows only a container it can tie to its own
+  launch. When the server answers with the placeholder workflow-id, it used to take
+  the first new container for the same wrapper in the project, which was
+  often someone else's when several people launch the same pipeline at
+  once. It now takes only a new container of the same wrapper whose
+  `user-id` is exactly the login the server confirms for this session and
+  whose recorded launch inputs equal the ones it sent. That login is asked
+  for only after the launch, and only when the response has no real
+  workflow-id; if the server does not confirm it, or the lookup had to log
+  in again, `--wait` says the launch was queued and stops, rather than trust
+  a configured username. An authentication or permission error in the
+  lookup keeps its exit code, and the time it takes counts against
+  `--timeout`. The one case it still cannot settle is one user launching the same
+  pipeline with identical inputs twice at once: when both containers are
+  visible it stops and lists them instead of guessing. A timeout lists
+  the new containers of the wrapper that did not match. A missing, null
+  or placeholder workflow-id is no longer compared as an id, so an older
+  container carrying one is not a match.
+- A command no longer runs twice when one of its own requests is refused
+  with 401 or 403. With a cached session and a stored password, the login
+  check logged in again and re-ran the whole command, so for example
+  `container launch --wait` denied while polling sent its launch a second
+  time; without a stored password it reported "Session expired" instead
+  of the refusal. Only the session check before the command can now lead
+  to a new login and a fresh start of the command. A single request that
+  the client itself retries after logging in again is unchanged; what no
+  longer happens is the whole command starting over.
 - The Windows release's checksum file (`xnatctl-windows-amd64.zip.sha256`)
   ends in a plain newline, so `sha256sum -c` accepts it. Through
   0.6.3 it ended in CRLF, and `sha256sum -c` read the CR as part of the

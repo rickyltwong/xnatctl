@@ -41,17 +41,19 @@ launch this project sent queued as ``"success"`` regardless of validity
 from __future__ import annotations
 
 import builtins
+import re
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import httpx
 
 from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError, XNATCtlError
-from xnatctl.core.validation import quote_path_segment
+from xnatctl.core.validation import quote_path_segment, validate_scan_id
 
 from .base import BaseService
 from .commands import CommandService
 from .projects import ProjectService
+from .sessions import SessionService
 
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
@@ -104,6 +106,38 @@ def _session_input_name(wrapper: dict[str, Any]) -> str:
     return name
 
 
+class ScanLaunch(NamedTuple):
+    """A scan-level launch resolved by :meth:`ContainerService.plan_scan_launch`."""
+
+    wrapper_id: int
+    wrapper_label: str
+    params: dict[str, str]
+
+
+# A wrapper ID as typed: ASCII digits only. str.isdigit() also accepts
+# characters such as "²", which int() then rejects.
+_DECIMAL_ID = re.compile(r"[0-9]+")
+
+
+def _scan_xsi_type(document: Any) -> str | None:
+    """Read ``items[0].meta["xsi:type"]`` from a single-scan ``?format=json`` document.
+
+    Returns ``None`` for any other shape, so the caller raises one
+    ``XNATCtlError`` naming the endpoint instead of a ``KeyError`` or a
+    model validation error.
+    """
+    items = document.get("items") if isinstance(document, dict) else None
+    first = items[0] if isinstance(items, list) and items else None
+    meta = first.get("meta") if isinstance(first, dict) else None
+    scan_type = meta.get("xsi:type") if isinstance(meta, dict) else None
+    return scan_type if isinstance(scan_type, str) and scan_type else None
+
+
+def _wrapper_display_name(row: dict[str, Any]) -> str:
+    """The name XNAT's Run menu shows for a ``commands/available`` row: its label, else its name."""
+    return str(row.get("wrapper-label") or row.get("wrapper-name") or row.get("wrapper-id"))
+
+
 class ContainerService(BaseService):
     """Service for XNAT Container Service container listing/monitoring/execution.
 
@@ -113,7 +147,9 @@ class ContainerService(BaseService):
     is a thin passthrough to it, and it avoids a circular import since
     ``commands.py`` never imports this module.
 
-    Every method returns plain ``dict``/``list[dict]`` -- see
+    Every method that returns server records returns them as plain
+    ``dict``/``list[dict]``; :meth:`plan_scan_launch` returns a small
+    :class:`ScanLaunch` of values it derived -- see
     :class:`~xnatctl.services.commands.CommandService`'s docstring for why.
     """
 
@@ -324,6 +360,186 @@ class ContainerService(BaseService):
         ProjectService(self.client).get(project)
         return self.build_launch_params(wrapper, params, experiment=experiment)
 
+    def available_wrappers(self, project: str, xsi_type: str) -> builtins.list[dict[str, Any]]:
+        """List the wrappers ``project`` offers for objects of ``xsi_type``: the Run menu's source.
+
+        ``GET /xapi/projects/{project}/commands/available?xsiType=...`` is the
+        route XNAT's own Run menu reads, and it needs only Read access on the
+        project (``restrictTo = Read`` in Container Service 3.7.3's
+        ``CommandRestApi``). The routes :meth:`resolve_wrapper` and
+        ``wrapper_enabled_state`` use are not open to a project member the
+        same way: ``GET /xapi/projects/{p}/wrappers/{w}/enabled`` checks Edit
+        on the project.
+
+        Verified live on Container Service 3.7.3: a JSON array with one row
+        per wrapper whose contexts include ``xsi_type``, enabled in the
+        project or not, each carrying ``command-id``, ``command-name``,
+        ``command-label``, ``command-description``, ``wrapper-id``,
+        ``wrapper-name``, ``wrapper-label``, ``wrapper-description``,
+        ``wrapper-contexts``, ``image-name``, ``image-type``, ``enabled``
+        (for this project) and ``root-element-name`` (the name of the
+        wrapper's input for the object being launched on). A nonexistent
+        project answers 500, so callers check the project first.
+
+        Args:
+            project: Project ID.
+            xsi_type: XSI type of the object a launch would run on, e.g.
+                ``xnat:mrScanData``.
+
+        Returns:
+            The rows, unfiltered.
+
+        Raises:
+            XNATCtlError: If the response is not a JSON array of objects,
+                each with an integer ``wrapper-id`` and a boolean ``enabled``.
+                A row without them cannot be told apart from a disabled
+                wrapper, so it is not quietly treated as one.
+        """
+        path = f"/xapi/projects/{quote_path_segment(project)}/commands/available"
+        rows = _expect_list(self.client.get_json(path, params={"xsiType": xsi_type}), path)
+        for index, row in enumerate(rows):
+            wrapper_id = row.get("wrapper-id") if isinstance(row, dict) else None
+            if (
+                not isinstance(row, dict)
+                or not isinstance(wrapper_id, int)
+                or isinstance(wrapper_id, bool)
+                or not isinstance(row.get("enabled"), bool)
+            ):
+                raise XNATCtlError(
+                    f"Unexpected row {index} from GET {path}: expected an object with an "
+                    f"integer 'wrapper-id' and a boolean 'enabled', got {row!r}."
+                )
+        return rows
+
+    def resolve_available_wrapper(self, project: str, xsi_type: str, ref: str) -> dict[str, Any]:
+        """Find the one wrapper enabled in ``project`` for ``xsi_type`` that ``ref`` names.
+
+        ``ref`` matches a wrapper's ``wrapper-label`` (what the Run menu
+        shows) or its ``wrapper-name``; a ``ref`` of ASCII digits only is a
+        ``wrapper-id`` and nothing else, as in :meth:`resolve_wrapper`, so
+        the ID the ambiguity error suggests always selects one wrapper. Only
+        wrappers enabled in the project are candidates, so a disabled
+        wrapper with the same label is not a conflict. Container Service
+        does not keep labels or names unique, so two enabled matches are an
+        error rather than a guess.
+
+        Args:
+            project: Project ID.
+            xsi_type: XSI type of the object the launch runs on.
+            ref: Run-menu label, wrapper name or numeric wrapper ID.
+
+        Returns:
+            The matching :meth:`available_wrappers` row.
+
+        Raises:
+            ResourceNotFoundError: If no enabled wrapper matches; its hint
+                lists the ones that are enabled.
+            InputValidationError: If more than one enabled wrapper matches.
+        """
+        enabled = [r for r in self.available_wrappers(project, xsi_type) if r["enabled"]]
+        if _DECIMAL_ID.fullmatch(ref):
+            matches = [r for r in enabled if r["wrapper-id"] == int(ref)]
+        else:
+            matches = [r for r in enabled if ref in (r.get("wrapper-label"), r.get("wrapper-name"))]
+        if not matches:
+            offered = ", ".join(
+                sorted(f"{_wrapper_display_name(r)!r} (ID {r['wrapper-id']})" for r in enabled)
+            )
+            error = ResourceNotFoundError(f"pipeline for {xsi_type} in project {project}", ref)
+            error.hint = (
+                f"Use a pipeline enabled for {xsi_type} in {project}: {offered}."
+                if offered
+                else f"No pipeline is enabled for {xsi_type} in {project}; a project owner "
+                "can enable one."
+            )
+            raise error
+        if len(matches) > 1:
+            candidates = ", ".join(
+                f"wrapper {r.get('wrapper-id')} ({_wrapper_display_name(r)})" for r in matches
+            )
+            raise InputValidationError(
+                f"Pipeline {ref!r} is ambiguous in project {project}: matched by "
+                f"{len(matches)} enabled wrappers ({candidates}). Use the numeric wrapper ID.",
+                field="wrapper",
+                value=ref,
+            )
+        return matches[0]
+
+    def plan_scan_launch(
+        self,
+        project: str,
+        wrapper_ref: str,
+        params: dict[str, str],
+        *,
+        experiment: str,
+        scan: str,
+    ) -> ScanLaunch:
+        """Resolve a scan-level launch from what a user sees in XNAT: session, scan, Run-menu name.
+
+        Looks up the session (label or accession ID) in ``project``, reads
+        the scan's XSI type, picks the wrapper ``wrapper_ref`` names among
+        those enabled in the project for that type (see
+        :meth:`resolve_available_wrapper`), and sets that wrapper's own
+        input (``root-element-name``) to the scan's
+        ``/archive/experiments/{ID}/scans/{scan}`` URI. The launch route
+        validates none of this itself (see :meth:`launch`), so every lookup
+        here doubles as the check that the launch would run on something.
+
+        Args:
+            project: Project ID the launch runs in.
+            wrapper_ref: Run-menu label, wrapper name or numeric wrapper ID.
+            params: Parsed ``--param KEY=VALUE`` values.
+            experiment: Session label or accession ID in ``project``.
+            scan: Scan ID within that session.
+
+        Returns:
+            The wrapper ID, its Run-menu name, and the params :meth:`launch`
+            would POST.
+
+        Raises:
+            ResourceNotFoundError: If the project, session, scan or pipeline
+                does not exist (see :meth:`resolve_available_wrapper`).
+            InputValidationError: If ``scan`` is not a valid scan ID, the
+                pipeline is ambiguous, or ``params`` already sets the
+                wrapper's scan input.
+            XNATCtlError: If a response lacks a field this relies on.
+        """
+        scan = validate_scan_id(scan)
+        ProjectService(self.client).get(project)
+        session_id = SessionService(self.client).get(experiment, project=project).id
+        # The lookup and the launched URI share these segments, so the scan
+        # that was checked is the scan that runs.
+        scan_tail = f"experiments/{quote_path_segment(session_id)}/scans/{quote_path_segment(scan)}"
+        scan_path = f"/data/{scan_tail}"
+        try:
+            scan_document = self.client.get_json(scan_path)
+        except ResourceNotFoundError as e:
+            raise ResourceNotFoundError("scan", f"{experiment}/{scan}") from e
+        scan_type = _scan_xsi_type(scan_document)
+        if scan_type is None:
+            raise XNATCtlError(f"Unexpected response from GET {scan_path}: no scan xsi:type.")
+
+        wrapper = self.resolve_available_wrapper(project, scan_type, wrapper_ref)
+        input_name = wrapper.get("root-element-name")
+        if not isinstance(input_name, str) or not input_name:
+            raise XNATCtlError(
+                f"Unexpected row from GET /xapi/projects/{project}/commands/available: wrapper "
+                f"{wrapper['wrapper-id']} has no usable 'root-element-name'."
+            )
+        if input_name in params:
+            raise InputValidationError(
+                f"--scan conflicts with --param {input_name}=...: the wrapper's scan input is "
+                f"named {input_name!r}. Use one or the other, not both.",
+                field="scan",
+                value=scan,
+            )
+        scan_uri = f"/archive/{scan_tail}"
+        return ScanLaunch(
+            wrapper_id=wrapper["wrapper-id"],
+            wrapper_label=_wrapper_display_name(wrapper),
+            params={**params, input_name: scan_uri},
+        )
+
     def launch(self, project: str, wrapper_id: int, params: dict[str, str]) -> dict[str, Any]:
         """Launch a container from a project-scoped wrapper.
 
@@ -343,8 +559,9 @@ class ContainerService(BaseService):
         assigned"`` -- and no container is ever subsequently created for
         it. So a bad wrapper ID here would silently do nothing while
         reporting success, if the caller had not resolved it client-side
-        first -- every call site in ``cli/container.py`` resolves via
-        :meth:`resolve_wrapper` before calling this.
+        first -- every call site in ``cli/container.py`` resolves the wrapper
+        before calling this: via :meth:`plan_scan_launch` for ``--scan``,
+        otherwise via :meth:`resolve_wrapper`.
 
         A nonexistent ``project`` DOES fail synchronously, but unhelpfully:
         verified live, 500 with body ``"There was an error in the request :

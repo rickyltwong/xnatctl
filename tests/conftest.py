@@ -49,6 +49,7 @@ def make_fake_client(base_url: str = DEFAULT_BASE_URL) -> MagicMock:
     client.is_authenticated = True
     client.base_url = base_url
     client.whoami.return_value = UserInfo(username="user", enabled=True)
+    client.current_username.return_value = "user"
     client.server_version = None
     return client
 
@@ -71,6 +72,7 @@ def make_authenticated_context(
     mock_client.is_authenticated = True
     mock_client.base_url = DEFAULT_BASE_URL
     mock_client.whoami.return_value = UserInfo(username="user", enabled=True)
+    mock_client.current_username.return_value = "user"
     ctx.client = cast(Any, mock_client)
     ctx.auth_manager = MagicMock()
     return ctx, mock_client
