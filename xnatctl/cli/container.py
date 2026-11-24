@@ -510,16 +510,21 @@ def _wait_for_launch(
             container_id = matches[0]
             break
         if len(matches) > 1:
+            basis = (
+                f"workflow-id {workflow_id}"
+                if workflow_id is not None
+                else "this user and these inputs"
+            )
             raise click.ClickException(
-                f"The launch was queued, but containers {', '.join(matches)} all match it, "
-                "so --wait cannot tell which one it started. Follow one with "
+                f"The launch was queued, but containers {', '.join(matches)} all match it "
+                f"({basis}), so --wait cannot tell which one it started. Follow one with "
                 "'xnatctl container show <id>'."
             )
         if time.monotonic() >= deadline:
             seen = (
                 f" {len(unmatched)} new container(s) for wrapper {wrapper_id} appeared "
-                f"({', '.join(unmatched)}), but none was started by {launcher} with this "
-                "launch's inputs."
+                f"({', '.join(unmatched)}), but none could be tied to this launch (started "
+                f"by {launcher}, with exactly its inputs). The launch itself was queued."
                 if unmatched
                 else ""
             )

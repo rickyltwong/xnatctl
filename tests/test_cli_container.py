@@ -1052,7 +1052,7 @@ class TestContainerLaunchWaitCorrelation:
         result = self._run(authenticated_cli, before=[], after=[superset])
 
         assert result.exit_code != 0
-        assert "with this launch's inputs" in " ".join(result.output.split())
+        assert "could be tied to this launch" in " ".join(result.output.split())
         assert "801" in result.output
 
     def test_two_identical_matches_are_refused_not_guessed(
@@ -1241,4 +1241,8 @@ class TestContainerLaunchWaitWithoutScan:
         result = authenticated_cli.invoke(["container", "launch", "34", "--wait", "--timeout", "5"])
 
         assert result.exit_code != 0
-        assert "801" in result.output
+        output = " ".join(result.output.split())
+        assert "timed out" in output
+        assert "(801)" in output
+        fetched = [c.args[0] for c in authenticated_cli.client.get_json.call_args_list]
+        assert "/xapi/containers/801" not in fetched

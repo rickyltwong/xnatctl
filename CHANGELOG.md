@@ -18,8 +18,8 @@ All notable changes to this project will be documented in this file.
 
 **Fixes**
 
-- `container launch --wait` follows the container its own launch started.
-  When the server answers with the placeholder workflow-id, it used to take
+- `container launch --wait` follows only a container it can tie to its own
+  launch. When the server answers with the placeholder workflow-id, it used to take
   the first new container for the same wrapper in the project, which was
   often someone else's when several people launch the same pipeline at
   once. It now takes only a new container of the same wrapper that the
