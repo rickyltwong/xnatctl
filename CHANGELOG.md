@@ -26,8 +26,10 @@ All notable changes to this project will be documented in this file.
   `user-id` is exactly the login the server confirms for this session and
   whose recorded launch inputs equal the ones it sent. That login is asked
   for only after the launch, and only when the response has no real
-  workflow-id; if the server does not confirm it, `--wait` says the launch
-  was queued and stops, rather than trust a configured username. The one case it still cannot settle is one user launching the same
+  workflow-id; if the server does not confirm it, or the lookup had to log
+  in again, `--wait` says the launch was queued and stops, rather than trust
+  a configured username. A failed lookup keeps its own exit code, and the
+  time it takes counts against `--timeout`. The one case it still cannot settle is one user launching the same
   pipeline with identical inputs twice at once: when both containers are
   visible it stops and lists them instead of guessing. A timeout lists
   the new containers of the wrapper that did not match. A missing, null

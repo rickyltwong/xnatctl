@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -11,7 +12,7 @@ import pytest
 from conftest import AuthenticatedCLI, make_response
 
 from xnatctl.cli import container as container_cli
-from xnatctl.core.exceptions import ResourceNotFoundError, XNATCtlError
+from xnatctl.core.exceptions import PermissionDeniedError, ResourceNotFoundError, XNATCtlError
 
 SAMPLE_CONTAINER = {
     "id": "501",
@@ -920,8 +921,12 @@ class TestContainerLaunchScan:
 
 
 @pytest.fixture
-def fake_clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace the module's clock so --wait reaches its deadline without real waiting."""
+def fake_clock(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
+    """Replace the module's clock so --wait reaches its deadline without real waiting.
+
+    Returns the function that advances it, for a test that lets time pass
+    outside ``sleep`` (a slow request).
+    """
     now = [0.0]
 
     def sleep(seconds: float) -> None:
@@ -930,6 +935,7 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         container_cli, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=sleep)
     )
+    return sleep
 
 
 def _scan_container(
@@ -1148,6 +1154,57 @@ class TestContainerLaunchWaitCorrelation:
         assert result.exit_code != 0
         assert "The launch was queued" in " ".join(result.output.split())
         assert authenticated_cli.client.post.call_count == 1
+
+    def test_login_read_on_a_re_established_session_is_not_trusted(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        """A 401 re-login during the lookup may be another account's credentials."""
+        client = authenticated_cli.client
+        client.session_token = "launching-session"
+
+        def relogin_as_someone_else() -> str:
+            client.session_token = "new-session"
+            return "someone-else"
+
+        client.current_username.side_effect = relogin_as_someone_else
+        theirs = _scan_container("801", self.OURS, user="someone-else")
+
+        result = self._run(authenticated_cli, before=[], after=[theirs])
+
+        assert result.exit_code != 0
+        assert "did not confirm which user is logged in" in " ".join(result.output.split())
+        fetched = [c.args[0] for c in client.get_json.call_args_list]
+        assert "/xapi/containers/801" not in fetched
+
+    def test_denied_login_lookup_keeps_its_exit_code(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        authenticated_cli.client.current_username.side_effect = PermissionDeniedError("denied")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[ours])
+
+        assert result.exit_code == 6  # ExitCode.PERMISSION_ERROR
+        assert "The launch was queued" in " ".join(result.output.split())
+
+    def test_slow_login_lookup_counts_against_the_timeout(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: Callable[[float], None]
+    ) -> None:
+        def slow_lookup() -> str:
+            fake_clock(60)
+            return "user"
+
+        authenticated_cli.client.current_username.side_effect = slow_lookup
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[ours])
+
+        assert result.exit_code != 0
+        output = " ".join(result.output.split())
+        assert "timed out" in output
+        assert "The launch itself was queued" in output
+        fetched = [c.args[0] for c in authenticated_cli.client.get_json.call_args_list]
+        assert "/xapi/containers/802" not in fetched
 
     def test_real_workflow_id_needs_no_login(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.current_username.side_effect = XNATCtlError("denied")

@@ -436,22 +436,30 @@ def _confirmed_login(ctx: Context, project: str) -> str:
     Asked only after the launch and only when its response has no real
     workflow-id, so a launch that does not need it never depends on it.
     A configured or cached username is no substitute: it can name another
-    account than the session's.
+    account than the session's. Neither is a login read on a session the
+    lookup itself had to re-establish (a 401 re-login can use another
+    account's configured credentials), so a changed session token counts as
+    unconfirmed.
 
     Raises:
         click.ClickException: When the server does not confirm the login.
-            The launch itself was already queued.
+        XNATCtlError: When the lookup fails, re-raised so its exit code holds,
+            after saying on stderr that the launch was queued.
     """
+    client = ctx.get_client()
+    unconfirmed = (
+        "The launch was queued, but --wait cannot tie a container to it: the server "
+        "did not confirm which user is logged in. Find it with "
+        f"'xnatctl container list -P {project}'."
+    )
+    token = client.session_token
     try:
-        login = ctx.get_client().current_username()
+        login = client.current_username()
     except XNATCtlError:
-        login = None
-    if not login:
-        raise click.ClickException(
-            "The launch was queued, but --wait cannot tie a container to it: the server "
-            "did not confirm which user is logged in. Find it with "
-            f"'xnatctl container list -P {project}'."
-        )
+        click.echo(unconfirmed, err=True)
+        raise
+    if not login or client.session_token != token:
+        raise click.ClickException(unconfirmed)
     return login
 
 
@@ -505,9 +513,9 @@ def _wait_for_launch(
             guess between; or when the fallback needs the server-confirmed
             login (see :func:`_confirmed_login`) and cannot get it.
     """
+    deadline = time.monotonic() + timeout
     workflow_id = _real_workflow_id(launch_result.get("workflow-id"))
     launcher = None if workflow_id is not None else _confirmed_login(ctx, project)
-    deadline = time.monotonic() + timeout
 
     if not ctx.quiet:
         target = (
@@ -518,6 +526,22 @@ def _wait_for_launch(
         click.echo(f"Waiting for a container matching {target}...", err=True)
 
     unmatched: dict[str, None] = {}  # every poll's, in first-seen order
+
+    def timed_out() -> click.ClickException:
+        seen = (
+            f" {len(unmatched)} new container(s) for wrapper {wrapper_id} appeared "
+            f"({', '.join(unmatched)}), but none could be tied to this launch "
+            f"(started by {launcher}, with exactly its inputs)."
+            if unmatched
+            else ""
+        )
+        return click.ClickException(
+            f"--wait timed out after {timeout}s: no container matching this launch "
+            f"appeared under project {project!r}.{seen} The launch itself was queued."
+        )
+
+    if time.monotonic() >= deadline:  # the login lookup counts against --timeout
+        raise timed_out()
     while True:
         matches, others = _launch_candidates(
             service,
@@ -544,17 +568,7 @@ def _wait_for_launch(
                 "'xnatctl container show <id>'."
             )
         if time.monotonic() >= deadline:
-            seen = (
-                f" {len(unmatched)} new container(s) for wrapper {wrapper_id} appeared "
-                f"({', '.join(unmatched)}), but none could be tied to this launch (started "
-                f"by {launcher}, with exactly its inputs). The launch itself was queued."
-                if unmatched
-                else ""
-            )
-            raise click.ClickException(
-                f"--wait timed out after {timeout}s: no container matching this launch "
-                f"appeared under project {project!r}.{seen}"
-            )
+            raise timed_out()
         time.sleep(_POLL_INTERVAL_SECONDS)
 
     if not ctx.quiet:
