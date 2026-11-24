@@ -497,7 +497,7 @@ def api_post(
 
     body, json_body, raw_bytes, decoded_text = _read_body(data, file_path)
 
-    # Stdin sentinel (-f -) has no extension to detect from; treat as no file.
+    # Stdin sentinel (--file -) has no extension to detect from; treat as no file.
     detect_file = None if file_path == _STDIN_SENTINEL else file_path
     effective_type = content_type or _detect_content_type(detect_file, raw_bytes, decoded_text)
     headers: dict[str, str] | None = None

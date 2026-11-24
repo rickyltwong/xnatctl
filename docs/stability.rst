@@ -63,8 +63,8 @@ What is covered
      - Wording changes freely.
    * - Hidden flags (absent from ``--help``)
      - Unstable
-     - Mostly deprecated aliases kept alive for existing scripts, plus a few
-       internal switches. Do not adopt them in new work.
+     - Internal switches and options kept for existing scripts but no longer
+       advertised. Do not adopt them in new work.
    * - Top-level ``xnatctl`` exports (the names listed in ``xnatctl.__all__``)
      - Stable
      - Exactly the names in ``xnatctl.__all__`` -- the client, config, the

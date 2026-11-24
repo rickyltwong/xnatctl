@@ -51,7 +51,9 @@ def _walk(
     return [(path, command)]
 
 
-def _deprecated_options() -> list[tuple[CommandPath, click.Parameter, str]]:
+def _deprecated_options(
+    root: click.Command = cli,
+) -> list[tuple[CommandPath, click.Parameter, str]]:
     """Find every option the CLI presents as deprecated.
 
     Detection is by the flag's own help text and hidden state rather than by
@@ -60,7 +62,7 @@ def _deprecated_options() -> list[tuple[CommandPath, click.Parameter, str]]:
     to the check it is supposed to fail.
     """
     found: list[tuple[CommandPath, click.Parameter, str]] = []
-    for path, command in _walk(cli):
+    for path, command in _walk(root):
         for param in command.params:
             help_text = getattr(param, "help", None) or ""
             if "deprecat" not in help_text.lower():
@@ -72,7 +74,9 @@ def _deprecated_options() -> list[tuple[CommandPath, click.Parameter, str]]:
     return found
 
 
-def _wired_alias_params() -> list[tuple[CommandPath, click.Parameter, str]]:
+def _wired_alias_params(
+    root: click.Command = cli,
+) -> list[tuple[CommandPath, click.Parameter, str]]:
     """Every option whose callback closure carries a baked deprecation warning.
 
     Most deprecated aliases carry no help at all (they are hidden), so the
@@ -84,7 +88,7 @@ def _wired_alias_params() -> list[tuple[CommandPath, click.Parameter, str]]:
     would simply be invisible to the checks it is supposed to fail.
     """
     found: list[tuple[CommandPath, click.Parameter, str]] = []
-    for path, command in _walk(cli):
+    for path, command in _walk(root):
         for param in command.params:
             callback = getattr(param, "callback", None)
             closure = getattr(callback, "__closure__", None)
@@ -127,7 +131,7 @@ class TestRegistryCoverage:
 
         assert not unregistered, (
             f"deprecated flags missing from DEPRECATED_FLAGS: {sorted(unregistered)}. "
-            "Register them in xnatctl/cli/common.py so the warning can name a "
+            "Register them in xnatctl/cli/common/deprecation.py so the warning can name a "
             "removal release."
         )
 
@@ -208,6 +212,48 @@ class TestRegistryCoverage:
                 f"{flag} was scheduled for removal in {entry.removed_in}, but "
                 f"{'.'.join(str(p) for p in current)} still carries it"
             )
+
+
+@pytest.mark.usefixtures("registered_test_flags")
+class TestTheSweepsFindAnAlias:
+    """Positive control: the real CLI has no alias since 0.7.0, so the sweeps
+    above come back empty there. Run them on a throwaway group that has one, so
+    a sweep that stopped finding aliases fails here instead of passing vacuously.
+    """
+
+    @staticmethod
+    def _group() -> click.Group:
+        from xnatctl.cli.common import _make_alias_cb
+
+        @click.group()
+        def root() -> None:
+            pass
+
+        @root.command("logs")
+        @click.option("--follow", is_flag=True, default=False)
+        @click.option(
+            "-f",
+            "legacy_follow_f",
+            is_flag=True,
+            hidden=True,
+            expose_value=False,
+            callback=_make_alias_cb("-f (container logs)", "follow", True),
+        )
+        @click.option("--old-name", hidden=True, help="Deprecated; use --follow.")
+        def logs(follow: bool, old_name: str | None) -> None:
+            pass
+
+        return root
+
+    def test_the_alias_sweep_finds_the_wired_alias(self) -> None:
+        sites = [(path, message) for path, _param, message in _wired_alias_params(self._group())]
+
+        assert sites == [(("logs",), deprecation_message("-f (container logs)"))]
+
+    def test_the_help_sweep_finds_the_marked_option(self) -> None:
+        found = [(path, flag) for path, _param, flag in _deprecated_options(self._group())]
+
+        assert found == [(("logs",), "--old-name")]
 
 
 @pytest.mark.usefixtures("registered_test_flags")

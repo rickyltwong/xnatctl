@@ -390,6 +390,7 @@ class TestRequiredValuesAreCheckedBeforeLogin:
         [
             (["pipeline", "run", "dcm2niix"], "Missing option '--experiment'"),
             (["pipeline", "run", "dcm2niix", "-E", ""], "cannot be empty"),
+            (["pipeline", "run", "dcm2niix", "-E", "   "], "cannot be empty"),
             (["scan", "download", "-E", "XNAT_E00001"], "Missing option '--scans'"),
             (["resource", "download", "XNAT_E00001", "DICOM"], "Missing option '--output-file'"),
             (["resource", "download", "XNAT_E00001", "DICOM", "-f", ""], "cannot be empty"),
@@ -397,6 +398,7 @@ class TestRequiredValuesAreCheckedBeforeLogin:
         ids=[
             "pipeline-run-missing",
             "pipeline-run-blank",
+            "pipeline-run-whitespace",
             "scan-download-missing",
             "resource-download-missing",
             "resource-download-blank",
@@ -556,7 +558,6 @@ class TestBothSpellingsOnOneCommandLine:
             return found
 
         offenders: list[str] = []
-        checked = 0
         for path, command in walk(cli, "xnatctl"):
             targets = {
                 getattr(param.callback, "_forwarding_alias_target", None)
@@ -564,9 +565,11 @@ class TestBothSpellingsOnOneCommandLine:
             }
             targets.discard(None)
             for param in command.params:
-                if param.name in targets and getattr(param, "multiple", False):
-                    checked += 1
-                    if not param.is_eager:
-                        offenders.append(f"{path}: --{param.name}")
+                if (
+                    param.name in targets
+                    and getattr(param, "multiple", False)
+                    and not param.is_eager
+                ):
+                    offenders.append(f"{path}: --{param.name}")
 
         assert offenders == []

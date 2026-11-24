@@ -75,7 +75,8 @@ All notable changes to this project will be documented in this file.
   session was cached last, and `-p user-profile` could run as the admin user.
   The cache now keeps one session per profile. A command uses its profile's
   session only while the profile still has the same URL and user (from
-  `XNAT_USER`, else the profile's `username`). Switching profiles no longer
+  `XNAT_USER`, else the profile's `username`); a profile that names no user
+  uses whatever session `auth login` cached for it. Switching profiles no longer
   evicts the other profile's session, and `auth logout` ends only the
   selected profile's session. A lock file next to the cache
   (`~/.config/xnatctl/.session.lock`) stops concurrent commands from
