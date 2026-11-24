@@ -69,11 +69,12 @@ from xnatctl.core.redact import SECRET_QUERY_KEYS, redact_url_query
 #
 # Below, the `X as X` redundant-alias idiom marks private helpers that
 # nonetheless cross module boundaries -- the deprecated-flag callbacks are
-# shared by four command modules, and `_parse_batch_text`/`_flag_given` are
-# patched by dotted name in the tests. With an `__all__` present, mypy's
-# strict no-implicit-reexport treats anything not aliased this way as private
-# to the module, so a plain import would make every consumer's import an
-# error. The idiom says "deliberately re-exported" without promoting these
+# what a command module wires a deprecated alias with, and
+# `_parse_batch_text`/`_flag_given` are patched by dotted name in the tests.
+# With an `__all__` present, mypy's strict no-implicit-reexport treats
+# anything not aliased this way as private to the module, so a plain import
+# would make every consumer's import an error. The idiom says "deliberately
+# re-exported" without promoting these
 # into the package's public surface; `services/downloads/__init__.py` uses the
 # same pattern for the same reason.
 from .batch import _parse_batch_text as _parse_batch_text
@@ -462,14 +463,21 @@ def require_auth(f: F) -> F:
         """Ensure the context client is authenticated before running."""
         client = ctx.get_client()
         had_session = client.is_authenticated
+        # The name get_client resolved the profile (and its cached session) by.
+        profile_name = ctx.profile_name or (ctx.config.default_profile if ctx.config else "default")
 
         if client.is_authenticated:
+            # Only the session check may lead to a re-login. The command runs
+            # outside this try: an AuthenticationError it raises (a 403 is one)
+            # may come after it already changed something, and running it
+            # again from the top would repeat that change.
             try:
                 client.whoami()
-                return f(ctx, *args, **kwargs)
             except AuthenticationError:
-                ctx.auth_manager.clear_session()
+                ctx.auth_manager.clear_session(profile_name)
                 client.session_token = None
+            else:
+                return f(ctx, *args, **kwargs)
 
         profile = None
         if ctx.config is not None:
@@ -485,6 +493,7 @@ def require_auth(f: F) -> F:
                 try:
                     token = client.authenticate()
                     ctx.auth_manager.save_session(
+                        profile_name,
                         token=token,
                         url=client.base_url,
                         username=username,
@@ -492,9 +501,6 @@ def require_auth(f: F) -> F:
                 except AuthenticationError as e:
                     raise click.ClickException(str(e)) from e
             else:
-                profile_name = ctx.profile_name or (
-                    ctx.config.default_profile if ctx.config else "default"
-                )
                 prefix = "Session expired" if had_session else "Not authenticated"
                 raise click.ClickException(
                     f"{prefix}. "

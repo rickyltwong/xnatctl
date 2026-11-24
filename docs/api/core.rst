@@ -194,7 +194,8 @@ session validation.
 **Session Token Storage:**
 
 - Cached at ``~/.config/xnatctl/.session`` per profile
-- Automatically reused until expiration
+- Reused until expiration, while the profile's URL and user still match the
+  session's
 - Can be overridden with ``XNAT_TOKEN`` environment variable
 
 .. automodule:: xnatctl.core.auth

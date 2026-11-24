@@ -819,7 +819,11 @@ container ID string -- both are accepted everywhere one is expected.
 - ``container launch`` -- Launch a container from a command wrapper
   (``WRAPPER`` is a numeric wrapper ID or a wrapper name, resolved the
   same way as ``wrapper`` commands); no ``--yes`` confirmation, matching
-  ``pipeline run``'s precedent -- this is the group's normal-use verb
+  ``pipeline run``'s precedent -- this is the group's normal-use verb.
+  With ``-E SESSION --scan SCAN_ID``, ``WRAPPER`` is the pipeline's name as
+  XNAT's Run menu shows it, matched only among the pipelines the project
+  has enabled for that scan's type, and the scan's address is filled in for
+  you -- this path needs only the project access XNAT's own Run menu needs
 - ``container kill`` -- Kill a running container (destructive: ``--yes``/
   ``--dry-run``)
 
@@ -830,6 +834,7 @@ container ID string -- both are accepted everywhere one is expected.
    $ xnatctl container logs 501 --stderr
    $ xnatctl container logs 501 --follow
    $ xnatctl container launch dcm2niix-scan -P MYPROJ -E XNAT_E00001
+   $ xnatctl container launch "DICOM to NIfTI" -P MYPROJ -E MYPROJ_S01_MR --scan 5
    $ xnatctl container launch 34 -P MYPROJ --param greeting=hello --wait
    $ xnatctl container kill 501 --yes
 
@@ -852,9 +857,17 @@ container ID string -- both are accepted everywhere one is expected.
    resolves and validates ``WRAPPER`` client-side first (via the same
    ``CommandService.resolve_wrapper`` that backs ``wrapper`` commands) so a
    typo'd wrapper fails loudly instead of silently queueing nothing.
-   ``-E``/``--experiment`` only works when the wrapper has exactly one
-   external input of type ``Session``; use ``--param <name>=<value>``
-   directly for any other input, or when that's ambiguous.
+   Without ``--scan``, ``-E``/``--experiment`` only works when the wrapper
+   has exactly one external input of type ``Session``; use
+   ``--param <name>=<value>`` directly for any other input, or when that's
+   ambiguous. ``--scan``
+   resolves through a different route, the one XNAT's Run menu reads
+   (``GET /xapi/projects/{project}/commands/available``, Read access): it
+   looks up the session and scan, takes the scan's XSI type, and matches
+   ``WRAPPER`` against the label, name or ID of the wrappers enabled in the
+   project for that type (a ``WRAPPER`` of digits only is a wrapper ID). A
+   disabled wrapper with the same label is not a conflict; two enabled
+   matches are rejected, and an unknown name lists the enabled ones.
 
 .. note::
 

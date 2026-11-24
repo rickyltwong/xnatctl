@@ -487,7 +487,9 @@ jobs:
         run: |
           Compress-Archive -Path dist\xnatctl.exe -DestinationPath xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip
           $hash = (Get-FileHash -Algorithm SHA256 xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip).Hash.ToLower()
-          "$hash  xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip" | Out-File -Encoding ascii xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip.sha256
+          # Explicit LF and -NoNewline: Out-File's own line ending is CRLF on
+          # Windows, and `sha256sum -c` reads the CR as part of the file name.
+          "$hash  xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip`n" | Out-File -Encoding ascii -NoNewline xnatctl-${{ matrix.platform }}-${{ matrix.arch }}.zip.sha256
         shell: pwsh
 
       - name: Upload build artifacts
@@ -516,6 +518,11 @@ jobs:
         with:
           pattern: binary-*
           merge-multiple: true
+
+      - name: Verify checksum sidecars
+        # Each published sidecar must pass plain `sha256sum -c`, which is
+        # what install.sh runs.
+        run: sha256sum -c --strict xnatctl-*.sha256
 
       - name: Attest build provenance
         # Signed here, not in `binary`: the job that runs third-party build

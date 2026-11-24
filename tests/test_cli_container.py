@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from conftest import AuthenticatedCLI, make_response
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.cli import container as container_cli
+from xnatctl.core.exceptions import PermissionDeniedError, ResourceNotFoundError, XNATCtlError
 
 SAMPLE_CONTAINER = {
     "id": "501",
@@ -626,8 +630,9 @@ class TestContainerLaunch:
         already `Complete`. This test fails with a timed-out `ClickException`
         (non-zero exit, no "Complete" in the output) against that code.
         """
-        launched = dict(SAMPLE_CONTAINER, id="777", status="Complete")
+        launched = dict(SAMPLE_CONTAINER, id="777", status="Complete", inputs=[])
         launched["workflow-id"] = "99"  # a resolved id, never the placeholder string
+        launched["user-id"] = "user"  # the test client's whoami()
 
         post_has_fired = False
 
@@ -720,3 +725,623 @@ class TestContainerLaunch:
 
         assert result.exit_code != 0
         authenticated_cli.client.post.assert_not_called()
+
+
+SCAN_WRAPPER_LABEL = "DICOM to NIfTI (KCNI default)"
+SCAN_LAUNCH_GET = {
+    "/data/projects/TESTPROJ": PROJECT_FOUND,
+    "/data/projects/TESTPROJ/experiments/TESTPROJ_S1_MR": {
+        "items": [
+            {
+                "meta": {"xsi:type": "xnat:mrSessionData"},
+                "data_fields": {"ID": "XNAT_E00001", "label": "TESTPROJ_S1_MR"},
+            }
+        ]
+    },
+}
+SCAN_LAUNCH_GET_JSON = {
+    "/data/experiments/XNAT_E00001/scans/5": {
+        "items": [{"meta": {"xsi:type": "xnat:mrScanData"}, "data_fields": {"ID": "5"}}]
+    },
+    "/xapi/projects/TESTPROJ/commands/available": [
+        {
+            "wrapper-id": 117,
+            "wrapper-name": SCAN_WRAPPER_LABEL,
+            "wrapper-label": SCAN_WRAPPER_LABEL,
+            "enabled": True,
+            "root-element-name": "scan",
+        }
+    ],
+}
+
+
+def _dispatch_get(mapping: dict[str, Any]):
+    """A `client.get` side_effect that routes by exact path to a JSON response."""
+
+    def _dispatch(path: str, **_kwargs: Any) -> Any:
+        if path not in mapping:
+            raise AssertionError(f"unexpected get call: {path}")
+        return make_response(mapping[path])
+
+    return _dispatch
+
+
+class TestContainerLaunchScan:
+    """`container launch --scan`: what a project Member sees in the UI is all it needs.
+
+    The wrapper is matched among those the project has enabled for the
+    scan's own type, through the Run menu's own route (`commands/available`,
+    Read access) -- never `GET /xapi/commands`, which the dispatchers here
+    would reject as an unexpected call.
+    """
+
+    def _arrange(self, cli: AuthenticatedCLI) -> None:
+        cli.client.get.side_effect = _dispatch_get(SCAN_LAUNCH_GET)
+        cli.client.get_json.side_effect = _dispatch_get_json(SCAN_LAUNCH_GET_JSON)
+        cli.client.post.return_value = make_response(
+            {
+                "status": "success",
+                "params": {"scan": "/archive/experiments/XNAT_E00001/scans/5"},
+                "command-id": 108,
+                "wrapper-id": 117,
+                "workflow-id": "To be assigned",
+            }
+        )
+
+    def test_launch_by_run_menu_label_and_session_label(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        self._arrange(authenticated_cli)
+
+        result = authenticated_cli.invoke(
+            ["container", "launch", SCAN_WRAPPER_LABEL, "-E", "TESTPROJ_S1_MR", "--scan", "5"]
+        )
+
+        assert result.exit_code == 0, result.output
+        authenticated_cli.client.post.assert_called_once_with(
+            "/xapi/projects/TESTPROJ/wrappers/117/launch",
+            json={"scan": "/archive/experiments/XNAT_E00001/scans/5"},
+        )
+
+    def test_dry_run_names_the_wrapper_without_posting(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        self._arrange(authenticated_cli)
+
+        result = authenticated_cli.invoke(
+            [
+                "container",
+                "launch",
+                SCAN_WRAPPER_LABEL,
+                "-E",
+                "TESTPROJ_S1_MR",
+                "--scan",
+                "5",
+                "--dry-run",
+            ]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "DRY-RUN" in result.output
+        assert "117" in result.output
+        assert SCAN_WRAPPER_LABEL in result.output
+        authenticated_cli.client.post.assert_not_called()
+
+    def test_post_uses_the_wrappers_own_input_name(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        self._arrange(authenticated_cli)
+        get_json = dict(SCAN_LAUNCH_GET_JSON)
+        get_json["/xapi/projects/TESTPROJ/commands/available"] = [
+            dict(
+                get_json["/xapi/projects/TESTPROJ/commands/available"][0],
+                **{"root-element-name": "image"},
+            )
+        ]
+        authenticated_cli.client.get_json.side_effect = _dispatch_get_json(get_json)
+
+        result = authenticated_cli.invoke(
+            ["container", "launch", SCAN_WRAPPER_LABEL, "-E", "TESTPROJ_S1_MR", "--scan", "5"]
+        )
+
+        assert result.exit_code == 0, result.output
+        authenticated_cli.client.post.assert_called_once_with(
+            "/xapi/projects/TESTPROJ/wrappers/117/launch",
+            json={"image": "/archive/experiments/XNAT_E00001/scans/5"},
+        )
+
+    def test_accession_id_works_as_the_session(self, authenticated_cli: AuthenticatedCLI) -> None:
+        self._arrange(authenticated_cli)
+        by_accession = dict(SCAN_LAUNCH_GET)
+        by_accession["/data/projects/TESTPROJ/experiments/XNAT_E00001"] = by_accession.pop(
+            "/data/projects/TESTPROJ/experiments/TESTPROJ_S1_MR"
+        )
+        authenticated_cli.client.get.side_effect = _dispatch_get(by_accession)
+
+        result = authenticated_cli.invoke(
+            ["container", "launch", SCAN_WRAPPER_LABEL, "-E", "XNAT_E00001", "--scan", "5"]
+        )
+
+        assert result.exit_code == 0, result.output
+        authenticated_cli.client.post.assert_called_once_with(
+            "/xapi/projects/TESTPROJ/wrappers/117/launch",
+            json={"scan": "/archive/experiments/XNAT_E00001/scans/5"},
+        )
+
+    def test_dry_run_with_wait_previews_params_and_touches_no_container(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        """The dispatchers reject the container routes --wait would poll."""
+        self._arrange(authenticated_cli)
+
+        result = authenticated_cli.invoke(
+            [
+                "container",
+                "launch",
+                SCAN_WRAPPER_LABEL,
+                "-E",
+                "TESTPROJ_S1_MR",
+                "--scan",
+                "5",
+                "--dry-run",
+                "--wait",
+            ]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "{'scan': '/archive/experiments/XNAT_E00001/scans/5'}" in " ".join(
+            result.output.split()
+        )
+        authenticated_cli.client.post.assert_not_called()
+
+    def test_scan_without_experiment_is_a_usage_error(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        result = authenticated_cli.invoke(
+            ["container", "launch", SCAN_WRAPPER_LABEL, "--scan", "5"]
+        )
+
+        assert result.exit_code == 2
+        assert "-E" in result.output
+        authenticated_cli.client.get.assert_not_called()
+        authenticated_cli.client.post.assert_not_called()
+
+    def test_unknown_pipeline_rejected_before_post(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        self._arrange(authenticated_cli)
+
+        result = authenticated_cli.invoke(
+            ["container", "launch", "No such pipeline", "-E", "TESTPROJ_S1_MR", "--scan", "5"]
+        )
+
+        assert result.exit_code != 0
+        assert SCAN_WRAPPER_LABEL in " ".join(result.output.split())
+        authenticated_cli.client.post.assert_not_called()
+
+
+@pytest.fixture
+def fake_clock(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], None]:
+    """Replace the module's clock so --wait reaches its deadline without real waiting.
+
+    Returns the function that advances it, for a test that lets time pass
+    outside ``sleep`` (a slow request).
+    """
+    now = [0.0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(
+        container_cli, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=sleep)
+    )
+    return sleep
+
+
+def _scan_container(
+    container_id: str, scan_uri: str, *, workflow_id: str = "1", user: str = "user"
+) -> dict[str, Any]:
+    """A container row for wrapper 117, its `inputs` shaped as verified live (type/name/value).
+
+    ``user`` defaults to the test client's ``whoami()`` username.
+    """
+    return {
+        "id": container_id,
+        "wrapper-id": 117,
+        "status": "Complete",
+        "workflow-id": workflow_id,
+        "user-id": user,
+        "inputs": [
+            {"type": "raw", "name": "scan", "value": scan_uri},
+            {"type": "wrapper-external", "name": "scan", "value": scan_uri},
+        ],
+    }
+
+
+class TestContainerLaunchWaitCorrelation:
+    """`--wait` after a placeholder workflow-id must follow OUR container, not a neighbour's.
+
+    In a room where everyone launches the same wrapper in the same project,
+    "the first new container for this wrapper" is often someone else's.
+    """
+
+    OURS = "/archive/experiments/XNAT_E00001/scans/5"
+
+    def _run(
+        self,
+        cli: AuthenticatedCLI,
+        before: list[Any],
+        after: list[Any],
+        *,
+        workflow_id: Any = "To be assigned",
+        later: list[list[Any]] | None = None,
+    ) -> Any:
+        """Run the launch; ``after`` is the first post-launch listing, ``later`` the next ones."""
+        post_has_fired = False
+        get_json = dict(SCAN_LAUNCH_GET_JSON)
+        polls = [after, *(later or [])]
+        rows = [r for listing in [before, *polls] for r in listing if isinstance(r, dict)]
+        details = {f"/xapi/containers/{row['id']}": row for row in rows}
+
+        def get_json_dispatch(path: str, **_kwargs: Any) -> Any:
+            if path == "/xapi/projects/TESTPROJ/containers":
+                if not post_has_fired:
+                    return before
+                return polls.pop(0) if len(polls) > 1 else polls[0]
+            if path in details:
+                return details[path]
+            if path in get_json:
+                return get_json[path]
+            raise AssertionError(f"unexpected get_json call: {path}")
+
+        def post_dispatch(_path: str, **_kwargs: Any) -> Any:
+            nonlocal post_has_fired
+            post_has_fired = True
+            return make_response(
+                {
+                    "status": "success",
+                    "params": {"scan": self.OURS},
+                    "command-id": 108,
+                    "wrapper-id": 117,
+                    "workflow-id": workflow_id,
+                }
+            )
+
+        cli.client.get.side_effect = _dispatch_get(SCAN_LAUNCH_GET)
+        cli.client.get_json.side_effect = get_json_dispatch
+        cli.client.post.side_effect = post_dispatch
+        return cli.invoke(
+            [
+                "container",
+                "launch",
+                SCAN_WRAPPER_LABEL,
+                "-E",
+                "TESTPROJ_S1_MR",
+                "--scan",
+                "5",
+                "--wait",
+                "--timeout",
+                "5",
+                "-o",
+                "json",
+            ]
+        )
+
+    def test_follows_the_new_container_with_our_inputs(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        neighbour = _scan_container("801", "/archive/experiments/XNAT_E00002/scans/5")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[neighbour, ours])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_placeholder_workflow_id_on_an_old_row_is_not_a_match(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        stale = _scan_container("700", self.OURS, workflow_id="To be assigned")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[stale], after=[stale, ours])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_extra_inputs_are_not_a_match(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
+    ) -> None:
+        superset = _scan_container("801", self.OURS)
+        superset["inputs"].append({"type": "raw", "name": "deface", "value": "true"})
+
+        result = self._run(authenticated_cli, before=[], after=[superset])
+
+        assert result.exit_code != 0
+        assert "could be tied to this launch" in " ".join(result.output.split())
+        assert "801" in result.output
+
+    def test_two_identical_matches_are_refused_not_guessed(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        first = _scan_container("801", self.OURS)
+        second = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[first, second])
+
+        assert result.exit_code != 0
+        output = " ".join(result.output.split())
+        assert "801, 802" in output
+        assert "cannot tell" in output
+
+    @pytest.mark.parametrize("workflow_id", [None, "", True], ids=["null", "empty", "boolean"])
+    def test_launch_without_a_real_workflow_id_ignores_old_rows_without_one(
+        self, authenticated_cli: AuthenticatedCLI, workflow_id: Any
+    ) -> None:
+        old = _scan_container("700", "/archive/experiments/XNAT_E00009/scans/1")
+        old["workflow-id"] = None
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(
+            authenticated_cli, before=[old], after=[old, ours], workflow_id=workflow_id
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_raw_input_with_a_non_string_name_is_skipped_not_a_crash(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        odd = _scan_container("801", self.OURS)
+        odd["inputs"].append({"type": "raw", "name": ["scan"], "value": self.OURS})
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[odd, ours])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_another_users_identical_launch_seen_first_is_not_followed(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
+    ) -> None:
+        """A neighbour running the same request shows up one poll before ours."""
+        theirs = _scan_container("801", self.OURS, user="neighbour")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[theirs], later=[[theirs, ours]])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_login_is_compared_exactly_as_container_service_does(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
+    ) -> None:
+        """A differently cased user-id is another account to Container Service."""
+        other_case = _scan_container("802", self.OURS, user="USER")
+
+        result = self._run(authenticated_cli, before=[], after=[other_case])
+
+        assert result.exit_code != 0
+        assert "(802)" in " ".join(result.output.split())
+
+    @pytest.mark.parametrize(
+        "login",
+        [None, ""],
+        ids=["no-login", "empty-login"],
+    )
+    def test_unconfirmed_login_reports_the_launch_as_queued(
+        self, authenticated_cli: AuthenticatedCLI, login: str | None
+    ) -> None:
+        """whoami()'s configured-username fallback ("user" here) is not used in its place."""
+        authenticated_cli.client.current_username.return_value = login
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[ours])
+
+        assert result.exit_code != 0
+        output = " ".join(result.output.split())
+        assert "The launch was queued" in output
+        assert "did not confirm which user is logged in" in output
+
+    def test_login_lookup_failure_after_the_launch_reports_it_as_queued(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        authenticated_cli.client.current_username.side_effect = XNATCtlError("denied")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[ours])
+
+        assert result.exit_code != 0
+        assert "The launch was queued" in " ".join(result.output.split())
+        assert authenticated_cli.client.post.call_count == 1
+
+    def test_login_read_on_a_re_established_session_is_not_trusted(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        """A 401 re-login during the lookup may be another account's credentials."""
+        client = authenticated_cli.client
+        client.session_token = "launching-session"
+
+        def relogin_as_someone_else() -> str:
+            client.session_token = "new-session"
+            return "someone-else"
+
+        client.current_username.side_effect = relogin_as_someone_else
+        theirs = _scan_container("801", self.OURS, user="someone-else")
+
+        result = self._run(authenticated_cli, before=[], after=[theirs])
+
+        assert result.exit_code != 0
+        assert "did not confirm which user is logged in" in " ".join(result.output.split())
+        fetched = [c.args[0] for c in client.get_json.call_args_list]
+        assert "/xapi/containers/801" not in fetched
+
+    def test_denied_login_lookup_keeps_its_exit_code(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        authenticated_cli.client.current_username.side_effect = PermissionDeniedError("denied")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[ours])
+
+        assert result.exit_code == 6  # ExitCode.PERMISSION_ERROR
+        assert "The launch was queued" in " ".join(result.output.split())
+
+    def test_slow_login_lookup_counts_against_the_timeout(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: Callable[[float], None]
+    ) -> None:
+        def slow_lookup() -> str:
+            fake_clock(60)
+            return "user"
+
+        authenticated_cli.client.current_username.side_effect = slow_lookup
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[ours])
+
+        assert result.exit_code != 0
+        output = " ".join(result.output.split())
+        assert "timed out" in output
+        assert "The launch itself was queued" in output
+        fetched = [c.args[0] for c in authenticated_cli.client.get_json.call_args_list]
+        assert "/xapi/containers/802" not in fetched
+
+    def test_real_workflow_id_needs_no_login(self, authenticated_cli: AuthenticatedCLI) -> None:
+        authenticated_cli.client.current_username.side_effect = XNATCtlError("denied")
+        ours = _scan_container("802", self.OURS, workflow_id="42")
+
+        result = self._run(authenticated_cli, before=[], after=[ours], workflow_id="42")
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+        authenticated_cli.client.current_username.assert_not_called()
+
+    def test_real_workflow_id_on_another_wrappers_row_is_not_a_match(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        other_wrapper = dict(
+            _scan_container("801", self.OURS, workflow_id="42"), **{"wrapper-id": 99}
+        )
+        ours = _scan_container("802", self.OURS, workflow_id="42")
+
+        result = self._run(
+            authenticated_cli, before=[], after=[other_wrapper, ours], workflow_id="42"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_timeout_lists_unmatched_containers_from_every_poll(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
+    ) -> None:
+        gone = _scan_container("803", "/archive/experiments/XNAT_E00002/scans/5")
+
+        result = self._run(authenticated_cli, before=[], after=[gone], later=[[]])
+
+        assert result.exit_code != 0
+        assert "803" in result.output
+
+    def test_malformed_listing_row_is_skipped(self, authenticated_cli: AuthenticatedCLI) -> None:
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[None], after=[ours, None])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+
+class TestContainerLaunchWaitWithoutScan:
+    """The input match also applies to the long-standing -E / --param path."""
+
+    def _run(self, cli: AuthenticatedCLI, after: list[Any]) -> Any:
+        post_has_fired = False
+        details = {f"/xapi/containers/{row['id']}": row for row in after}
+
+        def get_json_dispatch(path: str, **_kwargs: Any) -> Any:
+            if path == "/xapi/commands":
+                return [SAMPLE_COMMAND]
+            if path == "/xapi/projects/TESTPROJ/containers":
+                return after if post_has_fired else []
+            if path in details:
+                return details[path]
+            raise AssertionError(f"unexpected get_json call: {path}")
+
+        def post_dispatch(_path: str, **_kwargs: Any) -> Any:
+            nonlocal post_has_fired
+            post_has_fired = True
+            return make_response(
+                {
+                    "status": "success",
+                    "params": {"session": "XNAT_E00001"},
+                    "command-id": 12,
+                    "wrapper-id": 34,
+                    "workflow-id": "To be assigned",
+                }
+            )
+
+        cli.client.get_json.side_effect = get_json_dispatch
+        cli.client.get.return_value = make_response(PROJECT_FOUND)
+        cli.client.post.side_effect = post_dispatch
+        return cli.invoke(
+            ["container", "launch", "34", "-E", "XNAT_E00001", "--wait", "--timeout", "5"]
+        )
+
+    def test_follows_the_container_that_recorded_the_session(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        other = dict(SAMPLE_CONTAINER, id="801", inputs=[], **{"user-id": "user"})
+        ours = dict(
+            SAMPLE_CONTAINER,
+            id="802",
+            inputs=[{"type": "raw", "name": "session", "value": "XNAT_E00001"}],
+            **{"user-id": "user"},
+        )
+
+        result = self._run(authenticated_cli, after=[other, ours])
+
+        assert result.exit_code == 0, result.output
+        authenticated_cli.client.get_json.assert_any_call("/xapi/containers/802")
+
+    def test_timeout_names_the_new_containers_that_did_not_match(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
+    ) -> None:
+        other = dict(SAMPLE_CONTAINER, id="801", inputs=[], **{"user-id": "user"})
+
+        result = self._run(authenticated_cli, after=[other])
+
+        assert result.exit_code != 0
+        output = " ".join(result.output.split())
+        assert "timed out" in output
+        assert "801" in output
+
+    def test_row_without_inputs_is_not_a_parameterless_match(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
+    ) -> None:
+        """A row that does not say what it was sent cannot match even a launch that sent nothing."""
+        unknown = dict(SAMPLE_CONTAINER, id="801", **{"user-id": "user"})
+        unknown.pop("inputs", None)
+        authenticated_cli.client.get_json.side_effect = _dispatch_get_json(
+            {
+                "/xapi/commands": [SAMPLE_COMMAND],
+                "/xapi/projects/TESTPROJ/containers": _Seq([[], [unknown], [unknown]]),
+            }
+        )
+        authenticated_cli.client.get.return_value = make_response(PROJECT_FOUND)
+        authenticated_cli.client.post.return_value = make_response(
+            {
+                "status": "success",
+                "params": {},
+                "command-id": 12,
+                "wrapper-id": 34,
+                "workflow-id": "To be assigned",
+            }
+        )
+
+        result = authenticated_cli.invoke(["container", "launch", "34", "--wait", "--timeout", "5"])
+
+        assert result.exit_code != 0
+        output = " ".join(result.output.split())
+        assert "timed out" in output
+        assert "(801)" in output
+        fetched = [c.args[0] for c in authenticated_cli.client.get_json.call_args_list]
+        assert "/xapi/containers/801" not in fetched

@@ -16,7 +16,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_forwarding_alias_cb,
     global_options,
     handle_errors,
     require_auth,
@@ -86,7 +85,7 @@ def _read_body(
         data: Value of the ``-d`` / ``--data`` option (may be the literal
             ``-`` sentinel for stdin).
         file_path: Value of the ``--file`` option (may be the literal ``-``
-            sentinel for stdin; ``-f`` is a deprecated alias).
+            sentinel for stdin).
 
     Returns:
         ``(body, json_body, raw_bytes, decoded_text)``. ``body`` /
@@ -98,13 +97,13 @@ def _read_body(
         None, None)`` indicates no body was given.
 
     Raises:
-        click.UsageError: If both ``-d -`` and ``-f -`` are passed.
+        click.UsageError: If both ``-d -`` and ``--file -`` are passed.
     """
     data_is_stdin = data == _STDIN_SENTINEL
     file_is_stdin = file_path == _STDIN_SENTINEL
 
     if data_is_stdin and file_is_stdin:
-        raise click.UsageError("cannot combine -d - and -f -")
+        raise click.UsageError("cannot combine -d - and --file -")
 
     body: bytes | str | None = None
     json_body: object = None
@@ -211,7 +210,7 @@ def _detect_content_type(
     """Auto-detect a request ``Content-Type`` from a file body.
 
     Args:
-        file_path: Path supplied via ``-f/--file``, or ``None`` when no
+        file_path: Path supplied via ``--file``, or ``None`` when no
             file is in use.
         raw_bytes: The file's bytes as read from disk, or ``None`` when
             no file is in use.  Reserved for future content-sniffing
@@ -316,7 +315,7 @@ def _maybe_add_inbody(path: str, params: tuple[str, ...], *, has_body: bool) -> 
     if inbody_value is not None and inbody_value.lower() == "true" and not has_body:
         raise click.UsageError(
             "inbody=true set but no request body supplied; "
-            "pass -f <file> or -d <data> (use '-' for stdin)"
+            "pass --file <file> or -d <data> (use '-' for stdin)"
         )
 
     if inbody_value is None and has_body and _is_resource_file_path(path):
@@ -443,13 +442,6 @@ def api_get(
     help="Read body from file. Use '-' to read from stdin.",
 )
 @click.option(
-    "-f",
-    "legacy_file_short",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("-f (api post/put)", "file_path"),
-)
-@click.option(
     "--content-type",
     "-t",
     "content_type",
@@ -476,7 +468,7 @@ def api_post(
     """POST request to any XNAT endpoint.
 
     Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
-    ``--file`` (``-f`` is a deprecated alias): payloads that are not valid
+    ``--file``: payloads that are not valid
     UTF-8 are sent as raw bytes without text decoding. Pass ``-d -`` or
     ``--file -`` to read the body from stdin (keeps secrets out of argv and
     shell history).
@@ -505,7 +497,7 @@ def api_post(
 
     body, json_body, raw_bytes, decoded_text = _read_body(data, file_path)
 
-    # Stdin sentinel (-f -) has no extension to detect from; treat as no file.
+    # Stdin sentinel (--file -) has no extension to detect from; treat as no file.
     detect_file = None if file_path == _STDIN_SENTINEL else file_path
     effective_type = content_type or _detect_content_type(detect_file, raw_bytes, decoded_text)
     headers: dict[str, str] | None = None
@@ -564,13 +556,6 @@ def api_post(
     help="Read body from file. Use '-' to read from stdin.",
 )
 @click.option(
-    "-f",
-    "legacy_file_short",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("-f (api post/put)", "file_path"),
-)
-@click.option(
     "--content-type",
     "-t",
     "content_type",
@@ -597,7 +582,7 @@ def api_put(
     """PUT request to any XNAT endpoint.
 
     Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
-    ``--file`` (``-f`` is a deprecated alias): payloads that are not valid
+    ``--file``: payloads that are not valid
     UTF-8 are sent as raw bytes without text decoding. Pass ``-d -`` or
     ``--file -`` to read the body from stdin (keeps secrets out of argv and
     shell history).
@@ -625,7 +610,7 @@ def api_put(
         xnatctl api put /data/projects/PROJ --file project.xml
 
         xnatctl api put /xapi/xsync/credentials/save/projects/PROJ \\
-            -f ./creds.txt -t text/plain
+            --file ./creds.txt -t text/plain
     """
     client = ctx.get_client()
 

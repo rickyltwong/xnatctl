@@ -149,7 +149,7 @@ been converted yet.
      if [ -n "$has_nifti" ]; then
        echo "Downloading NIFTI for $session_id..."
        xnatctl resource download "$session_id" NIFTI \
-           --file "$OUTPUT/${session_id}_NIFTI.zip"
+           --output-file "$OUTPUT/${session_id}_NIFTI.zip"
      fi
    done
 

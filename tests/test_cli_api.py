@@ -503,7 +503,7 @@ class TestApiPut:
                             "api",
                             "put",
                             "/data/projects/PROJ/resources/BIDS/files/params.json",
-                            "-f",
+                            "--file",
                             str(payload),
                         ],
                     )
@@ -535,7 +535,7 @@ class TestApiPut:
                             "/data/projects/PROJ/resources/BIDS/files/params.json",
                             "--params",
                             "inbody=false",
-                            "-f",
+                            "--file",
                             str(payload),
                         ],
                     )
@@ -832,7 +832,7 @@ class TestApiContentType:
                             "api",
                             "post",
                             "/xapi/some/endpoint",
-                            "-f",
+                            "--file",
                             str(payload),
                             "-t",
                             "text/plain",
@@ -871,7 +871,7 @@ class TestApiContentType:
                             "api",
                             "post",
                             "/xapi/xsync/credentials/check/projects/PROJ",
-                            "-f",
+                            "--file",
                             str(payload),
                             "-t",
                             "text/plain",
@@ -887,7 +887,7 @@ class TestApiContentType:
     def test_put_explicit_content_type_preserves_file_bytes_verbatim(
         self, runner: CliRunner, tmp_path
     ) -> None:
-        """``api put -f creds.json -t text/plain`` parity with POST verbatim."""
+        """``api put --file creds.json -t text/plain`` parity with POST verbatim."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -907,7 +907,7 @@ class TestApiContentType:
                             "api",
                             "put",
                             "/xapi/xsync/credentials/save/projects/PROJ",
-                            "-f",
+                            "--file",
                             str(payload),
                             "-t",
                             "text/plain",
@@ -940,7 +940,7 @@ class TestApiContentType:
                             "api",
                             "post",
                             "/data/services/import",
-                            "-f",
+                            "--file",
                             str(payload),
                         ],
                     )
@@ -968,7 +968,7 @@ class TestApiContentType:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/foo", "-f", str(notes)],
+                        ["api", "post", "/data/foo", "--file", str(notes)],
                     )
 
         assert result.exit_code == 0
@@ -993,7 +993,7 @@ class TestApiContentType:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "put", "/data/projects/PROJ", "-f", str(proj)],
+                        ["api", "put", "/data/projects/PROJ", "--file", str(proj)],
                     )
 
         assert result.exit_code == 0
@@ -1020,7 +1020,7 @@ class TestApiContentType:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/foo", "-f", str(blob)],
+                        ["api", "post", "/data/foo", "--file", str(blob)],
                     )
 
         assert result.exit_code == 0
@@ -1049,7 +1049,7 @@ class TestApiContentType:
                             "api",
                             "put",
                             "/data/foo/files/foo.dcm",
-                            "-f",
+                            "--file",
                             str(blob),
                         ],
                     )
@@ -1077,7 +1077,7 @@ class TestApiContentType:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/foo", "-f", str(bad)],
+                        ["api", "post", "/data/foo", "--file", str(bad)],
                     )
 
         assert result.exit_code == 0
@@ -1320,11 +1320,11 @@ class TestApiParamsHelpWarning:
             assert token in rendered, f"missing warning token {token!r} in --help for {verb}"
         # Points users at the safer body-passing options.
         assert "-d" in result.output
-        assert "-f" in result.output
+        assert "--file" in result.output
 
 
 class TestApiStdinBody:
-    """D2 — ``-d -`` and ``-f -`` read the body once from stdin."""
+    """D2 — ``-d -`` and ``--file -`` read the body once from stdin."""
 
     def test_api_post_reads_body_from_stdin(self, runner: CliRunner) -> None:
         """``api post -d -`` reads JSON body from stdin and POSTs it."""
@@ -1371,7 +1371,7 @@ class TestApiStdinBody:
         assert call_kwargs["data"] is None
 
     def test_api_post_stdin_sentinel_for_file_flag(self, runner: CliRunner) -> None:
-        """``api post -f -`` is symmetric with ``-d -`` and also reads stdin."""
+        """``api post --file -`` is symmetric with ``-d -`` and also reads stdin."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1383,7 +1383,7 @@ class TestApiStdinBody:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/endpoint", "-f", "-"],
+                        ["api", "post", "/data/endpoint", "--file", "-"],
                         input='{"from":"stdin"}',
                     )
 
@@ -1393,7 +1393,7 @@ class TestApiStdinBody:
         assert call_kwargs["data"] is None
 
     def test_api_post_rejects_double_stdin(self, runner: CliRunner) -> None:
-        """Passing both ``-d -`` and ``-f -`` is a usage error."""
+        """Passing both ``-d -`` and ``--file -`` is a usage error."""
         client = _mock_client()
 
         with core_config_seam(_mock_config()):
@@ -1401,12 +1401,12 @@ class TestApiStdinBody:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/endpoint", "-d", "-", "-f", "-"],
+                        ["api", "post", "/data/endpoint", "-d", "-", "--file", "-"],
                         input='{"k":"v"}',
                     )
 
         assert result.exit_code != 0
-        assert "cannot combine -d - and -f -" in result.output
+        assert "cannot combine -d - and --file -" in result.output
         client.post.assert_not_called()
 
 

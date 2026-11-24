@@ -10,7 +10,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_alias_cb,
     confirm_destructive,
     default_project_from_context,
     global_options,
@@ -18,7 +17,7 @@ from xnatctl.cli.common import (
     require_auth,
     require_project_from_context,
 )
-from xnatctl.core.exceptions import InputValidationError
+from xnatctl.core.exceptions import InputValidationError, XNATCtlError
 from xnatctl.core.output import OutputFormat, print_output, print_success
 from xnatctl.services.containers import ContainerService
 
@@ -236,14 +235,6 @@ def _follow_logs(
     "status, or Ctrl+C. Re-fetches the full log each interval (see docstring for why).",
 )
 @click.option(
-    "-f",
-    "legacy_follow_f",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("-f (container logs)", "follow", True),
-)
-@click.option(
     "--interval",
     # Strictly positive: the follow loop issues two requests per pass (log
     # fetch + status), so `--interval 0` is not "poll fast", it is an
@@ -328,42 +319,139 @@ def _parse_params(pairs: tuple[str, ...]) -> dict[str, str]:
     return params
 
 
-def _locate_launched_container(
+_PLACEHOLDER_WORKFLOW_ID = "To be assigned"
+
+
+def _real_workflow_id(value: Any) -> str | None:
+    """A workflow-id that identifies one workflow, as text; ``None`` for anything else.
+
+    The launch response's placeholder, a missing or JSON-null value, an empty
+    string and a boolean all name no workflow. Stringifying them blindly
+    would make ``"None"`` or ``"To be assigned"`` look like an id that some
+    older container row also carries.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value.strip() and value != _PLACEHOLDER_WORKFLOW_ID:
+        return value
+    return None
+
+
+def _raw_inputs(row: dict[str, Any]) -> dict[str, Any] | None:
+    """A container row's ``raw`` inputs as ``{name: value}``: the params its launch was sent.
+
+    Verified live on Container Service 3.7.3: a container row's ``inputs``
+    is a list of ``{"type", "name", "value"}`` objects, and the ``raw``
+    entries carry the launch request's own keys and values (a session
+    launched with ``{"session": "/archive/experiments/E1"}`` lists exactly
+    that). Returns ``None`` when the row does not say what it was sent:
+    ``inputs`` missing or not a list, or a ``raw`` entry whose name is not
+    a string. ``{}`` means the row records an empty input list.
+    """
+    inputs = row.get("inputs")
+    if not isinstance(inputs, list):
+        return None
+    raw: dict[str, Any] = {}
+    for entry in inputs:
+        if not isinstance(entry, dict) or entry.get("type") != "raw":
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str):
+            return None
+        raw[name] = entry.get("value")
+    return raw
+
+
+def _launch_candidates(
     service: ContainerService,
     *,
     project: str,
     wrapper_id: int,
-    workflow_id: str,
+    workflow_id: str | None,
+    launch_params: dict[str, str],
+    launcher: str | None,
     known_ids: set[str],
-) -> str | None:
-    """Find the container id a launch produced, or ``None`` if it hasn't appeared yet.
+) -> tuple[list[str], list[str]]:
+    """List the containers that could be this launch's, and the other new ones of its wrapper.
 
     See :func:`_wait_for_launch` for the correlation strategy and its
     verified-vs-assumed parts.
 
-    The ``matches_new`` fallback identifies a container only as "not in the
-    pre-launch snapshot, and running the wrapper we launched". That is all
-    the server gives us when the launch response carries the placeholder
-    workflow-id, and it is not a unique key: if somebody else launches the
-    same wrapper in the same project and their container appears first,
-    this picks theirs and follows it to completion. Waiting would then
-    report a status that is not ours. Nothing here can close that -- the
-    correlating id simply does not exist yet at this point -- so it is a
-    documented limit of ``--wait``, not an oversight. ``matches_workflow``,
-    the path taken whenever the server does return a real workflow-id, has
-    no such ambiguity.
+    With a real workflow-id (see :func:`_real_workflow_id`) a container
+    matches when it runs the wrapper we launched and its own real
+    workflow-id is the same.
+
+    Without one, a container matches when it is not in the pre-launch
+    snapshot, runs the wrapper we launched, was started by ``launcher``
+    (its ``user-id`` equals the server-confirmed login exactly, as Container
+    Service itself compares them), and its ``raw`` inputs
+    equal the params we sent -- all of them and nothing more (see
+    :func:`_raw_inputs`). Container Service records the request's own
+    params as raw inputs, so a launch from this CLI is compared exactly.
+    The user and the inputs are what tell our container from a
+    neighbour's when several people launch the same wrapper in one project
+    at once. The one case left open is the same user launching the same
+    wrapper with identical params twice at once: either container ran
+    that request. The caller refuses to guess when both are visible.
+
+    Returns:
+        ``(matching ids, other new ids of this wrapper)``. The second list is
+        only for explaining a timeout: containers that appeared but did not
+        record this launch's inputs.
     """
+    matches: list[str] = []
+    others: list[str] = []
     for row in service.list(project=project):
+        if not isinstance(row, dict) or row.get("wrapper-id") != wrapper_id:
+            continue
         row_id = str(row.get("id"))
-        matches_workflow = str(row.get("workflow-id")) == workflow_id
-        matches_new = (
-            workflow_id == "To be assigned"
-            and row.get("wrapper-id") == wrapper_id
-            and row_id not in known_ids
-        )
-        if matches_workflow or matches_new:
-            return row_id
-    return None
+        if workflow_id is not None:
+            if _real_workflow_id(row.get("workflow-id")) == workflow_id:
+                matches.append(row_id)
+            continue
+        if row_id in known_ids:
+            continue
+        user = row.get("user-id")
+        if isinstance(user, str) and user == launcher and _raw_inputs(row) == launch_params:
+            matches.append(row_id)
+        else:
+            others.append(row_id)
+    return matches, others
+
+
+def _confirmed_login(ctx: Context, project: str) -> str:
+    """Return the server-confirmed login, which ``--wait``'s fallback matches ``user-id`` on.
+
+    Asked only after the launch and only when its response has no real
+    workflow-id, so a launch that does not need it never depends on it.
+    A configured or cached username is no substitute: it can name another
+    account than the session's. Neither is a login read on a session the
+    lookup itself had to re-establish (a 401 re-login can use another
+    account's configured credentials), so a changed session token counts as
+    unconfirmed.
+
+    Raises:
+        click.ClickException: When the server does not confirm the login.
+        XNATCtlError: When the lookup fails, re-raised so its exit code holds,
+            after saying on stderr that the launch was queued.
+    """
+    client = ctx.get_client()
+    unconfirmed = (
+        "The launch was queued, but --wait cannot tie a container to it: the server "
+        "did not confirm which user is logged in. Find it with "
+        f"'xnatctl container list -P {project}'."
+    )
+    token = client.session_token
+    try:
+        login = client.current_username()
+    except XNATCtlError:
+        click.echo(unconfirmed, err=True)
+        raise
+    if not login or client.session_token != token:
+        raise click.ClickException(unconfirmed)
+    return login
 
 
 def _wait_for_launch(
@@ -372,6 +460,7 @@ def _wait_for_launch(
     *,
     project: str,
     wrapper_id: int,
+    launch_params: dict[str, str],
     launch_result: dict[str, Any],
     known_ids: set[str],
     timeout: int,
@@ -388,9 +477,10 @@ def _wait_for_launch(
     docstring). When the response instead carries the literal placeholder
     ``"To be assigned"`` -- verified live to happen whenever the async
     launch has not resolved by response time, which is the common case --
-    there is no id to match on, so this falls back to the first NEW
-    container for this wrapper that was not present in ``known_ids``, a
-    snapshot the caller must take immediately before calling
+    there is no id to match on, so this falls back to the one NEW
+    container for this wrapper whose raw inputs equal ``launch_params``
+    (see :func:`_launch_candidates`) and that was not present in
+    ``known_ids``, a snapshot the caller must take immediately before calling
     ``service.launch()``. Taking the snapshot after the launch instead
     breaks the fallback: the launched container has often already appeared
     in the listing by then, landing it in ``known_ids`` and permanently
@@ -409,30 +499,67 @@ def _wait_for_launch(
 
     Raises:
         click.ClickException: On a ``timeout`` with no matching container
-            found, or with one found but stuck at a non-terminal status.
+            found, or with one found but stuck at a non-terminal status; or
+            when more than one container matches, which ``--wait`` will not
+            guess between; or when the fallback needs the server-confirmed
+            login (see :func:`_confirmed_login`) and cannot get it.
     """
-    workflow_id = str(launch_result.get("workflow-id"))
     deadline = time.monotonic() + timeout
+    workflow_id = _real_workflow_id(launch_result.get("workflow-id"))
+    launcher = None if workflow_id is not None else _confirmed_login(ctx, project)
 
     if not ctx.quiet:
-        click.echo(f"Waiting for a container matching workflow-id {workflow_id}...", err=True)
+        target = (
+            f"workflow-id {workflow_id}"
+            if workflow_id is not None
+            else f"wrapper {wrapper_id} and this launch's inputs"
+        )
+        click.echo(f"Waiting for a container matching {target}...", err=True)
 
-    container_id: str | None = None
-    while container_id is None:
-        container_id = _locate_launched_container(
+    unmatched: dict[str, None] = {}  # every poll's, in first-seen order
+
+    def timed_out() -> click.ClickException:
+        seen = (
+            f" {len(unmatched)} new container(s) for wrapper {wrapper_id} appeared "
+            f"({', '.join(unmatched)}), but none could be tied to this launch "
+            f"(started by {launcher}, with exactly its inputs)."
+            if unmatched
+            else ""
+        )
+        return click.ClickException(
+            f"--wait timed out after {timeout}s: no container matching this launch "
+            f"appeared under project {project!r}.{seen} The launch itself was queued."
+        )
+
+    if time.monotonic() >= deadline:  # the login lookup counts against --timeout
+        raise timed_out()
+    while True:
+        matches, others = _launch_candidates(
             service,
             project=project,
             wrapper_id=wrapper_id,
             workflow_id=workflow_id,
+            launch_params=launch_params,
+            launcher=launcher,
             known_ids=known_ids,
         )
-        if container_id is not None:
+        unmatched.update(dict.fromkeys(others))
+        if len(matches) == 1:
+            container_id = matches[0]
             break
-        if time.monotonic() >= deadline:
-            raise click.ClickException(
-                f"--wait timed out after {timeout}s: no container matching this launch "
-                f"appeared under project {project!r}."
+        if len(matches) > 1:
+            basis = (
+                f"workflow-id {workflow_id}"
+                if workflow_id is not None
+                else "this user and these inputs"
             )
+            raise click.ClickException(
+                f"The launch was queued, but containers {', '.join(matches)} all match it "
+                f"({basis}), so --wait cannot tell which one it started. Follow one with "
+                "'xnatctl container show <id>'."
+            )
+        if time.monotonic() >= deadline:
+            raise timed_out()
         time.sleep(_POLL_INTERVAL_SECONDS)
 
     if not ctx.quiet:
@@ -463,7 +590,15 @@ def _wait_for_launch(
     "--experiment",
     "-E",
     help="Session accession ID or label, mapped to the wrapper's single Session-typed "
-    "external input. Requires the wrapper to have exactly one -- see --param otherwise.",
+    "external input. Requires the wrapper to have exactly one -- see --param otherwise. "
+    "With --scan, the session that holds the scan instead.",
+)
+@click.option(
+    "--scan",
+    "scan",
+    metavar="SCAN_ID",
+    help="Run a scan-level pipeline on this scan of the -E session. WRAPPER is then the "
+    "name shown in XNAT's Run menu, matched among pipelines enabled in the project.",
 )
 @click.option(
     "--param",
@@ -491,6 +626,7 @@ def container_launch(
     wrapper_ref: str,
     project: str | None,
     experiment: str | None,
+    scan: str | None,
     params_raw: tuple[str, ...],
     wait: bool,
     timeout: int,
@@ -501,6 +637,12 @@ def container_launch(
     WRAPPER is a numeric wrapper ID or a wrapper name (see
     ``xnatctl wrapper list``); a name matched by wrappers on more than one
     command is rejected -- pass the numeric ID instead.
+
+    With ``--scan``, WRAPPER is the pipeline's name as XNAT's Run menu
+    shows it (its label), its wrapper name, or its ID, matched only among
+    the pipelines the project has enabled for that scan's type. The scan's
+    address and the wrapper's input name are filled in from the session
+    and scan, so nothing from ``wrapper list`` is needed.
 
     The Container Service launch route does not validate the wrapper,
     project scope, or required inputs before queueing the launch -- it
@@ -515,22 +657,32 @@ def container_launch(
     \b
     Example:
         xnatctl container launch dcm2niix-scan -P MYPROJ -E XNAT_E00001
+        xnatctl container launch "DICOM to NIfTI" -P MYPROJ -E MYPROJ_S01_MR --scan 5
         xnatctl container launch 34 -P MYPROJ --param greeting=hello
         xnatctl container launch 34 -P MYPROJ -E XNAT_E00001 --wait
         xnatctl container launch 34 -P MYPROJ --dry-run
     """
+    if scan is not None and experiment is None:
+        raise click.UsageError("--scan needs -E/--experiment: the session that holds the scan.")
     resolved_project = require_project_from_context(ctx, project)
     params = _parse_params(params_raw)
 
     service = ContainerService(ctx.get_client())
-    wrapper_id, wrapper = service.resolve_wrapper(wrapper_ref)
-    launch_params = service.preflight_launch(
-        resolved_project, wrapper, params, experiment=experiment
-    )
+    if scan is not None and experiment is not None:
+        plan = service.plan_scan_launch(
+            resolved_project, wrapper_ref, params, experiment=experiment, scan=scan
+        )
+        wrapper_id, wrapper_name, launch_params = plan
+    else:
+        wrapper_id, wrapper = service.resolve_wrapper(wrapper_ref)
+        wrapper_name = str(wrapper.get("name"))
+        launch_params = service.preflight_launch(
+            resolved_project, wrapper, params, experiment=experiment
+        )
 
     if dry_run:
         click.echo(
-            f"[DRY-RUN] Would launch wrapper {wrapper_id} ({wrapper.get('name')}) in "
+            f"[DRY-RUN] Would launch wrapper {wrapper_id} ({wrapper_name}) in "
             f"project {resolved_project} with params: {launch_params}",
             err=True,
         )
@@ -538,20 +690,24 @@ def container_launch(
 
     if not ctx.quiet:
         click.echo(
-            f"Launching wrapper {wrapper_id} ({wrapper.get('name')}) in project "
-            f"{resolved_project}...",
+            f"Launching wrapper {wrapper_id} ({wrapper_name}) in project {resolved_project}...",
             err=True,
         )
 
     # The --wait correlation snapshot has to be taken before the launch
     # fires, not after: the launched container is often already present in
     # the listing by the time a post-launch snapshot would run, which used
-    # to poison the "first NEW container" fallback by pre-marking it known.
+    # to poison the "new container" fallback by pre-marking it known.
     # See _wait_for_launch's docstring.
     known_ids = (
-        {str(row.get("id")) for row in service.list(project=resolved_project)} if wait else set()
+        {
+            str(row.get("id"))
+            for row in service.list(project=resolved_project)
+            if isinstance(row, dict)
+        }
+        if wait
+        else set()
     )
-
     result = service.launch(resolved_project, wrapper_id, launch_params)
 
     # LaunchReport.Failure is declared on the plugin's own DTO (see
@@ -570,6 +726,7 @@ def container_launch(
             service,
             project=resolved_project,
             wrapper_id=wrapper_id,
+            launch_params=launch_params,
             launch_result=result,
             known_ids=known_ids,
             timeout=timeout,

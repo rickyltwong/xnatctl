@@ -278,7 +278,7 @@ profiles:
 
 1. **`-o` is output FORMAT** (`json`/`table`), NOT output directory. Use `--out` for download destination.
 2. **Filter uses colon**: `--filter "label:CTRL_*"` not `label=CTRL_*`.
-3. **Scan IDs use `--scans`**: `--scans 1,3,5` (comma-separated, or repeat the flag) or `--scans "*"` (all). NOT positional args. `-s` is a deprecated alias.
+3. **Scan IDs use `--scans`**: `--scans 1,3,5` (comma-separated, or repeat the flag) or `--scans "*"` (all). NOT positional args.
 4. **Prearchive uses positional args**: `PROJECT TIMESTAMP SESSION_NAME`. NOT `-P`/`-E` flags.
 5. **API params use `--params key=value`** (pipeline parameters: `--param key=value`): NOT query strings appended to path.
 6. **`-w`/`--workers` sets parallelism** on session download, upload, upload-exam, and admin refresh-catalogs.

@@ -180,15 +180,15 @@ Scans
    # List scans
    xnatctl scan list -E XNAT_E00001
 
-   # Delete specific scans (comma-separated with -s flag)
-   xnatctl scan delete -E XNAT_E00042 -P BRAIN -s 1,3,5 --dry-run
-   xnatctl scan delete -E XNAT_E00042 -P BRAIN -s 1,3,5 --yes
+   # Delete specific scans (comma-separated with --scans)
+   xnatctl scan delete -E XNAT_E00042 -P BRAIN --scans 1,3,5 --dry-run
+   xnatctl scan delete -E XNAT_E00042 -P BRAIN --scans 1,3,5 --yes
 
    # Delete ALL scans
-   xnatctl scan delete -E XNAT_E00042 -s "*" --yes
+   xnatctl scan delete -E XNAT_E00042 --scans "*" --yes
 
    # Download scans as ZIP
-   xnatctl scan download -E XNAT_E00001 -s 1,2,3 --out ./scans
+   xnatctl scan download -E XNAT_E00001 --scans 1,2,3 --out ./scans
 
 
 Resources
@@ -206,7 +206,7 @@ Resources
    xnatctl resource upload XNAT_E00001 MY_RESOURCE ./data/
 
    # Download resource
-   xnatctl resource download XNAT_E00001 MY_RESOURCE --file ./output.zip
+   xnatctl resource download XNAT_E00001 MY_RESOURCE --output-file ./output.zip
 
 
 Prearchive
@@ -242,7 +242,7 @@ Pipelines
    xnatctl pipeline list --project MYPROJ
 
    # Run pipeline and wait for completion
-   xnatctl pipeline run dcm2niix -e XNAT_E00001 --param key1=val1 --param key2=val2 --wait
+   xnatctl pipeline run dcm2niix -E XNAT_E00001 --param key1=val1 --param key2=val2 --wait
 
    # Check job status (with watch mode)
    xnatctl pipeline status JOB_ID --watch
@@ -345,7 +345,7 @@ Gotchas
 #. **``-o`` is output FORMAT** (``json``/``table``), NOT output directory. Use ``--out`` for
    download destination.
 #. **Filter uses colon**: ``--filter "label:CTRL_*"`` not ``label=CTRL_*``.
-#. **Scan IDs use ``-s`` flag**: ``-s 1,3,5`` (comma-separated) or ``-s "*"`` (all). NOT positional
+#. **Scan IDs use the ``--scans`` flag**: ``--scans 1,3,5`` (comma-separated) or ``--scans "*"`` (all). NOT positional
    args.
 #. **Prearchive uses positional args**: ``PROJECT TIMESTAMP SESSION_NAME``. NOT ``-P``/``-E`` flags.
 #. **API params use ``--params key=value``**: NOT query strings appended to path.

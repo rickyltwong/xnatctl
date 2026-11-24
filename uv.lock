@@ -1839,7 +1839,7 @@ wheels = [
 
 [[package]]
 name = "xnatctl"
-version = "0.6.3"
+version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -1884,6 +1884,9 @@ binary = [
     { name = "hatchling" },
     { name = "pip" },
     { name = "pyinstaller" },
+]
+build = [
+    { name = "hatchling" },
 ]
 dev = [
     { name = "cryptography" },
@@ -1940,6 +1943,7 @@ binary = [
     { name = "pip", specifier = ">=25" },
     { name = "pyinstaller", specifier = ">=6.10" },
 ]
+build = [{ name = "hatchling", specifier = ">=1.27" }]
 dev = [
     { name = "cryptography", specifier = ">=42" },
     { name = "hypothesis", specifier = ">=6.0" },

@@ -9,7 +9,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_forwarding_alias_cb,
     apply_filter,
     apply_sort_limit,
     batch_option,
@@ -459,19 +458,8 @@ def _resolve_scan_ids(scans: tuple[str, ...], batch_ids: list[str] | None) -> li
     "--scans",
     multiple=True,
     required=False,
-    # Eager so it is processed before the deprecated -s alias, which merges
-    # into this option's value (see _make_forwarding_alias_cb).
-    is_eager=True,
     help="Scan IDs: repeatable (--scans 1 --scans 2), comma-separated "
     "(--scans 1,2,3), or '*' for all.",
-)
-@click.option(
-    "-s",
-    "legacy_scans_s",
-    multiple=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("-s", "scans"),
 )
 @batch_option
 @confirm_destructive("Delete these scans?")
