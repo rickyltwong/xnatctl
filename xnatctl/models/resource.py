@@ -35,7 +35,6 @@ class Resource(XNATResource):
     category: str | None = Field(None, description="Resource category")
     cacheable: bool | None = Field(None, description="Whether resource is cacheable")
 
-    # Parent references
     session_id: str | None = Field(None, description="Parent session ID")
     scan_id: str | None = Field(None, description="Parent scan ID (if scan-level)")
     project: str | None = Field(None, description="Parent project ID")

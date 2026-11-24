@@ -258,14 +258,6 @@ class TransferItemResult(BaseModel):
     @field_validator("error")
     @classmethod
     def _redact_error(cls, value: str | None) -> str | None:
-        """Redact secret-shaped URL query values before *error* ever reaches JSON.
-
-        `error` is frequently `str(exc)` from an arbitrary caught exception
-        (a request URL, a server response body, ...), so this is the one
-        choke point every construction of a `TransferItemResult` passes
-        through -- no call site can forget to redact, because the model
-        does it regardless of how the value got here.
-        """
         if value is None:
             return value
         return redact_url_query(value)
@@ -329,11 +321,6 @@ class TransferSummary(BaseModel):
         use, so the print mechanics (indentation, `default=str`, ...) live in
         exactly one place.
         """
-        # Deferred: core.output imports Rich. TransferSummary is part of the
-        # public library surface (xnatctl.__all__) and gets pulled in by a
-        # plain data-model consumer that never calls emit() -- a
-        # module-scope import here would make Rich a transitive dependency
-        # of just holding a TransferSummary.
         from xnatctl.core.output import print_json
 
         print_json(self.model_dump(mode="json"))

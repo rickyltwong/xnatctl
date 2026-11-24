@@ -48,24 +48,17 @@ DEFAULT_OVERWRITE = "delete"
 
 @dataclass
 class _UploadResult:
-    """Result of a single batch upload (internal)."""
-
     batch_id: int
     success: bool
     duration: float
     file_count: int
     archive_size: int
     error: str = ""
-    # A batch dropped because the user interrupted the run. Distinct from a
-    # failure: nothing went wrong with it, so it must not be reported as an
-    # error the server rejected.
     cancelled: bool = False
 
 
 @dataclass(frozen=True)
 class _BatchUploadConfig:
-    """Static per-batch upload configuration, identical for every batch in a run."""
-
     client: XNATClient
     username: str | None
     password: str | None
@@ -87,20 +80,6 @@ def _cancelled_result(
     duration: float = 0.0,
     archive_size: int = 0,
 ) -> _UploadResult:
-    """Build the result for a batch dropped by user cancellation.
-
-    Distinct from a failure: nothing went wrong with it, so it must not be
-    reported as an error the server rejected.
-
-    Args:
-        batch_id: 1-based batch number.
-        batch: The batch's files, for the file count.
-        duration: Elapsed time, 0.0 when no work started.
-        archive_size: Bytes archived before the cancellation, if any.
-
-    Returns:
-        A cancelled (not failed) _UploadResult.
-    """
     return _UploadResult(
         batch_id=batch_id,
         success=False,
@@ -123,17 +102,6 @@ def _create_and_upload_batch(
     cancel_token: CancellationToken = NULL_TOKEN,
     session_refresher: SessionRefresher | None = None,
 ) -> _UploadResult:
-    """Create archive, upload it, then delete the archive immediately.
-
-    Combines archive creation and upload into a single task to reduce peak
-    disk and memory usage. The archive is deleted as soon as the upload
-    completes (or fails), preventing all archives from existing on disk
-    simultaneously.
-
-    Checks for cancellation before doing any work: ``cancel_futures`` drops the
-    queue, but a worker that has already picked up a batch would otherwise go
-    on to build and upload an archive the user asked it to abandon.
-    """
     start_time = time.time()
     archive_size = 0
 
@@ -250,11 +218,6 @@ def upload_dicom_parallel(
         if progress_callback:
             progress_callback(UploadProgress(phase=phase, **kwargs))
 
-    # Phase 1: Collect files. Local validation (an empty/unscannable
-    # directory) runs before the version gate below, so a source with no
-    # DICOM files gets the "No DICOM files found" summary regardless of the
-    # server's version, rather than an UnsupportedServerVersionError that
-    # has nothing to do with why the upload can't proceed.
     report(OperationPhase.PREPARING, message="Scanning for DICOM files...")
 
     files_or_summary = _collect_files_or_summary(source_dir, total_start)
@@ -262,8 +225,6 @@ def upload_dicom_parallel(
         return files_or_summary
     files = files_or_summary
 
-    # The gate still precedes any archive creation or network upload -- it
-    # just runs after the local file-collection check above.
     if direct_archive:
         require_server_version(client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")
 
@@ -283,7 +244,6 @@ def upload_dicom_parallel(
         direct_archive=direct_archive,
     )
 
-    # Phase 2: Split into batches
     batch_count = max(1, min(upload_workers, len(files)))
     batches = split_into_n_batches(files, batch_count)
     report(
@@ -291,11 +251,6 @@ def upload_dicom_parallel(
         message=f"Split {len(files)} files into {len(batches)} batches",
     )
 
-    # Phase 3+4: Create archives and upload (merged to reduce peak memory)
-    #
-    # Each worker creates its archive, uploads it, then deletes it
-    # immediately. This avoids having all archives on disk at once,
-    # which would double the disk/page-cache footprint.
     ext = ".tar" if archive_format == "tar" else ".zip"
     temp_dir = Path(tempfile.mkdtemp(prefix="xnatctl_upload_"))
 
@@ -325,7 +280,6 @@ def upload_dicom_parallel(
             errors,
         )
 
-        # Phase 5: Complete
         return _build_final_summary(
             results, batches, files, errors, total_archive_size, total_start, session, report
         )
@@ -335,16 +289,6 @@ def upload_dicom_parallel(
 
 
 def _collect_files_or_summary(source_dir: Path, total_start: float) -> list[Path] | UploadSummary:
-    """Collect the DICOM files, or the failure summary when none can be had.
-
-    Args:
-        source_dir: Directory containing DICOM files.
-        total_start: The run's start timestamp, for the failure duration.
-
-    Returns:
-        The files to upload, or a failed UploadSummary the caller returns
-        as-is (unscannable directory, or nothing found).
-    """
     try:
         files = collect_dicom_files(source_dir)
     except (ValueError, OSError) as e:
@@ -372,20 +316,6 @@ def _collect_files_or_summary(source_dir: Path, total_start: float) -> list[Path
 def _build_batch_refresher(
     client: XNATClient, config: _BatchUploadConfig
 ) -> SessionRefresher | None:
-    """Build the run's shared session refresher, when a token is in play.
-
-    One refresher for the run, so a session evicted mid-upload is
-    re-established once rather than once per worker. Only built when
-    a token is in play: workers given bare credentials already log in
-    per batch and have nothing to refresh.
-
-    Args:
-        client: Bound XNAT client that owns the session.
-        config: The run's static batch configuration.
-
-    Returns:
-        The shared refresher, or None when no token is in play.
-    """
     if not config.session_token:
         return None
     return SessionRefresher(
@@ -409,26 +339,6 @@ def _run_upload_batches(
     report: Callable[..., None],
     errors: list[str],
 ) -> tuple[list[_UploadResult], int]:
-    """Run every batch through the worker pool, reporting as each completes.
-
-    Progress reporting and error collection happen inside the completion
-    loop, at the same point in the timeline as each batch finishes -- not
-    recomputed afterward.
-
-    Args:
-        batches: Per-worker file batches.
-        archive_paths: One archive path per batch, same order.
-        source_path: Resolved source directory (archive member roots).
-        archive_format: Archive format, "tar" or "zip".
-        config: The run's static batch configuration.
-        batch_refresher: Shared session refresher, or None.
-        effective_workers: Worker-pool size.
-        report: Progress-event emitter.
-        errors: Mutable run-wide error list, appended per failed batch.
-
-    Returns:
-        Tuple of (per-batch results in completion order, total archived bytes).
-    """
     results: list[_UploadResult] = []
     total_archive_size = 0
 
@@ -479,21 +389,6 @@ def _build_final_summary(
     session: str,
     report: Callable[..., None],
 ) -> UploadSummary:
-    """Tally the batch results into the run's UploadSummary and final report.
-
-    Args:
-        results: Per-batch results.
-        batches: The batches that ran.
-        files: All collected files.
-        errors: Run-wide error list.
-        total_archive_size: Total archived bytes.
-        total_start: The run's start timestamp.
-        session: Target session label.
-        report: Progress-event emitter.
-
-    Returns:
-        The run's UploadSummary.
-    """
     total_duration = time.time() - total_start
     batches_succeeded = sum(1 for r in results if r.success)
     batches_failed = len(results) - batches_succeeded

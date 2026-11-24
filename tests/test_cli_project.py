@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI project commands."""
-
 from __future__ import annotations
 
 import json
@@ -15,12 +13,10 @@ from xnatctl.core.config import Config, Profile
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with a default profile."""
     return Config(
         default_profile="default",
         profiles={
@@ -35,10 +31,7 @@ def _mock_config() -> Config:
 
 
 class TestProjectList:
-    """Tests for project list command."""
-
     def test_project_list_top_level_list(self, runner: CliRunner) -> None:
-        """Project list tolerates bare top-level JSON arrays."""
         mock_client = MagicMock()
         mock_client.is_authenticated = True
         mock_client.base_url = "https://xnat.example.org"
@@ -93,14 +86,6 @@ class TestProjectList:
         assert "PROJ1" in result.output
 
     def test_project_list_filter_and_limit(self, runner: CliRunner) -> None:
-        """--filter and --limit narrow the JSON output, client-side.
-
-        The non-matching rows are placed FIRST in the server response: if
-        --filter were silently ignored, --limit 2 alone would return exactly
-        those two non-matching rows and this test would still pass by
-        accident. Ordering it this way means the assertions only pass when
-        filtering actually ran before the limit was applied.
-        """
         mock_client = MagicMock()
         mock_client.is_authenticated = True
         mock_client.base_url = "https://xnat.example.org"
@@ -136,8 +121,6 @@ class TestProjectList:
                     )
 
         assert result.exit_code == 0
-        # A disabled-TLS warning (verify_ssl=False in _mock_config) shares
-        # stdout with the JSON in CliRunner's merged output; skip past it.
         rows = json.loads(result.output[result.output.index("[") :])
         assert [row["id"] for row in rows] == ["PROJ0", "PROJ1"]
 
@@ -209,10 +192,7 @@ class TestProjectList:
 
 
 class TestProjectShow:
-    """Tests for project show command."""
-
     def test_project_show_items_response(self, runner: CliRunner) -> None:
-        """Project show handles `items[]` detail responses."""
         mock_client = MagicMock()
         mock_client.is_authenticated = True
         mock_client.base_url = "https://xnat.example.org"
@@ -289,8 +269,6 @@ class TestProjectShow:
 
 
 class TestProjectCreate:
-    """Tests for project create command."""
-
     def test_project_create_success(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.is_authenticated = True
@@ -368,8 +346,6 @@ class TestProjectCreate:
 
 
 class TestProjectUsers:
-    """Tests for project users command."""
-
     def test_users_json(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.is_authenticated = True
@@ -410,8 +386,6 @@ class TestProjectUsers:
 
 
 class TestProjectGrant:
-    """Tests for project grant command."""
-
     def test_grant_puts_singular_group_id(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.is_authenticated = True
@@ -486,8 +460,6 @@ class TestProjectGrant:
 
 
 class TestProjectRevoke:
-    """Tests for project revoke command."""
-
     def test_revoke_deletes_group_id_verbatim(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.is_authenticated = True
@@ -544,8 +516,6 @@ class TestProjectRevoke:
 
 
 class TestProjectAccess:
-    """Tests for project access command."""
-
     def test_access_get(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.is_authenticated = True
@@ -563,7 +533,6 @@ class TestProjectAccess:
         mock_client.get.assert_called_once_with("/data/projects/PROJ/accessibility")
 
     def test_access_get_does_not_require_yes(self, runner: CliRunner) -> None:
-        """A plain read must not demand confirmation."""
         mock_client = MagicMock()
         mock_client.is_authenticated = True
         mock_client.base_url = "https://xnat.example.org"
@@ -578,7 +547,6 @@ class TestProjectAccess:
         assert result.exit_code == 0
 
     def test_access_get_writes_no_audit_record(self, runner: CliRunner, isolate_audit_log) -> None:
-        """A read through a `confirm_destructive_when` command must not be audited."""
         mock_client = MagicMock()
         mock_client.is_authenticated = True
         mock_client.base_url = "https://xnat.example.org"
@@ -649,8 +617,6 @@ class TestProjectAccess:
 
 
 class TestProjectRequests:
-    """Tests for project requests command."""
-
     def test_requests_list_hits_project_scoped_route(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.is_authenticated = True
@@ -688,12 +654,6 @@ class TestProjectRequests:
         assert not isolate_audit_log.exists() or isolate_audit_log.read_text().strip() == ""
 
     def test_requests_has_no_approve_or_deny_options(self, runner: CliRunner) -> None:
-        """PAR resolution always acts on the CURRENT SESSION USER in stock XNAT
-        (ProjectAccessRequest.process()), not the request's actual invitee --
-        an admin "approving" someone else's PAR would add themselves to the
-        project instead. There is no safe admin-side resolution to offer, so
-        the command exposes no --approve/--deny at all.
-        """
         mock_client = MagicMock()
         mock_client.is_authenticated = True
         mock_client.base_url = "https://xnat.example.org"

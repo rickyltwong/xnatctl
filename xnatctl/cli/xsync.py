@@ -48,13 +48,9 @@ from xnatctl.core.output import (
 )
 from xnatctl.services.xsync import XsyncService
 
-# Env-var name documented in ``.harness/decisions.md``. Keep here so the
-# CLI surface and the secret-sourcing helper agree on the spelling.
 _REMOTE_PASS_ENV: str = "XNAT_XSYNC_REMOTE_PASS"
 
 
-# Canonical implementation lives in cli/common.py; this module was
-# the pattern's origin and now just parameterizes it.
 _reject_argv_password = reject_argv_password(
     f"Use --remote-pass-stdin or set the {_REMOTE_PASS_ENV} env var."
 )
@@ -85,11 +81,6 @@ def xsync() -> None:
     """
 
 
-# =============================================================================
-# Read commands
-# =============================================================================
-
-
 @xsync.command("list")
 @list_options
 @global_options
@@ -117,9 +108,6 @@ def xsync_list(
     raw_rows = _coerce_rows(data)
     rows = apply_filter(raw_rows, filter_expr)
     rows = apply_sort_limit(rows, sort_by, limit)
-    # --columns is a table-rendering concern only -- it never narrows what
-    # JSON prints, so it does not count as a "control was used" reason to
-    # switch away from the server's raw payload below.
     filtering_or_limiting_used = bool(filter_expr or limit is not None or sort_by)
 
     if ctx.quiet:
@@ -132,18 +120,9 @@ def xsync_list(
         return
 
     if not raw_rows:
-        # Nothing could even be coerced into rows -- there is no known
-        # column shape to render, so show the server's raw payload instead
-        # of a useless empty table. Distinct from filtering/limiting having
-        # narrowed a non-empty `raw_rows` down to zero: that case falls
-        # through to print_output below, which reports "No results" rather
-        # than silently reprinting everything.
         print_json(data)
         return
 
-    # Validated against the union of keys across every row, not just the
-    # first -- rows can carry different keys across a varying deployment
-    # schema.
     default_columns = list(dict.fromkeys(key for row in raw_rows for key in row))
     print_output(rows, format=ctx.output_format, columns=resolve_columns(default_columns, columns))
 
@@ -223,11 +202,6 @@ def xsync_progress(ctx: Context, project_id: str | None) -> None:
     click.echo(service.get_progress(resolved))
 
 
-# =============================================================================
-# Write commands
-# =============================================================================
-
-
 @xsync.command("sync")
 @click.option(
     "-P",
@@ -277,7 +251,7 @@ def xsync_sync_subject(
     dry_run: bool,
 ) -> None:
     """Trigger an XSync run for a single subject / experiment."""
-    del project_id  # currently informational; XSync endpoint keys on experiment id
+    del project_id
     if dry_run:
         click.echo(f"[DRY-RUN] Would trigger xsync for experiment {experiment_id}", err=True)
         return
@@ -286,26 +260,7 @@ def xsync_sync_subject(
     print_success(f"XSync triggered for experiment {experiment_id}")
 
 
-# =============================================================================
-# Credentials rotation
-# =============================================================================
-
-
 def _resolve_remote_password(*, pass_stdin: bool) -> str:
-    """Source the remote password from stdin, env var, or interactive prompt.
-
-    Priority (decisions.md):
-
-    1. ``--remote-pass-stdin`` -> read one line from ``sys.stdin``.
-    2. ``XNAT_XSYNC_REMOTE_PASS`` env var.
-    3. Interactive ``click.prompt(hide_input=True)``.
-
-    Args:
-        pass_stdin: Whether ``--remote-pass-stdin`` was passed.
-
-    Returns:
-        The remote password as a string. Never logged by this helper.
-    """
     if pass_stdin:
         return read_password_stdin("--remote-pass-stdin")
 
@@ -328,11 +283,6 @@ def _refresh_one(
     remote_project: str,
     sync_new_only: bool,
 ) -> dict[str, Any]:
-    """Single-project wrapper around :meth:`XsyncService.refresh_credentials`.
-
-    Pulled out so the ``--all`` loop can call the same code path that the
-    single-project case uses, keeping the secret-handling surface uniform.
-    """
     return service.refresh_credentials(
         project_id=project_id,
         remote_url=remote_url,
@@ -345,13 +295,6 @@ def _refresh_one(
 
 
 def _enumerate_bound_projects(service: XsyncService, remote_url: str) -> list[str]:
-    """Return the local project ids bound to ``remote_url``.
-
-    Best-effort: walks :meth:`XsyncService.list_projects` and filters rows
-    whose ``host`` / ``remoteHost`` / ``url`` value matches ``remote_url``.
-    Returns every project id when the list endpoint does not surface a
-    remote-URL field (caller decides whether that is acceptable).
-    """
     data = service.list_projects()
     rows = _coerce_rows(data)
     if not rows:
@@ -479,9 +422,6 @@ def xsync_refresh_credentials(
             --remote-url https://remote.example.org \\
             --remote-user alice --remote-pass-stdin --all --yes
     """
-    # ``--remote-pass`` argv values are rejected at parse time by
-    # :func:`_reject_argv_password`; by the time we get here the only
-    # supported secret sources are stdin, env var, and interactive prompt.
     remote_password = _resolve_remote_password(pass_stdin=remote_pass_stdin)
 
     service = XsyncService(ctx.get_client())
@@ -522,9 +462,6 @@ def xsync_refresh_credentials(
                 sync_new_only=sync_new_only,
             )
         except Exception as exc:  # noqa: BLE001  # per-project isolation while refreshing credentials across --all-bound projects
-            # Stringify but do not echo the secret. ``handle_errors`` already
-            # routes through :func:`redact_url_query`; we keep one local
-            # safeguard so even bypass paths cannot leak the password.
             message = str(exc).replace(remote_password, "***") if remote_password else str(exc)
             failed.append((proj, message))
             print_error(f"Refresh failed for {proj}: {message}")
@@ -542,17 +479,7 @@ def xsync_refresh_credentials(
         click.echo(f"Summary: {succeeded} refreshed, 0 failed", err=True)
 
 
-# =============================================================================
-# Helpers
-# =============================================================================
-
-
 def _emit_payload(ctx: Context, data: Any) -> None:
-    """Print a server payload using the active output format.
-
-    Falls back to JSON when the payload is not list-of-dicts shaped so the
-    operator always gets the raw data without an explicit ``-o json``.
-    """
     if ctx.output_format == OutputFormat.JSON:
         print_json(data)
         return
@@ -567,11 +494,6 @@ def _emit_payload(ctx: Context, data: Any) -> None:
 
 
 def _coerce_rows(data: Any) -> list[dict[str, Any]]:
-    """Best-effort extraction of a list-of-dicts from a server payload.
-
-    Handles the common XNAT shapes: top-level list, ``ResultSet.Result``,
-    or a single dict (wrapped as a one-element list).
-    """
     if isinstance(data, list):
         return [row for row in data if isinstance(row, dict)]
     if isinstance(data, dict):
@@ -585,7 +507,6 @@ def _coerce_rows(data: Any) -> list[dict[str, Any]]:
 
 
 def _extract_project_id(row: dict[str, Any]) -> str:
-    """Pull a project id out of an XSync list row using the conventional keys."""
     for key in ("id", "ID", "projectId", "project_id", "project", "label"):
         value = row.get(key)
         if value:

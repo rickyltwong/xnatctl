@@ -1,5 +1,3 @@
-"""Tests for SessionLabelService: label computation and rename application."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -23,14 +21,6 @@ def wire_rename_confirmation(
     status: str = "Complete",
     put: Callable[..., None] | None = None,
 ) -> dict[str, int]:
-    """Make the fake server behave like XNAT does on an experiment rename.
-
-    A PUT that reaches the server creates a ``Renamed`` event in that
-    experiment's history, carrying the rename's live ``event_status``.
-    Returns the ``{experiment id: event id}`` map the fake fills in as PUTs
-    land, so a test can also fake a PUT that raised after reaching the
-    server by inserting an entry itself.
-    """
     landed: dict[str, int] = {}
 
     def default_put(path: str, **_: object) -> None:
@@ -102,8 +92,8 @@ class TestPlanLabelNormalization:
         plan = service.plan_label_normalization("PROJ")
 
         by_id = {r["id"]: r["new_label"] for r in plan["renames"]}
-        assert by_id["E2"] == "SUB01_01_SE01_MR"  # earlier date -> visit 1
-        assert by_id["E1"] == "SUB01_02_SE01_MR"  # later date -> visit 2
+        assert by_id["E2"] == "SUB01_01_SE01_MR"
+        assert by_id["E1"] == "SUB01_02_SE01_MR"
         assert plan["skipped"] == []
 
     def test_same_day_ordered_by_time(self, fake_client) -> None:
@@ -116,8 +106,8 @@ class TestPlanLabelNormalization:
         plan = service.plan_label_normalization("PROJ")
 
         by_id = {r["id"]: r["new_label"] for r in plan["renames"]}
-        assert by_id["E2"] == "SUB01_01_SE01_MR"  # earlier time -> session 1
-        assert by_id["E1"] == "SUB01_01_SE02_MR"  # later time -> session 2
+        assert by_id["E2"] == "SUB01_01_SE01_MR"
+        assert by_id["E1"] == "SUB01_01_SE02_MR"
 
     def test_same_day_missing_time_both_skipped(self, fake_client) -> None:
         fake_client.get_json.return_value = [
@@ -147,8 +137,6 @@ class TestPlanLabelNormalization:
     def test_target_held_by_a_non_renaming_experiment_is_refused(self, fake_client) -> None:
         fake_client.get_json.return_value = [
             _row("E1", "OLD1", date="2024-01-01"),
-            # Holds E1's computed target but is itself skipped (unknown
-            # modality), so the label never frees up.
             _row("E2", "SUB01_01_SE01_MR", xsi_type="xnat:imagesessiondata"),
         ]
         service = SessionLabelService(fake_client)
@@ -160,15 +148,8 @@ class TestPlanLabelNormalization:
         assert plan["renames"] == []
 
     def test_target_vacated_by_an_earlier_planned_rename_is_allowed(self, fake_client) -> None:
-        """A collision with a label this run renames away resolves, vacator first.
-
-        Treating every current label as permanently occupied would skip E1
-        here and leave the subject half-normalized until a second run.
-        """
         fake_client.get_json.return_value = [
             _row("E1", "OLD1", date="2024-01-01"),
-            # Currently holds E1's target, but its own rename (visit 2)
-            # vacates it.
             _row("E2", "SUB01_01_SE01_MR", date="2024-02-01"),
         ]
         service = SessionLabelService(fake_client)
@@ -177,15 +158,14 @@ class TestPlanLabelNormalization:
 
         assert plan["skipped"] == []
         assert [(r["id"], r["new_label"]) for r in plan["renames"]] == [
-            ("E2", "SUB01_02_SE01_MR"),  # vacates SUB01_01_SE01_MR first
+            ("E2", "SUB01_02_SE01_MR"),
             ("E1", "SUB01_01_SE01_MR"),
         ]
 
     def test_a_rename_cycle_is_refused(self, fake_client) -> None:
-        """Two experiments swapping labels have no safe order without a temp name."""
         fake_client.get_json.return_value = [
-            _row("E1", "SUB01_02_SE01_MR", date="2024-01-01"),  # target: .._01_SE01_MR
-            _row("E2", "SUB01_01_SE01_MR", date="2024-02-01"),  # target: .._02_SE01_MR
+            _row("E1", "SUB01_02_SE01_MR", date="2024-01-01"),
+            _row("E2", "SUB01_01_SE01_MR", date="2024-02-01"),
         ]
         service = SessionLabelService(fake_client)
 
@@ -197,11 +177,8 @@ class TestPlanLabelNormalization:
         assert "target label exists" in reasons["E2"]
 
     def test_a_cross_subject_vacating_chain_resolves_in_order(self, fake_client) -> None:
-        """Labels are project-unique, so the vacator may belong to another subject."""
         fake_client.get_json.return_value = [
             _row("E1", "OLD1", subject="SUB01", date="2024-01-01"),
-            # A DIFFERENT subject currently holds SUB01's target and
-            # vacates it via its own rename.
             _row("E2", "SUB01_01_SE01_MR", subject="SUB02", date="2024-01-01"),
         ]
         service = SessionLabelService(fake_client)
@@ -210,12 +187,11 @@ class TestPlanLabelNormalization:
 
         assert plan["skipped"] == []
         assert [(r["id"], r["new_label"]) for r in plan["renames"]] == [
-            ("E2", "SUB02_01_SE01_MR"),  # vacates SUB01_01_SE01_MR first
+            ("E2", "SUB02_01_SE01_MR"),
             ("E1", "SUB01_01_SE01_MR"),
         ]
 
     def test_a_label_held_outside_the_planned_subjects_still_blocks(self, fake_client) -> None:
-        """A subject excluded by the filter never renames, so its labels are occupied."""
         fake_client.get_json.return_value = [
             _row("E1", "OLD1", subject="SUB01", date="2024-01-01"),
             _row("E2", "SUB01_01_SE01_MR", subject="SUB02", date="2024-01-01"),
@@ -230,24 +206,12 @@ class TestPlanLabelNormalization:
         ]
 
     def test_a_long_vacating_chain_resolves_without_recursion_error(self, fake_client) -> None:
-        """A valid chain longer than the interpreter's recursion limit must plan.
-
-        Direction matters: resolution walks the candidate list in plan
-        order, so the FIRST candidate (visit 1) must sit at the DEEP end of
-        the chain -- its blocker's blocker's ... blocker, n links down, is
-        the free label. Pointed the other way, every lookup ends after one
-        hop at an already-resolved item and even a recursive resolver would
-        pass.
-        """
         from datetime import date as date_cls
         from datetime import timedelta
 
         n = 1500
         base = date_cls(2000, 1, 1)
         fake_client.get_json.return_value = [
-            # Experiment k (visit k by date order) currently holds
-            # experiment k-1's target, so E1's rename waits on E2's, which
-            # waits on E3's, ... down to E_n, whose target is free.
             _row(
                 f"E{k}",
                 "OLD1" if k == 1 else f"SUB01_{k - 1:02d}_SE01_MR",
@@ -261,30 +225,24 @@ class TestPlanLabelNormalization:
 
         assert plan["skipped"] == []
         assert len(plan["renames"]) == n
-        assert plan["renames"][0]["id"] == f"E{n}"  # free end of the chain goes first
-        assert plan["renames"][-1]["id"] == "E1"  # deepest dependent goes last
+        assert plan["renames"][0]["id"] == f"E{n}"
+        assert plan["renames"][-1]["id"] == "E1"
 
     def test_a_label_held_by_multiple_experiments_is_never_treated_as_vacated(
         self, fake_client
     ) -> None:
-        """One holder renaming away cannot free a label another holder keeps.
-
-        Duplicate labels in one project are a server anomaly, but if the
-        listing reports one, accepting a taker on the strength of a single
-        holder's rename would race the remaining holder.
-        """
         contested = "SUB01_01_SE01_MR"
         fake_client.get_json.return_value = [
-            _row("E1", "OLD1", subject="SUB01", date="2024-01-01"),  # taker of the label
-            _row("E2", contested, subject="SUB02", date="2024-01-01"),  # holder 1, renames away
-            _row("E3", contested, subject="SUB03", date="2024-01-01"),  # holder 2, renames away
+            _row("E1", "OLD1", subject="SUB01", date="2024-01-01"),
+            _row("E2", contested, subject="SUB02", date="2024-01-01"),
+            _row("E3", contested, subject="SUB03", date="2024-01-01"),
         ]
         service = SessionLabelService(fake_client)
 
         plan = service.plan_label_normalization("PROJ")
 
         planned = {r["id"] for r in plan["renames"]}
-        assert planned == {"E2", "E3"}  # the holders still normalize themselves
+        assert planned == {"E2", "E3"}
         assert plan["skipped"] == [
             {
                 "id": "E1",
@@ -294,7 +252,6 @@ class TestPlanLabelNormalization:
         ]
 
     def test_a_null_id_row_is_skipped_not_planned(self, fake_client) -> None:
-        """A JSON null ID must not become the literal string "None" in a plan."""
         row = _row("ignored", "OLD1")
         row["ID"] = None
         fake_client.get_json.return_value = [row]
@@ -306,7 +263,6 @@ class TestPlanLabelNormalization:
         assert plan["skipped"] == [{"id": "", "label": "OLD1", "reason": "missing experiment ID"}]
 
     def test_row_missing_experiment_id_is_skipped_not_planned(self, fake_client) -> None:
-        """An un-addressable row must not survive into a plan dry-run shows as valid."""
         fake_client.get_json.return_value = [_row("", "OLD1")]
         service = SessionLabelService(fake_client)
 
@@ -327,7 +283,6 @@ class TestPlanLabelNormalization:
         ]
 
     def test_bare_array_of_non_objects_raises(self, fake_client) -> None:
-        """A 200 whose body is ["plugin disabled"] is malformed, not zero results."""
         fake_client.get_json.return_value = ["plugin disabled"]
         service = SessionLabelService(fake_client)
 
@@ -381,11 +336,6 @@ class TestPlanLabelNormalization:
         assert renamed_subjects == {"SUB01"}
 
     def test_malformed_body_raises(self, fake_client) -> None:
-        # A 200 with no 'ResultSet' key at all (e.g. a plugin-disabled body)
-        # must not be coerced into "no experiments" -- before the fix,
-        # ResultSetEnvelope's default_factory silently validated this to an
-        # empty plan, so `session normalize-labels` reported "Renamed 0"
-        # instead of surfacing the server's actual, non-ResultSet response.
         fake_client.get_json.return_value = {"message": "plugin disabled"}
         service = SessionLabelService(fake_client)
 
@@ -393,10 +343,6 @@ class TestPlanLabelNormalization:
             service.plan_label_normalization("PROJ")
 
     def test_genuinely_empty_result_set_is_not_an_error(self, fake_client) -> None:
-        # Guard against over-correcting: a 'ResultSet' key that is present
-        # but genuinely empty (a project with no experiments) is a normal,
-        # legitimate response and must keep returning an empty plan, not
-        # raise.
         fake_client.get_json.return_value = {"ResultSet": {"Result": []}}
         service = SessionLabelService(fake_client)
 
@@ -414,7 +360,6 @@ class TestApplyLabelNormalization:
 
         assert result == {"renamed": 2, "failed": []}
         assert fake_client.put.call_count == 2
-        # Single-shot with a short read timeout: the workflow is the truth.
         fake_client.put.assert_any_call(
             "/data/experiments/E1", params={"label": "NEWE1"}, timeout=60, max_retries=0
         )
@@ -425,8 +370,6 @@ class TestApplyLabelNormalization:
         fake_client.get_json.assert_any_call("/data/experiments/E2/history")
 
     def test_put_timeout_still_counts_when_rename_completes(self, fake_client) -> None:
-        # A 504 / read timeout after the PUT was sent: XNAT is still
-        # renaming. Confirm through the history rather than retrying.
         service = SessionLabelService(fake_client)
         landed = wire_rename_confirmation(fake_client)
 

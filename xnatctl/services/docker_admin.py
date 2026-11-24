@@ -42,38 +42,16 @@ _DAEMON_UNREACHABLE_HINT = (
     "Service and confirm the daemon is running and reachable from the XNAT server."
 )
 
-# Substrings of the real observed body of a "no Docker daemon reachable" 500
-# (see the module docstring): the Docker Java client's low-level failure to
-# reach the socket/pipe. Both must be present -- either one alone is common
-# enough in an arbitrary Java stack trace that it is not, by itself, a
-# reliable signature of this specific failure.
 _DAEMON_UNREACHABLE_BODY_SIGNATURES = ("java.io.IOException", "LastErrorException")
 
 
 def _looks_like_daemon_unreachable(exc: ServerError) -> bool:
-    """Whether a ServerError's status and body match the observed no-daemon shape.
-
-    Narrowly matched on purpose: a 502/503/504 from a proxy, or an unrelated
-    500 from the plugin itself, must propagate unchanged rather than being
-    rewritten into a Docker-specific message that has nothing to do with the
-    real failure.
-    """
     return exc.status_code == 500 and all(
         sig in exc.body for sig in _DAEMON_UNREACHABLE_BODY_SIGNATURES
     )
 
 
 def _as_daemon_unreachable_error(path: str, exc: Exception) -> XNATCtlError | None:
-    """Recognize a "no Docker daemon reachable" failure, direct or retry-exhausted.
-
-    A single 500 surfaces as :class:`ServerError`; a persistent one survives
-    the retry ladder (GET is idempotent, so 500 is retried) and surfaces as
-    :class:`RetryExhaustedError` wrapping that same ``ServerError`` in
-    ``last_error`` -- verified live. Only a ``ServerError`` whose status is
-    exactly 500 AND whose body matches the observed daemon-unreachable
-    signature is rewritten; everything else (a different 5xx, or a 500 with
-    an unrelated body) returns ``None`` so the caller re-raises it unchanged.
-    """
     server_error = exc if isinstance(exc, ServerError) else None
     if (
         server_error is None
@@ -93,7 +71,6 @@ def _as_daemon_unreachable_error(path: str, exc: Exception) -> XNATCtlError | No
 
 
 def _expect_list(data: Any, path: str) -> list[dict[str, Any]]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``[]``. See ``commands.py``."""
     if not isinstance(data, list):
         raise XNATCtlError(
             f"Unexpected response from GET {path}: expected a JSON array, "
@@ -103,7 +80,6 @@ def _expect_list(data: Any, path: str) -> list[dict[str, Any]]:
 
 
 def _expect_dict(data: Any, path: str) -> dict[str, Any]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``{}``. See ``commands.py``."""
     if not isinstance(data, dict):
         raise XNATCtlError(
             f"Unexpected response from GET {path}: expected a JSON object, "
@@ -261,8 +237,6 @@ class DockerAdminService(BaseService):
             daemon_error = _as_daemon_unreachable_error(path, e)
             if daemon_error is None:
                 raise
-            # No daemon reachable means no existing configuration to lose --
-            # safe to proceed with a fresh host-only body.
             current = {}
 
         body = {k: v for k, v in current.items() if k != "ping"}

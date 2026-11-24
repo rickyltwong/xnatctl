@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Minimal TLS-only DICOM SCP for the integration tier.
 
 Accepts a C-ECHO over TLS and nothing else -- that is all
@@ -17,22 +16,21 @@ from pynetdicom.events import Event
 
 
 def _verification_sop_class() -> str:
-    """Match dicom_store.py's own cross-version lookup for this UID."""
     from pynetdicom import sop_class
 
     verification_uid = "1.2.840.10008.1.1"
     return str(
-        getattr(sop_class, "VerificationSOPClass", getattr(sop_class, "Verification", verification_uid))
+        getattr(
+            sop_class, "VerificationSOPClass", getattr(sop_class, "Verification", verification_uid)
+        )
     )
 
 
 def handle_echo(_event: Event) -> int:
-    """Accept every C-ECHO unconditionally: 0x0000 is DICOM's Success status."""
     return 0x0000
 
 
 def main() -> None:
-    """Parse the cert/key/port/AET args and block, serving C-ECHO over TLS."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cert", required=True, help="Server certificate (PEM)")
     parser.add_argument("--key", required=True, help="Server private key (PEM)")

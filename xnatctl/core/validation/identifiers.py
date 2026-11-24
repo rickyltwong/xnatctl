@@ -13,11 +13,6 @@ import re
 
 from xnatctl.core.exceptions import InvalidIdentifierError
 
-# =============================================================================
-# Constants
-# =============================================================================
-
-# XNAT identifier: alphanumeric, underscore, hyphen
 XNAT_ID_PATTERN = re.compile(r"[a-zA-Z0-9_-]+")
 XNAT_ID_MAX_LENGTH = 64
 
@@ -25,22 +20,8 @@ XNAT_ID_MAX_LENGTH = 64
 AE_TITLE_PATTERN = re.compile(r"[\x20-\x5B\x5D-\x7E]{1,16}")
 AE_TITLE_MAX_LENGTH = 16
 
-# XNAT labels (subject/experiment labels, resource labels) are looser than
-# XNAT_ID_PATTERN in the wild -- dots, spaces, and parentheses show up
-# routinely from imported DICOM metadata. Only characters that could redirect
-# a REST request to a different route or resource are forbidden: path
-# separators, the URL-reserved '?'/'#', '%' (which would smuggle a second
-# layer of percent-encoding past the quoting helpers below), and control
-# characters -- C0 (\x00-\x1f), DEL, and the C1 range (\x80-\x9f), which are
-# just as invisible/unprintable as C0 but sit past the ASCII range so a
-# purely-ASCII pattern would miss them.
 XNAT_LABEL_FORBIDDEN_PATTERN = re.compile(r"[/\\?#%\x00-\x1f\x7f-\x9f]")
 XNAT_LABEL_MAX_LENGTH = 255
-
-
-# =============================================================================
-# XNAT Identifier Validation
-# =============================================================================
 
 
 def validate_xnat_identifier(
@@ -111,12 +92,6 @@ def validate_scan_id(scan_id: str) -> str:
     return validate_xnat_identifier(scan_id, "scan", max_length=32)
 
 
-# Resource labels are a step looser again than XNAT_LABEL_FORBIDDEN_PATTERN:
-# '#', '?', and '%' show up in real resource labels (XNAT does not restrict
-# them at creation time, and resources are typically named once and never
-# renamed), and the quoting layer (quote_path_segment) percent-encodes all
-# three without ambiguity -- so there is no request-routing reason to reject
-# them here the way there is for '/' or a bare '..'.
 XNAT_RESOURCE_LABEL_FORBIDDEN_PATTERN = re.compile(r"[/\\\x00-\x1f\x7f-\x9f]")
 
 
@@ -129,14 +104,6 @@ def _validate_looser_xnat_label(
     forbidden_pattern: re.Pattern[str],
     forbidden_description: str,
 ) -> str:
-    """Shared body for :func:`validate_xnat_label` and :func:`validate_xnat_resource_label`.
-
-    Both accept dots, spaces, parentheses, and unicode -- routine once a
-    label comes from imported metadata rather than an admin-chosen ID --
-    while still rejecting whatever could redirect a REST request to a
-    different route or resource. They differ only in whether ``#``/``?``/``%``
-    are part of that "could redirect" set; see ``forbidden_pattern``.
-    """
     if not isinstance(value, str):
         raise InvalidIdentifierError(label_type, str(value), "must be a string")
 
@@ -160,11 +127,6 @@ def _validate_looser_xnat_label(
     if forbidden_pattern.search(value):
         raise InvalidIdentifierError(label_type, value, f"cannot contain {forbidden_description}")
 
-    # A segment made up of only dots (".", "..", "...") is never a real
-    # label -- dots are otherwise allowed literal because labels commonly
-    # contain them, but a dot-only segment is exactly the shape a path
-    # traversal needs, and /data/ paths deliberately do not %2E-encode dots
-    # the way the prearchive endpoints do (see quote_path_segment).
     if value.strip(".") == "":
         raise InvalidIdentifierError(
             label_type,
@@ -276,11 +238,6 @@ def validate_resource_label(label: str) -> str:
         )
 
     return label
-
-
-# =============================================================================
-# DICOM Validation
-# =============================================================================
 
 
 def validate_ae_title(ae_title: str, field_name: str = "AE Title") -> str:

@@ -91,7 +91,6 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
     options = list(option) if option else None
     experiment_ids = list(experiment) if experiment else None
 
-    # Get experiments
     results = service.list_experiments_for_refresh(project)
 
     experiments = []
@@ -106,15 +105,10 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
         click.echo(f"No experiments found for project {project}", err=True)
         return
 
-    # Filter by specific IDs
     if experiment_ids:
         targets = set(experiment_ids)
         experiments = [exp for exp in experiments if exp[1] in targets]
 
-    # Apply limit. `is not None`, not truthy: `--limit 0` must mean "process
-    # zero experiments", not "no limit" -- the CLI does its own PUT-per-
-    # experiment fan-out here (see the comment on AdminService above), so
-    # this check is separate from the service layer's own limit handling.
     if limit is not None:
         experiments = experiments[:limit]
 
@@ -124,14 +118,12 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
 
     workers = resolve_workers_from_context(ctx, workers)
 
-    # Prepare options parameter
     options_param = ",".join(options) if options else None
 
     refreshed = []
     failed = []
 
     def refresh_one(exp: tuple[str, str]) -> tuple[str, bool, str]:
-        """Refresh a single experiment catalog and return status."""
         subject_id, exp_id = exp
         resource_path = f"/archive/projects/{project}/subjects/{subject_id}/experiments/{exp_id}"
         try:
@@ -216,23 +208,14 @@ def admin_audit(
     """
     service = AdminService(ctx.get_client())
 
-    # A client-side --filter/--sort-by must see the full result set it is
-    # filtering/sorting over, not just whatever fits in the server's
-    # small default --limit window (50) -- fetching that window FIRST and
-    # filtering/sorting second would silently drop matches outside it. Only
-    # the network round-trip below is allowed to fail as "audit log not
-    # available"; option validation (bad --filter/--sort-by/--columns) must
-    # raise its own error, not be swallowed by that except clause.
     client_side_controls = bool(filter_expr or sort_by)
     fetch_limit = None if client_side_controls else limit
 
     try:
-        # Try the audit API endpoint
         resp = service.get_xapi_audit(
             fetch_limit, project=project, username=username, action=action
         )
     except (XNATCtlError, json.JSONDecodeError) as e:
-        # Audit API may not be available
         print_error(f"Audit log not available: {e}")
         click.echo("Note: Audit logging may not be enabled on this XNAT server", err=True)
         raise SystemExit(1) from e
@@ -267,12 +250,6 @@ _SECRET_KEY_PATTERN = re.compile(r"password|secret|token|key|private|captcha", r
 
 
 def _looks_like_secret_key(key: str) -> bool:
-    """Whether a site-config KEY name looks secret-shaped.
-
-    Site-config keys are free-form and server-specific (``emailSmtpPassword``,
-    ``oauthClientSecret``, ...) -- there is no fixed allowlist to check
-    against, so this is a best-effort substring match on the key name itself.
-    """
     return bool(_SECRET_KEY_PATTERN.search(key))
 
 
@@ -438,8 +415,6 @@ def docker_images(ctx: Context) -> None:
     service = DockerAdminService(ctx.get_client())
     rows = service.images()
 
-    # image-id and tags are the verified DockerImage @JsonProperty names
-    # (see DockerAdminService.images).
     print_output(
         rows,
         format=ctx.output_format,
@@ -533,19 +508,10 @@ def docker_server(ctx: Context, set_host: str | None, dry_run: bool) -> None:
 
     if set_host is None:
         data = service.get_server()
-        # No explicit `columns`: this shows every key the server returned,
-        # rather than a fixed subset -- so `ping` (present on
-        # DockerServerWithPing, the shape a live daemon connection returns)
-        # surfaces automatically. A dead daemon is the common real-world
-        # state here, and `ping` is the one field that tells the reader
-        # that at a glance.
         print_output(data, format=ctx.output_format, quiet=ctx.quiet, id_field="host")
         return
 
     if dry_run:
-        # Runs the same read-and-merge preflight `set_server` does (an
-        # unreadable or malformed current configuration must refuse here
-        # too, not just on real execution) without sending the POST.
         service.build_set_server_body(set_host)
         click.echo(f"[DRY-RUN] Would set the Docker daemon host to {set_host}", err=True)
         return

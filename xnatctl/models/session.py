@@ -60,5 +60,4 @@ class Session(XNATResource):
         return {col: str(data.get(col, "")) for col in cols}
 
 
-# Alias for backward compatibility
 Experiment = Session

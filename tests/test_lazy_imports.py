@@ -1,12 +1,3 @@
-"""Import-cost guard: ``import xnatctl`` must not pull in Rich, Click, or DICOM.
-
-These checks run in a subprocess. ``tests/conftest.py`` imports ``httpx`` and
-``click`` at module level for fixtures used elsewhere in the suite, so
-``sys.modules`` is already polluted in-process by the time any test in this
-file would run; a fresh interpreter is the only way to observe what a bare
-``import xnatctl`` actually pulls in.
-"""
-
 from __future__ import annotations
 
 import subprocess
@@ -28,20 +19,6 @@ _HEAVY_MODULES = ("rich", "click", "httpx", "pydantic", "pydicom", "pynetdicom")
 
 
 def test_import_xnatctl_does_not_load_rich_click_or_dicom() -> None:
-    """A bare ``import xnatctl`` stays cheap for library consumers.
-
-    This is the property the whole file guards: a library consumer that only
-    wants a data model or an exception class (``from xnatctl import
-    TransferSummary``) must not pay for Click's CLI framework, Rich's console
-    machinery, httpx's connection pool, pydantic's validation machinery, or
-    pydicom/pynetdicom's DICOM data dictionaries -- loaded eagerly, they
-    nearly double ``import xnatctl``'s cost (see
-    ``xnatctl/__init__.py``'s PEP 562 ``__getattr__`` and the function-local
-    imports it documents). If this test starts failing, something was hoisted
-    to module scope that shouldn't have been -- run
-    ``python -c "import sys, xnatctl; print(sorted(sys.modules))"`` and look
-    for the new entry's import chain back to ``xnatctl/__init__.py``.
-    """
     output = _run(
         "import sys\n"
         "import xnatctl\n"
@@ -56,7 +33,6 @@ def test_import_xnatctl_does_not_load_rich_click_or_dicom() -> None:
 
 
 def test_import_xnatctl_core_does_not_load_rich_click_or_dicom() -> None:
-    """A bare ``import xnatctl.core`` stays cheap too."""
     output = _run(
         "import sys\n"
         "import xnatctl.core\n"
@@ -70,10 +46,6 @@ def test_import_xnatctl_core_does_not_load_rich_click_or_dicom() -> None:
 
 
 def test_update_check_child_import_path_stays_light() -> None:
-    """The detached refresh child imports xnatctl.core.update_check directly;
-    that path (which pulls core.config for CONFIG_DIR) must not drag in httpx
-    or the Rich/Click stack httpx's own CLI imports.
-    """
     output = _run(
         "import sys\n"
         "import xnatctl.core.update_check\n"
@@ -85,12 +57,6 @@ def test_update_check_child_import_path_stays_light() -> None:
 
 
 def test_all_public_names_resolve_lazily() -> None:
-    """Every name in ``xnatctl.__all__`` resolves via ``__getattr__``.
-
-    Also verifies ``dir()`` lists the lazy names and that accessing a
-    Rich/Click-backed name (``XNATClient``) does pull those modules in --
-    lazy loading defers the cost, it does not remove the capability.
-    """
     output = _run(
         "import sys\n"
         "import xnatctl\n"
@@ -109,7 +75,6 @@ def test_all_public_names_resolve_lazily() -> None:
 
 
 def test_from_xnatctl_core_import_star_names_work() -> None:
-    """``from xnatctl.core import <name>``-style imports keep working lazily."""
     output = _run(
         "from xnatctl.core import print_error, XNATClient, Config, AuthManager\n"
         "assert callable(print_error)\n"
@@ -122,7 +87,6 @@ def test_from_xnatctl_core_import_star_names_work() -> None:
 
 
 def test_repeated_attribute_access_is_cached() -> None:
-    """The resolved value is cached on the module after first access."""
     output = _run(
         "import xnatctl\n"
         "a = xnatctl.XNATClient\n"

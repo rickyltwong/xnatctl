@@ -1,8 +1,5 @@
-"""Sphinx configuration for xnatctl documentation."""
-
 import importlib.metadata
 
-# -- Project information -----------------------------------------------------
 
 project = "xnatctl"
 author = "Ricky Wong"
@@ -10,7 +7,6 @@ copyright = "2026, Ricky Wong"
 release = importlib.metadata.version("xnatctl")
 version = ".".join(release.split(".")[:2])
 
-# -- General configuration ---------------------------------------------------
 
 extensions = [
     "sphinx.ext.autodoc",
@@ -22,22 +18,18 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-# README.md is a GitHub-only signpost to the published site, not a doc page.
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "plans", "README.md"]
 
-# -- Options for autodoc -----------------------------------------------------
 
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 autodoc_typehints_description_target = "documented"
 
-# -- Options for Napoleon (Google-style docstrings) --------------------------
 
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 napoleon_attr_annotations = True
 
-# -- Options for intersphinx -------------------------------------------------
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
@@ -45,7 +37,6 @@ intersphinx_mapping = {
     "pydantic": ("https://docs.pydantic.dev/latest/", None),
 }
 
-# -- Options for MyST (Markdown support) -------------------------------------
 
 source_suffix = {
     ".rst": "restructuredtext",
@@ -57,7 +48,6 @@ myst_enable_extensions = [
     "deflist",
 ]
 
-# -- Options for HTML output -------------------------------------------------
 
 html_theme = "furo"
 html_title = f"xnatctl {release}"
@@ -69,7 +59,6 @@ html_theme_options = {
     "navigation_with_keys": True,
 }
 
-# -- Options for sphinx-copybutton -------------------------------------------
 
 copybutton_prompt_text = r"^\$ "
 copybutton_prompt_is_regexp = True

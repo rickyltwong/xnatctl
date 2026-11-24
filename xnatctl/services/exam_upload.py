@@ -113,7 +113,7 @@ class ExamUploadResult:
                 "misc_files": 0,
                 "misc_label": self.misc_label,
             }
-        else:  # COMPLETE
+        else:
             base["resources"] = {
                 "skipped": False,
                 "resource_dirs": self.attached_resource_dirs,
@@ -166,15 +166,12 @@ class ExamUploadService(BaseService):
         raise as a ``ClickException``. On a wait timeout the DICOM upload is kept
         and the unattached resources are reported for an ``--attach-only`` rerun.
         """
-        # Imported here so tests that monkeypatch ``xnatctl.services.upload``
-        # /``xnatctl.services.resources`` still intercept the lookup.
         from xnatctl.services.upload import UploadService
 
         classification = plan.classification
         exam_root_path = plan.exam_root
         misc_label = plan.misc_label
 
-        # wait > 0 means "poll until archived"; wait is the timeout in seconds.
         wait_for_archive = wait > 0
         wait_timeout = wait
 
@@ -243,10 +240,6 @@ class ExamUploadService(BaseService):
                     break
 
         if not resolved_experiment_id:
-            # Archiving outlived the wait window (or --wait 0 on a not-yet-archived
-            # session). Don't discard the successful DICOM upload or silently drop
-            # resources: report an actionable partial result so the caller can
-            # attach resources with --attach-only once archiving completes.
             pending = len(classification.resource_dirs) + len(classification.misc_files)
             rerun = (
                 f"xnatctl session upload-exam '{exam_root_path}' "
@@ -268,7 +261,6 @@ class ExamUploadService(BaseService):
         )
 
     def _resolve_experiment_id(self, project: str, session: str) -> str | None:
-        """Resolve the session label to an archived experiment ID, or None."""
         try:
             resolved = HierarchyService(self.client).resolve_experiment(
                 ExperimentRef(
@@ -289,11 +281,6 @@ class ExamUploadService(BaseService):
         project: str,
         misc_label: str,
     ) -> None:
-        """Attach resource directories and zip up misc files onto the session."""
-        # Imported here for the same reason as the UploadService import in
-        # upload_exam above: tests monkeypatch
-        # xnatctl.services.resources.ResourceService to intercept the
-        # lookup, which only works if this stays a call-time import.
         from xnatctl.services.resources import ResourceService
 
         resource_service = ResourceService(self.client)
@@ -319,10 +306,6 @@ class ExamUploadService(BaseService):
                 project=project,
             )
             with tempfile.TemporaryDirectory() as tmp_dir:
-                # misc_label is caller-supplied (CLI --misc-label flag), and
-                # validate_resource_label alone doesn't cover the Windows
-                # filename quirks (colons, reserved names, boundary
-                # dots/spaces) validate_local_path_component does.
                 safe_misc_label = validate_local_path_component(misc_label, "misc_label")
                 zip_path = Path(tmp_dir) / f"{safe_misc_label}.zip"
                 with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:

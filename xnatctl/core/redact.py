@@ -42,20 +42,10 @@ SECRET_QUERY_KEYS: frozenset[str] = frozenset(
 _URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
 _TRAILING_PUNCT = ".,);]"
 
-# Matches the whole `user:pass@` authority prefix after `//`. The inner class
-# excludes `/` but not `@`, so it runs greedily to the last `@` of the
-# authority -- which is what a password containing `@` requires.
 _USERINFO_RE = re.compile(r"(//)([^/\s]*@)")
 
 
 def _scrub_userinfo(netloc: str) -> tuple[str, bool]:
-    """Replace the password in a ``user:pass@host`` netloc with ``***``.
-
-    Returns the (possibly rewritten) netloc and whether anything changed. A
-    bare ``user@host`` is left alone: it carries no password, and usernames are
-    not treated as secrets here -- the query-string pass deliberately preserves
-    ``username=`` for the same reason.
-    """
     if "@" not in netloc:
         return netloc, False
     userinfo, _, host = netloc.rpartition("@")
@@ -101,13 +91,10 @@ def redact_url_query(text: str) -> str:
         The input string with secret-shaped query values redacted. If no
         redaction is needed, the input is returned unchanged.
     """
-    # A userinfo URL needs rewriting even with no query string at all, so the
-    # cheap bail-out has to admit `@` as well as `?`.
     if "http" not in text or ("?" not in text and "@" not in text):
         return text
 
     def _scrub(match: re.Match[str]) -> str:
-        """Rewrite a single URL match with redacted secrets."""
         url = match.group(0)
         trailing = ""
         while url and url[-1] in _TRAILING_PUNCT:
@@ -118,9 +105,6 @@ def redact_url_query(text: str) -> str:
 
         netloc, changed = _scrub_userinfo(netloc)
 
-        # Walk the query string manually so non-secret values keep their
-        # original encoding byte-for-byte. We only compare the decoded key
-        # name (case-insensitively) against the allowlist.
         new_parts: list[str] = []
         for raw_pair in query.split("&"):
             if "=" in raw_pair:

@@ -28,26 +28,16 @@ from xnatctl.core.fsutil import (
 )
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path.home() / ".config" / "xnatctl"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 SESSION_CACHE_FILE = CONFIG_DIR / ".session"
 
-# Config file schema version. Bump whenever the on-disk shape of config.yaml
-# changes in a way that needs a migration, and register the migration below.
 CURRENT_CONFIG_VERSION = 1
 
-# Migrations are keyed by the version they migrate *from*, applied in order
-# in memory only (see Config.load). Empty until the first breaking change to
-# the file shape actually ships -- there is nothing to migrate yet.
 MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {}
 
-# Environment variable names
 ENV_URL = "XNAT_URL"
 ENV_USER = "XNAT_USER"
 ENV_PASS = "XNAT_PASS"
@@ -61,13 +51,6 @@ _FALSE_VALUES = frozenset({"false", "0", "no"})
 
 
 def _parse_bool_env(name: str, default: bool) -> bool:
-    """Parse a boolean environment variable strictly.
-
-    Accepts ``true/false/1/0/yes/no`` case-insensitively (after stripping
-    whitespace). Anything else raises ``ConfigurationError`` rather than
-    silently evaluating to ``False`` -- a typo like ``XNAT_VERIFY_SSL=on`` must
-    never quietly disable TLS verification for a PHI-bearing connection.
-    """
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -79,14 +62,8 @@ def _parse_bool_env(name: str, default: bool) -> bool:
     raise ConfigurationError(f"Invalid value for {name}: {raw!r}. Use true/false.")
 
 
-# =============================================================================
-# Profile
-# =============================================================================
-
-
 _OPERATIONAL_FIELDS = ("workers", "overwrite", "direct_archive", "archive_mode", "extract")
 
-# Keychain integration.
 KEYRING_SERVICE = "xnatctl"
 PASSWORD_SOURCE_KEYRING = "keyring"
 
@@ -122,19 +99,12 @@ class Profile:
     default_project: str | None = None
     username: str | None = None
     password: str | None = None
-    # Where the password comes from: None means the inline `password` field,
-    # "keyring" means the OS keychain. Optional with a default so existing
-    # config files keep loading unchanged (a schema version field can come later).
     password_source: str | None = None
-    # Operational defaults (None = not configured, use command default)
     workers: int | None = None
     overwrite: str | None = None
     direct_archive: bool | None = None
     archive_mode: str | None = None
     extract: bool | None = None
-    # Set by Config when a profile is loaded or created. Needed to build the
-    # keyring key; deliberately not serialized, because the name is already the
-    # YAML mapping key.
     name: str | None = field(default=None, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -150,8 +120,6 @@ class Profile:
         if self.username:
             result["username"] = self.username
         if self.password_source:
-            # A keychain-backed profile never writes the secret back out --
-            # that is the whole point of moving it.
             result["password_source"] = self.password_source
         elif self.password:
             result["password"] = self.password
@@ -214,18 +182,6 @@ class Profile:
         return str(password)
 
 
-# =============================================================================
-# On-disk schema (validation only)
-# =============================================================================
-#
-# These pydantic models exist to validate a loaded config.yaml and detect
-# unrecognized keys -- they are not the runtime representation. Config/Profile
-# above remain that; parsed models are converted into them via
-# Profile.from_dict so every other call site is unaffected. `extra="allow"`
-# is what lets a field unknown to this version of xnatctl surface in
-# `model_extra` for the unknown-key warning, instead of being rejected.
-
-
 class ProfileModel(BaseModel):
     """Validated shape of one entry under ``profiles:`` in config.yaml."""
 
@@ -260,13 +216,6 @@ class ConfigFileModel(BaseModel):
 
 
 def _coerce_version(value: Any) -> int | None:
-    """Best-effort int coercion for a version field.
-
-    A quoted integer (``version: "2"``) must mean the same thing as an
-    unquoted one -- YAML's own type inference should not change the
-    document's meaning. Anything else (a float, a bool, a list, non-numeric
-    text) is not a version this code understands.
-    """
     if isinstance(value, bool):  # bool is an int subclass; never a real version
         return None
     if isinstance(value, int):
@@ -279,18 +228,6 @@ def _coerce_version(value: Any) -> int | None:
 
 
 def _normalize_version(data: dict[str, Any], path: Path) -> int:
-    """Resolve ``data["version"]`` to a single int, in place.
-
-    Every later step (migration dispatch, the newer-than-known-version
-    warning, and Pydantic validation) reads this same normalized value off
-    ``data``, so a version that is missing, quoted, or outright invalid can
-    only ever be interpreted one way -- a mismatch here would let an
-    invalid value (e.g. ``version: banana``) sail past a local sanity check
-    only to reach Pydantic's strict ``int`` field and crash the whole load.
-    A missing key predates the field and is version 1; anything that will
-    not coerce is corrupt, treated as 1 (never a reason to brick every
-    command) with a warning naming the bad value.
-    """
     raw_version = data.get("version", 1)
     version = _coerce_version(raw_version)
     if version is None:
@@ -328,18 +265,6 @@ def _sanitize_keys(data: dict[Any, Any]) -> dict[str, Any]:
 
 
 def _migrate(data: dict[str, Any], version: int) -> tuple[dict[str, Any], int]:
-    """Apply registered migrations in order, purely in memory.
-
-    Never called from a save path -- the caller decides whether the migrated
-    form gets written back.
-
-    Raises:
-        ConfigurationError: If a migration step between ``version`` and
-            ``CURRENT_CONFIG_VERSION`` is missing. Stopping silently partway
-            would validate a half-migrated document against the current
-            schema's defaults and then, on the next save, stamp it as fully
-            current -- data loss dressed up as success.
-    """
     while version < CURRENT_CONFIG_VERSION:
         migration = MIGRATIONS.get(version)
         if migration is None:
@@ -355,11 +280,6 @@ def _migrate(data: dict[str, Any], version: int) -> tuple[dict[str, Any], int]:
 
 
 def _warn_on_unknown_keys(model: ConfigFileModel, path: Path) -> None:
-    """Warn once, naming every unrecognized top-level and profile key.
-
-    Never raises: an unknown key is forward/backward-compat noise, not a
-    reason to fail a load.
-    """
     sections: dict[str, list[str]] = {}
     if top_extra := sorted(model.model_extra or {}):
         sections["top-level"] = top_extra
@@ -372,11 +292,6 @@ def _warn_on_unknown_keys(model: ConfigFileModel, path: Path) -> None:
 
     detail = "; ".join(f"{where}: {', '.join(keys)}" for where, keys in sections.items())
     logger.warning("%s has unrecognized config keys, ignoring: %s", path, detail)
-
-
-# =============================================================================
-# Config
-# =============================================================================
 
 
 @dataclass
@@ -421,7 +336,6 @@ class Config:
         path = config_path or CONFIG_FILE
         config = cls()
 
-        # Load from file if exists
         if path.exists():
             try:
                 with open(path) as f:
@@ -430,11 +344,6 @@ class Config:
                     raise ConfigurationError("config.yaml must contain a YAML mapping")
 
                 raw = _sanitize_keys(raw)
-                # Normalizes data["version"] to a clean int in place (missing
-                # predates the field -> 1; invalid -> 1 with a warning), so
-                # every step below -- migration dispatch, the newer-version
-                # warning, and Pydantic's `version: int` field -- agrees on
-                # the exact same value.
                 file_version = _normalize_version(raw, path)
 
                 data, applied_version = _migrate(raw, file_version)
@@ -463,7 +372,6 @@ class Config:
 
             _warn_on_exposed_password(config, path)
 
-        # Environment variable overrides
         if url := os.getenv(ENV_URL):
             verify_ssl = _parse_bool_env(ENV_VERIFY_SSL, True)
             timeout = int(os.getenv(ENV_TIMEOUT, str(DEFAULT_HTTP_TIMEOUT_SECONDS)))
@@ -537,9 +445,6 @@ class Config:
         if not self.update_check:
             data["update_check"] = False
 
-        # config.yaml can carry a plaintext profile password today, so it gets
-        # the same 0600 atomic treatment as the session cache. Whether
-        # it should hold a password at all, prefer the keychain.
         with atomic_private_write(path) as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         restrict_permissions(path)
@@ -557,8 +462,6 @@ class Config:
             ProfileNotFoundError: If profile doesn't exist.
         """
         if not self.profiles:
-            # First run: nothing is configured, so "profile 'default' not
-            # found" would send the user hunting for a typo.
             raise NoConfigurationError(
                 f"No profiles configured. Expected a config file at {CONFIG_FILE}."
             )
@@ -634,14 +537,6 @@ class Config:
 
 
 def _warn_on_exposed_password(config: Config, path: Path) -> None:
-    """Warn when a plaintext password sits in a file others can read.
-
-    New writes are 0600, but a config.yaml created before that, or
-    copied in from elsewhere, keeps whatever mode it had. Warn rather than
-    chmod: silently changing permissions on a file the user did not ask us to
-    touch is its own surprise, and the actionable fix is to move the password
-    into the keychain.
-    """
     exposed = [name for name, profile in config.profiles.items() if profile.password]
     if not exposed:
         return
@@ -687,8 +582,6 @@ def get_credentials(profile: Profile | None = None) -> tuple[str | None, str | N
     if profile:
         if not username and profile.username:
             username = profile.username
-        # Only consult the profile (and therefore, possibly, the OS keychain)
-        # when the environment did not already supply a password.
         if not password:
             password = profile.resolve_password()
 

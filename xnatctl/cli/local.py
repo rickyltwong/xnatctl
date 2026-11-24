@@ -44,7 +44,6 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
     """
     input_path = Path(input_dir)
 
-    # Find ZIP files
     if recursive:
         zip_files = list(input_path.rglob("*.zip"))
     else:
@@ -87,7 +86,6 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
 
                     stripped_path = Path(*parts[1:])
                     output_path = zip_path.parent / stripped_path
-                    # Guard against ZipSlip path traversal
                     if not output_path.resolve().is_relative_to(zip_path.parent.resolve()):
                         continue
                     output_path.parent.mkdir(parents=True, exist_ok=True)

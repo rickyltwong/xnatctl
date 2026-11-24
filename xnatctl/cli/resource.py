@@ -60,16 +60,6 @@ def _resolve_resource_parent(
     subject: str | None,
     scan: str | None,
 ) -> HierarchyParentRef:
-    """Build a resource parent ref from CLI scope flags.
-
-    Levels map to XNAT resource URLs (session XOR project/subject):
-
-    \b
-    - project:    -P                -> /data/projects/{P}/resources/...
-    - subject:    -P -S             -> /data/projects/{P}/subjects/{S}/resources/...
-    - experiment: SESSION [+ -P]    -> /data/experiments/{E}/resources/... (or project-scoped)
-    - scan:       SESSION --scan N  -> .../scans/{N}/resources/...
-    """
     if session_id is not None:
         if subject:
             raise click.UsageError("--subject cannot be combined with a session argument")
@@ -95,7 +85,6 @@ def _validate_resource_list_scope(
     param: click.Parameter,
     session_id: str | None,
 ) -> str | None:
-    """Validate resource-list scope during Click parsing, before auth runs."""
     del param
     project_id = ctx.params.get("project_id")
     subject = ctx.params.get("subject")
@@ -143,9 +132,6 @@ def resource_list(
         xnatctl resource list XNAT_E00001 --scan 1
         xnatctl resource list XNAT_E00001 --filter 'format:DICOM' --limit 5
     """
-    # Deferred: tests monkeypatch xnatctl.services.resources.ResourceService
-    # to intercept the lookup; a module-scope import would bind the real
-    # class before the patch runs (see tests/test_resource_upload.py).
     from xnatctl.services.resources import ResourceService
 
     client = ctx.get_client()
@@ -212,8 +198,6 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
         xnatctl resource show XNAT_E00001 DICOM
         xnatctl resource show XNAT_E00001 DICOM --scan 1
     """
-    # Deferred: see the comment on the ResourceService import in
-    # resource_list above (test-monkeypatch seam).
     from xnatctl.services.resources import ResourceService
 
     session_id = validate_session_id(session_id)
@@ -237,7 +221,6 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
         print_error(f"Resource not found: {resource_label}")
         raise SystemExit(1)
 
-    # Get files
     try:
         files = service.list_file_rows(resource_parent, resource_label)
     except (XNATCtlError, ValueError) as exc:
@@ -250,7 +233,7 @@ def resource_show(ctx: Context, session_id: str, resource_label: str, scan: str 
         "content": resource_data.get("content", ""),
         "file_count": resource_data.get("file_count", len(files)),
         "file_size": resource_data.get("file_size", ""),
-        "files": [f.get("Name", "") for f in files[:20]],  # Limit to first 20
+        "files": [f.get("Name", "") for f in files[:20]],
     }
 
     if len(files) > 20:
@@ -315,12 +298,8 @@ def resource_upload(
         xnatctl resource upload -P MYPROJ TEMPLATEFLOW ./tpl_data
         xnatctl resource upload -P MYPROJ -S SUB01 QC ./qc.json
     """
-    # Deferred: see the comment on the ResourceService import in
-    # resource_list above (test-monkeypatch seam).
     from xnatctl.services.resources import ResourceService
 
-    # Only two positionals supplied -> they are RESOURCE_LABEL and PATH; the
-    # parent comes from --project/--subject (project- or subject-scope resources).
     if path is None:
         path = resource_label
         resource_label = session_id
@@ -334,7 +313,6 @@ def resource_upload(
         subject = validate_subject_id(subject)
     if session_id is not None:
         session_id = validate_session_id(session_id)
-        # Project context enables label-based session resolution.
         project_id = project_id or default_project_from_context(ctx)
     if scan:
         scan = validate_scan_id(scan)
@@ -348,16 +326,10 @@ def resource_upload(
     )
 
     upload_start = time.time()
-    # A single file is PUT as itself, so its size is exactly what was sent.
-    # A directory is zipped server-side by the service and the zip -- not the
-    # raw file sum -- is what actually travels, at a size this command never
-    # sees; reporting the raw sum would be an approximation, not a fact, so
-    # a directory upload leaves files/bytes null rather than guess.
     is_directory = input_path.is_dir()
     files_field = None if is_directory else 1
     bytes_field = None if is_directory else input_path.stat().st_size
 
-    # Create resource if it doesn't exist
     try:
         service.create(
             resource_label=resource_label,
@@ -391,7 +363,7 @@ def resource_upload(
                     overwrite=False,
                 )
                 progress.update(task, completed=100)
-    except Exception as exc:  # noqa: BLE001  # mixes filesystem/network errors; caught only to emit a JSON failure summary before re-raising as ClickException
+    except Exception as exc:
         if ctx.output_format == OutputFormat.JSON:
             TransferSummary(
                 operation="upload",
@@ -502,8 +474,6 @@ def resource_download(
         xnatctl resource download -P MYPROJ TEMPLATEFLOW -f ./tf.zip
         xnatctl resource download -P MYPROJ -S SUB01 QC -f ./qc.zip
     """
-    # Only one positional supplied -> it is the RESOURCE_LABEL; the parent comes
-    # from --project/--subject (project- or subject-scope resources).
     if resource_label is None:
         session_id, resource_label = None, session_id
     if resource_label is None:
@@ -544,7 +514,7 @@ def resource_download(
             )
 
             progress.update(task, completed=100)
-    except Exception as exc:  # noqa: BLE001  # emits JSON failure summary before re-raising unchanged
+    except Exception as exc:
         if ctx.output_format == OutputFormat.JSON:
             TransferSummary(
                 operation="download",

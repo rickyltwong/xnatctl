@@ -1,16 +1,3 @@
-"""Tests for `xnatctl upgrade`: install-method detection, dry-run vs. --yes,
---check, and the frozen-binary self-replace.
-
-Detection is exercised through :func:`detect_upgrade_method`'s injectable
-seams (``env``/``frozen``/``install_path``/``dockerenv_path``) directly --
-never the real ``sys.frozen``, ``PIPX_HOME``, or ``/.dockerenv``. The CLI
-layer is exercised through ``CliRunner``, with ``detect_upgrade_method`` and
-``subprocess.run`` monkeypatched so no test ever executes a real package
-manager or touches the network. ``replace_frozen_binary``'s own download
-seam is injected with local files built by :func:`_build_release_archive`,
-so the frozen self-replace tests never touch the network either.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -46,7 +33,6 @@ def runner() -> CliRunner:
 
 @pytest.fixture(autouse=True)
 def isolate_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Keep every test off the developer's real ``~/.config/xnatctl/.update-check``."""
     path = tmp_path / ".update-check"
     monkeypatch.setattr(update_check, "UPDATE_CACHE_FILE", path)
     return path
@@ -54,11 +40,6 @@ def isolate_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _seed_cache(path: Path, *, latest: str) -> None:
     path.write_text(json.dumps({"last_check": time.time(), "latest": latest}))
-
-
-# =============================================================================
-# detect_upgrade_method: one test per branch, all via injected seams
-# =============================================================================
 
 
 def test_detect_frozen() -> None:
@@ -95,7 +76,6 @@ def test_detect_pipx_via_pipx_home(tmp_path: Path) -> None:
 
 
 def test_detect_pipx_legacy_default_dir(tmp_path: Path) -> None:
-    """Pipx's pre-1.0 default root, with no PIPX_HOME set."""
     home = tmp_path / "home"
     install_path = (
         home
@@ -120,7 +100,6 @@ def test_detect_pipx_legacy_default_dir(tmp_path: Path) -> None:
 
 
 def test_detect_pipx_modern_xdg_data_dir(tmp_path: Path) -> None:
-    """Modern pipx (>=1.0) defaults to the XDG data dir, not ~/.local/pipx."""
     home = tmp_path / "home"
     install_path = (
         home
@@ -146,7 +125,6 @@ def test_detect_pipx_modern_xdg_data_dir(tmp_path: Path) -> None:
 
 
 def test_detect_pipx_generic_marker_fallback(tmp_path: Path) -> None:
-    """A relocated/distro-patched pipx whose root matches neither known default."""
     install_path = (
         tmp_path
         / "opt"
@@ -175,10 +153,6 @@ def test_detect_pipx_generic_marker_fallback(tmp_path: Path) -> None:
 
 
 def test_detect_docker_takes_precedence_over_pip(tmp_path: Path) -> None:
-    """The published image installs via plain `pip install .` (see the repo
-    Dockerfile) -- without Docker being checked before the pip/uv fallback,
-    every containerized install would be misreported as pip-managed.
-    """
     install_path = (
         tmp_path / "venv" / "lib" / "python3.11" / "site-packages" / "xnatctl" / "__init__.py"
     )
@@ -236,11 +210,6 @@ def test_detect_pip_fallback(tmp_path: Path) -> None:
     assert method.kind == "pip"
     assert method.command is not None
     assert method.command[0] == sys.executable
-
-
-# =============================================================================
-# CLI: dry-run vs. --yes, per detected method (detection itself monkeypatched)
-# =============================================================================
 
 
 def _pip_method() -> upgrade_mod.UpgradeMethod:
@@ -365,11 +334,6 @@ def test_frozen_unwritable_target_prints_manual_instructions_and_exits_nonzero(
     assert "not writable" in " ".join(result.stderr.split())
 
 
-# =============================================================================
-# --check: up-to-date / newer-available / unreachable
-# =============================================================================
-
-
 def test_check_up_to_date(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(update_check, "fetch_latest_version", lambda timeout=10.0: __version__)
 
@@ -423,15 +387,9 @@ def test_check_never_subprocesses(runner: CliRunner, monkeypatch: pytest.MonkeyP
     assert calls == []
 
 
-# =============================================================================
-# Frozen self-replace: real download/verify/extract/replace, network seamed
-# =============================================================================
-
-
 def _build_release_archive(
     dest_dir: Path, os_name: str, arch: str, *, content: bytes = b"new-binary-bytes"
 ) -> tuple[Path, Path]:
-    """Build a fake release archive + sha256 sidecar matching the real CI shape."""
     binary_name = "xnatctl.exe" if os_name == "windows" else "xnatctl"
     asset_name = upgrade_mod._release_asset_name(os_name, arch)
     archive_path = dest_dir / asset_name
@@ -467,15 +425,6 @@ def _noop_verify(path: Path) -> None:
 def test_verify_binary_starts_the_binary_with_pyinstaller_environment_reset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The --version check must start the binary as an independent PyInstaller app.
-
-    A frozen xnatctl passes its own ``_PYI_*`` variables to every child. A
-    child at the running binary's own path -- the installed copy, on the
-    post-install check -- then loads the old release's unpacked libraries
-    and, when the two releases bundle different library versions, crashes
-    and rolls the upgrade back. The stand-in exits 0 only if the reset is
-    requested and the rest of the environment still reaches it.
-    """
     monkeypatch.delenv("PYINSTALLER_RESET_ENVIRONMENT", raising=False)
     monkeypatch.setenv("XNATCTL_TEST_INHERITED", "kept")
     fake = tmp_path / "xnatctl"
@@ -535,7 +484,7 @@ def test_replace_frozen_binary_checksum_mismatch_leaves_target_untouched(
     release_dir.mkdir()
     src_archive, src_checksum = _build_release_archive(release_dir, os_name, arch)
     asset_name = upgrade_mod._release_asset_name(os_name, arch)
-    src_checksum.write_text(f"{'0' * 64}  {asset_name}\n")  # deliberately wrong
+    src_checksum.write_text(f"{'0' * 64}  {asset_name}\n")
 
     with pytest.raises(UpgradeError, match="Checksum mismatch"):
         upgrade_mod.replace_frozen_binary(
@@ -564,10 +513,6 @@ def test_replace_frozen_binary_no_release_tag_raises(tmp_path: Path) -> None:
 def test_replace_frozen_binary_candidate_verify_fails_leaves_target_untouched(
     tmp_path: Path,
 ) -> None:
-    """A valid checksum doesn't prove the binary RUNS -- the pre-install
-    --version sanity check must catch a candidate that downloads and
-    verifies fine but can't actually execute, before target is touched.
-    """
     target_dir = tmp_path / "install"
     target_dir.mkdir()
     target = target_dir / "xnatctl"
@@ -597,10 +542,6 @@ def test_replace_frozen_binary_candidate_verify_fails_leaves_target_untouched(
 def test_replace_frozen_binary_post_install_verify_fails_restores_backup(
     tmp_path: Path,
 ) -> None:
-    """The candidate passes its pre-install check but the INSTALLED copy
-    fails its own -- e.g. a filesystem quirk corrupted it mid-copy. Must
-    restore automatically rather than leave a broken binary in place.
-    """
     target_dir = tmp_path / "install"
     target_dir.mkdir()
     target = target_dir / "xnatctl"
@@ -628,18 +569,13 @@ def test_replace_frozen_binary_post_install_verify_fails_restores_backup(
         )
 
     assert len(calls) == 2
-    assert target.read_bytes() == b"old-binary-bytes"  # rolled back
-    assert not target.with_name(target.name + ".bak").exists()  # POSIX: cleaned up
+    assert target.read_bytes() == b"old-binary-bytes"
+    assert not target.with_name(target.name + ".bak").exists()
 
 
 def test_replace_frozen_binary_windows_renames_running_exe_aside(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Windows can't os.replace() over a running .exe -- the OS locks the
-    mapped image against overwrite/delete. The pre-upgrade binary must be
-    renamed aside instead (legal while running) and left for a later launch
-    to clean up, never deleted here.
-    """
     monkeypatch.setattr(upgrade_mod, "_detect_os", lambda: "windows")
     target_dir = tmp_path / "install"
     target_dir.mkdir()
@@ -661,7 +597,7 @@ def test_replace_frozen_binary_windows_renames_running_exe_aside(
     assert tag == "v2.0.0"
     assert target.read_bytes() == b"new-binary-bytes"
     backup = target.with_name(target.name + ".bak")
-    assert backup.exists()  # left for cleanup_stale_backup() on the next launch
+    assert backup.exists()
     assert backup.read_bytes() == b"old-binary-bytes"
 
 
@@ -698,11 +634,6 @@ def test_replace_frozen_binary_windows_post_install_verify_fails_restores(
     assert not target.with_name(target.name + ".bak").exists()
 
 
-# =============================================================================
-# cleanup_stale_backup: startup hygiene for a leftover .bak
-# =============================================================================
-
-
 def test_cleanup_stale_backup_removes_leftover_bak(tmp_path: Path) -> None:
     target = tmp_path / "xnatctl"
     backup = tmp_path / "xnatctl.bak"
@@ -715,7 +646,7 @@ def test_cleanup_stale_backup_removes_leftover_bak(tmp_path: Path) -> None:
 
 def test_cleanup_stale_backup_missing_is_silent(tmp_path: Path) -> None:
     target = tmp_path / "xnatctl"
-    upgrade_mod.cleanup_stale_backup(target)  # must not raise
+    upgrade_mod.cleanup_stale_backup(target)
 
 
 def test_frozen_cli_invocation_cleans_stale_backup_at_startup(
@@ -741,11 +672,6 @@ def test_non_frozen_cli_invocation_never_calls_cleanup(
 
     assert result.exit_code == 0
     assert calls == []
-
-
-# =============================================================================
-# Config opt-out: update_check: false suppresses the notice
-# =============================================================================
 
 
 @pytest.fixture

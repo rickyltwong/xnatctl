@@ -1,11 +1,3 @@
-"""End-to-end tests for `session download --verify` against a fake XNAT server.
-
-Reuses the real-local-HTTP-server pattern from
-``test_session_download_failures.py`` rather than mocking the transport, so
-these exercise the actual manifest-fetching requests (scan resource listing,
-file listing with digest) and the local-tree hashing path together.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -54,7 +46,6 @@ def _scan_zip(scan_id: str) -> bytes:
 
 
 def _all_scans_zip() -> bytes:
-    """The single combined archive the sequential (workers=1) path fetches."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         for scan_id in SCANS:
@@ -65,11 +56,6 @@ def _all_scans_zip() -> bytes:
 
 
 def _session_resource_zip(label: str = SESSION_RESOURCE_LABEL) -> bytes:
-    """The documented, real XNAT resource-ZIP shape: a session-label wrapper
-    around the full ``resources/{label}/files/{name}`` path (see
-    ``services/transfer/executor_resources.py::_strip_xnat_prefix``) -- not a bare
-    ``{label}/{name}`` shape.
-    """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         zf.writestr(
@@ -87,22 +73,6 @@ def _serve(
     two_session_resources: bool = False,
     manifest_scans: tuple[str, ...] | None = None,
 ) -> Iterator[str]:
-    """Fake XNAT serving a two-scan session plus its resource/file listings.
-
-    *bad_digest_scan*, when set, reports a wrong digest for that scan's file
-    so a verify pass over it must fail. *session_resources*, when set, also
-    serves one session-level resource (label ``QC``); *session_resource_download_fails*
-    makes fetching its ZIP 500, simulating the swallowed failure in
-    ``session download --session-resources``. *two_session_resources* serves
-    two (``QC`` and ``MISC``) instead, with the failure -- if requested --
-    applying only to ``MISC``, so QC's download always succeeds: this
-    reproduces a mid-loop failure in
-    ``DownloadService.download_session_level_resources`` without losing QC's
-    already-downloaded provenance. *manifest_scans*, when set, limits which
-    scans' JSON file listings (the manifest source) return rows -- the
-    download ZIPs are unaffected, so ``()`` yields an empty manifest over a
-    fully-downloaded session and ``("1",)`` a manifest covering only scan 1.
-    """
     resource_labels: list[str] = (
         [SESSION_RESOURCE_LABEL, MISC_RESOURCE_LABEL]
         if two_session_resources
@@ -183,7 +153,7 @@ def _serve(
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:  # noqa: N802  # BaseHTTPRequestHandler's spelling
+        def do_GET(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
             query = parse_qs(parsed.query)
@@ -306,9 +276,6 @@ class TestVerifyMismatch:
 
 class TestVerifyManifestGaps:
     def test_empty_manifest_fails(self, tmp_path: Path) -> None:
-        """A server manifest listing nothing for a downloaded session must
-        fail, not print 'Verified 0 files' and exit 0.
-        """
         for url in _serve(bad_digest_scan=None, manifest_scans=()):
             result = _download(url, tmp_path)
 
@@ -317,9 +284,6 @@ class TestVerifyManifestGaps:
         assert "nothing was verified" in result.stderr
 
     def test_partial_manifest_passes_but_reports_uncovered_files(self, tmp_path: Path) -> None:
-        """Files the manifest never mentioned do not fail verification once
-        something real was matched, but they must be reported, not silent.
-        """
         for url in _serve(bad_digest_scan=None, manifest_scans=("1",)):
             result = _download(url, tmp_path)
 
@@ -329,7 +293,6 @@ class TestVerifyManifestGaps:
 
 
 def _download_sequential(url: str, out: Path, *extra: str) -> Any:
-    """Like `_download`, but forces the sequential (workers=1) single-ZIP path."""
     client = XNATClient(base_url=url, session_token="tok", max_retries=0, timeout=30)
     try:
         with patch.object(Context, "get_client", return_value=client):
@@ -353,17 +316,12 @@ def _download_sequential(url: str, out: Path, *extra: str) -> Any:
 
 
 class TestVerifySequentialUnextractedZip:
-    """The sequential path (workers=1, no --extract) keeps scans.zip on disk;
-    --verify must check the ZIP members directly, not an extracted tree.
-    """
-
     def test_clean_exits_zero(self, tmp_path: Path) -> None:
         for url in _serve(bad_digest_scan=None):
             result = _download_sequential(url, tmp_path)
 
         assert result.exit_code == 0, result.stderr
         assert "Verified 2 files" in result.stderr
-        # Proves it really checked the ZIP, not an (absent) extracted tree.
         assert (tmp_path / EXPERIMENT / "scans.zip").exists()
 
     def test_mismatch_fails(self, tmp_path: Path) -> None:
@@ -375,8 +333,6 @@ class TestVerifySequentialUnextractedZip:
 
 
 class TestVerifySessionResources:
-    """--session-resources --verify must cover session-level resources too."""
-
     def _download_with_session_resources(self, url: str, out: Path, *extra: str) -> Any:
         client = XNATClient(base_url=url, session_token="tok", max_retries=0, timeout=30)
         try:
@@ -410,10 +366,6 @@ class TestVerifySessionResources:
         assert "Verified 3 files" in result.stderr
 
     def test_a_swallowed_session_resource_failure_is_still_caught(self, tmp_path: Path) -> None:
-        """`download_session_level_resources` failing is swallowed by
-        `session download` (it only echoes a warning and continues) --
-        --verify's missing_local must be what actually fails the command.
-        """
         for url in _serve(
             bad_digest_scan=None,
             session_resources=True,
@@ -428,11 +380,6 @@ class TestVerifySessionResources:
     def test_one_resource_succeeding_before_another_fails_still_verifies_the_first(
         self, tmp_path: Path
     ) -> None:
-        """QC's download succeeds; MISC's then raises. QC's provenance must
-        survive that exception (not be lost along with the whole method's
-        return value), so verification reports QC matched and only MISC
-        missing -- not both.
-        """
         for url in _serve(bad_digest_scan=None, two_session_resources=True):
             result = self._download_with_session_resources(url, tmp_path)
 
@@ -442,10 +389,6 @@ class TestVerifySessionResources:
         assert "resources/QC/notes.txt" not in result.stderr
 
     def test_stale_leftover_zip_does_not_paper_over_this_runs_failure(self, tmp_path: Path) -> None:
-        """A resources_QC.zip left over from an EARLIER run must never be
-        globbed and mistaken for this run's (failed) download -- only the
-        exact ZIP list this invocation produced is ever verified.
-        """
         session_dir = tmp_path / EXPERIMENT
         session_dir.mkdir(parents=True)
         stale_zip = session_dir / "resources_QC.zip"
@@ -466,17 +409,11 @@ class TestVerifySessionResources:
     def test_extract_defers_session_resource_zip_deletion_until_after_verify(
         self, tmp_path: Path
     ) -> None:
-        """--extract must not flatten the session-resource ZIP's content to
-        session_dir root (losing the QC label) and delete the ZIP before
-        --verify ever gets to read it -- a genuinely clean download would
-        always false-fail. The ZIP must be read intact first.
-        """
         for url in _serve(bad_digest_scan=None, session_resources=True):
             result = self._download_with_session_resources(url, tmp_path, "--extract")
 
         assert result.exit_code == 0, result.stderr
         assert "Verified 3 files" in result.stderr
-        # And the deferred extraction still ran afterward, with cleanup.
         assert not (tmp_path / EXPERIMENT / "resources_QC.zip").exists()
 
     def test_extract_keep_zips_still_verifies_clean_and_keeps_the_zip(self, tmp_path: Path) -> None:
@@ -525,7 +462,6 @@ class TestVerifyJsonOutput:
 
 
 def test_verify_is_off_by_default(tmp_path: Path) -> None:
-    """Without --verify, a bad server digest must not affect the outcome."""
     for url in _serve(bad_digest_scan="1"):
         client = XNATClient(base_url=url, session_token="tok", max_retries=0, timeout=30)
         try:

@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI resource commands."""
-
 from __future__ import annotations
 
 import json
@@ -16,12 +14,10 @@ from xnatctl.core.exceptions import ServerError
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with a default profile."""
     return Config(
         default_profile="default",
         profiles={
@@ -36,7 +32,6 @@ def _mock_config() -> Config:
 
 
 def _mock_client() -> MagicMock:
-    """Build a mock XNATClient."""
     client = MagicMock()
     client.is_authenticated = True
     client.base_url = "https://xnat.example.org"
@@ -45,8 +40,6 @@ def _mock_client() -> MagicMock:
 
 
 class TestResourceList:
-    """Tests for resource list command."""
-
     def test_resource_list(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.return_value = {
@@ -78,13 +71,6 @@ class TestResourceList:
         assert result.exit_code == 0
 
     def test_resource_list_filter_and_limit(self, runner: CliRunner) -> None:
-        """--filter and --limit narrow the resource listing, client-side.
-
-        Non-matching NIFTI is placed FIRST: if --filter were ignored, a bare
-        --limit 2 would return [NIFTI, DICOM_A] and this test would still
-        pass by accident. Three matching rows behind a --limit 2 (instead of
-        one row and no --limit) is what actually exercises --limit too.
-        """
         client = _mock_client()
         client.get_json.return_value = {
             "ResultSet": {
@@ -140,8 +126,6 @@ class TestResourceList:
                     )
 
         assert result.exit_code == 0
-        # A disabled-TLS warning (verify_ssl=False in _mock_config) shares
-        # stdout with the JSON in CliRunner's merged output; skip past it.
         rows = json.loads(result.output[result.output.index("[") :])
         assert [r["label"] for r in rows] == ["DICOM_A", "DICOM_B"]
 
@@ -280,8 +264,6 @@ class TestResourceList:
 
 
 class TestResourceShow:
-    """Tests for resource show command."""
-
     def test_resource_show(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.side_effect = [
@@ -365,14 +347,6 @@ class TestResourceShow:
         assert call_url.endswith("/data/experiments/XNAT_E00001/scans/1/resources")
 
     def test_resource_show_files_listing_failure_is_not_silent(self, runner: CliRunner) -> None:
-        """A file-listing failure must be visible, not indistinguishable from "no files".
-
-        A bare ``except Exception: files = []`` around the file listing
-        would render a transient 500 identically -- silently -- to a
-        resource that genuinely has no files. The graceful fallback stays
-        (the command still succeeds) but warns on stderr so the failure is
-        visible.
-        """
         client = _mock_client()
         client.get_json.side_effect = [
             {
@@ -401,8 +375,6 @@ class TestResourceShow:
 
 
 class TestResourceUpload:
-    """Tests for resource upload command."""
-
     def test_resource_upload_file(self, runner: CliRunner, tmp_path) -> None:
         client = _mock_client()
         mock_service = MagicMock()
@@ -463,7 +435,6 @@ class TestResourceUpload:
         mock_service.upload_directory.assert_called_once()
 
     def test_resource_upload_passes_project(self, runner: CliRunner, tmp_path) -> None:
-        """``--project/-P`` threads through ``service.create`` and ``upload_file``."""
         client = _mock_client()
         mock_service = MagicMock()
 
@@ -493,8 +464,6 @@ class TestResourceUpload:
                         )
 
         assert result.exit_code == 0
-        # The scan-level parent ref carries the project (for label resolution)
-        # and the scan id.
         create_parent = mock_service.create.call_args.kwargs["parent"]
         upload_parent = mock_service.upload_file.call_args.kwargs["parent"]
         assert create_parent.experiment.project_id == "CLM01_UCA_4"
@@ -502,7 +471,6 @@ class TestResourceUpload:
         assert upload_parent.scan_id == "1"
 
     def test_resource_upload_directory_passes_project(self, runner: CliRunner, tmp_path) -> None:
-        """Directory upload also receives ``project=``."""
         client = _mock_client()
         mock_service = MagicMock()
 
@@ -565,10 +533,7 @@ class TestResourceUpload:
 
 
 class TestResourceRefresh:
-    """Tests for ``resource refresh`` command (F5)."""
-
     def test_resource_refresh_command(self, runner: CliRunner) -> None:
-        """``resource refresh URI`` POSTs to the refresh-catalog service."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -598,11 +563,9 @@ class TestResourceRefresh:
         call_args = client.post.call_args
         assert call_args[0][0] == "/data/services/refresh/catalog"
         assert call_args[1]["params"]["resource"] == uri
-        # Multiple --options values are joined with commas.
         assert call_args[1]["params"]["options"] == "append,populateStats"
 
     def test_resource_refresh_no_options(self, runner: CliRunner) -> None:
-        """Without ``--options``, the ``options`` query param is omitted."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -620,7 +583,6 @@ class TestResourceRefresh:
         assert params == {"resource": uri}
 
     def test_resource_refresh_non_200_errors(self, runner: CliRunner) -> None:
-        """A non-200 response surfaces as a Click error with status + body."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 500
@@ -637,7 +599,6 @@ class TestResourceRefresh:
         assert "boom" in result.output
 
     def test_resource_refresh_rejects_unknown_option(self, runner: CliRunner) -> None:
-        """``--options`` is constrained to the documented Choice set."""
         client = _mock_client()
 
         with core_config_seam(_mock_config()):
@@ -659,7 +620,6 @@ class TestResourceRefresh:
 
 
 def _wire_stream(client: MagicMock, capture: dict) -> None:
-    """Wire ``client.stream(...)`` to capture the requested URL."""
     resp = MagicMock()
     resp.headers = {"content-length": "0"}
     resp.iter_bytes.return_value = iter([b""])
@@ -676,10 +636,6 @@ def _wire_stream(client: MagicMock, capture: dict) -> None:
 
 
 class TestResourceScopeLevels:
-    """Project/subject/session/scan scope for list, download, and upload."""
-
-    # ---- list --------------------------------------------------------------
-
     def test_list_subject_scope_hits_subject_path(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.return_value = {"ResultSet": {"Result": []}}
@@ -705,8 +661,6 @@ class TestResourceScopeLevels:
         assert result.exit_code != 0
         assert "--subject requires --project" in result.output
         mock_xnat.assert_not_called()
-
-    # ---- download ----------------------------------------------------------
 
     @pytest.mark.parametrize(
         "args,expected_url",
@@ -752,8 +706,6 @@ class TestResourceScopeLevels:
             with core_config_seam(_mock_config()):
                 with config_seam(_mock_config()):
                     with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                        # Single positional with no -P/-S is the resource label
-                        # but has no parent scope.
                         result = runner.invoke(
                             cli, ["resource", "download", "TEMPLATEFLOW", "-f", "out.zip"]
                         )
@@ -762,12 +714,6 @@ class TestResourceScopeLevels:
         assert "Provide a SESSION argument" in result.output
 
     def test_download_typed_failure_exits_cleanly(self, runner: CliRunner) -> None:
-        """A typed failure from the streamer exits nonzero with a clean message.
-
-        @handle_errors turns the propagated exception into the documented exit
-        code (3 for an auth failure) and a one-line message -- no traceback, no
-        stringified success summary.
-        """
         from xnatctl.core.exceptions import SessionExpiredError
 
         client = _mock_client()
@@ -788,8 +734,6 @@ class TestResourceScopeLevels:
         assert result.exit_code == 3, result.output
         assert "Session expired" in result.output
         assert "Traceback" not in result.output
-
-    # ---- upload ------------------------------------------------------------
 
     def test_upload_project_scope_parent(self, runner: CliRunner, tmp_path) -> None:
         client = _mock_client()

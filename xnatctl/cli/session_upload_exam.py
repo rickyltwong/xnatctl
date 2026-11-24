@@ -38,7 +38,6 @@ from xnatctl.services.exam_upload import (
 
 
 def _render_exam_upload_result(ctx: Context, result: ExamUploadResult) -> None:
-    """Render an exam-upload result to JSON or the table summary, unchanged."""
     if ctx.output_format == OutputFormat.JSON:
         print_output(result.to_json_dict(), format=OutputFormat.JSON)
         return
@@ -62,7 +61,7 @@ def _render_exam_upload_result(ctx: Context, result: ExamUploadResult) -> None:
         resources_msg = (
             "resources skipped" if result.skip_resources else "resources attached 0 dirs + 0 files"
         )
-    else:  # COMPLETE
+    else:
         resources_msg = (
             f"resources attached {result.attached_resource_dirs} dirs "
             f"+ {result.attached_misc_files} files"
@@ -218,8 +217,6 @@ def session_upload_exam(
     )
 
     if result.error_message is not None:
-        # NO_DICOM / DICOM_FAILED surface as the same ClickException (exit 1)
-        # the inline command has always raised.
         raise click.ClickException(result.error_message)
 
     _render_exam_upload_result(ctx, result)

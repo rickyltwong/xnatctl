@@ -90,21 +90,10 @@ class AsyncXNATClient:
     transport: httpx.AsyncBaseTransport | None = None
     _client: httpx.AsyncClient | None = field(init=False, default=None, repr=False)
     _ssl_context: ssl.SSLContext | None = field(init=False, default=None, repr=False)
-    # asyncio.Lock() does not need a running loop at construction time (true
-    # since Python 3.10); it binds lazily on first `await`, so building one
-    # here as a dataclass field default is safe under this project's
-    # `requires-python = ">=3.11"` floor.
     _reauth_lock: asyncio.Lock = field(init=False, default_factory=asyncio.Lock, repr=False)
-    # Guards first-time construction of ``_client``/``_ssl_context`` in
-    # ``_get_client``. Building the SSLContext for a ``ca_bundle`` profile
-    # requires an ``await`` (the file read is pushed off the loop), which
-    # opens a window between the "not built yet" check and the assignment --
-    # without this lock, two concurrent calls could each build and assign
-    # their own ``httpx.AsyncClient``, leaking one's connection pool.
     _client_lock: asyncio.Lock = field(init=False, default_factory=asyncio.Lock, repr=False)
 
     def __post_init__(self) -> None:
-        """Validate and normalize URL."""
         self.base_url = validate_server_url(self.base_url)
 
     @classmethod
@@ -144,17 +133,10 @@ class AsyncXNATClient:
         Raises:
             ProfileNotFoundError: If the named profile does not exist.
         """
-        # Deferred: tests monkeypatch xnatctl.core.connect.resolve_client_params
-        # to intercept the lookup; a module-scope import would bind the real
-        # function before the patch runs (see tests/test_async_client.py).
         from xnatctl.core.connect import resolve_client_params
 
         params = await asyncio.to_thread(resolve_client_params, name, config_path=config_path)
         return cls(**params)
-
-    # =========================================================================
-    # Client Management
-    # =========================================================================
 
     async def httpx_verify(self) -> ssl.SSLContext | bool:
         """TLS verification value for the underlying ``httpx.AsyncClient``.
@@ -183,10 +165,6 @@ class AsyncXNATClient:
         ``ca_bundle`` was ever considered.
         """
         if self.ca_bundle:
-            # Unlocked memoization, matching the sync client: callers that
-            # care about the race build the context on the main thread
-            # before spawning workers, and the worst case here just builds
-            # it twice.
             if self._ssl_context is None:
                 self._ssl_context = await asyncio.to_thread(
                     ssl.create_default_context, cafile=self.ca_bundle
@@ -195,24 +173,10 @@ class AsyncXNATClient:
         if not self.verify_ssl:
             return False
         if self._ssl_context is None:
-            # Delegates to httpx's own default-context construction
-            # (certifi bundle, SSL_CERT_FILE/SSL_CERT_DIR env overrides)
-            # instead of reimplementing it, so this stays identical to
-            # what ``httpx.AsyncClient(verify=True)`` would have built
-            # inline -- just off the loop.
             self._ssl_context = await asyncio.to_thread(httpx.create_ssl_context)
         return self._ssl_context
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the underlying ``httpx.AsyncClient``.
-
-        Guarded by ``_client_lock``: constructing the client involves an
-        ``await`` (``httpx_verify``, which may read a CA bundle off the loop),
-        so without the lock two requests arriving before the first client
-        exists could each build and assign their own, leaking a connection
-        pool. The common case -- the client already exists -- returns before
-        ever touching the lock.
-        """
         if self._client is not None:
             return self._client
         async with self._client_lock:
@@ -239,18 +203,12 @@ class AsyncXNATClient:
             self._client = None
 
     async def __aenter__(self) -> AsyncXNATClient:
-        # Same condition as XNATClient.__enter__: authenticate only when a
-        # password login is both possible and needed.
         if self.session_token is None and self.username and self.password:
             await self.authenticate()
         return self
 
     async def __aexit__(self, *args: Any) -> None:
         await self.aclose()
-
-    # =========================================================================
-    # Authentication
-    # =========================================================================
 
     @property
     def is_authenticated(self) -> bool:
@@ -294,7 +252,6 @@ class AsyncXNATClient:
         if resp.status_code != 200:
             raise AuthenticationError(self.base_url, f"HTTP {resp.status_code}")
 
-        # XNAT returns HTML on auth failure
         if "<html" in resp.text.lower():
             raise AuthenticationError(self.base_url, "Invalid credentials or password expired")
 
@@ -302,12 +259,7 @@ class AsyncXNATClient:
         logger.debug("Authenticated as %s at %s", self.username, redact_url_query(self.base_url))
         return self.session_token
 
-    # =========================================================================
-    # HTTP Methods (read path only)
-    # =========================================================================
-
     def _get_auth(self) -> tuple[str, str] | None:
-        """Get basic auth tuple if no session token."""
         if not self.session_token and self.username and self.password:
             return (self.username, self.password)
         return None
@@ -358,7 +310,6 @@ class AsyncXNATClient:
         timeout: int | None = None,
         max_retries: int | None = None,
     ) -> httpx.Response:
-        """Execute an HTTP request with retry logic. See :func:`async_transport.request`."""
         return await async_transport.request(
             self,
             method,

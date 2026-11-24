@@ -1,20 +1,3 @@
-"""Path-injection hardening tests for the hierarchy builders, refs, and quoting helpers.
-
-Covers three layers:
-
-* ``core.validation.quote_path_segment`` / ``quote_prearchive_segment`` --
-  the shared percent-encoding helpers.
-* ``models.hierarchy`` refs (``ProjectRef``, ``SubjectRef``, ``ExperimentRef``,
-  ``ScanRef``, ``ResourceRef``) -- reject a hostile identifier at
-  construction, before it ever reaches a path builder.
-* ``services.hierarchy.join_api_path`` / ``HierarchyService.build_*_path`` --
-  every legal-ID path stays byte-for-byte unchanged; every hostile segment
-  is either encoded into a single harmless path element or rejected outright.
-
-And a traversal regression at the download boundary: a caller-supplied local
-filename cannot climb out of the output directory.
-"""
-
 from __future__ import annotations
 
 import os
@@ -56,7 +39,6 @@ from xnatctl.services.transfer.scan_transfer import ScanTransfer
 from xnatctl.services.transfer.verifier import Verifier
 from xnatctl.services.zip_extract import _extract_scan_zip
 
-# Hostile identifiers every ref field and path builder must neutralize.
 HOSTILE_IDENTIFIERS = [
     "a/b",
     "x?y=z",
@@ -68,12 +50,9 @@ HOSTILE_IDENTIFIERS = [
     "a\x00b",
     "a#b",
     "a\\b",
-    "a\x80b",  # Unicode C1 control char
+    "a\x80b",
 ]
 
-# ResourceRef uses a looser validator than every other ref field: '#', '?',
-# and '%' are routine in real resource labels and the quoting layer encodes
-# them unambiguously, so they are NOT part of its hostile set.
 RESOURCE_HOSTILE_IDENTIFIERS = [
     "a/b",
     "..",
@@ -85,13 +64,8 @@ RESOURCE_HOSTILE_IDENTIFIERS = [
     "a\x80b",
 ]
 
-# The characters ResourceRef accepts specifically because they are routine
-# in real resource labels and get percent-encoded, not rejected.
 RESOURCE_URL_RESERVED_LABELS = ["QA #1", "x?y=z", "%2e%2e", "a#b"]
 
-# Legal identifiers/labels that must pass through untouched -- includes
-# characters (dots, spaces, parens, unicode) that are routine in real XNAT
-# labels but illegal in the strict xnat_identifier charset.
 LEGAL_LABELS = [
     "XNAT_S00001",
     "SUB-001",
@@ -103,14 +77,11 @@ LEGAL_LABELS = [
 
 
 class TestQuoteHelpers:
-    """Direct tests for the shared path-segment quoting helpers."""
-
     def test_quote_path_segment_leaves_legal_chars_untouched(self) -> None:
         assert quote_path_segment("XNAT_S00001") == "XNAT_S00001"
         assert quote_path_segment("SUB-001") == "SUB-001"
 
     def test_quote_path_segment_keeps_dots_literal(self) -> None:
-        """Dots stay literal for /data/ paths -- labels routinely contain them."""
         assert quote_path_segment("John.Doe") == "John.Doe"
 
     def test_quote_path_segment_encodes_reserved_chars(self) -> None:
@@ -119,29 +90,18 @@ class TestQuoteHelpers:
         assert quote_path_segment("a#b") == "a%23b"
 
     def test_quote_prearchive_segment_also_encodes_dots(self) -> None:
-        """Prearchive/archive-move paths %2E-encode dots -- load-bearing, see executor.py."""
         assert quote_prearchive_segment("John.Doe") == "John%2EDoe"
         assert quote_prearchive_segment("a/b") == "a%2Fb"
 
     @pytest.mark.parametrize("dotted", [".", "..", "..."])
     def test_quote_path_segment_rejects_dot_only_segments(self, dotted: str) -> None:
-        """A bare ".."/"." would otherwise pass through literal -- quote() treats
-        dots as unreserved, and /data/ paths deliberately leave dots alone for
-        real labels, so a dot-only segment needs an explicit reject here.
-        """
         with pytest.raises(InputValidationError):
             quote_path_segment(dotted)
 
     def test_quote_prearchive_segment_neutralizes_dot_only_via_encoding(self) -> None:
-        """The prearchive variant doesn't need the reject -- it %2E-encodes dots."""
         assert quote_prearchive_segment("..") == "%2E%2E"
 
     def test_direct_service_call_bypassing_refs_rejects_dot_segment(self) -> None:
-        """ProjectService.get() takes a raw string, not a ProjectRef -- the one
-        call shape refs cannot protect. Must still reject ".." rather than
-        building /data/projects/.. (which a server/proxy could normalize
-        upward, escaping the /projects/ route entirely).
-        """
         client = MagicMock()
         service = ProjectService(client)
         with pytest.raises(InputValidationError):
@@ -150,9 +110,6 @@ class TestQuoteHelpers:
 
     @pytest.mark.parametrize("empty", ["", "   ", "\t\n"])
     def test_quote_path_segment_rejects_empty_or_whitespace(self, empty: str) -> None:
-        """An empty segment would otherwise pass through as "" -- turning an
-        item route into a COLLECTION route (see the direct-service test below).
-        """
         with pytest.raises(InputValidationError):
             quote_path_segment(empty)
 
@@ -162,9 +119,6 @@ class TestQuoteHelpers:
             quote_prearchive_segment(empty)
 
     def test_direct_service_call_with_empty_id_rejects_before_the_request(self) -> None:
-        """ProjectService.delete("") would otherwise build DELETE /data/projects/
-        -- the PROJECT COLLECTION route, not a single (missing) project.
-        """
         client = MagicMock()
         service = ProjectService(client)
         with pytest.raises(InputValidationError):
@@ -173,16 +127,13 @@ class TestQuoteHelpers:
 
 
 class TestJoinApiPath:
-    """Tests for the low-level path joiner."""
-
     def test_legal_segments_unchanged(self) -> None:
         assert join_api_path("data", "projects", "PROJ1") == "/data/projects/PROJ1"
 
     def test_hostile_segment_is_encoded_as_one_element(self) -> None:
-        """A slash embedded in a single logical segment cannot add a route hop."""
         path = join_api_path("data", "projects", "a/b")
         assert path == "/data/projects/a%2Fb"
-        assert path.count("/") == 3  # only the real separators
+        assert path.count("/") == 3
 
     def test_query_breaking_chars_are_encoded(self) -> None:
         path = join_api_path("data", "experiments", "XNAT_E1?activate=")
@@ -190,16 +141,10 @@ class TestJoinApiPath:
         assert path == "/data/experiments/XNAT_E1%3Factivate%3D"
 
     def test_dot_only_segment_is_rejected_not_left_literal(self) -> None:
-        """A bare ".." segment must never survive into the joined path."""
         with pytest.raises(InputValidationError):
             join_api_path("data", "projects", "..")
 
     def test_leading_slash_on_a_part_is_rejected_not_silently_stripped(self) -> None:
-        """A leading slash must not canonicalize away (``/TARGET`` -> ``TARGET``)
-        -- a different resource for what was actually invalid input. No
-        static literal in this module carries a slash, so a leading/trailing
-        slash here is always a bug.
-        """
         with pytest.raises(InputValidationError):
             join_api_path("data", "projects", "/TARGET")
 
@@ -208,7 +153,6 @@ class TestJoinApiPath:
             join_api_path("data", "projects", "TARGET/")
 
     def test_slash_only_part_is_rejected_not_reduced_to_a_double_slash(self) -> None:
-        """A bare "/" part must not strip to "" -- a double-slash route."""
         with pytest.raises(InputValidationError):
             join_api_path("data", "/", "TARGET")
 
@@ -217,15 +161,10 @@ class TestJoinApiPath:
             join_api_path("data", "", "TARGET")
 
     def test_none_part_is_still_silently_omitted(self) -> None:
-        """None is the deliberate "omit this part" sentinel -- unlike "", it
-        is never a caller-supplied value that could indicate a bug.
-        """
         assert join_api_path("data", "projects", None, "TARGET") == "/data/projects/TARGET"
 
 
 class TestRefConstructionRejection:
-    """Hostile identifiers must raise at ref construction, not at request time."""
-
     @pytest.mark.parametrize("bad", HOSTILE_IDENTIFIERS)
     def test_project_ref_rejects_hostile_id(self, bad: str) -> None:
         with pytest.raises(InputValidationError):
@@ -247,7 +186,6 @@ class TestRefConstructionRejection:
             ExperimentRef(experiment=bad, project_id="PROJ")
 
     def test_experiment_ref_rejects_the_documented_attack(self) -> None:
-        """The exact scenario from the library-hardening report."""
         with pytest.raises(InputValidationError):
             ExperimentRef(experiment="SUB1/experiments/XNAT_E1?activate=")
 
@@ -263,19 +201,10 @@ class TestRefConstructionRejection:
 
     @pytest.mark.parametrize("label", RESOURCE_URL_RESERVED_LABELS)
     def test_resource_ref_accepts_url_reserved_chars(self, label: str) -> None:
-        """'#'/'?'/'%' are routine in real resource labels and get quoted, not rejected.
-
-        Unlike every other ref field: ResourceService.list_file_rows
-        constructs a ResourceRef directly from a server-reported label (see
-        test_resource_label_with_hash_flows_through_to_a_quoted_request_path
-        below), so rejecting these here would break real, already-existing
-        resources rather than catching anything hostile.
-        """
         ResourceRef(parent=ProjectRef(project_id="PROJ"), resource_label=label)
 
     @pytest.mark.parametrize("label", LEGAL_LABELS)
     def test_refs_accept_realistic_labels(self, label: str) -> None:
-        """Labels with dots/spaces/parens/unicode -- routine in the wild -- still work."""
         ProjectRef(project_id=label)
         SubjectRef(subject=label, project_id="PROJ")
         ExperimentRef(experiment=label, project_id="PROJ")
@@ -289,8 +218,6 @@ class TestRefConstructionRejection:
 
 
 class TestBuilderCharacterization:
-    """Every existing builder path is byte-for-byte unchanged for legal IDs."""
-
     @pytest.fixture
     def service(self) -> HierarchyService:
         return HierarchyService(MagicMock())
@@ -364,7 +291,6 @@ class TestBuilderCharacterization:
         )
 
     def test_labels_with_dots_stay_literal_in_data_paths(self, service: HierarchyService) -> None:
-        """A dotted subject label round-trips unencoded through /data/ paths."""
         path = service.build_subject_path(SubjectRef(subject="John.Doe", project_id="PROJ"))
         assert path == "/data/projects/PROJ/subjects/John.Doe"
 
@@ -376,8 +302,6 @@ class TestBuilderCharacterization:
 
 
 class TestDownloadFilenameTraversal:
-    """A caller-supplied local filename must not escape the output directory."""
-
     def test_safe_output_path_accepts_a_plain_filename(self, tmp_path: Path) -> None:
         result = _safe_output_path(tmp_path, "custom.zip", "default.zip")
         assert result == tmp_path / "custom.zip"
@@ -401,10 +325,9 @@ class TestDownloadFilenameTraversal:
     def test_download_scans_rejects_hostile_zip_filename_before_any_write(
         self, tmp_path: Path
     ) -> None:
-        """A hostile ``zip_filename`` must raise, and nothing lands outside output_dir."""
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
+        service._resolve_zip_experiment_ref = MagicMock(
             return_value=ExperimentRef(experiment="XNAT_E1")
         )
         output_dir = tmp_path / "out"
@@ -417,29 +340,17 @@ class TestDownloadFilenameTraversal:
                 zip_filename="../../evil.zip",
             )
 
-        # The traversal target must not have been created anywhere on disk.
         assert not (tmp_path / "evil.zip").exists()
         assert not (tmp_path.parent / "evil.zip").exists()
         client.stream.assert_not_called()
 
 
 class TestValidateLocalPathComponent:
-    """``validate_local_path_component`` accepts only pass-through identity values.
-
-    A previous version reduced a hostile value to a fallback constant (or to
-    ``Path(value).name``) instead of rejecting it -- but that silently
-    aliases distinct inputs onto the same local destination (two different
-    hostile scan IDs both landing on the same generic name, then
-    overwriting each other's files). So now: anything that is not ALREADY
-    its own safe form is a hard failure, not a substitution.
-    """
-
     def test_plain_id_passes_through_unchanged(self) -> None:
         assert validate_local_path_component("1", "scan_id") == "1"
         assert validate_local_path_component("DICOM", "resource_label") == "DICOM"
 
     def test_a_dot_inside_a_name_is_fine(self) -> None:
-        """Only a DOT-ONLY component is unsafe; a dot inside a real name is routine."""
         assert validate_local_path_component("John.Doe", "resource_label") == "John.Doe"
 
     @pytest.mark.parametrize("bad", [".", "..", "..."])
@@ -449,9 +360,6 @@ class TestValidateLocalPathComponent:
 
     @pytest.mark.parametrize("bad", ["/", "/etc/passwd", "../../evil", "a/b"])
     def test_any_value_containing_a_slash_is_rejected_not_reduced(self, bad: str) -> None:
-        """Not "reduced to a basename" -- a value whose safe form differs
-        from itself fails loudly instead of being silently aliased.
-        """
         with pytest.raises(PathValidationError):
             validate_local_path_component(bad, "scan_id")
 
@@ -465,40 +373,21 @@ class TestValidateLocalPathComponent:
             validate_local_path_component(bad, "resource_label")
 
     def test_two_distinct_hostile_values_cannot_alias_onto_the_same_destination(self) -> None:
-        """Hostile "../../1" and clean "1" must not both reduce to "1": the
-        first one simply fails instead of colliding with the second.
-        """
         assert validate_local_path_component("1", "scan_id") == "1"
         with pytest.raises(PathValidationError):
             validate_local_path_component("../../1", "scan_id")
 
     @pytest.mark.parametrize("bad", ["C:", "C:escape", "file:stream"])
     def test_a_colon_is_rejected(self, bad: str) -> None:
-        """A drive-qualified/drive-relative value has no '/' or '\\' at all,
-        so the separator check alone misses it -- but on Windows,
-        Path(base) / "C:escape" DISCARDS base entirely (a drive-relative
-        path replaces whatever it's joined onto, same as an absolute path
-        does), escaping containment before the result is even resolved. Any
-        ':' is rejected outright, which also closes the NTFS
-        alternate-data-stream form ("file:stream").
-        """
         with pytest.raises(PathValidationError):
             validate_local_path_component(bad, "scan_id")
 
     @pytest.mark.parametrize("bad", ["scan.", ".scan", " scan", "scan ", " scan "])
     def test_leading_or_trailing_dot_or_space_is_rejected(self, bad: str) -> None:
-        """A trailing dot/space is silently stripped by Windows filesystem
-        APIs -- "scan." and "scan" land on the same real file there, even
-        though they're different strings here. Leading is rejected too, for
-        the same "looks different, lands the same" aliasing reason.
-        """
         with pytest.raises(PathValidationError):
             validate_local_path_component(bad, "scan_id")
 
     def test_a_dot_or_space_in_the_interior_is_fine(self) -> None:
-        """Only LEADING/TRAILING dots and spaces are unsafe -- interior ones
-        are routine in real labels (see John.Doe / "QA (v2)" elsewhere).
-        """
         assert validate_local_path_component("John.Doe", "resource_label") == "John.Doe"
         assert validate_local_path_component("QA v2", "resource_label") == "QA v2"
 
@@ -519,37 +408,23 @@ class TestValidateLocalPathComponent:
         ],
     )
     def test_windows_reserved_device_names_are_rejected(self, bad: str) -> None:
-        """CON/PRN/AUX/NUL/COM1-9/LPT1-9 fail to create as a normal
-        file/directory on Windows, case-insensitively and regardless of
-        extension -- matched against the stem (the part before the first '.').
-        """
         with pytest.raises(PathValidationError):
             validate_local_path_component(bad, "scan_id")
 
     @pytest.mark.parametrize("ok", ["CONSOLE", "COM10", "LPT10", "CONNOR", "AUXILIARY"])
     def test_names_that_merely_start_with_a_reserved_token_are_not_rejected(self, ok: str) -> None:
-        """Only an EXACT stem match is reserved -- "CONSOLE" is a real,
-        unrelated name, not a disguised "CON".
-        """
         assert validate_local_path_component(ok, "scan_id") == ok
 
     def test_non_nfc_unicode_is_rejected(self) -> None:
-        """An NFD-decomposed accented character (e.g. combining-acute "e" +
-        U+0301) can be byte-distinct from its NFC form while denoting the
-        SAME filename on a normalizing filesystem (macOS/HFS+) -- two values
-        that look different here would alias to one real path there.
-        """
         nfc = unicodedata.normalize("NFC", "Étude")
         nfd = unicodedata.normalize("NFD", "Étude")
-        assert nfc != nfd  # sanity: these really are different strings
+        assert nfc != nfd
         assert validate_local_path_component(nfc, "resource_label") == nfc
         with pytest.raises(PathValidationError):
             validate_local_path_component(nfd, "resource_label")
 
 
 class TestExtractScanZipLabelSafety:
-    """_extract_scan_zip must not let a hostile resource label escape scan_base."""
-
     @staticmethod
     def _flat_zip(tmp_path: Path, member_name: str = "file.dcm", content: bytes = b"x") -> Path:
         zip_path = tmp_path / "scan.zip"
@@ -567,9 +442,6 @@ class TestExtractScanZipLabelSafety:
         with pytest.raises(PathValidationError):
             _extract_scan_zip(zip_path, scan_base, resource_label="../../../../escape")
 
-        # The label is rejected before any directory is built from it or any
-        # file is written -- nothing should have escaped anywhere near
-        # tmp_path's parent, and no "escape" directory should exist at all.
         assert not (tmp_path.parent / "escape").exists()
         assert not any(p.name == "escape" for p in tmp_path.rglob("*"))
 
@@ -586,8 +458,6 @@ class TestExtractScanZipLabelSafety:
 
 
 class TestVerifierPathQuoting:
-    """transfer/verifier.py builds its own REST paths from scan_id/res_label."""
-
     def test_verify_experiment_quotes_scan_id_and_resource_label(self) -> None:
         source = MagicMock()
         dest = MagicMock()
@@ -608,8 +478,6 @@ class TestVerifierPathQuoting:
         verifier = Verifier(source, dest)
         verifier.verify_experiment("/data/experiments/E1", "/data/experiments/E2")
 
-        # Every request path issued after scan/resource discovery must have
-        # the hostile-looking scan id and resource label quoted, never raw.
         all_paths = [c.args[0] for c in source.get.call_args_list + dest.get.call_args_list]
         assert any("1%202" in p for p in all_paths)
         assert not any("/scans/1 2" in p for p in all_paths)
@@ -618,30 +486,22 @@ class TestVerifierPathQuoting:
 
 
 class TestDownloadScansEmptyInput:
-    """download_scans rejects an empty batch before any HTTP call or filesystem write."""
-
     def test_empty_scan_ids_list_is_rejected(self, tmp_path: Path) -> None:
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with pytest.raises(InputValidationError):
             service.download_scans(session_id="E1", scan_ids=[], output_dir=tmp_path)
 
         client.stream.assert_not_called()
         service._resolve_zip_experiment_ref.assert_not_called()
-        # Fails before even creating the output directory -- nothing landed
-        # inside tmp_path (which pytest already created for us).
         assert not any(tmp_path.iterdir())
 
     def test_an_empty_id_within_the_list_is_rejected(self, tmp_path: Path) -> None:
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with pytest.raises(InputValidationError):
             service.download_scans(session_id="E1", scan_ids=["1", ""], output_dir=tmp_path)
@@ -651,9 +511,7 @@ class TestDownloadScansEmptyInput:
     def test_a_whitespace_only_id_within_the_list_is_rejected(self, tmp_path: Path) -> None:
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with pytest.raises(InputValidationError):
             service.download_scans(session_id="E1", scan_ids=["1", "   "], output_dir=tmp_path)
@@ -662,21 +520,14 @@ class TestDownloadScansEmptyInput:
 
 
 class TestScanBatchDelimiter:
-    """download_scans' multi-scan comma syntax must survive quoting."""
-
     def test_multiple_scan_ids_joined_with_a_literal_comma(self, tmp_path: Path) -> None:
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         captured: dict[str, str] = {}
 
         def fake_stream(_client, path, *_a, **_kw):
-            # download_scans reports a stream failure in the summary rather
-            # than raising (it's a batch operation) -- raising here just
-            # short-circuits before any real I/O; the path is what matters.
             captured["path"] = path
             raise RuntimeError("stop before any real streaming")
 
@@ -693,12 +544,9 @@ class TestScanBatchDelimiter:
         assert captured["path"] == "/data/experiments/E1/scans/1,2/files"
 
     def test_a_hostile_id_in_the_batch_is_quoted_on_its_own(self, tmp_path: Path) -> None:
-        """Each ID is quoted individually -- a hostile one cannot break the batch."""
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         captured: dict[str, str] = {}
 
@@ -720,8 +568,6 @@ class TestScanBatchDelimiter:
 
 
 class TestResourceLabelRoundTrip:
-    """Non-mocked proof that a realistic, hash-bearing resource label works end to end."""
-
     def test_resource_label_with_hash_flows_through_to_a_quoted_request_path(self) -> None:
         client = MagicMock()
         client.get_json.return_value = {"ResultSet": {"Result": []}}
@@ -734,8 +580,6 @@ class TestResourceLabelRoundTrip:
 
 
 class TestImportServiceProjectValidation:
-    """archive_destination_params validates project even though dest is a param value."""
-
     def test_hostile_project_is_rejected_before_the_request(self) -> None:
         from xnatctl.services.import_service import archive_destination_params
 
@@ -751,8 +595,6 @@ class TestImportServiceProjectValidation:
 
 
 class TestDeadCodeRemoved:
-    """services/base.py's non-quoting _build_path had zero callers; it's gone."""
-
     def test_build_path_no_longer_exists(self) -> None:
         from xnatctl.services.base import BaseService
 
@@ -760,28 +602,14 @@ class TestDeadCodeRemoved:
 
 
 class TestEmptyStringDoesNotWidenScope:
-    """An explicitly-supplied empty string must not silently degrade to "no filter".
-
-    ``None`` is the deliberate "omit this scope" sentinel throughout this
-    package; a caller-supplied empty string is a different thing (almost
-    certainly a bug upstream of the call) and must fail loudly rather than
-    quietly widening the request to the broader scope ``None`` would have
-    meant.
-    """
-
     def test_build_subject_collection_path_rejects_empty_project_id(self) -> None:
-        """Was: falls through to /data/subjects -- the SITE-WIDE collection."""
         with pytest.raises(InputValidationError):
             HierarchyService.build_subject_collection_path("")
 
     def test_build_subject_collection_path_still_allows_none(self) -> None:
-        """None is the real "no project filter" -- unaffected."""
         assert HierarchyService.build_subject_collection_path(None) == "/data/subjects"
 
     def test_build_experiment_collection_path_rejects_empty_subject(self) -> None:
-        """Was: falls through to every experiment in the project, ignoring
-        the (falsy) subject filter that was explicitly passed as "".
-        """
         with pytest.raises(InputValidationError):
             HierarchyService.build_experiment_collection_path("PROJ", "")
 
@@ -796,12 +624,9 @@ class TestEmptyStringDoesNotWidenScope:
         )
 
     def test_download_scans_rejects_empty_resource_filter(self, tmp_path: Path) -> None:
-        """Was: falls through to the unfiltered (all-resources) request."""
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with pytest.raises(InputValidationError):
             service.download_scans(
@@ -811,12 +636,9 @@ class TestEmptyStringDoesNotWidenScope:
         client.stream.assert_not_called()
 
     def test_download_resource_rejects_empty_scan_id(self, tmp_path: Path) -> None:
-        """Was: falls through to a session-level (unscoped) resource request."""
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with pytest.raises(InputValidationError):
             service.download_resource(
@@ -828,9 +650,6 @@ class TestEmptyStringDoesNotWidenScope:
     def test_download_session_fast_rejects_an_empty_string_in_include_resources(
         self, tmp_path: Path
     ) -> None:
-        """Was: the tuple ("",) is truthy, turning on the include-filter
-        branch, and the per-item check then fell through to UNFILTERED.
-        """
         client = MagicMock()
         service = DownloadService(client)
 
@@ -863,7 +682,6 @@ class TestEmptyStringDoesNotWidenScope:
         client.stream.assert_not_called()
 
     def test_download_session_fast_accepts_a_real_include_filter(self, tmp_path: Path) -> None:
-        """The guard must not reject legitimate, non-empty filter values."""
         client = MagicMock()
         client.get_json.return_value = {"ResultSet": {"Result": []}}
         service = DownloadService(client)
@@ -876,16 +694,14 @@ class TestEmptyStringDoesNotWidenScope:
             include_resources=("DICOM",),
         )
 
-        assert outcome.succeeded == 0  # no scans discovered; the guard just didn't block it
+        assert outcome.succeeded == 0
 
     def test_build_verification_manifest_rejects_an_empty_string_in_include_resources(
         self, tmp_path: Path
     ) -> None:
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with pytest.raises(InputValidationError):
             service.build_verification_manifest(
@@ -895,12 +711,9 @@ class TestEmptyStringDoesNotWidenScope:
     def test_build_verification_manifest_rejects_an_empty_resource_filter(
         self, tmp_path: Path
     ) -> None:
-        """resource_filter="" must not widen verification to every resource on the scan."""
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with pytest.raises(InputValidationError):
             service.build_verification_manifest(
@@ -909,14 +722,6 @@ class TestEmptyStringDoesNotWidenScope:
 
 
 class TestResourceServiceEmptyScanIdWidening:
-    """ResourceService._resolve_parent must not widen scan_id="" to session scope.
-
-    This is the destructive edition of the empty-string-widening bug:
-    ResourceService.delete() defaults remove_files=True, so a caller who
-    meant to delete one scan's resource and passed an accidentally-empty
-    scan_id would delete the whole SESSION's resource instead.
-    """
-
     def test_delete_with_empty_scan_id_raises_before_any_http_call(self) -> None:
         client = MagicMock()
         service = ResourceService(client)
@@ -927,7 +732,6 @@ class TestResourceServiceEmptyScanIdWidening:
         client.delete.assert_not_called()
 
     def test_delete_still_works_with_scan_id_omitted(self) -> None:
-        """None (the real "no scan scope") must still work -- session-level delete."""
         client = MagicMock()
         service = ResourceService(client)
 
@@ -958,14 +762,6 @@ class TestResourceServiceEmptyScanIdWidening:
 
 
 class TestServicesEmptyStringPathRoutingWidening:
-    """A sweep of services/ sites where "" must not silently widen scope.
-
-    Each function toggles between two DIFFERENT REST routes based on
-    whether an optional identifier was supplied; a truthy check would send
-    "" down the same branch as omitted (None), landing on the
-    wider/unscoped route.
-    """
-
     def test_session_service_get_rejects_empty_project(self) -> None:
         client = MagicMock()
         service = SessionService(client)
@@ -1045,12 +841,7 @@ class TestServicesEmptyStringPathRoutingWidening:
 
 
 class TestTransferLocalPathJoins:
-    """Cross-server transfer staging must validate server-reported values
-    used as local path components under work_dir, same as DownloadService.
-    """
-
     def test_download_resource_rejects_hostile_resource_label(self, tmp_path: Path) -> None:
-        """A drive-qualified label under work_dir would escape it on Windows."""
         source = MagicMock()
         dest = MagicMock()
         executor = TransferExecutor(source, dest)
@@ -1099,17 +890,10 @@ class TestTransferLocalPathJoins:
 
 
 class TestDownloadResourceExtractionRootSafety:
-    """DownloadService.download_resource(extract=True) builds its extraction
-    root straight from the resource label -- a Windows drive-qualified label
-    must not reach that join unvalidated.
-    """
-
     def test_hostile_label_rejected_before_extraction(self, tmp_path: Path) -> None:
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with pytest.raises(PathValidationError):
             service.download_resource(
@@ -1122,20 +906,6 @@ class TestDownloadResourceExtractionRootSafety:
 
 
 class TestCliNameValidation:
-    """`session download --name` / `scan download --name` route through
-    validate_local_path_component now, not a separator-only ad hoc check.
-
-    Both tests deliberately use a bare, un-mocked ``CliRunner()`` with
-    ``no_ambient_credentials`` rather than the harness's usual
-    authenticated fixtures: the point being verified is that an invalid
-    --name is rejected by an eager Click callback that runs during argument
-    parsing, BEFORE @require_auth ever executes -- so it must fail the same
-    way with zero credentials available, not just when auth happens to
-    succeed. Authenticating first (via authenticated_seams/authenticated_cli)
-    would make this indistinguishable from validation running inside the
-    command body after a successful login.
-    """
-
     def test_session_download_rejects_windows_invalid_name(
         self, no_ambient_credentials: Path
     ) -> None:
@@ -1188,8 +958,6 @@ class TestCliNameValidation:
 
 
 class TestValidateLocalPathComponentWindowsInvalidChars:
-    """Windows filename-invalid characters -- rejected on every platform."""
-
     @pytest.mark.parametrize("bad_char", list('<>"|?*'))
     def test_each_windows_invalid_char_is_rejected(self, bad_char: str) -> None:
         with pytest.raises(PathValidationError):
@@ -1200,10 +968,6 @@ class TestValidateLocalPathComponentWindowsInvalidChars:
 
 
 class TestCasefoldCollisionGuard:
-    """check_no_casefold_collision -- individually-valid values that would
-    still collide as siblings on a case-insensitive filesystem.
-    """
-
     def test_first_occurrence_is_accepted(self) -> None:
         seen: set[str] = set()
         check_no_casefold_collision("scan", seen, "scan_id")
@@ -1222,9 +986,6 @@ class TestCasefoldCollisionGuard:
         assert seen == {"scan1", "scan2"}
 
     def test_download_session_fast_rejects_case_colliding_scan_ids(self, tmp_path: Path) -> None:
-        """Two scans "1a" and "1A" would extract into the same directory
-        on a case-insensitive filesystem.
-        """
         client = MagicMock()
         service = DownloadService(client)
 
@@ -1245,12 +1006,6 @@ class TestCasefoldCollisionGuard:
     def test_download_session_level_resources_rejects_case_colliding_labels(
         self, tmp_path: Path
     ) -> None:
-        """Two resources "QC" and "qc" would produce the same local ZIP name.
-
-        The first resource in the list has already streamed by the time the
-        second one's collision is detected (the check runs per-resource, in
-        order) -- what matters is that the second one never does.
-        """
         client = MagicMock()
         service = DownloadService(client)
 
@@ -1272,12 +1027,6 @@ class TestCasefoldCollisionGuard:
 
 
 class TestQueryParamFilterEmptyStringWidening:
-    """Query-param filters (admin audit endpoints, session subject filter)
-    must not let an explicitly-empty string silently widen the result set,
-    same as the path-routing sweep -- lower severity (a wider read, not a
-    different route), same fix shape.
-    """
-
     def test_audit_log_rejects_empty_project(self) -> None:
         client = MagicMock()
         service = AdminService(client)
@@ -1369,12 +1118,6 @@ class TestQueryParamFilterEmptyStringWidening:
 
 
 class TestExtractScanZipCasefoldCollision:
-    """_extract_scan_zip must not merge two case-differing resource labels
-    within one ZIP -- the third case-aliasing site, using a casefold ->
-    literal map since (unlike the batch sites) the SAME literal label
-    legitimately recurs across many members of one resource.
-    """
-
     @staticmethod
     def _zip_with_members(tmp_path: Path, members: dict[str, bytes]) -> Path:
         zip_path = tmp_path / "scan.zip"
@@ -1401,9 +1144,6 @@ class TestExtractScanZipCasefoldCollision:
         assert (scan_base / "resources" / "DICOM" / "files" / "b.dcm").exists()
 
     def test_case_differing_literal_labels_raise(self, tmp_path: Path) -> None:
-        """A "DICOM" then a "dicom" label -- individually valid, but a
-        case-insensitive filesystem would merge them into one directory.
-        """
         zip_path = self._zip_with_members(
             tmp_path,
             {
@@ -1434,11 +1174,6 @@ class TestExtractScanZipCasefoldCollision:
 
 
 class TestScanTransferCaseCollision:
-    """Cross-server transfer staging must preflight/check the same casefold
-    collisions as DownloadService, at both the scan-batch and per-scan-resource
-    levels.
-    """
-
     @staticmethod
     def _scan_transfer(scan_workers: int = 4) -> tuple[ScanTransfer, MagicMock, MagicMock]:
         source = MagicMock()
@@ -1452,10 +1187,6 @@ class TestScanTransferCaseCollision:
         return ScanTransfer(executor, filter_engine, config), source, dest
 
     def test_batch_preflight_rejects_case_colliding_scan_ids(self, tmp_path: Path) -> None:
-        """Two scans "1a"/"1A" would share a scan_{id} staging dir once
-        concurrent download workers write into them -- caught before the
-        pool (or any HTTP call) starts.
-        """
         scan_transfer, source, _dest = self._scan_transfer()
         exp = MagicMock(xsi_type="xnat:mrSessionData", local_id="E1", local_label="EXP1")
         subject = MagicMock(local_label="SUB1")
@@ -1468,7 +1199,6 @@ class TestScanTransferCaseCollision:
         source.get.assert_not_called()
 
     def test_batch_preflight_accepts_distinct_scan_ids(self, tmp_path: Path) -> None:
-        """The preflight itself must not reject a normal, non-colliding batch."""
         scan_transfer, _source, _dest = self._scan_transfer()
         exp = MagicMock(xsi_type="xnat:mrSessionData", local_id="E1", local_label="EXP1")
         subject = MagicMock(local_label="SUB1")
@@ -1483,12 +1213,6 @@ class TestScanTransferCaseCollision:
         assert mock_task.call_count == 2
 
     def test_per_scan_resource_labels_reject_case_collision(self, tmp_path: Path) -> None:
-        """Two resources "QA"/"qa" on the SAME scan would stage the same
-        local ZIP name -- since every resource downloads before any
-        uploads, the second would silently overwrite the first. Caught per
-        scan, not per batch, so it fails only that scan (recorded in
-        result.errors / resources_failed), not the whole transfer.
-        """
         scan_transfer, _source, _dest = self._scan_transfer(scan_workers=1)
         exp = MagicMock(xsi_type="xnat:mrSessionData", local_id="E1", local_label="EXP1")
         subject = MagicMock(local_label="SUB1")
@@ -1505,9 +1229,6 @@ class TestScanTransferCaseCollision:
                 ],
             ),
             patch.object(scan_transfer, "_ensure_scan_shell"),
-            # The first resource ("QA") must succeed cleanly so the second
-            # ("qa") is what actually reaches (and trips) the collision
-            # check -- no real download/ZIP handling needed for that.
             patch.object(scan_transfer, "_download_scan_resource", return_value=MagicMock()),
         ):
             scan_transfer.transfer_scans(
@@ -1518,8 +1239,6 @@ class TestScanTransferCaseCollision:
 
 
 class TestDiscoveryLastSyncTimeEmptyStringWidening:
-    """An empty last_sync_time must not silently trigger a full resync."""
-
     def test_discover_subjects_rejects_empty_last_sync_time(self) -> None:
         client = MagicMock()
         service = DiscoveryService(client)
@@ -1542,10 +1261,6 @@ class TestDiscoveryLastSyncTimeEmptyStringWidening:
 
 
 class TestSymlinkedRootEscape:
-    """A pre-existing symlink at the identifier-joined path must not let
-    extraction land outside the caller-supplied trusted root.
-    """
-
     def test_verify_directory_contained_in_accepts_a_normal_subdirectory(
         self, tmp_path: Path
     ) -> None:
@@ -1567,10 +1282,6 @@ class TestSymlinkedRootEscape:
             verify_directory_contained_in(escape, root, "extraction directory")
 
     def test_download_resource_extract_rejects_a_pre_existing_symlink(self, tmp_path: Path) -> None:
-        """output_dir/DICOM is a symlink to outside -- containment inside
-        zip_extract would otherwise anchor to (and pass trivially for) the
-        escaped location.
-        """
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         outside = tmp_path / "outside"
@@ -1579,9 +1290,7 @@ class TestSymlinkedRootEscape:
 
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         def fake_stream(_client, _path, dest, **_kw):
             with zipfile.ZipFile(dest, "w") as zf:
@@ -1599,7 +1308,6 @@ class TestSymlinkedRootEscape:
                     extract=True,
                 )
 
-        # Nothing extracted into the escaped, outside location.
         assert not any(outside.iterdir())
 
     def test_download_session_fast_scan_extraction_rejects_a_pre_existing_symlink(
@@ -1635,17 +1343,12 @@ class TestSymlinkedRootEscape:
                 workers=1,
             )
 
-        # The scan failed (symlink escape rejected), not silently escaped.
         assert outcome.succeeded == 0
         assert len(outcome.failed) == 1
         assert not any(outside.iterdir())
 
 
 class TestZipFilenameComponentValidation:
-    """zip_filename must route through validate_local_path_component, not
-    just the containment-only check.
-    """
-
     def test_explicit_empty_string_raises_not_defaults(self, tmp_path: Path) -> None:
         with pytest.raises(PathValidationError):
             _safe_output_path(tmp_path, "", "default.zip")
@@ -1679,10 +1382,6 @@ class TestZipFilenameComponentValidation:
 
 
 class TestValidateLocalPathComponentControlChars:
-    """C0 control characters (including NUL) are rejected, same as the
-    label validators already reject them.
-    """
-
     @pytest.mark.parametrize("bad", ["scan\x00id", "scan\x01id", "scan\x1fid", "scan\tid"])
     def test_control_characters_are_rejected(self, bad: str) -> None:
         with pytest.raises(PathValidationError):
@@ -1693,13 +1392,7 @@ class TestValidateLocalPathComponentControlChars:
 
 
 class TestMoreEmptyStringWideningStragglers:
-    """The remaining named truthiness stragglers, plus the `limit` sweep."""
-
     def test_sessions_list_rejects_subject_without_project(self) -> None:
-        """Subject given but project None must not silently IGNORE subject
-        and issue a site-wide query -- XNAT subject labels aren't globally
-        unique without a project to scope them.
-        """
         client = MagicMock()
         service = SessionService(client)
         with pytest.raises(InputValidationError):
@@ -1714,10 +1407,6 @@ class TestMoreEmptyStringWideningStragglers:
         client.get.assert_not_called()
 
     def test_download_service_resolve_rejects_empty_project(self) -> None:
-        """project="" must not be treated as omitted during resolution --
-        that would silently use session_id AS an accession ID rather than
-        resolving a label through the (rejected) empty project.
-        """
         client = MagicMock()
         service = DownloadService(client)
         with pytest.raises(InputValidationError):
@@ -1763,9 +1452,6 @@ class TestMoreEmptyStringWideningStragglers:
 
     def test_prearchive_archive_still_works_with_a_real_subject(self) -> None:
         client = MagicMock()
-        # `_post` reads `.headers`/`.text` off the response like a real
-        # httpx.Response -- a plain dict return value fails before the
-        # code under test is even reached.
         client.post.return_value = MagicMock(headers={}, text="")
         service = PrearchiveService(client)
         service.archive("PROJ1", "20260101_120000", "session1", subject="SUB1")
@@ -1794,12 +1480,6 @@ class TestMoreEmptyStringWideningStragglers:
 
 
 class TestZipExtractExclusionBeforeValidation:
-    """An explicitly EXCLUDED resource must never be validated or
-    casefold-registered -- it is never extracted, so a locally-unsafe or
-    case-colliding label on it must not fail the whole ZIP for content
-    that is never written.
-    """
-
     @staticmethod
     def _zip_with_members(tmp_path: Path, members: dict[str, bytes]) -> Path:
         zip_path = tmp_path / "scan.zip"
@@ -1809,9 +1489,6 @@ class TestZipExtractExclusionBeforeValidation:
         return zip_path
 
     def test_excluded_resource_with_unsafe_label_does_not_raise(self, tmp_path: Path) -> None:
-        """The label "QA?1" is not a safe local path component -- but it is
-        excluded, so it must never reach validation.
-        """
         zip_path = self._zip_with_members(
             tmp_path,
             {
@@ -1831,11 +1508,6 @@ class TestZipExtractExclusionBeforeValidation:
         assert not (scan_base / "resources" / "QA?1").exists()
 
     def test_excluded_case_variant_does_not_trip_false_collision(self, tmp_path: Path) -> None:
-        """The label "DICOM" is extracted; "dicom" (a case-variant that
-        would otherwise collide with it) is excluded -- exclusion must be
-        checked before the excluded label is ever registered in the
-        casefold map.
-        """
         zip_path = self._zip_with_members(
             tmp_path,
             {
@@ -1862,10 +1534,6 @@ class TestZipExtractExclusionBeforeValidation:
         assert resource_dirs == ["DICOM"]
 
     def test_explicit_empty_resource_label_raises(self, tmp_path: Path) -> None:
-        """resource_label="" is a caller mistake, not "no override" -- it
-        must not silently fall through to the per-member detected label
-        (or "UNKNOWN"). ``None`` still means "no override".
-        """
         zip_path = self._zip_with_members(
             tmp_path, {"EXP/scans/1/resources/DICOM/files/a.dcm": b"a"}
         )
@@ -1887,11 +1555,6 @@ class TestZipExtractExclusionBeforeValidation:
 
 
 class TestListSessionsModalityEmptyStringWidening:
-    """SessionService.list_sessions(modality="") must raise, matching
-    list()'s own modality filter -- the earlier fix only reached list(),
-    not this separate classified-rows path used by ``session list``.
-    """
-
     def test_empty_modality_raises(self) -> None:
         client = MagicMock()
         service = SessionService(client)
@@ -1909,8 +1572,6 @@ class TestListSessionsModalityEmptyStringWidening:
         }
         with pytest.raises(InputValidationError):
             service.list_sessions("PROJ1", modality="")
-        # The guard runs before the fetch -- a bad modality value must not
-        # cost an HTTP request.
         client.get_json.assert_not_called()
 
     def test_none_modality_returns_everything(self) -> None:
@@ -1964,10 +1625,6 @@ class TestListSessionsModalityEmptyStringWidening:
 
 
 class TestValidateLocalPathComponentSuperscriptReservedNames:
-    """COM1-9/LPT1-9's superscript-digit forms (U+00B9/U+00B2/U+00B3) are
-    reserved by Windows the same way the plain-digit forms are.
-    """
-
     @pytest.mark.parametrize(
         "value",
         ["COM¹", "com²", "LPT³", "Lpt¹.txt", "COM².tar.gz"],
@@ -1977,6 +1634,4 @@ class TestValidateLocalPathComponentSuperscriptReservedNames:
             validate_local_path_component(value, "value")
 
     def test_lookalike_but_not_reserved_still_passes(self) -> None:
-        # "COM10" is not reserved (only COM1-9 are); sanity check the
-        # superscript addition didn't over-broaden the match.
         assert validate_local_path_component("COM10", "value") == "COM10"

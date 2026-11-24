@@ -24,11 +24,6 @@ from xnatctl.models.subject import Subject
 
 from .base import BaseService
 
-# Accession-ID-shaped tokens such as ``XNAT_E00001`` or ``CLM01_E12``.
-# Applied with `fullmatch` at both call sites below, not `match`:
-# Python's `$` also matches just BEFORE a final newline, so
-# `"XNAT_E00001\n"` matches a `^...$` pattern under `.match()` and
-# would be routed as a clean accession ID.
 _ACCESSION_ID_PATTERN = re.compile(r"[A-Z][A-Za-z0-9]*_E\d+")
 
 
@@ -354,10 +349,6 @@ class HierarchyService(BaseService):
                 f"200 response. Got keys: {sorted(data.keys())!r}."
             )
         if isinstance(data, list) and any(not isinstance(row, dict) for row in data):
-            # The lenient extractor drops non-dict entries; here that would
-            # turn a bare-array error body (e.g. ["plugin disabled"]) into
-            # zero rows -- the exact "0 results for a server that never
-            # answered the question" this method exists to refuse.
             raise XNATCtlError(
                 f"Unexpected response while {what}: top-level array contains non-object entries."
             )
@@ -410,18 +401,6 @@ class HierarchyService(BaseService):
                 here must not be reported as "no custom variables" -- see
                 ``commands.py``'s ``wrappers_of`` for the same rule.
         """
-        # Unlike ``extract_first_item``, every caller of THIS method (the
-        # subject/session custom-variable readers) always requests a
-        # detailed format=json document and has no ResultSet-shaped
-        # fallback to fall through to -- so an absent top-level ``items``
-        # key here is not "genuinely empty", it is a body this client does
-        # not recognize (e.g. a plugin error like
-        # ``{"message": "plugin disabled"}``). ``ItemsEnvelope``'s
-        # ``default_factory=list`` would otherwise let that validate
-        # silently to zero rows, reported as "no custom variables" for a
-        # request that never actually returned the expected shape.
-        # ``{"items": []}`` is unaffected -- that is the genuinely-empty
-        # case and stays a normal empty read.
         if "items" not in data:
             raise XNATCtlError(
                 "Unexpected response: no top-level 'items' field in a detailed "
@@ -433,14 +412,6 @@ class HierarchyService(BaseService):
                 "Unexpected response: top-level 'items' is not a list in a detailed "
                 f"(format=json) document. Got {type(raw_items).__name__} ({raw_items!r})."
             )
-        # ``ItemRecord``'s fields all carry ``default_factory``, so a
-        # present-but-empty entry like ``{}`` would otherwise validate
-        # silently into an item with no data_fields/children/meta --
-        # indistinguishable from a legitimately empty one. Checked against
-        # the raw dict, before Pydantic coerces it, for the same reason:
-        # coercion is also where a non-object entry would surface as a raw
-        # ``pydantic.ValidationError`` instead of this method's own typed
-        # one.
         if raw_items:
             first_raw = raw_items[0]
             if not isinstance(first_raw, dict) or "data_fields" not in first_raw:
@@ -592,7 +563,6 @@ class HierarchyService(BaseService):
             return self._resolve_experiment_fallback(ref)
 
     def _resolve_experiment_fallback(self, ref: ExperimentRef) -> ResolvedExperimentRef:
-        """Apply project-listing and accession-ID fallbacks for label resolution."""
         if ref.experiment_is_label and ref.project_id:
             canonical_id = self._lookup_experiment_in_project_listing(
                 ref.project_id, ref.experiment
@@ -621,13 +591,6 @@ class HierarchyService(BaseService):
         raise ResourceNotFoundError("session", ref.experiment)
 
     def _lookup_experiment_in_project_listing(self, project_id: str, token: str) -> str | None:
-        """Return canonical accession ID for ``token`` within ``project_id``.
-
-        Issues a single
-        ``GET /data/projects/{project_id}/experiments?columns=ID,label,subject_ID,xsiType``
-        call and matches ``token`` against ``label`` or ``ID`` exactly
-        (case-sensitive). Returns ``None`` when no row matches.
-        """
         try:
             data = self.client.get_json(
                 join_api_path("data", "projects", project_id, "experiments"),

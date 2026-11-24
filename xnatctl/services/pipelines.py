@@ -28,7 +28,6 @@ class PipelineService(BaseService):
         Returns:
             List of pipeline dicts
         """
-        # `is not None`, not truthy -- see list_jobs below for the rationale.
         if project is not None:
             path = f"/data/projects/{quote_path_segment(project)}/pipelines"
         else:
@@ -55,7 +54,6 @@ class PipelineService(BaseService):
         Raises:
             ResourceNotFoundError: If pipeline not found
         """
-        # `is not None`, not truthy -- see list_jobs below for the rationale.
         if project is not None:
             path = (
                 f"/data/projects/{quote_path_segment(project)}"
@@ -107,12 +105,10 @@ class PipelineService(BaseService):
 
         result = self._post(path, params=request_params)
 
-        # Extract job ID from result
         job_id = None
         if isinstance(result, dict):
             job_id = result.get("jobId") or result.get("id")
         elif isinstance(result, str):
-            # Sometimes returns just the job ID as text
             job_id = result.strip()
 
         return {
@@ -231,10 +227,6 @@ class PipelineService(BaseService):
         Returns:
             List of job dicts
         """
-        # `is not None`, not truthy: an explicitly-supplied `experiment_id=""`
-        # (or `project=""`) is a caller mistake, not "no filter" -- it must
-        # not silently widen to the unfiltered, server-wide job listing.
-        # quote_path_segment already rejects the empty string.
         if experiment_id is not None:
             path = f"/data/experiments/{quote_path_segment(experiment_id)}/pipelines/jobs"
         elif project is not None:
@@ -245,8 +237,6 @@ class PipelineService(BaseService):
         params: dict[str, Any] = {"format": "json"}
         if limit is not None:
             params["limit"] = limit
-        # `is not None`, not truthy: `status=""` is a caller mistake, not
-        # "no status filter" -- it must not silently widen to every status.
         if status is not None:
             if status.strip() == "":
                 raise InputValidationError(

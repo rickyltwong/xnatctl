@@ -1,5 +1,3 @@
-"""Tests for transfer orchestrator."""
-
 from __future__ import annotations
 
 import tempfile
@@ -137,10 +135,7 @@ class TestRemoteIdMapping:
         dest_client: MagicMock,
         state_store: TransferStateStore,
     ) -> None:
-        """Verify that the actual XNAT-assigned ID is stored, not local_id."""
-        # Discovery returns one subject with no experiments
         source_client.get.side_effect = [
-            # discover_subjects
             make_response(
                 {
                     "ResultSet": {
@@ -156,11 +151,9 @@ class TestRemoteIdMapping:
                     }
                 }
             ),
-            # discover_experiments (empty)
             make_response({"ResultSet": {"Result": []}}),
         ]
 
-        # create_subject returns a URI with the dest-assigned ID
         dest_client.put.return_value = MagicMock(
             text="/data/subjects/XNAT_S999", strip=lambda: None
         )
@@ -185,9 +178,7 @@ class TestSuccessPropagation:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Verify result.success becomes False when an experiment fails."""
         source_client.get.side_effect = [
-            # discover_subjects
             make_response(
                 {
                     "ResultSet": {
@@ -202,7 +193,6 @@ class TestSuccessPropagation:
                     }
                 }
             ),
-            # discover_experiments
             make_response(
                 {
                     "ResultSet": {
@@ -218,13 +208,10 @@ class TestSuccessPropagation:
                     }
                 }
             ),
-            # discover_scans (empty -> no DICOM -> experiment pre-created)
             make_response({"ResultSet": {"Result": []}}),
         ]
 
-        # check_experiment_exists -> not found, then create fails
         dest_client.get.return_value = make_response({"ResultSet": {"Result": []}})
-        # create_subject succeeds, create_experiment raises
         subject_resp = MagicMock()
         subject_resp.text = "/data/subjects/XNAT_S999"
         dest_client.put.side_effect = [
@@ -239,16 +226,8 @@ class TestSuccessPropagation:
 
 
 class TestPipelinedTransfer:
-    """Integration tests for the pipelined transfer flow.
-
-    The pipelined flow uploads DICOM for experiment A, enqueues to poller,
-    starts uploading experiment B while poller monitors A. When A is ready,
-    main thread finalizes A between uploads.
-    """
-
     @staticmethod
     def _subject_response() -> MagicMock:
-        """Build mock discover_subjects HTTP response."""
         return make_response(
             {
                 "ResultSet": {
@@ -269,11 +248,6 @@ class TestPipelinedTransfer:
     def _experiments_response(
         experiments: list[tuple[str, str, str]],
     ) -> MagicMock:
-        """Build mock discover_experiments HTTP response.
-
-        Args:
-            experiments: List of (id, label, xsiType) tuples.
-        """
         rows = [
             {
                 "ID": eid,
@@ -288,7 +262,6 @@ class TestPipelinedTransfer:
 
     @staticmethod
     def _setup_fast_poller(orchestrator: TransferOrchestrator) -> None:
-        """Configure orchestrator for fast test polling."""
         orchestrator.config.verify_after_transfer = False
         orchestrator.config.archive_poll_interval = 0.05
         orchestrator.config.archive_wait_timeout = 5.0
@@ -296,7 +269,6 @@ class TestPipelinedTransfer:
 
     @staticmethod
     def _mock_create_subject(dest_client: MagicMock) -> None:
-        """Mock dest_client.put to return a subject URI."""
         subject_resp = MagicMock()
         subject_resp.text = "/data/subjects/XNAT_S999"
         dest_client.put.return_value = subject_resp
@@ -307,7 +279,6 @@ class TestPipelinedTransfer:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Two DICOM experiments are uploaded and finalized via the pipeline."""
         self._setup_fast_poller(orchestrator)
 
         source_client.get.side_effect = [
@@ -355,7 +326,6 @@ class TestPipelinedTransfer:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Experiment with no DICOM is pre-created and finalized without poller."""
         self._setup_fast_poller(orchestrator)
 
         source_client.get.side_effect = [
@@ -400,7 +370,6 @@ class TestPipelinedTransfer:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Failure finalizing first experiment does not block the second."""
         self._setup_fast_poller(orchestrator)
 
         source_client.get.side_effect = [
@@ -432,8 +401,6 @@ class TestPipelinedTransfer:
         orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
-        # First experiment's finalize fails via session resource discovery error.
-        # discover_session_resources is called during _finalize_experiment.
         call_count = 0
 
         def session_resources_side_effect(experiment_id: str) -> list:
@@ -450,7 +417,6 @@ class TestPipelinedTransfer:
 
         result = orchestrator.run()
 
-        # Second experiment should still be synced
         assert result.experiments_synced >= 1
         assert orchestrator.executor.download_scan_dicom.call_count == 2
         assert orchestrator.executor.upload_scan_dicom.call_count == 2
@@ -461,7 +427,6 @@ class TestPipelinedTransfer:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Temp directories are cleaned up after successful pipelined transfer."""
         self._setup_fast_poller(orchestrator)
 
         source_client.get.side_effect = [
@@ -496,9 +461,7 @@ class TestPipelinedTransfer:
         cleanup_calls: list[str] = []
         original_tempdir = tempfile.TemporaryDirectory
 
-        class TrackingTempDir(original_tempdir):  # type: ignore[misc]
-            """TemporaryDirectory subclass that tracks cleanup calls."""
-
+        class TrackingTempDir(original_tempdir):
             def cleanup(self) -> None:
                 cleanup_calls.append(self.name)
                 super().cleanup()
@@ -510,7 +473,6 @@ class TestPipelinedTransfer:
             result = orchestrator.run()
 
         assert result.experiments_synced == 1
-        # ScanPipeline._upload_dicom_phase creates one TemporaryDirectory per DICOM experiment
         assert len(cleanup_calls) >= 1
 
     def test_backward_compatible_single_experiment(
@@ -519,7 +481,6 @@ class TestPipelinedTransfer:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Single DICOM experiment produces the same result via pipelined path."""
         self._setup_fast_poller(orchestrator)
 
         source_client.get.side_effect = [
@@ -566,7 +527,6 @@ class TestPipelinedTransfer:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Pipeline throttles when max_pending_archives is reached."""
         self._setup_fast_poller(orchestrator)
         orchestrator.config.max_pending_archives = 1
 
@@ -600,7 +560,6 @@ class TestPipelinedTransfer:
         orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
-        # count_dest_scans returns 1 (archived) so poller marks ready
         orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
 
         result = orchestrator.run()
@@ -615,7 +574,6 @@ class TestPipelinedTransfer:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Main thread resolves a READY prearchive entry."""
         self._setup_fast_poller(orchestrator)
 
         source_client.get.side_effect = [
@@ -644,8 +602,6 @@ class TestPipelinedTransfer:
         orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
-        # Prearchive: first calls return READY entry, subsequent calls empty.
-        # The poller sees the READY entry and sets needs_archive_action.
         prearchive_call_count = 0
 
         def prearchive_side_effect(project: str) -> list[dict]:
@@ -675,16 +631,13 @@ class TestPipelinedTransfer:
             }
         )
         orchestrator.executor.archive_prearchive = MagicMock()
-        # After archiving, count_dest_scans returns expected count
         orchestrator.executor.count_dest_scans = MagicMock(return_value=1)
         orchestrator.executor.wait_for_archive = MagicMock(return_value=1)
 
         result = orchestrator.run()
 
         assert result.experiments_synced == 2
-        # archive_prearchive should have been called for the READY entry
         orchestrator.executor.archive_prearchive.assert_called()
-        # Verify overwrite is None (READY, not CONFLICT)
         first_call = orchestrator.executor.archive_prearchive.call_args_list[0]
         assert first_call.kwargs.get("overwrite") is None
 
@@ -694,7 +647,6 @@ class TestPipelinedTransfer:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """Main thread resolves CONFLICT prearchive entry with overwrite=append."""
         self._setup_fast_poller(orchestrator)
 
         source_client.get.side_effect = [
@@ -723,7 +675,6 @@ class TestPipelinedTransfer:
         orchestrator.executor.upload_resource = MagicMock()
         orchestrator.executor.transfer_resource = MagicMock()
 
-        # Prearchive returns CONFLICT for first calls, then empty
         conflict_call_count = 0
 
         def conflict_prearchive(project: str) -> list[dict]:
@@ -758,7 +709,6 @@ class TestPipelinedTransfer:
 
         assert result.experiments_synced == 2
         orchestrator.executor.archive_prearchive.assert_called()
-        # Check overwrite="append" was used for CONFLICT resolution
         archive_calls = orchestrator.executor.archive_prearchive.call_args_list
         conflict_resolved = any(call.kwargs.get("overwrite") == "append" for call in archive_calls)
         assert conflict_resolved, (
@@ -767,15 +717,8 @@ class TestPipelinedTransfer:
 
 
 class TestDestReconciliation:
-    """Tests for reconciliation of previously-synced subjects deleted from dest."""
-
     @staticmethod
     def _subject_response(subjects: list[tuple[str, str]]) -> MagicMock:
-        """Build mock discover_subjects HTTP response.
-
-        Args:
-            subjects: List of (id, label) tuples.
-        """
         rows = [
             {
                 "ID": sid,
@@ -790,7 +733,6 @@ class TestDestReconciliation:
 
     @staticmethod
     def _experiments_response() -> MagicMock:
-        """Empty experiments response."""
         return make_response({"ResultSet": {"Result": []}})
 
     def test_reconcile_re_syncs_deleted_subject(
@@ -800,8 +742,6 @@ class TestDestReconciliation:
         dest_client: MagicMock,
         state_store: TransferStateStore,
     ) -> None:
-        """Subject deleted from dest is re-synced on next run."""
-        # Simulate a prior successful sync
         src_url = str(source_client.base_url)
         dst_url = str(dest_client.base_url)
         prev_sync = state_store.start_sync(src_url, "SRC", dst_url, "DST")
@@ -810,28 +750,17 @@ class TestDestReconciliation:
             src_url, "SRC", dst_url, "DST", "XNAT_S001", "XNAT_S999", "subject"
         )
 
-        # Source: subject unchanged (insert_date == last_modified < last_sync)
-        # Incremental discovery returns empty (nothing changed)
-        # Full discovery returns the subject
         source_client.get.side_effect = [
-            # Incremental discover_subjects: returns subject but _classify_change filters it
             self._subject_response([("XNAT_S001", "SUB001")]),
-            # list_dest_subjects (from reconciliation) is on dest_client
-            # Full discover_subjects (from reconciliation)
             self._subject_response([("XNAT_S001", "SUB001")]),
-            # discover_experiments for the re-synced subject
             self._experiments_response(),
         ]
 
-        # Dest: subject does NOT exist (deleted)
         dest_client.get.side_effect = [
-            # list_dest_subjects: empty (subject was deleted)
             make_response({"ResultSet": {"Result": []}}),
-            # conflict_checker.check_subject: empty (subject gone)
             make_response({"ResultSet": {"Result": []}}),
         ]
 
-        # create_subject returns URI
         subject_resp = MagicMock()
         subject_resp.text = "/data/subjects/XNAT_S999"
         dest_client.put.return_value = subject_resp
@@ -839,7 +768,6 @@ class TestDestReconciliation:
         result = orchestrator.run()
 
         assert result.subjects_synced == 1
-        # create_subject was called (PUT to dest)
         dest_client.put.assert_called()
 
     def test_no_reconcile_when_dest_has_subject(
@@ -849,7 +777,6 @@ class TestDestReconciliation:
         dest_client: MagicMock,
         state_store: TransferStateStore,
     ) -> None:
-        """Subject still on dest is not re-synced."""
         src_url = str(source_client.base_url)
         dst_url = str(dest_client.base_url)
         prev_sync = state_store.start_sync(src_url, "SRC", dst_url, "DST")
@@ -858,19 +785,16 @@ class TestDestReconciliation:
             src_url, "SRC", dst_url, "DST", "XNAT_S001", "XNAT_S999", "subject"
         )
 
-        # Source: subject unchanged
         source_client.get.side_effect = [
             self._subject_response([("XNAT_S001", "SUB001")]),
         ]
 
-        # Dest: subject still exists
         dest_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}
         )
 
         result = orchestrator.run()
 
-        # No subjects to sync (all exist on dest, unchanged on source)
         assert result.subjects_synced == 0
         dest_client.put.assert_not_called()
 
@@ -880,15 +804,11 @@ class TestDestReconciliation:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """First sync (no last_sync_time) skips reconciliation entirely."""
         source_client.get.side_effect = [
-            # discover_subjects: new subject
             self._subject_response([("XNAT_S001", "SUB001")]),
-            # discover_experiments
             self._experiments_response(),
         ]
 
-        # No dest conflict check since no prior mapping
         dest_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         subject_resp = MagicMock()
@@ -901,15 +821,8 @@ class TestDestReconciliation:
 
 
 class TestExperimentReconciliation:
-    """Tests for reconciliation of previously-synced experiments deleted from dest."""
-
     @staticmethod
     def _subject_response(subjects: list[tuple[str, str]]) -> MagicMock:
-        """Build mock discover_subjects HTTP response.
-
-        Args:
-            subjects: List of (id, label) tuples.
-        """
         rows = [
             {
                 "ID": sid,
@@ -924,7 +837,6 @@ class TestExperimentReconciliation:
 
     @staticmethod
     def _experiments_response() -> MagicMock:
-        """Empty experiments response."""
         return make_response({"ResultSet": {"Result": []}})
 
     def test_reconcile_re_syncs_subject_with_deleted_experiment(
@@ -934,11 +846,9 @@ class TestExperimentReconciliation:
         dest_client: MagicMock,
         state_store: TransferStateStore,
     ) -> None:
-        """Subject whose experiment was deleted from dest is re-synced."""
         src_url = str(source_client.base_url)
         dst_url = str(dest_client.base_url)
 
-        # Simulate a prior successful sync with subject + experiment mappings
         prev_sync = state_store.start_sync(src_url, "SRC", dst_url, "DST")
         state_store.end_sync(prev_sync, SyncStatus.COMPLETED, subjects_synced=1)
         state_store.save_id_mapping(
@@ -947,7 +857,6 @@ class TestExperimentReconciliation:
         state_store.save_id_mapping(
             src_url, "SRC", dst_url, "DST", "XNAT_E001", "XNAT_E999", "experiment"
         )
-        # Record experiment in entity_manifest so parent lookup works
         state_store.record_entity(
             sync_id=prev_sync,
             entity_type="experiment",
@@ -958,24 +867,15 @@ class TestExperimentReconciliation:
             status=EntityStatus.SYNCED,
         )
 
-        # Source: subject unchanged, incremental returns it but unchanged
-        # Full discovery returns the subject
         source_client.get.side_effect = [
-            # Incremental discover_subjects
             self._subject_response([("XNAT_S001", "SUB001")]),
-            # Full discover_subjects for experiment reconciliation
             self._subject_response([("XNAT_S001", "SUB001")]),
-            # discover_experiments for the re-synced subject
             self._experiments_response(),
         ]
 
-        # Dest: subject exists but experiment does NOT
         dest_client.get.side_effect = [
-            # list_dest_subjects: subject still there
             make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
-            # list_dest_experiments: experiment missing
             make_response({"ResultSet": {"Result": []}}),
-            # conflict_checker.check_subject
             make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
         ]
 
@@ -985,7 +885,6 @@ class TestExperimentReconciliation:
 
         result = orchestrator.run()
 
-        # Subject should be re-synced due to missing experiment
         assert result.subjects_synced == 1
 
     def test_no_experiment_reconcile_when_dest_has_experiment(
@@ -995,7 +894,6 @@ class TestExperimentReconciliation:
         dest_client: MagicMock,
         state_store: TransferStateStore,
     ) -> None:
-        """Subject is not re-synced when its experiments still exist on dest."""
         src_url = str(source_client.base_url)
         dst_url = str(dest_client.base_url)
 
@@ -1017,16 +915,12 @@ class TestExperimentReconciliation:
             status=EntityStatus.SYNCED,
         )
 
-        # Source: subject unchanged
         source_client.get.side_effect = [
             self._subject_response([("XNAT_S001", "SUB001")]),
         ]
 
-        # Dest: both subject and experiment exist
         dest_client.get.side_effect = [
-            # list_dest_subjects
             make_response({"ResultSet": {"Result": [{"ID": "XNAT_S999"}]}}),
-            # list_dest_experiments
             make_response({"ResultSet": {"Result": [{"ID": "XNAT_E999"}]}}),
         ]
 
@@ -1041,7 +935,6 @@ class TestExperimentReconciliation:
         source_client: MagicMock,
         dest_client: MagicMock,
     ) -> None:
-        """First sync (no last_sync_time) skips experiment reconciliation."""
         source_client.get.side_effect = [
             self._subject_response([("XNAT_S001", "SUB001")]),
             self._experiments_response(),

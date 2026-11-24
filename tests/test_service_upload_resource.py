@@ -1,11 +1,3 @@
-"""Temp-file lifecycle tests for UploadService.upload_resource.
-
-A directory source is zipped to a NamedTemporaryFile(delete=False) before
-upload. That zip must be removed on every exit path: a leak leaves a 50 GB
-zip behind for a 50 GB resource directory on each call, and `session
-upload-exam` calls this once per resource directory in the exam.
-"""
-
 from __future__ import annotations
 
 import tempfile
@@ -22,13 +14,12 @@ from xnatctl.services.upload import UploadService
 
 @pytest.fixture
 def temp_zips(tmp_path: Path) -> list[Path]:
-    """Redirect the service's temp zips into tmp_path and record their paths."""
     created: list[Path] = []
     real = tempfile.NamedTemporaryFile
 
-    def tracking(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+    def tracking(*args: object, **kwargs: object):
         kwargs["dir"] = str(tmp_path)
-        handle = real(*args, **kwargs)  # type: ignore[arg-type]
+        handle = real(*args, **kwargs)
         created.append(Path(handle.name))
         return handle
 
@@ -57,7 +48,6 @@ def source_dir(tmp_path: Path) -> Path:
 
 
 def _mock_http(status: int = 200) -> MagicMock:
-    """Patchable httpx.Client whose PUT returns ``status``."""
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status
     resp.text = "ok" if status < 400 else "boom"
@@ -84,11 +74,6 @@ def test_temp_zip_removed_after_successful_upload(
 def test_temp_zip_removed_when_upload_fails(
     service: UploadService, source_dir: Path, temp_zips: list[Path]
 ) -> None:
-    """A single-target upload raises on failure; the `finally` still cleans up.
-
-    The cleanup lives in a `finally` rather than on the success path precisely
-    so it covers the raising branch too.
-    """
     with patch(
         "xnatctl.services.upload.resources.httpx.Client",
         side_effect=RuntimeError("connection exploded"),
@@ -104,15 +89,7 @@ def test_temp_zip_removed_when_upload_fails(
 def test_temp_zip_removed_when_setup_fails_before_the_request(
     service: UploadService, source_dir: Path, temp_zips: list[Path]
 ) -> None:
-    """Cleanup must cover the setup work between zipping and the request too.
-
-    That window (stat, progress reporting, param building) must sit inside
-    the try block, or a failure there leaks the zip despite the finally.
-    """
-
     def exploding_callback(progress: object) -> None:
-        # An earlier callback fires before the zip exists; only blow up on the
-        # UPLOADING phase, which is inside the window under test.
         if getattr(progress, "phase", None) is OperationPhase.UPLOADING:
             raise RuntimeError("callback exploded")
 
@@ -129,7 +106,6 @@ def test_temp_zip_removed_when_setup_fails_before_the_request(
 def test_file_source_is_not_deleted(
     service: UploadService, tmp_path: Path, temp_zips: list[Path]
 ) -> None:
-    """Only the temp zip is cleaned up; a caller's own file must survive."""
     src = tmp_path / "payload.txt"
     src.write_text("keep me")
 
@@ -144,7 +120,6 @@ def test_file_source_is_not_deleted(
 def test_typed_failure_propagates_unwrapped(
     service: UploadService, source_dir: Path, temp_zips: list[Path]
 ) -> None:
-    """A typed client-layer failure passes through instead of being stringified."""
     with patch(
         "xnatctl.services.upload.resources.httpx.Client",
         side_effect=SessionExpiredError("https://xnat.example.org"),
@@ -157,7 +132,6 @@ def test_typed_failure_propagates_unwrapped(
 
 
 def test_upload_summary_raise_for_status_raises_on_failed_batch() -> None:
-    """UploadSummary.raise_for_status mirrors httpx.Response.raise_for_status."""
     summary = UploadSummary(
         success=False,
         total=4,
@@ -186,7 +160,6 @@ def test_upload_summary_raise_for_status_noop_on_success() -> None:
 def test_unexpected_failure_wraps_with_cause_and_source_path(
     service: UploadService, source_dir: Path, temp_zips: list[Path]
 ) -> None:
-    """The wrapper preserves the original exception and names the source."""
     boom = RuntimeError("connection exploded")
     with patch("xnatctl.services.upload.resources.httpx.Client", side_effect=boom):
         with pytest.raises(UploadError) as excinfo:
@@ -199,7 +172,6 @@ def test_unexpected_failure_wraps_with_cause_and_source_path(
 def test_typed_failure_is_the_same_exception_object(
     service: UploadService, source_dir: Path
 ) -> None:
-    """Pass-through means the identical object, not a lookalike."""
     exc = SessionExpiredError("https://xnat.example.org")
     with patch("xnatctl.services.upload.resources.httpx.Client", side_effect=exc):
         with pytest.raises(SessionExpiredError) as excinfo:
@@ -211,7 +183,6 @@ def test_typed_failure_is_the_same_exception_object(
 def test_archive_build_failure_wraps_and_cleans_the_temp_zip(
     service: UploadService, source_dir: Path, temp_zips: list[Path]
 ) -> None:
-    """A failed zip build is part of the upload contract and must not leak."""
     with patch(
         "xnatctl.services.upload.resources.shutil.make_archive",
         side_effect=OSError("No space left on device"),
@@ -228,9 +199,6 @@ def test_archive_build_failure_wraps_and_cleans_the_temp_zip(
 def test_error_progress_fires_and_a_raising_callback_cannot_mask(
     service: UploadService, source_dir: Path
 ) -> None:
-    """The failure notification is best-effort: it fires, and if the callback
-    itself raises it is suppressed so the typed failure still propagates.
-    """
     phases: list[OperationPhase] = []
 
     def callback(progress: UploadProgress) -> None:

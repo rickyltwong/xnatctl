@@ -64,8 +64,6 @@ def resolve_client_params(
     if auth_manager is None:
         auth_manager = AuthManager()
 
-    # ProfileNotFoundError carries its own next-step hint, so it propagates
-    # rather than being restated as a ConfigurationError.
     profile = config.get_profile(profile_name)
 
     # Credentials: env vars > profile config. The cached session is this
@@ -120,9 +118,6 @@ def build_client_from_profile(
     Raises:
         ProfileNotFoundError: If the named profile does not exist.
     """
-    # Imported here rather than at module scope: core.client imports this module
-    # via its from_profile classmethod, and a top-level import back into
-    # core.client would close that cycle.
     from xnatctl.core.client import XNATClient
 
     return XNATClient(

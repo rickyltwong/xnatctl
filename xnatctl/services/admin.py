@@ -16,20 +16,6 @@ from .base import BaseService
 
 
 def _add_filter_param(params: dict[str, Any], key: str, value: str | None) -> None:
-    """Add an optional query-string filter, rejecting an explicitly-empty one.
-
-    ``None`` means "no filter" and is simply omitted. An empty or
-    whitespace-only STRING is a different thing -- these filters go into
-    query-param values (httpx encodes them safely, so there's no path/route
-    injection risk the way an unquoted URL segment would carry), but
-    a truthy check would let ``value=""`` fall through the same way
-    ``None`` does, silently widening an audit query to every project/user/
-    action instead of failing on the caller's mistake.
-
-    Raises:
-        InputValidationError: If ``value`` is supplied but empty or
-            whitespace-only.
-    """
     if value is None:
         return
     if value.strip() == "":
@@ -66,7 +52,6 @@ class AdminService(BaseService):
         Returns:
             Summary dict with refreshed, failed, errors
         """
-        # Get experiments if not specified
         if not experiments:
             path = f"/data/projects/{quote_path_segment(project)}/experiments"
             params = {"format": "json", "columns": "ID"}
@@ -74,7 +59,7 @@ class AdminService(BaseService):
             experiment_rows = self._extract_results(data)
             experiments = [str(r["ID"]) for r in experiment_rows if r.get("ID")]
 
-        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+        if limit is not None:
             experiments = experiments[:limit]
 
         total = len(experiments)
@@ -85,11 +70,9 @@ class AdminService(BaseService):
             "total": total,
         }
 
-        # Build options string
         option_str = ",".join(options) if options else ""
 
         def refresh_experiment(exp_id: str) -> tuple[str, bool, str]:
-            """Refresh a single experiment and return status."""
             try:
                 path = f"/data/experiments/{quote_path_segment(exp_id)}"
                 params: dict[str, Any] = {"pullDataFromHeaders": "true"}
@@ -155,7 +138,6 @@ class AdminService(BaseService):
             "errors": [],
         }
 
-        # Expand groups with projects if provided
         target_groups: list[str] = []
         if projects:
             for project in projects:
@@ -237,8 +219,6 @@ class AdminService(BaseService):
         Returns:
             List of user dicts
         """
-        # `is not None`, not truthy: `project=""` is a caller mistake, not
-        # "no filter" -- it must not silently widen to every user on the site.
         if project is not None:
             path = f"/data/projects/{quote_path_segment(project)}/users"
         else:
@@ -367,27 +347,12 @@ class AdminService(BaseService):
             a single property can just as easily be a bool, a number, or a
             nested structure as a string; there is no dict to cast to.
         """
-        # `is not None`, not truthy: `key=""` is a caller mistake, not "get
-        # everything" -- it must not silently widen to the whole site
-        # config. quote_path_segment already rejects the empty string.
         if key is not None:
             path = f"/xapi/siteConfig/{quote_path_segment(key)}"
         else:
             path = "/xapi/siteConfig"
 
         return self._get(path)
-
-    # -------------------------------------------------------------------------
-    # Raw accessors used by the CLI
-    #
-    # These target the specific endpoints the CLI has always called, which
-    # differ from the typed methods above: ``refresh_catalogs`` PUTs each
-    # experiment, whereas the CLI POSTs the catalog-refresh service; ``audit_log``
-    # reads ``/data/audit``, whereas the CLI reads ``/xapi/audit``;
-    # ``add_user_to_groups`` PUTs per-project group paths, whereas the CLI PUTs
-    # the ``/xapi/users/{u}/groups`` list. The endpoints are not interchangeable,
-    # so the CLI's wire calls live here rather than being repointed.
-    # -------------------------------------------------------------------------
 
     def list_experiments_for_refresh(self, project: str) -> list[dict[str, Any]]:
         """Return raw ``(ID, subject_ID, label)`` experiment rows for a project."""

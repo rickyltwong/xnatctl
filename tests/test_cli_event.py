@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI `event` commands."""
-
 from __future__ import annotations
 
 import json
@@ -42,8 +40,6 @@ CREATE_PAYLOAD = {
 
 
 class TestEventList:
-    """Tests for `event list`."""
-
     def test_list_requests_expected_path(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = [SAMPLE_SUBSCRIPTION]
 
@@ -70,8 +66,6 @@ class TestEventList:
 
 
 class TestEventShow:
-    """Tests for `event show`."""
-
     def test_show(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = SAMPLE_SUBSCRIPTION
 
@@ -94,8 +88,6 @@ class TestEventShow:
 
 
 class TestEventCreate:
-    """Tests for `event create` -- happy path, declined confirmation, dry-run, stdin."""
-
     def test_create_from_file(self, authenticated_cli: AuthenticatedCLI, tmp_path) -> None:
         payload_file = tmp_path / "subscription.json"
         payload_file.write_text(json.dumps(CREATE_PAYLOAD))
@@ -161,8 +153,6 @@ class TestEventCreate:
 
 
 class TestEventDelete:
-    """Tests for `event delete` -- happy path, declined confirmation, dry-run."""
-
     def test_delete(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.delete.return_value = make_response(
             text="", content_type="text/plain"
@@ -205,8 +195,6 @@ class TestEventDelete:
 
 
 class TestEventEnableDisable:
-    """Tests for `event enable`/`event disable`."""
-
     def test_enable(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.post.return_value = make_response(
             text="", content_type="text/plain"
@@ -257,8 +245,6 @@ class TestEventEnableDisable:
 
 
 class TestEventActions:
-    """Tests for `event actions`."""
-
     def test_actions(self, authenticated_cli: AuthenticatedCLI) -> None:
         actions = [
             {
@@ -278,8 +264,6 @@ class TestEventActions:
 
 
 class TestEventTypes:
-    """Tests for `event types`."""
-
     def test_types(self, authenticated_cli: AuthenticatedCLI) -> None:
         types_ = [
             {

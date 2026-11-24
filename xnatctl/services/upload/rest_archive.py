@@ -56,12 +56,6 @@ class ArchiveUploadResult(NamedTuple):
 
 @dataclass
 class _AuthAttempt:
-    """Outcome of resolving batch-upload credentials to a JSESSION cookie.
-
-    Exactly one of ``failure`` / ``session_token`` is set: a failure short-
-    circuits the upload, otherwise the token and cookie jar are ready to use.
-    """
-
     failure: ArchiveUploadResult | None = None
     session_token: str | None = None
     cookies: dict[str, str] | None = None
@@ -74,18 +68,6 @@ def _resolve_batch_credentials(
     password: str | None,
     session_token: str | None,
 ) -> _AuthAttempt:
-    """Turn a token or username/password into a JSESSION cookie jar.
-
-    Args:
-        client: The batch's own httpx client.
-        username: XNAT username, used only when no token is given.
-        password: Its password.
-        session_token: Existing JSESSION token, preferred when present.
-
-    Returns:
-        _AuthAttempt; ``created_session`` is True only when this call logged
-        in itself, in which case the caller owns the session's deletion.
-    """
     if session_token:
         return _AuthAttempt(session_token=session_token, cookies={"JSESSIONID": session_token})
 
@@ -125,23 +107,6 @@ def _upload_with_reauth(
     session_refresher: SessionRefresher | None,
     cancel_token: CancellationToken,
 ) -> httpx.Response:
-    """Run the upload retry ladder, retrying once with a refreshed token on 401.
-
-    Mutates *cookies* in place when the token is refreshed, so the caller's
-    JSESSION cleanup always targets the newest token -- even when the retried
-    upload raises.
-
-    Args:
-        attempt_with: Uploads the archive using the given cookie jar.
-        archive_name: Archive filename, for log/retry labels.
-        session_token: Token the first attempt runs with.
-        cookies: Cookie jar shared with the caller's cleanup path.
-        session_refresher: Thread-safe token manager; None disables reauth.
-        cancel_token: Checked by the retry ladder.
-
-    Returns:
-        The final response (possibly still 401 when reauth is unavailable).
-    """
     resp = upload_with_retry(
         lambda: attempt_with(cookies),
         label=f"batch {archive_name}",
@@ -165,12 +130,9 @@ def _upload_with_reauth(
 
 
 def _classify_import_response(resp: httpx.Response) -> ArchiveUploadResult:
-    """Turn the import service's final response into an ArchiveUploadResult."""
     if resp.status_code == 200:
         return ArchiveUploadResult(True, "")
     if resp.status_code in (401, 403):
-        # No body snippet here on purpose: XNAT answers both with an HTML
-        # login page, which is noise in a one-line error.
         return ArchiveUploadResult(
             False,
             "Authentication failed: invalid or expired session",
@@ -250,13 +212,9 @@ def upload_single_archive(
     if direct_archive:
         require_server_version(xnat_client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")
 
-    # Same object the gate just inspected -- see the docstring.
     base_url = xnat_client.base_url
 
     name = archive_path.name.lower()
-    # Anything that is not a ZIP defaults to tar: the CLI accepts arbitrary
-    # archive names (data.tar.bz2, extensionless), and tar is the default
-    # for those. The batch path only ever generates .tar/.zip names.
     content_type = "application/zip" if name.endswith(".zip") else "application/x-tar"
 
     params = build_import_params(
@@ -276,7 +234,7 @@ def upload_single_archive(
 
     with httpx.Client(
         base_url=base_url,
-        timeout=build_httpx_timeout(timeout),  # connect fails fast
+        timeout=build_httpx_timeout(timeout),
         verify=verify_ssl,
     ) as client:
         try:
@@ -321,8 +279,6 @@ def upload_single_archive(
             return _classify_import_response(resp)
 
         except httpx.ConnectTimeout as e:
-            # upload_with_retry re-raises this without retrying (fail fast on
-            # an unreachable host), so do not claim retries happened.
             return ArchiveUploadResult(False, "Connection timed out; not retried", exception=e)
         except httpx.TimeoutException as e:
             return ArchiveUploadResult(False, "Upload timed out (after retries)", exception=e)
@@ -415,25 +371,6 @@ def _raise_for_archive_result(
     subject: str,
     session: str,
 ) -> None:
-    """Map a failed ArchiveUploadResult to the typed exception taxonomy.
-
-    Args:
-        result: Outcome of one archive upload.
-        base_url: XNAT server base URL, for error context.
-        archive_path: Uploaded archive, for error context.
-        project: Target project ID.
-        subject: Target subject label.
-        session: Target session label.
-
-    Raises:
-        SessionExpiredError: On a final 401.
-        PermissionDeniedError: On a final 403.
-        ResourceNotFoundError: On a final 404.
-        RetryExhaustedError: On an exhausted retryable status.
-        RequestTimeoutError: On an httpx timeout.
-        NetworkError: On an httpx transport failure.
-        UploadError: On any other failure.
-    """
     if result.success:
         return
     if result.status_code == 401:
@@ -443,9 +380,6 @@ def _raise_for_archive_result(
     if result.status_code == 404:
         raise ResourceNotFoundError("Import destination", f"{project}/{subject}/{session}")
     if result.status_code in RETRYABLE_STATUS_CODES:
-        # The core set (429/5xx), NOT the upload set: an exhausted transient
-        # 400 falls through to UploadError below, where the body -- which names
-        # the conflicting session -- survives in the message.
         raise RetryExhaustedError(
             f"upload {archive_path.name}",
             UPLOAD_MAX_RETRIES + 1,

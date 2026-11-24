@@ -1,15 +1,3 @@
-"""TLS for DICOM C-STORE.
-
-Plain C-STORE puts pixel data and the identifiers attached to it on the wire in
-cleartext. There was no way to encrypt it: neither association passed
-``tls_args``, and ``grep -i tls`` over the upload service returned nothing but
-HTTP-side settings.
-
-The certificate tests use real self-signed material generated here rather than
-mocking ``load_cert_chain``, so a context that would not actually load is a
-failure rather than a passing assertion about a mock.
-"""
-
 from __future__ import annotations
 
 import ssl
@@ -23,7 +11,6 @@ from xnatctl.services.upload.dicom_store import _tls_kwargs, build_dicom_tls_con
 
 
 def _write_self_signed(tmp_path: Path) -> tuple[Path, Path]:
-    """Generate a throwaway cert/key pair, or skip if cryptography is absent."""
     crypto = pytest.importorskip("cryptography")
     from datetime import UTC, datetime, timedelta
 
@@ -32,7 +19,7 @@ def _write_self_signed(tmp_path: Path) -> tuple[Path, Path]:
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.x509.oid import NameOID
 
-    assert crypto  # silence the unused-import linter; importorskip is the point
+    assert crypto
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "xnatctl-test")])
     now = datetime.now(UTC)
@@ -71,13 +58,6 @@ class TestContext:
         assert context.check_hostname is True
 
     def test_there_is_no_way_to_turn_verification_off(self) -> None:
-        """Deliberately no insecure mode.
-
-        A TLS mode that accepts any certificate reads as encrypted in the
-        command line and the logs while a man-in-the-middle reads the PHI
-        anyway. A site that cannot verify should send plaintext knowingly and
-        see the notice that goes with it.
-        """
         import inspect
 
         params = inspect.signature(build_dicom_tls_context).parameters
@@ -94,7 +74,6 @@ class TestContext:
         assert context.get_ca_certs(), "the bundle was not loaded"
 
     def test_a_client_cert_and_key_are_loaded(self, tmp_path: Path) -> None:
-        """Mutual TLS: XNAT DICOM SCP deployments commonly require it."""
         cert_path, key_path = _write_self_signed(tmp_path)
 
         context = build_dicom_tls_context(client_cert=str(cert_path), client_key=str(key_path))
@@ -108,7 +87,6 @@ class TestContext:
         assert "client certificate" in str(excinfo.value)
 
     def test_a_mismatched_key_raises_rather_than_silently_continuing(self, tmp_path: Path) -> None:
-        """Loading the wrong key must fail here, not at association time."""
         cert_path, _key = _write_self_signed(tmp_path)
         other = tmp_path / "other"
         other.mkdir()
@@ -130,12 +108,6 @@ class TestAssociationKwargs:
         assert kwargs["tls_args"][0] is context
 
     def test_the_hostname_is_passed_for_verification(self) -> None:
-        """Not the ``None`` the pynetdicom examples use.
-
-        With check_hostname on, omitting server_hostname means the certificate
-        is never matched against the host being talked to, which removes most
-        of the protection the context was built for.
-        """
         context = build_dicom_tls_context()
 
         kwargs = _tls_kwargs(context, "scp.example.org")
@@ -144,8 +116,6 @@ class TestAssociationKwargs:
 
 
 class TestServiceWiring:
-    """The context must actually reach ``ae.associate``."""
-
     @staticmethod
     def _service():
         from xnatctl.core.client import XNATClient
@@ -162,15 +132,13 @@ class TestServiceWiring:
 
         captured: dict[str, object] = {}
 
-        def fake_echo(host, port, calling, called, tls_context=None):  # type: ignore[no-untyped-def]
+        def fake_echo(host, port, calling, called, tls_context=None):
             captured["tls_context"] = tls_context
-            return False  # stop before any real association is attempted
+            return False
 
         monkeypatch.setattr(uploads, "_c_echo", fake_echo)
         (tmp_path / "a.dcm").write_bytes(b"DICM")
 
-        # C-ECHO is stubbed to fail, which is how the call is stopped before
-        # any real association: the assertion is about what was passed to it.
         with pytest.raises(RuntimeError, match="C-ECHO failed"):
             self._service().upload_dicom_store(
                 dicom_root=tmp_path, host="scp.example.org", called_aet="AET", tls=True
@@ -185,7 +153,7 @@ class TestServiceWiring:
 
         captured: dict[str, object] = {"tls_context": "unset"}
 
-        def fake_echo(host, port, calling, called, tls_context=None):  # type: ignore[no-untyped-def]
+        def fake_echo(host, port, calling, called, tls_context=None):
             captured["tls_context"] = tls_context
             return False
 
@@ -202,7 +170,6 @@ class TestServiceWiring:
     def test_plaintext_logs_the_notice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Someone reading the logs should be able to tell it was cleartext."""
         import logging
 
         import xnatctl.services.upload.dicom_store as uploads
@@ -220,14 +187,6 @@ class TestServiceWiring:
 
 
 class TestCLI:
-    """Guards against believing a transfer was encrypted when it was not.
-
-    These go through the authenticated harness because ``@require_auth`` runs
-    before the command body: without it the tests pass only on a machine that
-    happens to have working credentials configured, and fail everywhere else
-    with "Not authenticated" -- which is exactly what happened in CI.
-    """
-
     def test_the_options_are_documented(self) -> None:
         from click.testing import CliRunner
 
@@ -267,7 +226,6 @@ class TestCLI:
         assert "--tls-key requires --tls-cert" in result.output
 
     def test_tls_material_without_tls_is_refused(self, tmp_path: Path) -> None:
-        """Silently ignoring a --tls-cert would look like it was in use."""
         from conftest import make_authenticated_cli
 
         cert = tmp_path / "c.pem"

@@ -42,8 +42,6 @@ from xnatctl.services.subjects import SubjectService
 
 @dataclass(frozen=True)
 class _RenameRule:
-    """A single subject rename rule loaded from a patterns JSON file."""
-
     project: str
     match: str
     to: str
@@ -51,20 +49,12 @@ class _RenameRule:
 
 
 def _targets_field(expr: str | None, field: str) -> bool:
-    """Whether a ``--filter``/``--sort-by`` expression names *field*.
-
-    A lightweight pre-check (field name only, no validation of the rest of
-    the expression) used to decide filter/enrichment ORDER in ``subject
-    list`` before the real, validating :func:`apply_filter`/
-    :func:`apply_sort_limit` run.
-    """
     if not expr:
         return False
     return expr.split(":", 1)[0].strip() == field
 
 
 def _apply_template(*, template: str, project: str, groups: tuple[str | None, ...]) -> str:
-    """Apply {project} and {1}/{2}/... substitutions to a template string."""
     target = template.replace("{project}", project)
     for i, g in enumerate(groups, start=1):
         target = target.replace(f"{{{i}}}", g or "")
@@ -72,13 +62,6 @@ def _apply_template(*, template: str, project: str, groups: tuple[str | None, ..
 
 
 def _validate_rename_target(target: str) -> str | None:
-    """Reject a rename target that is not a legal XNAT label.
-
-    Every rename target here is derived text -- a regex substitution, a
-    template expansion, or a raw value from a user-supplied mapping/patterns
-    JSON file -- none of it XNAT has validated yet. Returns an error message
-    if invalid, or ``None`` if the target is safe to use.
-    """
     try:
         validate_xnat_label(target, "subject label")
     except InvalidIdentifierError as e:
@@ -87,7 +70,6 @@ def _validate_rename_target(target: str) -> str | None:
 
 
 def _projects_in_patterns_file(path: str) -> set[str]:
-    """Extract the unique project IDs referenced by a patterns JSON file."""
     with open(path) as f:
         data = json.load(f)
 
@@ -111,11 +93,6 @@ def _projects_in_patterns_file(path: str) -> set[str]:
 def _load_patterns_file(
     *, path: str, project: str
 ) -> list[tuple[re.Pattern[str], str, str | None]]:
-    """Load and compile rename rules for a single project.
-
-    Returns:
-        List of (compiled_regex, to_template, description) tuples.
-    """
     with open(path) as f:
         data = json.load(f)
 
@@ -189,30 +166,16 @@ def subject_list(
     project = validate_project_id(require_project_from_context(ctx, project))
     service = SubjectService(ctx.get_client())
 
-    # Get subjects
     results = service.list_rows(project, columns="ID,label,src")
 
-    # Transform for output
     subjects = [{"id": r.get("ID", ""), "label": r.get("label", "")} for r in results]
 
-    # A --filter targeting "sessions" cannot run on id/label alone -- there
-    # is nothing to narrow the working set by until enrichment (below) has
-    # happened, so it is deferred. Everything else narrows NOW, regardless
-    # of what --sort-by (a separate option) happens to target -- a --filter
-    # on id/label must narrow the set before the enrichment cap is checked
-    # even when --sort-by is what's asking for "sessions".
     filter_targets_sessions = _targets_field(filter_expr, "sessions")
     sort_targets_sessions = _targets_field(sort_by, "sessions")
     needs_sessions_for_controls = filter_targets_sessions or sort_targets_sessions
     if not filter_targets_sessions:
         subjects = apply_filter(subjects, filter_expr)
 
-    # Get session counts (if not too many subjects, after the narrowing
-    # above). Quiet mode never computes it (its output is id/label lines
-    # only), which is an independent reason to skip enrichment from the
-    # size cap below -- conflating the two would misreport "too many
-    # subjects" for a small, quiet-mode project that was never going to get
-    # the column anyway.
     enriched = False
     if ctx.quiet:
         if needs_sessions_for_controls:
@@ -234,9 +197,6 @@ def subject_list(
             "Narrow further with --filter on id/label, or use 'subject show' per-subject."
         )
     else:
-        # Neither control needs it, but the project is still too big to
-        # enrich -- say so once rather than rendering silent blanks for a
-        # column the caller never explicitly asked to filter/sort by.
         click.echo(
             f"session counts omitted: project has {len(subjects)} subjects "
             "(> 50); narrow with --filter to see them",
@@ -280,14 +240,12 @@ def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
     hierarchy = HierarchyService(client)
     service = SubjectService(client)
 
-    # Get subject details
     try:
         resolved = hierarchy.resolve_subject(SubjectRef(subject=subject_id, project_id=project))
     except ResourceNotFoundError:
         print_error(f"Subject not found: {subject_id}")
         raise SystemExit(1) from None
 
-    # Get sessions
     try:
         sessions = service.experiment_rows(project, resolved.subject_id)
         session_labels = [s.get("label", s.get("ID", "")) for s in sessions]
@@ -318,7 +276,7 @@ def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
         "label": resolved.subject_label or subject_id,
         "project": resolved.project_id or project,
         "session_count": len(session_labels),
-        "sessions": session_labels[:10],  # Limit to first 10
+        "sessions": session_labels[:10],
         "shared_projects": shared_projects,
     }
 
@@ -356,11 +314,6 @@ def subject_delete(
         xnatctl subject delete SUB001 -P MYPROJ --dry-run
         xnatctl subject list -P MYPROJ -q | xnatctl subject delete -P MYPROJ --batch - --yes
     """
-    # `batch_ids is not None` is presence ("--batch was given"), not
-    # truthiness of the parsed list -- @batch_option already refuses an
-    # empty-but-given batch, but these checks stay presence-based rather
-    # than relying on that guarantee, so a positional SUBJECT_ID can never
-    # slip past mutual exclusion just because the batch happened to be empty.
     if subject_id and batch_ids is not None:
         raise click.UsageError("provide SUBJECT_ID or --batch, not both")
     ids = batch_ids if batch_ids is not None else ([subject_id] if subject_id else None)
@@ -368,24 +321,9 @@ def subject_delete(
         raise click.UsageError("provide SUBJECT_ID or --batch")
 
     project = validate_project_id(require_project_from_context(ctx, project))
-    # Validate every ID up front, before any mutation: a malformed ID
-    # anywhere in the batch must abort the whole command, not surface only
-    # after earlier IDs in the same batch have already been deleted.
     validated_ids = [validate_subject_id(raw_id) for raw_id in ids]
     service = SubjectService(ctx.get_client())
 
-    # Every non-2xx status arrives here as a typed exception, not as a
-    # response to inspect: the client layer raises on 404/403/5xx and only
-    # ever returns 2xx. So one bad ID in the middle of a list has to be
-    # caught per subject, otherwise it aborts the run and silently leaves
-    # every later ID untouched. The status check below still stands for the
-    # 2xx-but-not-200/204 case.
-    #
-    # Isolation applies only when there IS a rest of the list. With a single
-    # subject the exception propagates to @handle_errors, which renders the
-    # real cause ("Permission denied on SUB001") and records that class in
-    # the audit trail -- swallowing it here would replace both with a
-    # generic failure count.
     isolate_failures = len(validated_ids) > 1
     failed: list[tuple[str, str]] = []
     for sid in validated_ids:
@@ -395,7 +333,7 @@ def subject_delete(
 
         try:
             resp = service.delete_raw(project, sid)
-        except Exception as e:  # noqa: BLE001  # per-subject isolation across a multi-subject list
+        except Exception as e:
             if not isolate_failures:
                 raise
             failed.append((sid, str(e)))
@@ -485,7 +423,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
         print_error("Must provide --patterns-file, --mapping file, or --pattern with --to template")
         raise SystemExit(1)
 
-    # Get current subjects
     subjects = subject_svc.list_rows(project)
     current_labels = {s["label"] for s in subjects}
 
@@ -494,7 +431,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
     skipped = []
 
     if patterns_file:
-        # Load per-project rules and apply the first matching rule per subject.
         try:
             rules = _load_patterns_file(path=patterns_file, project=project)
         except (OSError, json.JSONDecodeError, ValueError, ConfigurationError) as e:
@@ -571,7 +507,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                     skipped.append((label, f"failed: {resp.status_code}"))
 
     elif mapping:
-        # Load mapping from file
         with open(mapping) as f:
             rename_map = json.load(f)
 
@@ -601,9 +536,7 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                 else:
                     renamed[old_label] = new_label
             else:
-                # Execute rename/merge
                 if target_exists:
-                    # Merge: move all experiments from source to target
                     try:
                         result = subject_svc.merge_subjects(
                             project=project,
@@ -629,7 +562,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                         skipped.append((old_label, f"failed: {resp.status_code}"))
 
     elif pattern and to_template:
-        # Pattern-based rename
         regex = validate_regex_pattern(pattern)
 
         for subj in subjects:
@@ -638,7 +570,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
             if not match:
                 continue
 
-            # Build target name from template
             groups = match.groups()
             target = to_template.replace("{project}", project)
             for i, g in enumerate(groups, start=1):
@@ -662,7 +593,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                     renamed[label] = target
             else:
                 if target_exists:
-                    # Merge: move all experiments from source to target
                     try:
                         result = subject_svc.merge_subjects(
                             project=project,
@@ -687,7 +617,6 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
                     else:
                         skipped.append((label, f"failed: {resp.status_code}"))
 
-    # Output results
     prefix = "[DRY-RUN] " if dry_run else ""
 
     if renamed:

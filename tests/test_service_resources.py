@@ -1,5 +1,3 @@
-"""Unit tests for ResourceService."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,7 +13,6 @@ from xnatctl.services.resources import ResourceService
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """Create a mock XNATClient."""
     client = MagicMock()
     client.base_url = "https://xnat.example.org"
     return client
@@ -23,7 +20,6 @@ def mock_client() -> MagicMock:
 
 @pytest.fixture
 def service(mock_client: MagicMock) -> ResourceService:
-    """Create ResourceService with mock client."""
     return ResourceService(mock_client)
 
 
@@ -38,10 +34,7 @@ SAMPLE_RESOURCE = {
 
 
 class TestResourceList:
-    """Tests for ResourceService.list."""
-
     def test_list_session_resources(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """List session-level resources."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.list("E001")
@@ -54,7 +47,6 @@ class TestResourceList:
         assert "/data/experiments/E001/resources" in call_path
 
     def test_list_scan_resources(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """List scan-level resources."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.list("E001", scan_id="1")
@@ -64,7 +56,6 @@ class TestResourceList:
         assert "/scans/1/resources" in call_path
 
     def test_list_with_project(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """List with project uses project-scoped path."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.list("E001", project="PROJ01")
@@ -76,7 +67,6 @@ class TestResourceList:
     def test_list_tolerates_missing_id_and_unparseable_counts(
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
-        """list() tolerates real-ish rows that violate strict typing."""
         rows = [
             {
                 "label": "Physio",
@@ -107,7 +97,6 @@ class TestResourceList:
     def test_list_treats_bool_file_count_as_missing(
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
-        """Bool file_count should not coerce to 1/0."""
         rows = [
             {
                 "label": "Physio",
@@ -125,10 +114,7 @@ class TestResourceList:
 
 
 class TestResourceGet:
-    """Tests for ResourceService.get."""
-
     def test_get_resource(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """Get resource by label."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         result = service.get("E001", "DICOM")
@@ -137,7 +123,6 @@ class TestResourceGet:
         assert result.label == "DICOM"
 
     def test_get_not_found(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """Get raises ResourceNotFoundError when label not matched."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
         with pytest.raises(ResourceNotFoundError):
@@ -145,10 +130,7 @@ class TestResourceGet:
 
 
 class TestResourceListFiles:
-    """Tests for ResourceService.list_files."""
-
     def test_list_files(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """list_files returns ResourceFile objects."""
         file_row = {"Name": "scan001.dcm", "Size": 524288, "URI": "/files/scan001.dcm"}
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [file_row]}})
 
@@ -160,7 +142,6 @@ class TestResourceListFiles:
         assert result[0].size == 524288
 
     def test_list_files_scan_level(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """list_files at scan level uses correct path."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list_files("E001", "DICOM", scan_id="1", project="PROJ01")
@@ -170,10 +151,7 @@ class TestResourceListFiles:
 
 
 class TestResourceCreate:
-    """Tests for ResourceService.create."""
-
     def test_create_resource(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """Create issues PUT then fetches the resource."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
@@ -186,7 +164,6 @@ class TestResourceCreate:
         assert put_params["content"] == "raw"
 
     def test_create_scan_level(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """Create at scan level uses correct path."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
@@ -198,13 +175,6 @@ class TestResourceCreate:
     def test_create_existing_resource_409(
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
-        """Create returns existing resource on 409 Conflict.
-
-        ``XNATClient.put()`` never lets a raw ``httpx.HTTPStatusError``
-        escape -- it always translates a non-2xx response to a typed
-        ``ClientRequestError`` first, so that's what the service must
-        catch (and what the mock here must raise) for the 409 path.
-        """
         mock_client.put.side_effect = ClientRequestError(409, "PUT", "/some/path")
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_RESOURCE]}})
 
@@ -216,7 +186,6 @@ class TestResourceCreate:
     def test_create_non_409_error_raises(
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
-        """Create raises on non-409 HTTP errors."""
         mock_client.put.side_effect = ClientRequestError(400, "PUT", "/some/path")
 
         with pytest.raises(ClientRequestError):
@@ -224,10 +193,7 @@ class TestResourceCreate:
 
 
 class TestResourceDelete:
-    """Tests for ResourceService.delete."""
-
     def test_delete(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """Delete returns True."""
         mock_client.delete.return_value = make_response("")
 
         assert service.delete("E001", "DICOM") is True
@@ -235,7 +201,6 @@ class TestResourceDelete:
     def test_delete_with_remove_files(
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
-        """Delete passes removeFiles=true by default."""
         mock_client.delete.return_value = make_response("")
 
         service.delete("E001", "DICOM")
@@ -246,7 +211,6 @@ class TestResourceDelete:
     def test_delete_without_remove_files(
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
-        """Delete without remove_files omits param."""
         mock_client.delete.return_value = make_response("")
 
         service.delete("E001", "DICOM", remove_files=False)
@@ -256,17 +220,13 @@ class TestResourceDelete:
 
 
 class TestResourceUploadFile:
-    """Tests for ResourceService.upload_file."""
-
     def test_upload_file_not_found(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """Upload raises FileNotFoundError for missing file."""
         with pytest.raises(FileNotFoundError):
             service.upload_file("E001", "DICOM", Path("/nonexistent/file.dcm"))
 
     def test_upload_file(
         self, service: ResourceService, mock_client: MagicMock, tmp_path: Path
     ) -> None:
-        """Upload reads file and calls client.put."""
         test_file = tmp_path / "test.json"
         test_file.write_text('{"key": "value"}')
         mock_client.put.return_value = make_response("", content_type="text/plain")
@@ -281,7 +241,6 @@ class TestResourceUploadFile:
     def test_upload_file_zip_content_type(
         self, service: ResourceService, mock_client: MagicMock, tmp_path: Path
     ) -> None:
-        """ZIP files get application/zip content type."""
         test_file = tmp_path / "archive.zip"
         test_file.write_bytes(b"PK\x03\x04fake")
         mock_client.put.return_value = make_response("", content_type="text/plain")
@@ -294,7 +253,6 @@ class TestResourceUploadFile:
     def test_upload_file_extract_flag(
         self, service: ResourceService, mock_client: MagicMock, tmp_path: Path
     ) -> None:
-        """Extract flag is passed as param."""
         test_file = tmp_path / "data.zip"
         test_file.write_bytes(b"fake")
         mock_client.put.return_value = make_response("", content_type="text/plain")
@@ -308,7 +266,6 @@ class TestResourceUploadFile:
     def test_upload_file_sets_inbody(
         self, service: ResourceService, mock_client: MagicMock, tmp_path: Path
     ) -> None:
-        """Raw-body file writes must carry inbody=true (regression, issue #21)."""
         test_file = tmp_path / "params.json"
         test_file.write_text('{"k": "v"}')
         mock_client.put.return_value = make_response("", content_type="text/plain")
@@ -321,7 +278,6 @@ class TestResourceUploadFile:
     def test_upload_file_streams_via_content_not_data(
         self, service: ResourceService, mock_client: MagicMock, tmp_path: Path
     ) -> None:
-        """Body is sent through content= (raw stream), not the form data= param."""
         test_file = tmp_path / "blob.bin"
         test_file.write_bytes(b"\x00\x01\x02payload")
         mock_client.put.return_value = make_response("", content_type="text/plain")
@@ -334,8 +290,6 @@ class TestResourceUploadFile:
 
 
 class TestResourceRawAccessors:
-    """Tests for the raw-row accessors the resource/scan screens route through."""
-
     def _experiment_parent(self):
         from xnatctl.models.hierarchy import ExperimentRef
 
@@ -344,7 +298,6 @@ class TestResourceRawAccessors:
     def test_list_rows_keeps_every_key(
         self, service: ResourceService, mock_client: MagicMock
     ) -> None:
-        """list_rows returns untyped rows verbatim (no model normalization)."""
         row = {"label": "DICOM", "format": "DICOM", "file_count": "5", "extra": "kept"}
         mock_client.get_json.return_value = {"ResultSet": {"Result": [row]}}
 
@@ -354,13 +307,11 @@ class TestResourceRawAccessors:
         mock_client.get_json.assert_called_once_with("/data/experiments/EXP01/resources")
 
     def test_list_rows_empty(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """An empty ResultSet yields an empty list."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         assert service.list_rows(self._experiment_parent()) == []
 
     def test_list_file_rows(self, service: ResourceService, mock_client: MagicMock) -> None:
-        """list_file_rows reads the resource's files collection for the given label."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": [{"Name": "a.dcm"}]}}
 
         rows = service.list_file_rows(self._experiment_parent(), "DICOM")

@@ -1,11 +1,3 @@
-"""Unit tests for EventService.
-
-Fixture shapes are the real ones observed live against XNAT 1.9.2.1 core:
-kebab-case JSON keys throughout, a bare JSON array from list/actions/types,
-a plain-text "{name}:{id}" body (not JSON) from create, and empty 200/204
-bodies from update/delete/activate/deactivate.
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -49,15 +41,10 @@ CREATE_PAYLOAD = {
 
 
 class TestParseCreatedId:
-    """Tests for the `"{name}:{id}"` plain-text create response parser."""
-
     def test_simple_name(self) -> None:
         assert _parse_created_id("probe-test-2:1", "/xapi/events/subscription") == 1
 
     def test_name_containing_colons_uses_trailing_digits(self) -> None:
-        """Verified live: a name with colons in it still parses correctly --
-        the id is always the text after the LAST colon.
-        """
         assert _parse_created_id("weird:name:test:3", "/xapi/events/subscription") == 3
 
     def test_server_generated_name_when_name_omitted(self) -> None:
@@ -74,8 +61,6 @@ class TestParseCreatedId:
 
 
 class TestListSubscriptions:
-    """Tests for EventService.list_subscriptions."""
-
     def test_list_subscriptions(self, fake_client) -> None:
         fake_client.get_json.return_value = [SAMPLE_SUBSCRIPTION]
         service = EventService(fake_client)
@@ -92,7 +77,6 @@ class TestListSubscriptions:
         assert service.list_subscriptions() == []
 
     def test_list_subscriptions_non_list_response_raises(self, fake_client) -> None:
-        """An unexpected 2xx shape must raise, not silently become []."""
         fake_client.get_json.return_value = {"error": "nope"}
         service = EventService(fake_client)
 
@@ -101,8 +85,6 @@ class TestListSubscriptions:
 
 
 class TestGetSubscription:
-    """Tests for EventService.get_subscription."""
-
     def test_get_subscription(self, fake_client) -> None:
         fake_client.get_json.return_value = SAMPLE_SUBSCRIPTION
         service = EventService(fake_client)
@@ -123,8 +105,6 @@ class TestGetSubscription:
 
 
 class TestCreateSubscription:
-    """Tests for EventService.create_subscription."""
-
     def test_create_subscription(self, fake_client, response_factory) -> None:
         fake_client.post.return_value = response_factory(
             text="cli-probe-1:5", content_type="text/plain"
@@ -138,8 +118,6 @@ class TestCreateSubscription:
 
 
 class TestDeleteSubscription:
-    """Tests for EventService.delete_subscription."""
-
     def test_delete_subscription(self, fake_client, response_factory) -> None:
         fake_client.delete.return_value = response_factory(text="", content_type="text/plain")
         service = EventService(fake_client)
@@ -149,7 +127,6 @@ class TestDeleteSubscription:
         fake_client.delete.assert_called_once_with("/xapi/events/subscription/5")
 
     def test_delete_unknown_subscription_raises(self, fake_client) -> None:
-        """DELETE itself 404s cleanly on an unknown id -- no preflight GET needed."""
         fake_client.delete.side_effect = ResourceNotFoundError(
             "resource", "/xapi/events/subscription/999"
         )
@@ -160,8 +137,6 @@ class TestDeleteSubscription:
 
 
 class TestActivateDeactivateSubscription:
-    """Tests for EventService.activate_subscription / deactivate_subscription."""
-
     def test_activate_subscription(self, fake_client, response_factory) -> None:
         fake_client.post.return_value = response_factory(text="", content_type="text/plain")
         service = EventService(fake_client)
@@ -189,8 +164,6 @@ class TestActivateDeactivateSubscription:
 
 
 class TestListActions:
-    """Tests for EventService.list_actions."""
-
     def test_list_actions(self, fake_client) -> None:
         actions = [
             {
@@ -217,8 +190,6 @@ class TestListActions:
 
 
 class TestListEventTypes:
-    """Tests for EventService.list_event_types."""
-
     def test_list_event_types(self, fake_client) -> None:
         types_ = [
             {

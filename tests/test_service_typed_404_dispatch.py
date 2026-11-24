@@ -1,11 +1,3 @@
-"""Cross-service pin for typed 404 dispatch.
-
-``tests/test_api_surface.py`` guards that no module classifies an error by
-sniffing ``str(exc)``; this module pins the behavior that guard protects,
-across every service that re-scopes a typed 404, in one place rather
-than duplicated per-service test file.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -29,9 +21,6 @@ def _mock_client() -> MagicMock:
     return client
 
 
-# (service class, a call that triggers a single-resource GET, expected
-# resource_type, expected resource_id) for every service that re-scopes
-# the client's typed 404 into a resource-specific error.
 _GET_CASES = [
     pytest.param(
         SubjectService,
@@ -78,14 +67,6 @@ def test_typed_404_dispatches_on_type_not_message_text(
     resource_type: str,
     resource_id: str,
 ) -> None:
-    """A typed 404 is classified by its class, not by sniffing the message.
-
-    The client can raise ``ResourceNotFoundError`` with any message; a
-    resource labelled e.g. "SUB404" must not defeat classification the way a
-    substring check on "404" would. Each service must also re-scope the error
-    to name the resource it was looking for -- a new object chained from the
-    client's original, not the mutated original re-raised.
-    """
     client = _mock_client()
     original = ResourceNotFoundError("resource", "no such thing here")
     client.get.side_effect = original
@@ -101,9 +82,6 @@ def test_typed_404_dispatches_on_type_not_message_text(
     assert err.details.get("resource_id") == resource_id
 
 
-# (service class, a call that triggers a single-resource GET, a path to embed
-# in the ServerError's message) for every service in _GET_CASES -- the id in
-# each path contains "404" without the error being a 404.
 _FALSE_POSITIVE_CASES = [
     pytest.param(
         SubjectService, lambda svc: svc.get("SUB404"), "/data/subjects/SUB404", id="subjects"
@@ -138,13 +116,6 @@ def test_non_404_error_whose_text_contains_404_propagates_unchanged(
     call: Callable[[Any], Any],
     path: str,
 ) -> None:
-    """The false positive the old string match got wrong, pinned per service.
-
-    A ``ServerError`` for a resource labelled e.g. "SUB404" stringifies to
-    something like "HTTP 500 on GET /data/subjects/SUB404" -- containing the
-    substring "404" without being a 404. It must propagate as itself, not be
-    reclassified as ResourceNotFoundError.
-    """
     client = _mock_client()
     original = ServerError(500, "GET", path, "")
     client.get.side_effect = original

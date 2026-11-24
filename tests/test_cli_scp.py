@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI `scp` commands."""
-
 from __future__ import annotations
 
 from conftest import AuthenticatedCLI, make_response
@@ -16,8 +14,6 @@ SAMPLE_SCP = {
 
 
 class TestScpList:
-    """Tests for `scp list`."""
-
     def test_list_requests_expected_path(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = [SAMPLE_SCP]
 
@@ -37,8 +33,6 @@ class TestScpList:
 
 
 class TestScpShow:
-    """Tests for `scp show`."""
-
     def test_show(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = SAMPLE_SCP
 
@@ -50,12 +44,10 @@ class TestScpShow:
 
 
 class TestScpCreate:
-    """Tests for `scp create` -- happy path, declined confirmation, dry-run, port validation."""
-
     def test_create(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.side_effect = [
-            {"dicomObjectIdentifier": "Default..."},  # identifier lookup
-            [],  # existing receivers -- no port collision
+            {"dicomObjectIdentifier": "Default..."},
+            [],
         ]
         created = {**SAMPLE_SCP, "id": 2, "aeTitle": "TESTSCP", "port": 18104}
         authenticated_cli.client.post.return_value = make_response(created)
@@ -87,13 +79,9 @@ class TestScpCreate:
     def test_create_duplicate_port_rejected_no_post(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """The server accepts a duplicate port silently (verified live) --
-        this must be rejected client-side before any request is sent, since
-        two receivers cannot independently bind one listening socket.
-        """
         authenticated_cli.client.get_json.side_effect = [
             {"dicomObjectIdentifier": "Default..."},
-            [SAMPLE_SCP],  # existing receiver already bound to port 8104
+            [SAMPLE_SCP],
         ]
 
         result = authenticated_cli.invoke(
@@ -106,7 +94,7 @@ class TestScpCreate:
     def test_create_free_port_still_succeeds(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.side_effect = [
             {"dicomObjectIdentifier": "Default..."},
-            [SAMPLE_SCP],  # existing receiver on a different port (8104)
+            [SAMPLE_SCP],
         ]
         created = {**SAMPLE_SCP, "id": 2, "aeTitle": "TESTSCP", "port": 18104}
         authenticated_cli.client.post.return_value = make_response(created)
@@ -121,9 +109,6 @@ class TestScpCreate:
     def test_create_dry_run_duplicate_port_also_rejected(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """Dry run runs every validation, skipping only the mutation -- the
-        port-collision check is not an exception to that.
-        """
         authenticated_cli.client.get_json.side_effect = [
             {"dicomObjectIdentifier": "Default..."},
             [SAMPLE_SCP],
@@ -139,9 +124,6 @@ class TestScpCreate:
     def test_create_invalid_port_rejected_client_side(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """The server accepts port 0 silently (verified live) -- this must be
-        rejected before any request is sent.
-        """
         result = authenticated_cli.invoke(
             ["scp", "create", "--ae-title", "TESTSCP", "--port", "0", "--yes"]
         )
@@ -190,8 +172,6 @@ class TestScpCreate:
 
 
 class TestScpDelete:
-    """Tests for `scp delete` -- happy path, declined confirmation, dry-run."""
-
     def test_delete(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.delete.return_value = make_response(
             text="", content_type="text/plain"
@@ -234,8 +214,6 @@ class TestScpDelete:
 
 
 class TestScpEnableDisable:
-    """Tests for `scp enable`/`scp disable`."""
-
     def test_enable(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = SAMPLE_SCP
         authenticated_cli.client.put.return_value = make_response({**SAMPLE_SCP, "enabled": True})

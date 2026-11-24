@@ -1,12 +1,3 @@
-"""Stream discipline: stdout is for data, stderr for everything else.
-
-Sending success lines, progress bars, prompts, or dry-run previews to
-stdout has two visible consequences: piping `-o json` output interleaves
-status text with the JSON, and redirecting stdout (`... > log`) kills the
-live progress bar entirely, because Rich disables live display when its
-console is not a tty -- even though stderr still is one.
-"""
-
 from __future__ import annotations
 
 import json
@@ -37,18 +28,13 @@ class TestOutputHelpers:
 
         captured = capsys.readouterr()
         assert captured.out == ""
-        # Rich colourises the message; compare on the uncoloured text.
         assert "3 sessions matched" in captured.err.replace("\x1b[1;36m3\x1b[0m", "3")
 
     def test_progress_renders_on_stderr(self) -> None:
-        """Redirecting stdout must not kill the live bar."""
         assert create_progress().console.stderr is True
         assert create_spinner().console.stderr is True
 
     def test_empty_table_notice_goes_to_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """An empty `-o table` pipe stays byte-clean; scripts should use
-        `-o json` for emptiness checks.
-        """
         print_table([], columns=["id"])
 
         captured = capsys.readouterr()
@@ -73,7 +59,6 @@ class TestCommandStreams:
         result = harness.invoke(["project", "list", "-o", "json"])
 
         assert result.exit_code == 0
-        # The whole point: stdout parses as a single JSON document.
         json.loads(result.stdout)
 
     def test_dry_run_delete_keeps_stdout_empty(self) -> None:
@@ -86,9 +71,6 @@ class TestCommandStreams:
         assert "Would delete subject" in result.stderr
 
     def test_confirmation_prompt_goes_to_stderr(self) -> None:
-        """A prompt on stdout would corrupt piped output before the user even
-        answers it.
-        """
         harness = make_authenticated_cli(default_project="PROJ")
         harness.client.delete.return_value = make_response(text="OK")
 
@@ -108,7 +90,6 @@ class TestCommandStreams:
         assert "Deleted subject" in result.stderr
 
     def test_quiet_ids_stay_on_stdout(self) -> None:
-        """Quiet mode IS data: `subject list -q | xargs ...` must keep working."""
         harness = make_authenticated_cli(default_project="PROJ")
         harness.client.get_json.return_value = {
             "ResultSet": {"Result": [{"ID": "XNAT_S01", "label": "SUB001", "project": "PROJ"}]}

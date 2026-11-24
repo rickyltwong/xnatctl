@@ -1,11 +1,3 @@
-"""Unit tests for DicomScpService.
-
-Fixture shapes are the real ones observed live against XNAT 1.9.2.1: bare
-JSON array from list, 200 (not 201) with the full object from create, a
-PARTIAL MERGE from the enable/disable PUT, and a raw 500 (not 404) from that
-same PUT against an unknown id.
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -33,8 +25,6 @@ SAMPLE_SCP = {
 
 
 class TestListScps:
-    """Tests for DicomScpService.list_scps."""
-
     def test_list_scps(self, fake_client) -> None:
         fake_client.get_json.return_value = [SAMPLE_SCP]
         service = DicomScpService(fake_client)
@@ -45,7 +35,6 @@ class TestListScps:
         fake_client.get_json.assert_called_once_with("/xapi/dicomscp")
 
     def test_list_scps_non_list_response_raises(self, fake_client) -> None:
-        """An unexpected 2xx shape must raise, not silently become []."""
         fake_client.get_json.return_value = {"error": "nope"}
         service = DicomScpService(fake_client)
 
@@ -54,8 +43,6 @@ class TestListScps:
 
 
 class TestGetScp:
-    """Tests for DicomScpService.get_scp."""
-
     def test_get_scp(self, fake_client) -> None:
         fake_client.get_json.return_value = SAMPLE_SCP
         service = DicomScpService(fake_client)
@@ -74,8 +61,6 @@ class TestGetScp:
 
 
 class TestResolveIdentifier:
-    """Tests for DicomScpService.resolve_identifier."""
-
     def test_explicit_identifier_validated_against_registered_list(self, fake_client) -> None:
         fake_client.get_json.return_value = {"dicomObjectIdentifier": "Default..."}
         service = DicomScpService(fake_client)
@@ -104,8 +89,6 @@ class TestResolveIdentifier:
 
 
 class TestCreateScp:
-    """Tests for DicomScpService.create_scp."""
-
     def test_create_scp(self, fake_client, response_factory) -> None:
         created = {**SAMPLE_SCP, "id": 2, "aeTitle": "TESTSCP", "port": 18104}
         fake_client.post.return_value = response_factory(created)
@@ -121,8 +104,6 @@ class TestCreateScp:
 
 
 class TestDeleteScp:
-    """Tests for DicomScpService.delete_scp."""
-
     def test_delete_scp(self, fake_client, response_factory) -> None:
         fake_client.delete.return_value = response_factory(text="", content_type="text/plain")
         service = DicomScpService(fake_client)
@@ -132,7 +113,6 @@ class TestDeleteScp:
         fake_client.delete.assert_called_once_with("/xapi/dicomscp/2")
 
     def test_delete_unknown_scp_raises(self, fake_client) -> None:
-        """DELETE itself 404s cleanly on an unknown id -- no preflight GET needed here."""
         fake_client.delete.side_effect = ResourceNotFoundError("resource", "/xapi/dicomscp/999")
         service = DicomScpService(fake_client)
 
@@ -141,10 +121,8 @@ class TestDeleteScp:
 
 
 class TestSetEnabled:
-    """Tests for DicomScpService.set_enabled."""
-
     def test_set_enabled_sends_partial_body(self, fake_client, response_factory) -> None:
-        fake_client.get_json.return_value = SAMPLE_SCP  # preflight get_scp
+        fake_client.get_json.return_value = SAMPLE_SCP
         updated = {**SAMPLE_SCP, "enabled": False}
         fake_client.put.return_value = response_factory(updated)
         service = DicomScpService(fake_client)
@@ -152,13 +130,9 @@ class TestSetEnabled:
         result = service.set_enabled(1, False)
 
         assert result["enabled"] is False
-        # A PARTIAL merge: only "enabled" in the body, not the full object.
         fake_client.put.assert_called_once_with("/xapi/dicomscp/1", json={"enabled": False})
 
     def test_set_enabled_unknown_scp_raises_before_put(self, fake_client) -> None:
-        """The PUT itself 500s (raw Hibernate error) for an unknown id -- the
-        preflight get_scp() call must turn that into a clean 404 first.
-        """
         fake_client.get_json.side_effect = ResourceNotFoundError("resource", "/xapi/dicomscp/999")
         service = DicomScpService(fake_client)
 

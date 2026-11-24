@@ -1,10 +1,3 @@
-"""Atomicity and Content-Length verification for stream_to_file.
-
-The helper must never leave a truncated final file or a stray ``.part`` behind:
-a size mismatch or a mid-stream transport error has to fail loudly with neither
-artefact on disk.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
@@ -49,7 +42,6 @@ def test_matching_content_length_writes_final_file(tmp_path: Path) -> None:
 
 
 def test_content_length_mismatch_raises_and_leaves_nothing(tmp_path: Path) -> None:
-    # Server lies: declares more bytes than it sends.
     client = _client(
         lambda r: httpx.Response(200, content=b"short", headers={"content-length": "999"})
     )
@@ -64,7 +56,6 @@ def test_content_length_mismatch_raises_and_leaves_nothing(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("bad_length", ["not-a-number", "-5"])
 def test_malformed_content_length_is_ignored(tmp_path: Path, bad_length: str) -> None:
-    """A garbage Content-Length disables verification instead of failing the download."""
     payload = b"payload"
     client = _client(
         lambda r: httpx.Response(200, content=payload, headers={"content-length": bad_length})
@@ -78,9 +69,6 @@ def test_malformed_content_length_is_ignored(tmp_path: Path, bad_length: str) ->
 
 
 def test_content_encoded_response_skips_length_check(tmp_path: Path) -> None:
-    """With non-identity Content-Encoding the header counts wire bytes, not
-    the decoded bytes written, so a mismatch there is not corruption.
-    """
     import gzip
 
     payload = b"decoded payload bytes"
@@ -116,8 +104,6 @@ def test_mid_stream_read_error_raises_typed_and_leaves_nothing(tmp_path: Path) -
     client = _client(handler)
     dest = tmp_path / "out.zip"
 
-    # A failure once the body is streaming is not retryable; it must surface
-    # as the typed NetworkError, never a raw httpx exception.
     with pytest.raises(NetworkError):
         stream_to_file(client, "/data/files", dest)
 

@@ -36,7 +36,6 @@ from .session import Experiment, Session
 from .subject import Subject
 
 __all__ = [
-    # Base
     "BaseModel",
     "XNATResource",
     "ProjectRef",
@@ -50,7 +49,6 @@ __all__ = [
     "ItemsEnvelope",
     "ResolvedSubjectRef",
     "ResolvedExperimentRef",
-    # Resources
     "Project",
     "Subject",
     "Session",
@@ -58,10 +56,8 @@ __all__ = [
     "Scan",
     "Resource",
     "ResourceFile",
-    # Client introspection
     "ServerInfo",
     "UserInfo",
-    # Progress
     "OperationPhase",
     "Progress",
     "UploadProgress",

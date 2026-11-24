@@ -1,29 +1,3 @@
-"""Event Service subscriptions, checked against a real server.
-
-Every endpoint EventService calls was verified once, by hand, against this
-same stack: kebab-case create/response bodies, a plain-text
-``"{name}:{id}"`` body (not JSON) from a successful create, POST (not PUT)
-for activate/deactivate, and clean 404s from GET/DELETE/activate/deactivate
-against an unknown id. This file is what keeps that verification from going
-stale.
-
-The Event Service can be switched off site-wide (``GET /xapi/events/prefs``
--> ``{"enabled": false}`` on a fresh install), and *when* it went off
-matters: toggled off at runtime only subscription creation is gated (405
-"Event Service disabled."), but on a server booted with it off -- the CI
-stack's fresh install -- subscription listing answers 200 with an empty
-body and single-subscription reads 405 too; only ``actions``/``events``
-work either way. This module owns no CLI-facing command for that toggle (see
-``xnatctl.services.events`` module docstring), so the ``event_service_enabled``
-fixture below talks to the raw client directly to guarantee subscription
-creation works for the tests that need it, and restores whatever state it
-found on the way out -- this tier runs against a shared stack, and flipping
-a site-wide setting and leaving it flipped would be a surprise for whoever
-runs the suite next.
-
-Every subscription created here is deleted in a ``finally`` block.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -61,14 +35,6 @@ def _probe_payload(name: str) -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def event_service_enabled(xnat_client: Any) -> Iterator[None]:
-    """Ensure the site-wide Event Service is on for this module, restore after.
-
-    Every creating test needs it (creation 405s with "Event Service
-    disabled." when the preference is off, verified live), and so do
-    subscription listing/reads on a server *booted* with it off -- see the
-    module docstring. Only the ``actions``/``events`` catalogs work without
-    it.
-    """
     was_enabled = bool(xnat_client.get_json(_PREFS_PATH).get("enabled", False))
     if not was_enabled:
         xnat_client.put(_PREFS_PATH, json={"enabled": True})
@@ -81,7 +47,6 @@ def event_service_enabled(xnat_client: Any) -> Iterator[None]:
 
 @pytest.fixture
 def probe_subscription(xnat_client: Any, event_service_enabled: None) -> Iterator[dict[str, Any]]:
-    """Create a probe subscription, yield its full record, delete it after."""
     service = EventService(xnat_client)
     subscription_id = service.create_subscription(_probe_payload("xnatctl-it-probe"))
     created = service.get_subscription(subscription_id)
@@ -95,19 +60,6 @@ def probe_subscription(xnat_client: Any, event_service_enabled: None) -> Iterato
 
 
 class TestListActionsAndTypes:
-    """Read-only endpoints.
-
-    Subscription listing and reads fail on a server *booted* with the
-    site-wide toggle off (the CI stack's fresh install: listing answers 200
-    with an empty body, reads 405 "Event Service disabled."), so those two
-    tests take ``event_service_enabled`` like the mutating half does. The
-    ``actions``/``events`` catalogs answer normally either way -- that was
-    verified by hand against a cold booted-disabled stack (2026-08-27); the
-    tests here exercise them with the service enabled whenever the module
-    fixture has already fired, so they no longer re-verify the disabled
-    half.
-    """
-
     def test_list_subscriptions_returns_a_bare_array(
         self, xnat_client: Any, event_service_enabled: None
     ) -> None:
@@ -141,8 +93,6 @@ class TestListActionsAndTypes:
 
 
 class TestCreateAndDelete:
-    """The mutating half: create, delete, and the existence-check guards."""
-
     def test_create_then_get_then_delete(
         self, xnat_client: Any, event_service_enabled: None
     ) -> None:
@@ -163,9 +113,6 @@ class TestCreateAndDelete:
     def test_delete_unknown_subscription_raises_not_found(
         self, xnat_client: Any, event_service_enabled: None
     ) -> None:
-        """Verifies the real DELETE contract: a clean 404, unlike
-        CommandService.delete_command's idempotent-succeeds DELETE.
-        """
         service = EventService(xnat_client)
 
         with pytest.raises(ResourceNotFoundError):
@@ -173,8 +120,6 @@ class TestCreateAndDelete:
 
 
 class TestActivateDeactivate:
-    """POST-based enable/disable, and the unknown-id guard."""
-
     def test_activate_deactivate_round_trips(
         self, xnat_client: Any, probe_subscription: dict[str, Any]
     ) -> None:

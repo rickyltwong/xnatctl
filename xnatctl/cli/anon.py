@@ -45,7 +45,6 @@ def read_script_argument(f: F) -> F:
     @click.argument("file", type=click.Path(exists=True, dir_okay=False, allow_dash=True))
     @wraps(f)
     def wrapper(*args: Any, file: str, **kwargs: Any) -> Any:
-        """Read FILE (or stdin) and inject its raw text into kwargs."""
         if file == "-":
             if sys.stdin.isatty():
                 raise click.UsageError(
@@ -70,16 +69,6 @@ def read_script_argument(f: F) -> F:
 
 
 def _text_diff(before: str, after: str, *, label: str) -> str:
-    """Render a unified diff between two anonymization scripts, for ``--dry-run`` previews.
-
-    Args:
-        before: The script currently on the server (``""`` if none is set).
-        after: The script that would be sent.
-        label: Used to name both sides of the diff (e.g. ``"site script"``).
-
-    Returns:
-        A unified diff as a single string (empty when there is no change).
-    """
     diff = difflib.unified_diff(
         before.splitlines(keepends=True),
         after.splitlines(keepends=True),
@@ -90,7 +79,6 @@ def _text_diff(before: str, after: str, *, label: str) -> str:
 
 
 def _scope_label(project: str | None) -> str:
-    """Human-readable label for the site scope or a project scope."""
     return f"project {project}'s override" if project is not None else "site-wide"
 
 
@@ -198,9 +186,6 @@ def anon_set(
 
     if project is not None:
         project = validate_project_id(project)
-        # Same read set_project_script's own preflight performs (project
-        # existence) -- calling it here means dry-run refuses a typo'd -P
-        # exactly as execution would, and gives the diff its "current" side.
         current = service.get_project_script(project) or ""
     else:
         current = service.get_site_script()
@@ -219,11 +204,6 @@ def anon_set(
     else:
         service.set_site_script(script)
     print_success(f"Replaced the {label} anonymization script from {script_source}")
-    # The matching GET is eventually consistent -- measured live, a read
-    # issued right after this write still serves the OLD script for about
-    # a second. Without this line, the obvious next thing a user does
-    # (`anon show`, to check) reports the previous script and reads as a
-    # silent failure. See AnonymizeService.set_site_script.
     print_warning("`anon show` may report the previous script for a moment; the write has landed.")
 
 
@@ -254,9 +234,6 @@ def anon_enable(ctx: Context, project: str | None, dry_run: bool) -> None:
 
     if dry_run:
         if project is not None:
-            # Same preflight set_project_enabled() runs before its PUT: a
-            # dry run that skipped this would report success for a project
-            # whose real PUT would 500 (no override script set yet).
             service.check_project_enable_scope(project)
         click.echo(f"[DRY-RUN] Would enable the {label} anonymization script", err=True)
         return

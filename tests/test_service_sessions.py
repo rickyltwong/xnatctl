@@ -1,5 +1,3 @@
-"""Unit tests for SessionService."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -21,7 +19,6 @@ from xnatctl.services.sessions import SessionService
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """Create a mock XNATClient."""
     client = MagicMock()
     client.base_url = "https://xnat.example.org"
     return client
@@ -29,7 +26,6 @@ def mock_client() -> MagicMock:
 
 @pytest.fixture
 def service(mock_client: MagicMock) -> SessionService:
-    """Create SessionService with mock client."""
     return SessionService(mock_client)
 
 
@@ -43,10 +39,7 @@ SAMPLE_SESSION = {
 
 
 class TestSessionList:
-    """Tests for SessionService.list."""
-
     def test_list_all(self, service: SessionService, mock_client: MagicMock) -> None:
-        """List without filters uses /data/experiments."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SESSION]}})
 
         result = service.list()
@@ -58,7 +51,6 @@ class TestSessionList:
         assert call_path == "/data/experiments"
 
     def test_list_by_project(self, service: SessionService, mock_client: MagicMock) -> None:
-        """List by project uses project-scoped path."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list(project="PROJ01")
@@ -69,7 +61,6 @@ class TestSessionList:
     def test_list_by_project_and_subject(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """List by project and subject uses nested path."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list(project="PROJ01", subject="SUB01")
@@ -78,7 +69,6 @@ class TestSessionList:
         assert "/data/projects/PROJ01/subjects/SUB01/experiments" in call_path
 
     def test_list_with_modality(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Modality filter sets xsiType param."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list(modality="MR")
@@ -89,7 +79,6 @@ class TestSessionList:
     def test_list_with_modality_oct_resolves_to_opt_xsitype(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """OCT is a user-facing alias for XNAT's real `optSessionData` type."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list(modality="OCT")
@@ -98,7 +87,6 @@ class TestSessionList:
         assert params["xsiType"] == "xnat:optSessionData"
 
     def test_list_with_limit(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Limit truncates results."""
         rows = [{**SAMPLE_SESSION, "ID": f"E{i:05d}"} for i in range(10)]
         mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
@@ -107,7 +95,6 @@ class TestSessionList:
         assert len(result) == 3
 
     def test_list_with_columns(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Columns param is joined and passed."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list(columns=["ID", "label", "date"])
@@ -117,10 +104,7 @@ class TestSessionList:
 
 
 class TestSessionGet:
-    """Tests for SessionService.get."""
-
     def test_get_items_response(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Get session handles `items[]` detail responses."""
         mock_client.get.return_value = make_response(
             {
                 "items": [
@@ -144,7 +128,6 @@ class TestSessionGet:
         assert result.xsi_type == "xnat:mrSessionData"
 
     def test_get_by_id(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Get session by ID."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SESSION]}})
 
         result = service.get("XNAT_E00001")
@@ -153,7 +136,6 @@ class TestSessionGet:
         assert result.label == "MR001"
 
     def test_get_with_project(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Get session scoped to project."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SESSION]}})
 
         service.get("MR001", project="PROJ01")
@@ -162,7 +144,6 @@ class TestSessionGet:
         assert "/data/projects/PROJ01/experiments/MR001" in call_path
 
     def test_get_not_found(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Get raises ResourceNotFoundError on empty results."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         with pytest.raises(ResourceNotFoundError):
@@ -171,12 +152,6 @@ class TestSessionGet:
     def test_get_not_found_dispatches_on_type_not_message_text(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """A typed 404 is classified by its class, not by sniffing the message.
-
-        The client can raise ``ResourceNotFoundError`` with any message; a
-        session labelled e.g. "SUB404" must not defeat classification the way
-        a substring check on "404" would.
-        """
         mock_client.get.side_effect = ResourceNotFoundError("resource", "no such thing here")
 
         with pytest.raises(ResourceNotFoundError) as excinfo:
@@ -187,10 +162,7 @@ class TestSessionGet:
 
 
 class TestSessionCreate:
-    """Tests for SessionService.create."""
-
     def test_create_default_xsi_type(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Create uses default xnat:mrSessionData."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SESSION]}})
 
@@ -203,7 +175,6 @@ class TestSessionCreate:
     def test_create_with_modality_override(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Modality overrides xsi_type."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SESSION]}})
 
@@ -215,7 +186,6 @@ class TestSessionCreate:
     def test_create_with_optional_params(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Optional params are passed when provided."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SESSION]}})
 
@@ -227,10 +197,7 @@ class TestSessionCreate:
 
 
 class TestSessionDelete:
-    """Tests for SessionService.delete."""
-
     def test_delete_with_project(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Delete uses project-scoped path."""
         mock_client.delete.return_value = make_response("")
 
         assert service.delete("MR001", project="PROJ01") is True
@@ -238,7 +205,6 @@ class TestSessionDelete:
         assert "/data/projects/PROJ01/experiments/MR001" in call_path
 
     def test_delete_without_project(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Delete without project uses global path."""
         mock_client.delete.return_value = make_response("")
 
         service.delete("XNAT_E00001")
@@ -248,10 +214,7 @@ class TestSessionDelete:
 
 
 class TestSessionGetScans:
-    """Tests for SessionService.get_scans."""
-
     def test_get_scans(self, service: SessionService, mock_client: MagicMock) -> None:
-        """get_scans returns typed Scan models with parent references set."""
         rows = [{"ID": "1", "type": "T1w", "series_description": "t1_mprage"}]
         mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
@@ -267,9 +230,6 @@ class TestSessionGetScans:
     def test_get_scans_accepts_bare_array_response(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """An older XNAT answering with a bare top-level JSON array must not
-        be read as zero scans -- see ``HierarchyService.extract_rows``.
-        """
         rows = [{"ID": "1", "type": "T1w", "series_description": "t1_mprage"}]
         mock_client.get.return_value = make_response(rows)
 
@@ -281,14 +241,7 @@ class TestSessionGetScans:
 
 
 class TestSessionGetResources:
-    """Tests for SessionService.get_resources."""
-
     def test_get_resources(self, service: SessionService, mock_client: MagicMock) -> None:
-        """get_resources returns typed Resource models from realistic rows.
-
-        Resource listing rows carry ``xnat_abstractresource_id`` rather than
-        ``ID``; the normalization must absorb that instead of dropping rows.
-        """
         rows = [
             {
                 "xnat_abstractresource_id": "42",
@@ -314,7 +267,6 @@ class TestSessionGetResources:
     def test_get_resources_accepts_bare_array_response(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """A bare top-level JSON array must not be read as zero resources."""
         rows = [
             {
                 "xnat_abstractresource_id": "42",
@@ -334,10 +286,7 @@ class TestSessionGetResources:
 
 
 class TestSessionSetField:
-    """Tests for SessionService.set_field."""
-
     def test_set_field(self, service: SessionService, mock_client: MagicMock) -> None:
-        """set_field issues PUT with field param."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
 
         assert service.set_field("XNAT_E00001", "note", "test note") is True
@@ -346,10 +295,7 @@ class TestSessionSetField:
 
 
 class TestSessionShare:
-    """Tests for SessionService.share."""
-
     def test_share(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Share issues PUT to target project path."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
 
         assert service.share("XNAT_E00001", "PROJ02", label="MR_SHARED") is True
@@ -359,7 +305,6 @@ class TestSessionShare:
         assert put_params["label"] == "MR_SHARED"
 
     def test_share_primary(self, service: SessionService, mock_client: MagicMock) -> None:
-        """Share with primary flag."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
 
         service.share("XNAT_E00001", "PROJ02", primary=True)
@@ -369,12 +314,9 @@ class TestSessionShare:
 
 
 class TestSessionRawAccessors:
-    """Tests for the raw-row accessors the CLI screens/engine route through."""
-
     def test_list_project_experiment_rows_no_subject(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """The session-list rows carry the fixed column set and no subject filter."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "EXP01"}]}}
 
         rows = service.list_project_experiment_rows("PROJ01")
@@ -388,7 +330,6 @@ class TestSessionRawAccessors:
     def test_list_project_experiment_rows_with_subject(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """A subject adds a subject_label filter to the same request."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         service.list_project_experiment_rows("PROJ01", subject="SUBJ01")
@@ -399,7 +340,6 @@ class TestSessionRawAccessors:
     def test_list_project_experiment_rows_missing_resultset(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """A response without a ResultSet yields an empty list."""
         mock_client.get_json.return_value = {}
 
         assert service.list_project_experiment_rows("PROJ01") == []
@@ -407,7 +347,6 @@ class TestSessionRawAccessors:
     def test_scan_rows_uses_flat_experiment_url(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Without a project the scans URL is the routable flat form."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "1"}]}}
 
         rows = service.scan_rows("EXP01")
@@ -418,7 +357,6 @@ class TestSessionRawAccessors:
     def test_experiment_resource_rows_subject_scoped(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Session-level resources are read from the subject-scoped experiment URL."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": [{"label": "MISC"}]}}
 
         rows = service.experiment_resource_rows("EXP01", project="PROJ01", subject="SUBJ01")
@@ -430,8 +368,6 @@ class TestSessionRawAccessors:
 
 
 class TestListSessions:
-    """Tests for SessionService.list_sessions (classification + modality filter)."""
-
     ROWS = {
         "ResultSet": {
             "Result": [
@@ -507,15 +443,6 @@ class TestListSessions:
     def test_modality_filter_supports_arbitrary_modalities(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Not just MR/PET/CT/EEG -- any `xnat:{modality}SessionData` xsiType.
-
-        A modality filter keyed on a fixed 4-entry marker table would give
-        a modality outside it (US, XA, CR, MG, ...) no marker to match, and
-        would silently pass EVERY row through instead of
-        narrowing to none or the matching ones. `xnat:usSessionData` is a
-        real XNAT xsiType (confirmed against the xnat-web schema), not a
-        fictitious one.
-        """
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -547,13 +474,6 @@ class TestListSessions:
     def test_modality_oct_matches_the_real_opt_sessiondata_xsitype(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """XNAT archives OCT (Optical Coherence Tomography) sessions as
-        `xnat:optSessionData` -- OPT is DICOM's own modality code for
-        Ophthalmic Tomography, confirmed against the xnat-web schema
-        (`xnat_optSessionData.js`) and this project's own 0.2.11 fix for the
-        same xsiType. `--modality OCT` (what users actually say) must match
-        it, not the fictitious `xnat:octSessionData`.
-        """
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -576,7 +496,6 @@ class TestListSessions:
     def test_modality_opt_also_matches_the_same_sessiondata(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """The XNAT-native spelling works too, not just the OCT alias."""
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -598,10 +517,6 @@ class TestListSessions:
     def test_modality_pet_excludes_petmr_sessions(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """PETMR is its own xsiType (`xnat:petmrSessionData`), confirmed
-        against the xnat-web schema -- `--modality PET` must not also match
-        combined PET/MR sessions.
-        """
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -619,16 +534,11 @@ class TestListSessions:
 
         rows = service.list_sessions("PROJ01", modality="PET")
 
-        assert [r["id"] for r in rows] == ["XNAT_E2"]  # the plain PET row from self.ROWS
+        assert [r["id"] for r in rows] == ["XNAT_E2"]
 
     def test_modality_classification_rejects_trailing_newline(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Regression: `^...$` combined with `.match()` accepts a trailing
-        newline, because `$` also matches just before a final `\\n`. A
-        malformed/embedded-newline `xsiType` must classify as unknown ("?"),
-        not silently pick up whatever modality preceded the newline.
-        """
         mock_client.get_json.return_value = {
             "ResultSet": {
                 "Result": [
@@ -661,12 +571,9 @@ class TestListSessions:
 
 
 class TestSessionShareConflictAndUnshare:
-    """Tests for SessionService.share (409 case) / unshare / list_shares."""
-
     def test_share_conflict_raises_resource_exists(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """A 409 (already shared) is translated to a clear typed error."""
         mock_client.put.side_effect = ClientRequestError(
             409, "PUT", "/data/experiments/XNAT_E00001/projects/PROJ02", "Already assigned"
         )
@@ -697,14 +604,6 @@ class TestSessionShareConflictAndUnshare:
     def test_unshare_refuses_the_primary_project(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Unsharing FROM the primary project is a delete, not an unshare.
-
-        Verified against XNAT 1.9.2.1: DELETE /data/experiments/{id}/projects/{primary}
-        answers 200 and the session is 404 afterwards -- the server destroys
-        it and its data, and the response is indistinguishable from removing
-        an ordinary share. A mistyped --from would silently delete the
-        session while reporting success, so the request must never be sent.
-        """
         with pytest.raises(InputValidationError):
             service.unshare("XNAT_E00001", "PROJ01", primary_project="PROJ01")
 
@@ -713,7 +612,6 @@ class TestSessionShareConflictAndUnshare:
     def test_unshare_primary_check_ignores_case(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Refusing a little too much beats deleting a session on a case slip."""
         with pytest.raises(InputValidationError):
             service.unshare("XNAT_E00001", "proj01", primary_project="PROJ01")
 
@@ -738,7 +636,6 @@ class TestSessionShareConflictAndUnshare:
     def test_unshare_primary_check_ignores_target_padding(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Padded input must not slip past the equality check as a distinct project."""
         with pytest.raises(InputValidationError):
             service.unshare("XNAT_E00001", " PROJ01 ", primary_project="PROJ01")
 
@@ -774,10 +671,7 @@ class TestSessionShareConflictAndUnshare:
 
 
 class TestSessionVars:
-    """Tests for SessionService.list_vars/set_vars."""
-
     def _fields_document(self, fields: list[tuple[str, str]]) -> dict:
-        """Build a minimal format=json document with a fields/field child."""
         return {
             "items": [
                 {
@@ -827,7 +721,6 @@ class TestSessionVars:
     def test_list_vars_null_field_value_stays_empty_not_the_word_none(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """A null ``field``/``name`` must render as "" -- not the string "None"."""
         mock_client.get_json.return_value = {
             "items": [
                 {
@@ -851,7 +744,6 @@ class TestSessionVars:
     def test_set_vars_requires_subject_scoped_path_and_xsi_prefix(
         self, service: SessionService, mock_client: MagicMock
     ) -> None:
-        """Verified live: the flat experiment route silently no-ops for field writes."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
 
         service.set_vars(

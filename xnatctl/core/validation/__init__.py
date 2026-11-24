@@ -108,11 +108,6 @@ __all__ = [
 ]
 
 
-# =============================================================================
-# Regex Pattern Validation
-# =============================================================================
-
-
 def validate_regex_pattern(pattern: str, field_name: str = "pattern") -> re.Pattern[str]:
     """Validate and compile a regex pattern.
 
@@ -137,11 +132,6 @@ def validate_regex_pattern(pattern: str, field_name: str = "pattern") -> re.Patt
             field_name,
             pattern,
         ) from e
-
-
-# =============================================================================
-# Batch Input Validation
-# =============================================================================
 
 
 def validate_scan_ids_input(scan_input: str) -> list[str] | None:

@@ -1,5 +1,3 @@
-"""Tests for xnatctl.services.downloads module."""
-
 from __future__ import annotations
 
 import hashlib
@@ -23,57 +21,42 @@ from xnatctl.services.verify import VerificationManifest
 
 
 class TestDownloadService:
-    """Tests for DownloadService."""
-
     @pytest.fixture
     def mock_client(self):
-        """Create a mock XNAT client."""
         return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):
-        """Create a DownloadService with mock client."""
         return DownloadService(mock_client)
 
     def test_download_service_initialization(self, mock_client):
-        """Test that DownloadService initializes with a client."""
         service = DownloadService(mock_client)
         assert service.client == mock_client
 
 
 class TestDownloadResourceSessionResolution:
-    """Tests for session ID resolution in download_resource."""
-
     @pytest.fixture
     def mock_client(self):
-        """Create a mock XNAT client."""
         return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):
-        """Create a DownloadService with mock client."""
         return DownloadService(mock_client)
 
     def test_resolves_session_label_to_internal_id(self, download_service, tmp_path):
-        """Test that session label is resolved to internal experiment ID."""
-        # Given: A session label and a mock response with internal ID
         session_label = "MY_SESSION_LABEL"
         internal_id = "XNAT_E00001"
         project = "TEST_PROJECT"
 
-        # Mock the _get method to return experiment data
         download_service._get = MagicMock(
             return_value={"items": [{"data_fields": {"ID": internal_id}}]}
         )
 
-        # Mock the HTTP client stream to fail (we just want to test resolution)
         stream_ctx = MagicMock()
         stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
         stream_ctx.__exit__ = MagicMock(return_value=False)
         download_service.client.stream.return_value = stream_ctx
 
-        # When: download_resource is called, the failing stream raises (a
-        # single-target download raises instead of returning a failure summary).
         with pytest.raises(DownloadError):
             download_service.download_resource(
                 session_id=session_label,
@@ -83,27 +66,22 @@ class TestDownloadResourceSessionResolution:
                 project=project,
             )
 
-        # Then: The _get was called to resolve the session
         download_service._get.assert_called_once_with(
             f"/data/projects/{project}/experiments/{session_label}",
             params={"format": "json"},
         )
 
     def test_uses_session_id_directly_when_starts_with_xnat_e(self, download_service, tmp_path):
-        """Test that XNAT_E* IDs are used directly without resolution."""
-        # Given: A session ID starting with XNAT_E
         session_id = "XNAT_E12345"
         project = "TEST_PROJECT"
 
         download_service._get = MagicMock()
 
-        # Mock HTTP to fail
         stream_ctx = MagicMock()
         stream_ctx.__enter__ = MagicMock(side_effect=Exception("Connection test"))
         stream_ctx.__exit__ = MagicMock(return_value=False)
         download_service.client.stream.return_value = stream_ctx
 
-        # When: download_resource is called (the failing stream raises)
         with pytest.raises(DownloadError):
             download_service.download_resource(
                 session_id=session_id,
@@ -113,11 +91,9 @@ class TestDownloadResourceSessionResolution:
                 project=project,
             )
 
-        # Then: _get was NOT called for resolution
         download_service._get.assert_not_called()
 
     def test_resolves_session_label_from_resultset(self, download_service, tmp_path):
-        """Test that ResultSet responses resolve to internal experiment ID."""
         session_label = "SESSION_LABEL"
         internal_id = "XNAT_E99999"
         project = "PROJECT"
@@ -146,9 +122,6 @@ class TestDownloadResourceSessionResolution:
         )
 
     def test_session_expired_during_resolution_propagates(self, download_service, tmp_path):
-        """An auth failure during label resolution is not masked by the
-        best-effort fallback -- it would just fail again on the fallback path.
-        """
         download_service._get = MagicMock(
             side_effect=SessionExpiredError("https://xnat.example.org")
         )
@@ -163,10 +136,6 @@ class TestDownloadResourceSessionResolution:
             )
 
     def test_server_error_during_resolution_falls_back_to_raw_id(self, download_service, tmp_path):
-        """A non-404, non-auth typed failure during resolution is best-effort:
-        the download proceeds treating the given ID as the experiment ID
-        directly, rather than aborting on a transient resolution hiccup.
-        """
         download_service._get = MagicMock(
             side_effect=ServerError(503, "GET", "/data/projects/TEST_PROJECT", "unavailable")
         )
@@ -176,8 +145,6 @@ class TestDownloadResourceSessionResolution:
         stream_ctx.__exit__ = MagicMock(return_value=False)
         download_service.client.stream.return_value = stream_ctx
 
-        # The fallback path proceeds instead of re-raising the resolution
-        # error -- it reaches (and fails at) the stream step, not resolution.
         with pytest.raises(DownloadError):
             download_service.download_resource(
                 session_id="MY_SESSION_LABEL",
@@ -188,23 +155,12 @@ class TestDownloadResourceSessionResolution:
             )
 
         download_service.client.stream.assert_called_once()
-        # And it used the raw, unresolved session id in exactly the flat
-        # /data/experiments/{id}/... form the fallback ExperimentRef builds
-        # (no project/subject segment, since resolution never ran) -- not a
-        # wrong or malformed id.
         stream_path = download_service.client.stream.call_args[0][1]
         assert stream_path == "/data/experiments/MY_SESSION_LABEL/scans/1/resources/DICOM/files"
 
     def test_download_scans_server_error_during_resolution_falls_back_to_raw_id(
         self, download_service, tmp_path
     ):
-        """download_scans has the same best-effort fallback as download_resource.
-
-        Unlike download_resource it never raises on a stream failure -- it
-        reports the batch as failed in the returned summary -- but it must
-        still reach the stream step using the raw, unresolved session id
-        rather than aborting the whole batch at resolution.
-        """
         download_service._get = MagicMock(
             side_effect=ServerError(503, "GET", "/data/projects/TEST_PROJECT", "unavailable")
         )
@@ -223,28 +179,20 @@ class TestDownloadResourceSessionResolution:
 
         assert summary.success is False
         download_service.client.stream.assert_called_once()
-        # Same flat-fallback form as download_resource, without a resource
-        # segment since download_scans defaults to all resources.
         stream_path = download_service.client.stream.call_args[0][1]
         assert stream_path == "/data/experiments/MY_SESSION_LABEL/scans/1/files"
 
 
 class TestDownloadScan:
-    """Tests for download_scan method."""
-
     @pytest.fixture
     def mock_client(self):
-        """Create a mock XNAT client."""
         return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):
-        """Create a DownloadService with mock client."""
         return DownloadService(mock_client)
 
     def test_download_scan_delegates_to_download_resource(self, download_service, tmp_path):
-        """Test that download_scan calls download_resource with correct params."""
-        # Given: A mock for download_resource
         mock_summary = DownloadSummary(
             success=True,
             total=1,
@@ -255,7 +203,6 @@ class TestDownloadScan:
         )
         download_service.download_resource = MagicMock(return_value=mock_summary)
 
-        # When: download_scan is called
         result = download_service.download_scan(
             session_id="TEST_SESSION",
             scan_id="1",
@@ -264,7 +211,6 @@ class TestDownloadScan:
             resource="NIFTI",
         )
 
-        # Then: download_resource was called with correct parameters
         download_service.download_resource.assert_called_once_with(
             session_id="TEST_SESSION",
             resource_label="NIFTI",
@@ -274,25 +220,19 @@ class TestDownloadScan:
             progress_callback=None,
         )
 
-        # And: The result is returned
         assert result == mock_summary
 
 
 class TestDownloadScansSessionResolution:
-    """Tests for session ID resolution in download_scans."""
-
     @pytest.fixture
     def mock_client(self):
-        """Create a mock XNAT client."""
         return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):
-        """Create a DownloadService with mock client."""
         return DownloadService(mock_client)
 
     def test_resolves_session_label_to_internal_id_resultset(self, download_service, tmp_path):
-        """Test that download_scans uses internal ID from ResultSet responses."""
         session_label = "SESSION_LABEL"
         internal_id = "XNAT_E12345"
         project = "PROJECT"
@@ -328,21 +268,15 @@ class TestDownloadScansSessionResolution:
 
 
 class TestDownloadResourcePathConstruction:
-    """Tests for URL path construction in download_resource."""
-
     @pytest.fixture
     def mock_client(self):
-        """Create a mock XNAT client."""
         return MagicMock()
 
     @pytest.fixture
     def download_service(self, mock_client):
-        """Create a DownloadService with mock client."""
         return DownloadService(mock_client)
 
     def test_scan_resource_path_uses_experiments_endpoint(self, download_service, tmp_path):
-        """Test that scan downloads use /data/experiments/{id}/scans/... path."""
-        # Given: Mock setup
         download_service._get = MagicMock(
             return_value={"items": [{"data_fields": {"ID": "INTERNAL_ID"}}]}
         )
@@ -356,21 +290,16 @@ class TestDownloadResourcePathConstruction:
         mock_stream_ctx.__exit__ = MagicMock(return_value=False)
         download_service.client.stream.return_value = mock_stream_ctx
 
-        # Create a valid empty ZIP file for extraction
         zip_path = tmp_path / "DICOM.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("test.txt", "content")
 
-        # Patch open to return our test zip
         with patch("builtins.open", create=True):
             with patch.object(zipfile, "ZipFile") as mock_zipfile:
                 mock_zf = MagicMock()
                 mock_zipfile.return_value.__enter__ = MagicMock(return_value=mock_zf)
                 mock_zipfile.return_value.__exit__ = MagicMock(return_value=False)
 
-                # When: download_resource is called for scan. The mocked open
-                # leaves no .part file, so the atomic rename fails and the
-                # single-target path raises -- we only assert the request path.
                 with pytest.raises(DownloadError):
                     download_service.download_resource(
                         session_id="SESSION_LABEL",
@@ -380,14 +309,11 @@ class TestDownloadResourcePathConstruction:
                         project="PROJECT",
                     )
 
-        # Then: Stream was called with experiments-based path
         stream_call_args = download_service.client.stream.call_args
         path_arg = stream_call_args[0][1]
         assert path_arg == "/data/experiments/INTERNAL_ID/scans/1/resources/DICOM/files"
 
     def test_session_resource_path_uses_experiments_endpoint(self, download_service, tmp_path):
-        """Test that session-level resource downloads use experiments endpoint."""
-        # Given: Mock setup (no scan_id)
         download_service._get = MagicMock(
             return_value={"items": [{"data_fields": {"ID": "INTERNAL_ID"}}]}
         )
@@ -407,9 +333,6 @@ class TestDownloadResourcePathConstruction:
                 mock_zipfile.return_value.__enter__ = MagicMock(return_value=mock_zf)
                 mock_zipfile.return_value.__exit__ = MagicMock(return_value=False)
 
-                # When: download_resource is called without scan_id. As above,
-                # the mocked open makes the atomic rename fail, so the
-                # single-target path raises; we only assert the request path.
                 with pytest.raises(DownloadError):
                     download_service.download_resource(
                         session_id="SESSION_LABEL",
@@ -419,27 +342,20 @@ class TestDownloadResourcePathConstruction:
                         project="PROJECT",
                     )
 
-        # Then: Stream was called with session-level path
         stream_call_args = download_service.client.stream.call_args
         path_arg = stream_call_args[0][1]
         assert path_arg == "/data/experiments/INTERNAL_ID/resources/SNAPSHOTS/files"
 
 
 class TestDownloadResourceAndScansSkippedEntries:
-    """download_resource / download_scans (the single-ZIP, extract=True
-    paths) populate DownloadSummary.skipped_unsafe_entries and log a
-    warning -- the same observability the parallel engine gets.
-    """
-
     @staticmethod
     def _fake_stream_to_file(client, path, dest, *, params=None, progress_cb=None):
-        """Write a real ZIP with one symlink-typed member to *dest*."""
         from xnatctl.services.downloads import StreamedFile
 
         with zipfile.ZipFile(dest, "w") as zf:
             zf.writestr("good.dcm", b"data")
             info = zipfile.ZipInfo("link.dcm")
-            info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+            info.external_attr = 0o120777 << 16
             zf.writestr(info, "../../../etc/passwd")
         return StreamedFile(bytes_written=dest.stat().st_size, content_length=None)
 
@@ -448,9 +364,7 @@ class TestDownloadResourceAndScansSkippedEntries:
     ) -> None:
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with (
             patch(
@@ -477,9 +391,7 @@ class TestDownloadResourceAndScansSkippedEntries:
     ) -> None:
         client = MagicMock()
         service = DownloadService(client)
-        service._resolve_zip_experiment_ref = MagicMock(  # type: ignore[method-assign]
-            return_value=ExperimentRef(experiment="E1")
-        )
+        service._resolve_zip_experiment_ref = MagicMock(return_value=ExperimentRef(experiment="E1"))
 
         with (
             patch(
@@ -502,13 +414,7 @@ class TestDownloadResourceAndScansSkippedEntries:
         assert "Skipped 1 unsafe ZIP entries" in caplog.text
 
 
-# =============================================================================
-# download_session_fast: the parallel per-scan engine at the service seam
-# =============================================================================
-
-
 def _write_scan_zip(path: str, dest: Path) -> None:
-    """Write a ZIP shaped like the scan URL the engine requested."""
     parts = path.strip("/").split("/")
     scan_id = parts[parts.index("scans") + 1]
     label = parts[parts.index("resources") + 1] if "resources" in parts else "DICOM"
@@ -517,10 +423,6 @@ def _write_scan_zip(path: str, dest: Path) -> None:
 
 
 def _write_hostile_scan_zip(path: str, dest: Path, outside: Path) -> None:
-    """Like _write_scan_zip, but adds one member that escapes containment
-    via a planted symlink (the realistic ZipSlip vector -- see
-    test_zip_extract.py for why a literal ".." never reaches the check).
-    """
     parts = path.strip("/").split("/")
     scan_id = parts[parts.index("scans") + 1]
     label = parts[parts.index("resources") + 1] if "resources" in parts else "DICOM"
@@ -530,8 +432,6 @@ def _write_hostile_scan_zip(path: str, dest: Path, outside: Path) -> None:
 
 
 class TestDownloadSessionFast:
-    """Service-seam tests for DownloadService.download_session_fast."""
-
     def _run(
         self,
         tmp_path: Path,
@@ -561,7 +461,6 @@ class TestDownloadSessionFast:
             )
 
     def test_scan_only_tier_requests_one_unfiltered_zip_per_scan(self, tmp_path: Path) -> None:
-        """No include filter: one request per scan at the full wire URL."""
         calls: list[tuple[str, dict | None]] = []
 
         def fake_stream(client, path, dest, *, params=None, **kw):
@@ -579,7 +478,6 @@ class TestDownloadSessionFast:
         assert (tmp_path / "scans" / "1" / "resources" / "DICOM" / "files" / "0001.dcm").exists()
 
     def test_include_filter_requests_one_zip_per_scan_resource_pair(self, tmp_path: Path) -> None:
-        """Include filter: one request per (scan, resource) at the full wire URL."""
         calls: list[tuple[str, dict | None]] = []
 
         def fake_stream(client, path, dest, *, params=None, **kw):
@@ -602,7 +500,6 @@ class TestDownloadSessionFast:
         assert outcome.succeeded == 4
 
     def test_callbacks_fire_for_start_and_each_result_in_order(self, tmp_path: Path) -> None:
-        """on_start(count) fires once, before any per-scan result callback."""
         events: list[object] = []
 
         def fake_stream(client, path, dest, *, params=None, **kw):
@@ -622,7 +519,6 @@ class TestDownloadSessionFast:
         assert all(isinstance(r, ScanResult) and r.ok for r in results)
 
     def test_no_scans_reports_zero_and_returns_empty_outcome(self, tmp_path: Path) -> None:
-        """An empty session still calls on_start(0) so the caller can say so."""
         started: list[int] = []
 
         def fake_stream(client, path, dest, *, params=None, **kw):
@@ -639,8 +535,6 @@ class TestDownloadSessionFast:
         assert outcome == DownloadOutcome(succeeded=0, failed=[], files=0)
 
     def test_all_404_scans_are_not_failures_but_yield_zero_files(self, tmp_path: Path) -> None:
-        """A 404 per scan is an empty result, not a lost scan."""
-
         def fake_stream(client, path, dest, *, params=None, **kw):
             raise ResourceNotFoundError("no files", path)
 
@@ -651,7 +545,6 @@ class TestDownloadSessionFast:
         assert outcome.files == 0
 
     def test_a_hard_failure_is_recorded_in_the_outcome(self, tmp_path: Path) -> None:
-        """A non-404 error on one scan is a lost scan the caller must see."""
         results: list[ScanResult] = []
 
         def fake_stream(client, path, dest, *, params=None, **kw):
@@ -673,10 +566,6 @@ class TestDownloadSessionFast:
     def test_hostile_zip_entries_are_counted_reported_and_logged(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A ZipSlip entry (a planted symlink -- see test_zip_extract.py for
-        why a literal ".." never reaches this check) is skipped, counted
-        into the outcome, and logged -- not dropped without a trace.
-        """
         outside = tmp_path.parent / "outside_download_session_fast"
         outside.mkdir(exist_ok=True)
 
@@ -699,29 +588,6 @@ class TestDownloadSessionFast:
         assert "Skipped 1 unsafe ZIP entries" in caplog.text
 
     def test_shared_scans_dir_exists_before_any_worker_starts(self, tmp_path: Path) -> None:
-        """Regression test for a Windows-only false-positive containment failure.
-
-        Every scan's ``scan_base`` (``session_dir/scans/{id}``) is checked
-        with ``verify_directory_contained_in`` against ``session_dir`` before
-        that scan is extracted. On Windows, ``Path.resolve()`` only
-        canonicalizes (corrects case, expands any 8.3 short name, follows a
-        substituted drive/junction) the deepest ALREADY-EXISTING ancestor of
-        a path -- so if the shared ``scans/`` parent does not exist yet when
-        one worker's check runs, and a *different*, concurrent worker's
-        ``mkdir`` is what actually creates it, the two workers' resolves of
-        overlapping paths can disagree and fail containment on a perfectly
-        safe directory. This is exactly what was observed in CI: "Scan 2
-        FAILED: Invalid path: ...\\XNAT_E00001\\scans\\2 - scan directory
-        resolves outside its trusted root ...\\XNAT_E00001".
-
-        The fix creates ``session_dir/scans`` once, single-threaded, before
-        the worker pool starts -- removing the race outright rather than
-        trying to make two independent concurrent resolves agree. Proven
-        here by asserting the shared parent already exists at the moment
-        the FIRST per-scan action (streaming the ZIP) runs, for every scan
-        in the batch -- true on any platform, not just Windows, since this
-        is about ordering, not OS-specific path canonicalization.
-        """
         seen_before_stream: list[bool] = []
 
         def fake_stream(client, path, dest, *, params=None, **kw):
@@ -735,8 +601,6 @@ class TestDownloadSessionFast:
 
 
 class TestDownloadSessionArchiveAndResources:
-    """The sequential single-ZIP path and the session-level resources loop."""
-
     def test_archive_streams_scans_zip_and_forwards_progress(self, tmp_path: Path) -> None:
         calls: list[tuple[str, str, dict | None]] = []
 
@@ -802,12 +666,6 @@ class TestDownloadSessionArchiveAndResources:
     def test_provenance_survives_a_mid_loop_failure_via_the_downloaded_list(
         self, tmp_path: Path
     ) -> None:
-        """QC downloads fine; MISC then raises. The (label, path) pairs
-        appended before the raise must still be visible in the caller's
-        list -- not lost with the exception the way a return-only value
-        would lose them.
-        """
-
         def fake_stream(client, path, dest, *, params=None, **kw):
             if "MISC" in path:
                 raise DownloadError("boom", path)
@@ -833,27 +691,16 @@ class TestDownloadSessionArchiveAndResources:
         assert caller_list == [("QC", tmp_path / "resources_QC.zip")]
 
 
-# =============================================================================
-# Raise-by-default contract: single-target downloads raise typed failures,
-# batch summaries expose raise_for_status().
-# =============================================================================
-
-
 class TestSingleTargetDownloadContract:
-    """download_resource raises rather than returning a failure summary."""
-
     def _service(self) -> DownloadService:
         return DownloadService(MagicMock())
 
     def test_session_expired_propagates_unwrapped(self, tmp_path: Path) -> None:
-        """A typed client-layer failure passes through, so a caller can catch it."""
         service = self._service()
         with patch(
             "xnatctl.services.downloads.resource_scan.stream_to_file",
             side_effect=SessionExpiredError("https://xnat.example.org"),
         ):
-            # The whole point of the contract: an expired session is catchable
-            # as itself, not buried in a stringified summary.
             try:
                 service.download_resource(
                     session_id="XNAT_E00001",
@@ -862,11 +709,10 @@ class TestSingleTargetDownloadContract:
                 )
             except SessionExpiredError:
                 pass
-            else:  # pragma: no cover - the assertion below reports the miss
+            else:
                 raise AssertionError("SessionExpiredError did not propagate")
 
     def test_disk_full_oserror_surfaces_as_download_error_with_cause(self, tmp_path: Path) -> None:
-        """An unexpected OSError is wrapped as DownloadError, __cause__ preserved."""
         service = self._service()
         disk_full = OSError("No space left on device")
         with patch(
@@ -884,7 +730,6 @@ class TestSingleTargetDownloadContract:
         assert excinfo.value.resource == "DICOM"
 
     def test_typed_failure_is_the_same_exception_object(self, tmp_path: Path) -> None:
-        """Pass-through means the identical object, not a lookalike."""
         service = self._service()
         exc = SessionExpiredError("https://xnat.example.org")
         with patch("xnatctl.services.downloads.resource_scan.stream_to_file", side_effect=exc):
@@ -897,9 +742,6 @@ class TestSingleTargetDownloadContract:
         assert excinfo.value is exc
 
     def test_error_progress_fires_and_a_raising_callback_cannot_mask(self, tmp_path: Path) -> None:
-        """The ERROR notification fires on failure and is suppressed if the
-        callback itself raises, so it can never mask the typed failure.
-        """
         service = self._service()
         phases: list[OperationPhase] = []
 
@@ -922,8 +764,6 @@ class TestSingleTargetDownloadContract:
 
 
 class TestDownloadScanDelegation:
-    """download_scan raises via the resource path, summarizes via the batch path."""
-
     def _service(self) -> DownloadService:
         return DownloadService(MagicMock())
 
@@ -940,7 +780,6 @@ class TestDownloadScanDelegation:
                 )
 
     def test_batch_path_returns_the_batch_summary_unraised(self, tmp_path: Path) -> None:
-        """With resource=None a failed batch still comes back as a summary."""
         service = self._service()
         failed = DownloadSummary(
             success=False, total=1, succeeded=0, failed=1, duration=0.1, errors=["boom"]
@@ -955,19 +794,11 @@ class TestDownloadScanDelegation:
         scans.assert_called_once()
 
 
-# =============================================================================
-# Verification: manifest building and the service-layer verify entry point
-# =============================================================================
-
-
 class TestBuildVerificationManifest:
-    """DownloadService.build_verification_manifest fetches server checksums."""
-
     def _service(self) -> DownloadService:
         return DownloadService(MagicMock())
 
     def test_keys_by_scan_and_resource_not_basename(self, tmp_path: Path) -> None:
-        """Two scans each reporting a 1.dcm: the manifest must not collide them."""
         service = self._service()
         with (
             patch.object(
@@ -1035,10 +866,6 @@ class TestBuildVerificationManifest:
         assert manifest.digests == {"scans/1/resources/DICOM/1.dcm": None}
 
     def test_name_fallback_key_agrees_with_uri_derived_key_for_a_scan_resource(self) -> None:
-        """Two rows for the same conceptual file -- one with a parseable
-        URI, one without -- must produce the identical key, not diverge
-        because the fallback used a different shape than key_from_uri.
-        """
         service = self._service()
         with (
             patch.object(
@@ -1052,7 +879,7 @@ class TestBuildVerificationManifest:
             ),
             patch(
                 "xnatctl.services.downloads.ResourceService.list_file_rows",
-                return_value=[{"Name": "1.dcm"}],  # no URI at all
+                return_value=[{"Name": "1.dcm"}],
             ),
         ):
             fallback_manifest = service.build_verification_manifest(
@@ -1100,7 +927,7 @@ class TestBuildVerificationManifest:
             ),
             patch(
                 "xnatctl.services.downloads.ResourceService.list_file_rows",
-                return_value=[{"Name": "notes.txt"}],  # no URI at all
+                return_value=[{"Name": "notes.txt"}],
             ),
         ):
             fallback_manifest = service.build_verification_manifest(
@@ -1148,7 +975,6 @@ class TestBuildVerificationManifest:
         file_rows_mock.assert_called_once()
 
     def test_resource_filter_skips_the_resource_listing_call(self) -> None:
-        """A single-resource scope goes straight to the file listing."""
         service = self._service()
         with (
             patch.object(
@@ -1180,13 +1006,6 @@ class TestBuildVerificationManifest:
         list_rows_mock.assert_not_called()
 
     def test_label_is_passed_through_for_the_request_but_literal_in_the_key(self) -> None:
-        """A label with a space/# is percent-encoded by the path builder, not the caller.
-
-        ``list_file_rows`` receives the literal label; encoding happens inside
-        ``HierarchyService.build_resource_path`` (via ``ResourceRef``), not at
-        this call site -- see ``test_hierarchy_paths.py`` for the encoding
-        itself. Pre-quoting here would double-encode.
-        """
         service = self._service()
         with (
             patch.object(
@@ -1216,8 +1035,6 @@ class TestBuildVerificationManifest:
                 session_id="E", project="P", subject="S", scan_ids=["1"]
             )
 
-        # The literal label -- matching what the local/ZIP indexer would see
-        # on disk -- not the percent-encoded form sent over the wire.
         assert manifest.digests == {"scans/1/resources/QA #1/1.dcm": "abc"}
         call_args = file_rows_mock.call_args
         assert call_args[0][1] == "QA #1"
@@ -1276,9 +1093,6 @@ class TestBuildVerificationManifest:
         session_rows_mock.assert_not_called()
 
     def test_two_rows_with_different_digests_on_the_same_key_are_a_collision(self) -> None:
-        """A duplicate-listing edge case where two rows share a key must not
-        silently keep whichever the API happened to return last.
-        """
         service = self._service()
         with (
             patch.object(
@@ -1306,9 +1120,6 @@ class TestBuildVerificationManifest:
         assert manifest.collisions == ["scans/1/resources/DICOM/1.dcm"]
 
     def test_identical_repeated_row_is_not_a_collision(self) -> None:
-        """The exact same file listed twice (same identity, same digest) is
-        a harmless duplicate, not an ambiguity.
-        """
         service = self._service()
         with (
             patch.object(
@@ -1336,9 +1147,6 @@ class TestBuildVerificationManifest:
         assert manifest.collisions == []
 
     def test_case_differing_digests_are_not_a_collision(self) -> None:
-        """The same file reported twice with a differently-cased hex digest
-        is still the same file.
-        """
         service = self._service()
         with (
             patch.object(
@@ -1370,9 +1178,6 @@ class TestBuildVerificationManifest:
     def test_a_collided_key_stays_collided_even_if_a_later_row_matches_the_first(
         self,
     ) -> None:
-        """Once evicted for colliding, a key must not be quietly repopulated
-        by a third row whose fingerprint happens to match the first.
-        """
         service = self._service()
         with (
             patch.object(
@@ -1402,8 +1207,6 @@ class TestBuildVerificationManifest:
 
 
 class TestVerifyScanDownloads:
-    """DownloadService.verify_scan_downloads composes manifest + local compare."""
-
     def test_delegates_to_manifest_and_verify_manifest(self, tmp_path: Path) -> None:
         service = DownloadService(MagicMock())
         target = tmp_path / "scans" / "1" / "resources" / "DICOM" / "files" / "1.dcm"
@@ -1457,8 +1260,6 @@ class TestVerifyScanDownloads:
 
 
 class TestDownloadSummaryRaiseForStatus:
-    """DownloadSummary.raise_for_status mirrors httpx.Response.raise_for_status."""
-
     def test_raises_batch_operation_error_on_failure(self) -> None:
         summary = DownloadSummary(
             success=False,

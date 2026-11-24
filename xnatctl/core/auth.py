@@ -23,16 +23,8 @@ from xnatctl.core.fsutil import (
 )
 from xnatctl.core.redact import redact_url_query
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 logger = logging.getLogger(__name__)
 
-# Every log line in this module reports the *source* or *presence* of a
-# credential, never its value. "Which credential did xnatctl actually use?" is
-# the question `-v` has to answer here; the answer must not be the secret
-# itself.
 
 SESSION_CACHE_FILE = CONFIG_DIR / ".session"
 SESSION_EXPIRY_MINUTES = 15  # XNAT JSESSION expires after 15 minutes of inactivity by default
@@ -52,11 +44,6 @@ SESSION_CACHE_VERSION = 2
 # own. Each holds the lock for one small file read and write, so a wait this
 # long means that process is stuck.
 SESSION_CACHE_LOCK_TIMEOUT_SECONDS = 10
-
-
-# =============================================================================
-# Session Cache
-# =============================================================================
 
 
 @dataclass
@@ -131,31 +118,15 @@ class CachedSession:
             expires_at=(
                 datetime.fromisoformat(data["expires_at"]) if data.get("expires_at") else None
             ),
-            # Caches written before this field existed fall back to creation
-            # time.
             last_used_at=datetime.fromisoformat(last_used) if last_used else created_at,
         )
-
-
-# =============================================================================
-# AuthManager
-# =============================================================================
 
 
 class AuthManager:
     """Manages authentication credentials and session tokens."""
 
     def __init__(self, cache_file: Path | None = None):
-        """Initialize auth manager.
-
-        Args:
-            cache_file: Path to session cache file.
-        """
         self.cache_file = cache_file or SESSION_CACHE_FILE
-
-    # =========================================================================
-    # Credential Access
-    # =========================================================================
 
     def get_credentials(self) -> tuple[str | None, str | None]:
         """Get credentials from environment variables.
@@ -181,10 +152,6 @@ class AuthManager:
             Token if set.
         """
         return os.getenv(ENV_TOKEN)
-
-    # =========================================================================
-    # Session Cache
-    # =========================================================================
 
     def _lock(self) -> AbstractContextManager[None]:
         """The interprocess lock held across each read-modify-write of the cache.
@@ -248,8 +215,6 @@ class AuthManager:
         if not sessions:
             self.cache_file.unlink(missing_ok=True)
             return
-        # Write through a private temp file so the token is never observable
-        # under the process umask, not even for the duration of the write.
         with atomic_private_write(self.cache_file) as f:
             json.dump(
                 {
@@ -290,16 +255,12 @@ class AuthManager:
             expires_at=now + timedelta(minutes=expiry_minutes),
         )
 
-        # Ensure the directory exists and is owner-only.
         ensure_private_dir(self.cache_file.parent)
         with self._lock():
             sessions = self._read_cache()
             sessions[profile] = session
             self._write_cache(sessions)
 
-        # The replace already carries the temp file's 0600 mode; this is
-        # belt-and-braces for filesystems that do not, and it warns rather than
-        # silently leaving the token readable.
         restrict_permissions(self.cache_file)
 
         logger.debug(
@@ -456,10 +417,6 @@ class AuthManager:
             return False
         return True
 
-    # =========================================================================
-    # Convenience Methods
-    # =========================================================================
-
     def get_session_token(self, profile: str, url: str, username: str | None) -> str | None:
         """Get session token from cache or environment.
 
@@ -475,12 +432,10 @@ class AuthManager:
         Returns:
             Session token if available.
         """
-        # Check environment first
         if token := self.get_token_from_env():
             logger.debug("Using session token from %s", ENV_TOKEN)
             return token
 
-        # Check cache
         if session := self.load_session(profile, url, username):
             return session.token
 

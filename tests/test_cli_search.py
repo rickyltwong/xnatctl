@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI `search` commands."""
-
 from __future__ import annotations
 
 from conftest import AuthenticatedCLI, make_response
@@ -22,8 +20,6 @@ SAMPLE_DEFINITION_XML = (
 
 
 class TestSearchList:
-    """Tests for `search list`."""
-
     def test_list_requests_expected_path(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = {
             "ResultSet": {"Result": [SAMPLE_ROW], "title": "Stored Searches"}
@@ -46,8 +42,6 @@ class TestSearchList:
         assert result.output.strip() == "test_search"
 
     def test_list_malformed_body_fails(self, authenticated_cli: AuthenticatedCLI) -> None:
-        # A 200 with no 'ResultSet' key at all must surface as an error, not
-        # as an empty listing.
         authenticated_cli.client.get_json.return_value = {"message": "plugin disabled"}
 
         result = authenticated_cli.invoke(["search", "list"])
@@ -56,8 +50,6 @@ class TestSearchList:
 
 
 class TestSearchShow:
-    """Tests for `search show`."""
-
     def test_show_requests_xml_format(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get.return_value = make_response(
             text=SAMPLE_DEFINITION_XML, content_type="application/xml"
@@ -73,8 +65,6 @@ class TestSearchShow:
 
 
 class TestSearchRun:
-    """Tests for `search run`."""
-
     def test_run_prints_dynamic_columns(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = {
             "ResultSet": {"Result": [{"ID": "PROJ1", "name": "Project One"}]}
@@ -107,8 +97,6 @@ class TestSearchRun:
 
 
 class TestSearchDelete:
-    """Tests for `search delete` -- happy path, declined confirmation, dry-run."""
-
     def test_delete(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get.return_value = make_response(
             text=SAMPLE_DEFINITION_XML, content_type="application/xml"
@@ -140,9 +128,6 @@ class TestSearchDelete:
         assert "DRY-RUN" in result.output
 
     def test_delete_unknown_id_fails_no_delete(self, authenticated_cli: AuthenticatedCLI) -> None:
-        # DELETE itself would answer 200 even for an unknown id (idempotent-
-        # succeeds), so only the get_definition() preflight can catch a
-        # typo. Before the fix, this printed "Deleted saved search bad_id".
         authenticated_cli.client.get.side_effect = ResourceNotFoundError("saved search", "bad_id")
 
         result = authenticated_cli.invoke(["search", "delete", "bad_id", "--yes"])
@@ -151,8 +136,6 @@ class TestSearchDelete:
         authenticated_cli.client.delete.assert_not_called()
 
     def test_delete_dry_run_unknown_id_fails(self, authenticated_cli: AuthenticatedCLI) -> None:
-        # --dry-run runs every validation and skips only the mutation, so it
-        # must run the same preflight and fail the same way.
         authenticated_cli.client.get.side_effect = ResourceNotFoundError("saved search", "bad_id")
 
         result = authenticated_cli.invoke(["search", "delete", "bad_id", "--dry-run"])

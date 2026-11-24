@@ -48,21 +48,12 @@ from .hierarchy import HierarchyService
 
 logger = logging.getLogger(__name__)
 
-#: Read timeout for the rename PUT itself. XNAT relabels an experiment by
-#: moving its archive directory, which for a large session takes hours and
-#: outlives any proxy timeout, so the HTTP reply is only a hint that the
-#: request was accepted. The rename's *workflow* is the source of truth.
 RENAME_PUT_TIMEOUT_SECONDS = 60
-#: How long after the PUT to wait for the "Renamed" workflow to show up in
-#: the experiment's history before concluding the request never landed.
 RENAME_WORKFLOW_APPEAR_SECONDS = 120.0
-#: Cap on one rename's server-side completion before it is reported as failed.
 RENAME_TIMEOUT_SECONDS = 4 * 60 * 60.0
-#: Interval between workflow status polls.
 RENAME_POLL_INTERVAL_SECONDS = 30.0
 
 
-#: XSI type -> modality code used to build experiment labels.
 XSI_MODALITY_MAP: dict[str, str] = {
     "xnat:mrsessiondata": "MR",
     "xnat:petsessiondata": "PET",
@@ -87,15 +78,10 @@ _DATETIME_FORMATS = (
     "%Y/%m/%d %H:%M:%S",
 )
 
-#: Columns fetched for the label computation. ``time``/``insert_date``/
-#: ``insert_time`` are not part of ``SessionService.list_sessions``'s column
-#: set -- that screen only needs ``date`` -- but same-day ordering here needs
-#: all three.
 _EXPERIMENT_COLUMNS = "ID,label,subject_label,xsiType,date,time,insert_date,insert_time"
 
 
 def _parse_datetime(value: str) -> datetime | None:
-    """Best-effort datetime parse across the formats XNAT emits, or None."""
     if not value:
         return None
     for fmt in _DATETIME_FORMATS:
@@ -110,7 +96,6 @@ def _parse_datetime(value: str) -> datetime | None:
 
 
 def _parse_date(value: str) -> date | None:
-    """Best-effort date parse, falling back to a full datetime parse."""
     if not value:
         return None
     for fmt in _DATE_FORMATS:
@@ -123,7 +108,6 @@ def _parse_date(value: str) -> date | None:
 
 
 def _parse_time(value: str) -> time | None:
-    """Best-effort time-of-day parse, falling back to a full datetime parse."""
     if not value:
         return None
     for fmt in _TIME_FORMATS:
@@ -136,7 +120,6 @@ def _parse_time(value: str) -> time | None:
 
 
 def _modality_from_xsi(xsi_type: str) -> str | None:
-    """Map an experiment's ``xsiType`` to its modality code, or None."""
     return XSI_MODALITY_MAP.get((xsi_type or "").strip().lower())
 
 
@@ -205,15 +188,6 @@ class SessionLabelService(BaseService):
             f"listing experiments for project {project!r}",
         )
 
-        # Occupancy is project-wide: XNAT experiment labels are unique per
-        # PROJECT, so a target can be blocked by ANY row's current label --
-        # including rows excluded from planning below (other subjects,
-        # filter misses, malformed rows). Those never rename, so their
-        # labels are permanent blockers, and they must be collected before
-        # any row is dropped. Multiplicity matters too: a label the listing
-        # reports on MORE than one row (a server anomaly -- labels are
-        # supposed to be project-unique) can never be proven vacated by any
-        # single rename, so targets equal to it are refused outright.
         label_counts = Counter(str(row.get("label") or "") for row in rows)
         all_labels = {label for label in label_counts if label}
         contested_labels = {label for label, count in label_counts.items() if label and count > 1}
@@ -223,9 +197,6 @@ class SessionLabelService(BaseService):
         for row in rows:
             subject_label = row.get("subject_label")
             if not isinstance(subject_label, str) or not subject_label:
-                # A row without the requested subject_label column is a
-                # malformed answer for THIS query, not a filter miss --
-                # dropping it silently would understate the plan.
                 skipped.append(
                     {
                         "id": str(row.get("ID") or ""),
@@ -252,10 +223,6 @@ class SessionLabelService(BaseService):
                 skipped=skipped,
             )
 
-        # One project-wide resolution pass, not one per subject: a vacating
-        # rename and the rename that takes its label may belong to
-        # different subjects, and only a global pass can see (and order)
-        # that dependency.
         renames = self._resolve_collisions(tentative, all_labels, contested_labels, skipped)
         return {"renames": renames, "skipped": skipped}
 
@@ -269,20 +236,13 @@ class SessionLabelService(BaseService):
         tentative: list[dict[str, Any]],
         skipped: list[dict[str, Any]],
     ) -> None:
-        """Append this subject's candidate renames/skips onto the running lists."""
         by_modality_date: dict[str, dict[date, list[dict[str, Any]]]] = {}
         for exp in experiments:
-            # `or ""` and not a plain default: a JSON null must not become
-            # the literal string "None" and pass the emptiness checks (a
-            # "None"-ID rename would target /data/experiments/None).
             exp_id = str(exp.get("ID") or "")
             exp_label = str(exp.get("label") or "")
             modality = _modality_from_xsi(exp.get("xsiType", ""))
 
             if not exp_id:
-                # Without an ID the rename PUT cannot be addressed; letting
-                # the row into the plan would show a preview that execution
-                # then fails on.
                 skipped.append({"id": "", "label": exp_label, "reason": "missing experiment ID"})
                 continue
             if not modality:
@@ -346,7 +306,6 @@ class SessionLabelService(BaseService):
         tentative: list[dict[str, Any]],
         skipped: list[dict[str, Any]],
     ) -> None:
-        """Assign SESSION order within one (modality, date) group and plan renames."""
         if len(group) > 1 and any(g["order_time"] is None for g in group):
             for g in group:
                 skipped.append(
@@ -381,14 +340,6 @@ class SessionLabelService(BaseService):
                 )
                 continue
 
-            # Defensive: given the enumeration above (visit_idx unique per
-            # modality/date, session_idx unique per position within a
-            # date's group), two experiments computing the same target
-            # should not be reachable in practice. Kept as a hard refusal
-            # rather than removed, in case a future change to the grouping
-            # logic reopens the path -- silently applying one of a
-            # colliding pair would be worse than a defensive check that
-            # never fires.
             prior = seen_targets.get(target)
             if prior and prior != g["id"]:
                 skipped.append(
@@ -417,35 +368,6 @@ class SessionLabelService(BaseService):
         contested_labels: set[str],
         skipped: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Order the project's renames so vacated labels free up before reuse.
-
-        A target equal to some experiment's *current* label is allowed when
-        that experiment is itself renamed away in this plan -- across
-        subjects, since XNAT experiment labels are unique per project: the
-        vacating rename is placed earlier in the returned list, and
-        ``apply_label_normalization`` executes in list order. A target held
-        by an experiment with no planned rename is a genuine collision and
-        is refused. A rename cycle (A -> B while B -> A) has no safe order
-        without a temporary label, so every member is refused.
-
-        Iterative with an explicit stack, not recursive: a vacating chain
-        can in principle be as long as the plan itself, and a long valid
-        chain must not die on the interpreter's recursion limit.
-
-        Args:
-            tentative: All validated candidate renames for the project.
-            existing_labels: Current labels of every experiment the listing
-                returned, planned or not (project-wide occupancy).
-            contested_labels: Labels the listing reported on more than one
-                row. ``by_old`` below can hold only one vacator per label,
-                so a taker of a contested label could otherwise be accepted
-                on the strength of ONE holder's rename while another holder
-                keeps the label; refused instead.
-            skipped: Running skip list to append refusals onto.
-
-        Returns:
-            The renames that survive, in a safe execution order.
-        """
         by_old = {item["old_label"]: item for item in tentative if item["old_label"]}
         ordered: list[dict[str, Any]] = []
         state: dict[str, bool] = {}
@@ -459,7 +381,6 @@ class SessionLabelService(BaseService):
             ordered.append(item)
 
         def blocker_of(item: dict[str, Any]) -> dict[str, Any] | None:
-            """The planned rename currently holding this item's target, if any."""
             blocker = by_old.get(item["new_label"])
             if blocker is not None and str(blocker["id"]) == str(item["id"]):
                 return None
@@ -568,25 +489,6 @@ class SessionLabelService(BaseService):
         rename_timeout: float,
         poll_interval: float,
     ) -> None:
-        """Rename one experiment and wait for XNAT to finish doing it.
-
-        The PUT is single-shot with a short read timeout: a reply that
-        arrives means the request was accepted, and a timeout, dropped
-        socket or proxy 5xx after the request was sent means nothing
-        either way -- XNAT keeps relabelling regardless, so retrying the
-        PUT would only stack a second rename behind the first. What
-        decides success is a new ``Renamed`` event appearing in the
-        experiment's history and reaching ``Complete``. The history
-        endpoint reports each event's live workflow status, so it is
-        polled directly rather than ``/xapi/workflows/{id}``, whose ids do
-        not line up with history event ids on every XNAT version.
-
-        Raises:
-            OperationError: no rename event appeared, the rename ended
-                ``Failed``, or it was still running at ``rename_timeout``.
-            XNATConnectionError, ServerError: the PUT failed AND no rename
-                event appeared afterwards, so the request never reached XNAT.
-        """
         path = f"/data/experiments/{quote_path_segment(exp_id)}"
         before = max(self._rename_events(exp_id), default=0)
         put_error: Exception | None = None
@@ -624,7 +526,6 @@ class SessionLabelService(BaseService):
             )
 
     def _rename_events(self, exp_id: str) -> dict[int, str]:
-        """``{event_id: lower-cased status}`` for every ``Renamed`` event in the history."""
         body = self.client.get_json(f"/data/experiments/{quote_path_segment(exp_id)}/history")
         events = body.get("events") if isinstance(body, dict) else None
         found: dict[int, str] = {}
@@ -638,7 +539,6 @@ class SessionLabelService(BaseService):
         return found
 
     def _wait_for_rename_event(self, exp_id: str, before: int, poll_interval: float) -> int | None:
-        """Id of the rename event created after ``before``, or None on timeout."""
         deadline = monotonic() + RENAME_WORKFLOW_APPEAR_SECONDS
         while True:
             latest = max(self._rename_events(exp_id), default=0)
@@ -651,7 +551,6 @@ class SessionLabelService(BaseService):
     def _wait_for_rename_event_status(
         self, exp_id: str, event_id: int, rename_timeout: float, poll_interval: float
     ) -> str:
-        """Poll one rename event until it is terminal; on timeout, describe where it stopped."""
         deadline = monotonic() + rename_timeout
         while True:
             status = self._rename_events(exp_id).get(event_id, "")

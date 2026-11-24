@@ -45,10 +45,6 @@ from xnatctl.core.validation import quote_path_segment
 from .base import BaseService
 from .projects import ProjectService
 
-# `enable=`/`disable=` need a JSON-typed body to be accepted at all (a
-# request with no Content-Type, or any non-JSON one, answers 415) but the
-# body's CONTENT is never read -- the real value travels in the `enable`
-# query parameter instead. See the module docstring.
 _ENABLE_HEADERS = {"Content-Type": "application/json"}
 _ENABLE_BODY = b"null"
 
@@ -62,12 +58,6 @@ class AnonymizeService(BaseService):
     """
 
     def _check_project_exists(self, project: str) -> None:
-        """Raise ``ResourceNotFoundError`` if ``project`` does not exist.
-
-        The anonymize project routes answer a raw 500 for an unknown
-        project (verified live -- see the module docstring), so this is the
-        only thing standing between a typo'd ``-P`` and a confusing error.
-        """
         ProjectService(self.client).get(project)
 
     def get_default_script(self) -> str:
@@ -265,7 +255,6 @@ class AnonymizeService(BaseService):
         self._put_enabled(path, enable)
 
     def _put_enabled(self, path: str, enable: bool) -> None:
-        """Shared PUT for the ``.../enabled`` routes. See the module docstring for the contract."""
         self.client.put(
             path,
             params={"enable": "true" if enable else "false"},

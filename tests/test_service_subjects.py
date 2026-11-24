@@ -1,5 +1,3 @@
-"""Unit tests for SubjectService."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -20,7 +18,6 @@ from xnatctl.services.subjects import SubjectService
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """Create a mock XNATClient."""
     client = MagicMock()
     client.base_url = "https://xnat.example.org"
     return client
@@ -28,7 +25,6 @@ def mock_client() -> MagicMock:
 
 @pytest.fixture
 def service(mock_client: MagicMock) -> SubjectService:
-    """Create SubjectService with mock client."""
     return SubjectService(mock_client)
 
 
@@ -41,10 +37,7 @@ SAMPLE_SUBJECT = {
 
 
 class TestSubjectList:
-    """Tests for SubjectService.list."""
-
     def test_list_all(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """List without project uses /data/subjects."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
         result = service.list()
@@ -56,7 +49,6 @@ class TestSubjectList:
         assert call_args == "/data/subjects"
 
     def test_list_by_project(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """List with project filters by project path."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
         service.list(project="PROJ01")
@@ -65,7 +57,6 @@ class TestSubjectList:
         assert "/data/projects/PROJ01/subjects" in call_args
 
     def test_list_with_limit(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Limit truncates results."""
         rows = [{**SAMPLE_SUBJECT, "ID": f"S{i:05d}", "label": f"SUB{i:03d}"} for i in range(5)]
         mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
@@ -74,7 +65,6 @@ class TestSubjectList:
         assert len(result) == 3
 
     def test_list_with_columns(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Columns param is joined and passed."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         service.list(columns=["ID", "label"])
@@ -84,10 +74,7 @@ class TestSubjectList:
 
 
 class TestSubjectGet:
-    """Tests for SubjectService.get."""
-
     def test_get_items_response(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Get subject handles `items[]` detail responses."""
         mock_client.get.return_value = make_response(
             {
                 "items": [
@@ -108,7 +95,6 @@ class TestSubjectGet:
         assert result.label == "SUB001"
 
     def test_get_by_id(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Get subject by ID."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
         result = service.get("XNAT_S00001")
@@ -117,7 +103,6 @@ class TestSubjectGet:
         assert result.label == "SUB001"
 
     def test_get_with_project(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Get subject scoped to project."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
         service.get("SUB001", project="PROJ01")
@@ -126,7 +111,6 @@ class TestSubjectGet:
         assert "/data/projects/PROJ01/subjects/SUB001" in call_path
 
     def test_get_not_found(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Get raises ResourceNotFoundError on empty results."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         with pytest.raises(ResourceNotFoundError):
@@ -134,10 +118,7 @@ class TestSubjectGet:
 
 
 class TestSubjectCreate:
-    """Tests for SubjectService.create."""
-
     def test_create(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Create issues PUT then fetches subject."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
@@ -151,11 +132,7 @@ class TestSubjectCreate:
 
 
 class TestSubjectDelete:
-    """Tests for SubjectService.delete."""
-
     def test_delete_with_project(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Delete uses project-scoped path (when subject has no experiments)."""
-        # Empty experiments list so the safety guard allows the delete.
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
         mock_client.delete.return_value = make_response("")
 
@@ -164,9 +141,6 @@ class TestSubjectDelete:
         assert "/data/projects/PROJ01/subjects/SUB001" in call_path
 
     def test_delete_without_project(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Delete without project uses global path (safety guard skipped)."""
-        # Safety check is skipped when no project is supplied because
-        # get_sessions requires a project scope.
         mock_client.delete.return_value = make_response("")
 
         service.delete("XNAT_S00001")
@@ -177,7 +151,6 @@ class TestSubjectDelete:
     def test_delete_with_remove_files(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Delete passes removeFiles param."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
         mock_client.delete.return_value = make_response("")
 
@@ -189,11 +162,6 @@ class TestSubjectDelete:
     def test_delete_refuses_when_subject_has_experiments(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Refuse to delete a subject that still has attached experiments.
-
-        XNAT would cascade-delete the experiments — the exact failure mode
-        of the OXD01_CMH PET-session deletion incident.
-        """
         mock_client.get.return_value = make_response(
             {"ResultSet": {"Result": [{"ID": "EXP01"}, {"ID": "EXP02"}]}}
         )
@@ -206,17 +174,6 @@ class TestSubjectDelete:
     def test_delete_aborts_when_safety_check_fails_open(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """A transient failure in the safety check must abort the delete, not bypass it.
-
-        A pre-delete "does this subject still have experiments" check that
-        caught bare ``Exception`` would treat ANY failure -- including a
-        network/auth error unrelated to whether experiments exist -- as "no
-        experiments attached", letting the delete proceed as if the check
-        had passed. The check must fail
-        closed: only a genuinely-gone subject/project (``ResourceNotFoundError``)
-        is a valid "no sessions" inference; every other failure propagates
-        and the delete does not happen.
-        """
         mock_client.get.side_effect = NetworkError("https://xnat.example.org", "connection reset")
 
         with pytest.raises(NetworkError):
@@ -227,7 +184,6 @@ class TestSubjectDelete:
     def test_delete_proceeds_when_safety_check_finds_subject_gone(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """A genuinely-gone subject/project is a valid "no sessions" inference."""
         mock_client.get.side_effect = ResourceNotFoundError("subject", "SUB001")
         mock_client.delete.return_value = make_response("")
 
@@ -237,7 +193,6 @@ class TestSubjectDelete:
     def test_delete_force_overrides_guard(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """force=True skips the experiment-attached safety check."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
         mock_client.delete.return_value = make_response("")
 
@@ -246,10 +201,7 @@ class TestSubjectDelete:
 
 
 class TestSubjectRename:
-    """Tests for SubjectService.rename."""
-
     def test_rename(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Rename issues PUT with new label, then fetches."""
         mock_client.put.return_value = make_response("", content_type="text/plain")
         new_subject = {**SAMPLE_SUBJECT, "label": "SUB002"}
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [new_subject]}})
@@ -262,10 +214,7 @@ class TestSubjectRename:
 
 
 class TestSubjectRenameBatch:
-    """Tests for SubjectService.rename_batch."""
-
     def test_rename_batch_dry_run(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Dry run verifies subjects exist but does not rename."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
         result = service.rename_batch("PROJ01", {"SUB001": "SUB_NEW"}, dry_run=True)
@@ -277,7 +226,6 @@ class TestSubjectRenameBatch:
     def test_rename_batch_not_found_skips(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Missing subjects are skipped."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": []}})
 
         result = service.rename_batch("PROJ01", {"MISSING": "NEW"}, dry_run=True)
@@ -287,17 +235,13 @@ class TestSubjectRenameBatch:
 
 
 class TestSubjectRenamePattern:
-    """Tests for SubjectService.rename_pattern."""
-
     def test_invalid_regex(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Invalid regex raises InputValidationError."""
         with pytest.raises(InputValidationError):
             service.rename_pattern("PROJ01", "[invalid", "{1}")
 
     def test_pattern_no_change_skipped(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Subjects where old == new label are skipped."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
         result = service.rename_pattern("PROJ01", r"^(SUB001)$", "{1}", dry_run=True)
@@ -306,7 +250,6 @@ class TestSubjectRenamePattern:
         assert result["skipped"][0]["reason"] == "no change"
 
     def test_pattern_rename_dry_run(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Pattern rename in dry-run mode."""
         mock_client.get.return_value = make_response({"ResultSet": {"Result": [SAMPLE_SUBJECT]}})
 
         result = service.rename_pattern("PROJ01", r"^SUB(\d+)$", "SUBJ_{1}", dry_run=True)
@@ -317,7 +260,6 @@ class TestSubjectRenamePattern:
     def test_pattern_merge_skipped_without_flag(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Multiple subjects mapping to same target are skipped without merge flag."""
         subjects = [
             {**SAMPLE_SUBJECT, "ID": "S1", "label": "SUB_A1"},
             {**SAMPLE_SUBJECT, "ID": "S2", "label": "SUB_A2"},
@@ -330,12 +272,9 @@ class TestSubjectRenamePattern:
 
 
 class TestSubjectGetSessions:
-    """Tests for SubjectService.get_sessions."""
-
     def test_get_sessions_with_project(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """get_sessions with project uses project-scoped path."""
         rows = [{"ID": "EXP01"}]
         mock_client.get.return_value = make_response({"ResultSet": {"Result": rows}})
 
@@ -347,10 +286,7 @@ class TestSubjectGetSessions:
 
 
 class TestSubjectMerge:
-    """Tests for SubjectService.merge_subjects."""
-
     def test_merge_dry_run(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """Dry-run merge reports experiments without modifying."""
         source = {**SAMPLE_SUBJECT, "ID": "S1", "label": "SRC"}
         target = {**SAMPLE_SUBJECT, "ID": "S2", "label": "TGT"}
 
@@ -376,16 +312,6 @@ class TestSubjectMerge:
     def test_merge_uses_scoped_put_to_target_subject(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Regression test for OXD01_CMH PET-session deletion incident.
-
-        The reassignment MUST use the project+target-subject-scoped PUT
-        (same URI shape as the XNAT web UI), with the target subject's
-        internal XNAT ID in the URL path. An earlier implementation used
-        PUT /data/experiments/{id}?xnat:experimentData/subject_ID=... which
-        was silently destructive on the live XNAT — the experiment was
-        neither left on source nor moved to target, and the source DELETE
-        completed with nothing to cascade. Do not reintroduce that pattern.
-        """
         source = {**SAMPLE_SUBJECT, "ID": "XNAT_S00001", "label": "SRC"}
         target = {**SAMPLE_SUBJECT, "ID": "XNAT_S99999", "label": "TGT"}
 
@@ -394,14 +320,11 @@ class TestSubjectMerge:
         def get_side_effect(path: str, **kwargs: object) -> MagicMock:
             get_calls.append(path)
             if "SRC" in path and "experiments" in path:
-                # First call returns the source experiment; post-reassign
-                # fail-safe call returns empty (all moved successfully).
                 prior_src_exps = sum(1 for p in get_calls if "SRC" in p and "experiments" in p)
                 if prior_src_exps == 1:
                     return make_response({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
                 return make_response({"ResultSet": {"Result": []}})
             if "/data/experiments/EXP01" in path:
-                # Verification GET after the reassignment PUT.
                 return make_response(
                     {
                         "items": [
@@ -444,8 +367,6 @@ class TestSubjectMerge:
             f"PUT must be scoped to project+target-subject+experiment. Got: {put_path}"
         )
 
-        # Must NOT use the old (destructive) global endpoint with the
-        # xnat:experimentData/subject_ID XML-path-shortcut querystring.
         global_calls = [
             c for c in mock_client.put.call_args_list if c.args[0] == "/data/experiments/EXP01"
         ]
@@ -460,7 +381,6 @@ class TestSubjectMerge:
                 "encoded in the URL path, not an XML-path-shortcut param."
             )
 
-        # Audit metadata matching the web UI.
         params = reassign_calls[0].kwargs.get("params", {})
         assert params.get("event_type") == "WEB_FORM"
         assert params.get("event_action") == "Modified subject"
@@ -468,12 +388,6 @@ class TestSubjectMerge:
     def test_merge_aborts_if_verification_detects_wrong_subject_id(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """If the post-PUT verify GET shows the experiment's subject_ID did
-        not change to the target, abort before deleting the source.
-
-        This is the guard that the original OXD01_CMH "use internal ID" fix
-        was missing. Verified absence is not the same as verified presence.
-        """
         source = {**SAMPLE_SUBJECT, "ID": "XNAT_S00001", "label": "SRC"}
         target = {**SAMPLE_SUBJECT, "ID": "XNAT_S99999", "label": "TGT"}
 
@@ -481,8 +395,6 @@ class TestSubjectMerge:
             if "SRC" in path and "experiments" in path:
                 return make_response({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
             if "/data/experiments/EXP01" in path:
-                # Simulate the destructive PUT: subject_ID unchanged (or
-                # pointing elsewhere). The verify step must catch this.
                 return make_response(
                     {
                         "items": [
@@ -514,17 +426,11 @@ class TestSubjectMerge:
     def test_merge_aborts_if_source_still_has_experiments_after_loop(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Defence in depth: even if every per-experiment verify passes,
-        re-list source experiments before deleting. If any remain, abort.
-        """
         source = {**SAMPLE_SUBJECT, "ID": "XNAT_S00001", "label": "SRC"}
         target = {**SAMPLE_SUBJECT, "ID": "XNAT_S99999", "label": "TGT"}
 
         def get_side_effect(path: str, **kwargs: object) -> MagicMock:
             if "SRC" in path and "experiments" in path:
-                # Both the initial list AND the post-loop recheck return the
-                # same experiment. Per-experiment verify passes (below), so
-                # this tests the outer defence-in-depth guard only.
                 return make_response({"ResultSet": {"Result": [{"ID": "EXP01"}]}})
             if "/data/experiments/EXP01" in path:
                 return make_response(
@@ -557,10 +463,7 @@ class TestSubjectMerge:
 
 
 class TestSubjectRawAccessors:
-    """Tests for the raw-row / raw-response accessors the CLI routes through."""
-
     def test_list_rows_with_columns(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """list_rows requests the given columns and returns raw rows."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "SUBJ01"}]}}
 
         rows = service.list_rows("PROJ01", columns="ID,label,src")
@@ -573,14 +476,12 @@ class TestSubjectRawAccessors:
     def test_list_rows_without_columns(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Without columns, list_rows issues a plain GET (no params kwarg)."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": []}}
 
         assert service.list_rows("PROJ01") == []
         mock_client.get_json.assert_called_once_with("/data/projects/PROJ01/subjects")
 
     def test_experiment_rows(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """experiment_rows lists a subject's experiments."""
         mock_client.get_json.return_value = {"ResultSet": {"Result": [{"ID": "EXP01"}]}}
 
         rows = service.experiment_rows("PROJ01", "SUBJ01")
@@ -591,7 +492,6 @@ class TestSubjectRawAccessors:
         )
 
     def test_delete_raw(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """delete_raw DELETEs the subject and returns the raw response."""
         mock_client.delete.return_value = make_response("", status_code=200)
 
         resp = service.delete_raw("PROJ01", "SUBJ01")
@@ -600,7 +500,6 @@ class TestSubjectRawAccessors:
         mock_client.delete.assert_called_once_with("/data/projects/PROJ01/subjects/SUBJ01")
 
     def test_rename_raw(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """rename_raw PUTs the new label and returns the raw response."""
         mock_client.put.return_value = make_response("", status_code=200)
 
         resp = service.rename_raw("PROJ01", "OLD", "NEW")
@@ -612,8 +511,6 @@ class TestSubjectRawAccessors:
 
 
 class TestSubjectShare:
-    """Tests for SubjectService.share/unshare/list_shares."""
-
     def test_share_puts_flat_accession_path(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
@@ -640,7 +537,6 @@ class TestSubjectShare:
     def test_share_conflict_raises_resource_exists(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """A 409 (already shared) is translated to a clear typed error."""
         mock_client.put.side_effect = ClientRequestError(
             409, "PUT", "/data/subjects/XNAT_S00001/projects/PROJ02", "Already assigned"
         )
@@ -671,14 +567,6 @@ class TestSubjectShare:
     def test_unshare_refuses_the_primary_project(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Unsharing FROM the primary project is a delete, not an unshare.
-
-        Verified against XNAT 1.9.2.1: DELETE /data/subjects/{id}/projects/{primary}
-        answers 200 and the subject is 404 afterwards -- the server destroys
-        it and its data, and the response is indistinguishable from removing
-        an ordinary share. A mistyped --from would silently delete the
-        subject while reporting success, so the request must never be sent.
-        """
         with pytest.raises(InputValidationError):
             service.unshare("XNAT_S00001", "PROJ01", primary_project="PROJ01")
 
@@ -687,7 +575,6 @@ class TestSubjectShare:
     def test_unshare_primary_check_ignores_case(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Refusing a little too much beats deleting a subject on a case slip."""
         with pytest.raises(InputValidationError):
             service.unshare("XNAT_S00001", "proj01", primary_project="PROJ01")
 
@@ -712,7 +599,6 @@ class TestSubjectShare:
     def test_unshare_primary_check_ignores_target_padding(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """Padded input must not slip past the equality check as a distinct project."""
         with pytest.raises(InputValidationError):
             service.unshare("XNAT_S00001", " PROJ01 ", primary_project="PROJ01")
 
@@ -748,10 +634,7 @@ class TestSubjectShare:
 
 
 class TestSubjectVars:
-    """Tests for SubjectService.list_vars/set_vars."""
-
     def _fields_document(self, fields: list[tuple[str, str]]) -> dict:
-        """Build a minimal format=json document with a fields/field child."""
         return {
             "items": [
                 {
@@ -807,7 +690,6 @@ class TestSubjectVars:
     def test_list_vars_null_field_value_stays_empty_not_the_word_none(
         self, service: SubjectService, mock_client: MagicMock
     ) -> None:
-        """A null ``field``/``name`` must render as "" -- not the string "None"."""
         mock_client.get.return_value = make_response(
             {
                 "items": [
@@ -883,16 +765,6 @@ class TestSubjectVars:
         mock_client.put.assert_not_called()
 
     def test_set_vars_not_found(self, service: SubjectService, mock_client: MagicMock) -> None:
-        """A nonexistent subject_id must be rejected before any PUT is issued.
-
-        Regression test for the phantom-subject bug: the PUT this method
-        issues is the same create-or-update route ``SubjectService.create``
-        uses, and XNAT answers a nonexistent subject with 201, not 404
-        (verified live against 1.9.2.1) -- so relying on the PUT itself to
-        404 (as the old code did) never catches a typo; it just silently
-        creates an empty subject. This asserts the existence preflight GET
-        is what raises, and that the PUT is never reached.
-        """
         mock_client.get.side_effect = ResourceNotFoundError("resource", "/data/subjects/GONE")
 
         with pytest.raises(ResourceNotFoundError, match="subject not found: GONE"):

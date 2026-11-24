@@ -71,17 +71,6 @@ class ConflictChecker(BaseService):
         expected_label: str,
         expected_project: str,
     ) -> ConflictResult:
-        """Query destination for an entity and compare label/project.
-
-        Args:
-            entity_type: XNAT entity type path segment (subjects/experiments).
-            entity_id: Accession ID to look up.
-            expected_label: Label we expect on the destination.
-            expected_project: Project we expect on the destination.
-
-        Returns:
-            ConflictResult with conflict details if mismatches found.
-        """
         data: dict[str, Any] = self._get(
             f"/data/{entity_type}",
             params={"format": "json", "ID": entity_id, "columns": "ID,label,project"},

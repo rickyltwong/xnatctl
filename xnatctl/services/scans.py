@@ -19,22 +19,12 @@ from .hierarchy import HierarchyService
 
 
 def _scan_collection_path(session_id: str, project: str | None) -> str:
-    """Build the scans listing path for a session."""
     return HierarchyService.build_scan_collection_path(
         ExperimentRef(experiment=session_id, project_id=project)
     )
 
 
 def _scan_item_path(session_id: str, scan_id: str, project: str | None, *parts: str) -> str:
-    """Build a scan item path (optionally with a nested suffix).
-
-    Routed through ``HierarchyService`` rather than interpolated here, because
-    ``/data/projects/{P}/experiments/{E}/scans/{id}`` does not address a scan:
-    XNAT ignores the suffix and answers with the experiment document, so a
-    listing came back empty and a DELETE resolved to the whole session. Without
-    a subject segment the flat form is the only one that routes; access is
-    enforced server-side either way. See ``routable_scan_parent``.
-    """
     return HierarchyService.build_scan_path(
         ScanRef(
             experiment=ExperimentRef(experiment=session_id, project_id=project),
@@ -70,12 +60,6 @@ class ScanService(BaseService):
             params["columns"] = ",".join(columns)
 
         data = self._get(path, params=params)
-        # extract_rows, not _extract_results: some XNAT deployments answer a
-        # scans listing with a bare top-level JSON array rather than a
-        # ResultSet envelope. _extract_results only understands the envelope
-        # shape and silently returns [] for a bare array, which would make
-        # this look like a session with zero scans. extract_rows accepts
-        # both shapes.
         results = HierarchyService.extract_rows(data)
 
         scans = []
@@ -173,7 +157,6 @@ class ScanService(BaseService):
         Returns:
             Summary dict with deleted, failed, errors
         """
-        # Handle wildcard
         if scan_ids == ["*"] or "*" in scan_ids:
             scans = self.list(session_id, project=project)
             scan_ids = [s.id for s in scans]
@@ -186,7 +169,6 @@ class ScanService(BaseService):
         }
 
         def delete_scan(scan_id: str) -> tuple[str, bool, str]:
-            """Delete a single scan and return status."""
             try:
                 self.delete(session_id, scan_id, project=project, remove_files=remove_files)
                 return (scan_id, True, "")
@@ -290,17 +272,6 @@ class ScanService(BaseService):
         params = {"xnat:imageScanData/note": note}
         self._put(path, params=params)
         return True
-
-    # -------------------------------------------------------------------------
-    # Ref-based accessors
-    #
-    # The CLI resolves an experiment to a canonical, routable ``ScanRef``
-    # before addressing a scan -- XNAT silently answers a mis-routed scan URL
-    # with the parent experiment document, so the route must be one XNAT
-    # actually dispatches. These operate on that already-resolved ref so the
-    # wire path matches what inspection produced, rather than re-deriving it
-    # from ``(session_id, project)``.
-    # -------------------------------------------------------------------------
 
     def get_scan_document(self, scan_ref: ScanRef) -> dict[str, Any] | None:
         """Return a scan's raw detail row, or ``None`` if not found."""

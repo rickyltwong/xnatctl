@@ -51,10 +51,6 @@ from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir
 
 logger = logging.getLogger(__name__)
 
-#: Cache file: ``{"last_check": <epoch seconds>, "latest": "<version>"}``.
-#: Lives next to config.yaml/.session, written 0600 via core.fsutil like
-#: those other secrets-adjacent files (this one isn't a secret, but reusing
-#: the same helper keeps one code path for "files under ~/.config/xnatctl").
 UPDATE_CACHE_FILE = CONFIG_DIR / ".update-check"
 
 CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -62,11 +58,6 @@ CACHE_TTL_SECONDS = 24 * 60 * 60
 PYPI_PROJECT_URL = "https://pypi.org/pypi/xnatctl/json"
 FETCH_TIMEOUT_SECONDS = 1.0
 
-#: Any non-empty value on any of these disables both the notice and the
-#: background cache refresh. Mirrors the convention of NO_UPDATE_NOTIFIER
-#: (used by several JS CLIs) plus xnatctl's own env-var naming, and treats a
-#: CI environment as opted out by default -- a CI runner has no one to show
-#: the notice to and no reason to phone home on every job.
 _OPT_OUT_ENV_VARS = ("NO_UPDATE_NOTIFIER", "XNAT_NO_UPDATE_CHECK", "CI")
 
 #: Private signal set on the detached refresh child's environment when the
@@ -82,17 +73,6 @@ FROZEN_REFRESH_ENV_VAR = "_XNATCTL_FROZEN_UPDATE_CHECK_REFRESH"
 
 
 def _running_under_pytest() -> bool:
-    """True when the current process is a pytest run.
-
-    There is no autouse fixture isolating this cache file the way
-    ``isolate_session_cache``/``isolate_audit_log`` isolate theirs (this
-    module doesn't own conftest.py), so without this guard every CliRunner
-    invocation across the whole test suite would read/write the real
-    ``~/.config/xnatctl/.update-check`` and, once a cache is missing or
-    stale, launch a real refresh subprocess making a real HTTP request to
-    pypi.org. Tests that specifically want to exercise the notify path
-    monkeypatch this to return False.
-    """
     return "PYTEST_CURRENT_TEST" in os.environ
 
 
@@ -126,7 +106,6 @@ def update_check_disabled(
 
 
 def _read_cache() -> dict[str, Any] | None:
-    """Return the parsed cache, or None if missing/unreadable/malformed."""
     try:
         with UPDATE_CACHE_FILE.open(encoding="utf-8") as handle:
             data = json.load(handle)
@@ -138,14 +117,6 @@ def _read_cache() -> dict[str, Any] | None:
 
 
 def _normalize_version(raw: str) -> str | None:
-    """Parse and canonicalize a version string. None if it doesn't parse.
-
-    A cached (or freshly fetched) version string is stored and re-emitted in
-    its canonical ``str(Version(...))`` form rather than verbatim -- PyPI's
-    JSON API, a hand-edited cache, or a stray trailing newline can all put
-    non-canonical text in the value, and that text is what ends up in the
-    printed notice if it isn't normalized first.
-    """
     try:
         return str(Version(raw))
     except InvalidVersion:
@@ -153,7 +124,6 @@ def _normalize_version(raw: str) -> str | None:
 
 
 def _write_cache(latest: str) -> None:
-    """Persist the latest known version. Any failure is logged, never raised."""
     normalized = _normalize_version(latest)
     if normalized is None:
         logger.debug("Refusing to cache an unparsable version: %r", latest)
@@ -205,17 +175,8 @@ def check_for_update(current: str) -> str | None:
 
 
 def _fetch_latest_version(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
-    """Fetch the latest published version from PyPI. None on any failure.
-
-    Deliberately catches every exception, not a curated list: this call
-    crosses DNS, TLS, HTTP, and JSON parsing, each with its own exception
-    hierarchy (``OSError``, ``urllib.error.URLError``,
-    ``http.client.HTTPException``, ``ValueError``/``json.JSONDecodeError``,
-    a malformed-payload ``KeyError``/``TypeError``, ...), and this function's
-    entire contract is "return the version, or None -- never raise."
-    """
     try:
-        with urllib.request.urlopen(PYPI_PROJECT_URL, timeout=timeout) as response:  # noqa: S310
+        with urllib.request.urlopen(PYPI_PROJECT_URL, timeout=timeout) as response:
             payload = json.load(response)
         version = payload["info"]["version"]
     except Exception as e:  # noqa: BLE001 -- "return version or None, never raise"
@@ -249,16 +210,6 @@ def refresh_cache_now(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
 
 
 def _cleanup_stale_tmp_files() -> None:
-    """Remove orphaned atomic-write temp files from a previously killed refresh.
-
-    ``atomic_private_write`` names its temp file
-    ``.{destination-name}.{pid}.tmp`` and unlinks it in a ``finally`` -- but a
-    refresh process that dies mid-write (killed, crashed, host rebooted)
-    leaves that temp file behind forever, since nothing else ever revisits
-    it. Opportunistic hygiene: sweep for them before writing a fresh one.
-    Never raises -- a permission error, or racing another refresh process
-    that's mid-write right now, is not worth aborting this refresh over.
-    """
     pattern = f".{UPDATE_CACHE_FILE.name}.*.tmp"
     try:
         for stale in UPDATE_CACHE_FILE.parent.glob(pattern):
@@ -271,16 +222,6 @@ def _cleanup_stale_tmp_files() -> None:
 
 
 def _refresh(fetch: Callable[[], str | None]) -> None:
-    """Fetch and, on success, overwrite the cache. Never raises.
-
-    ``fetch`` is an injectable seam -- tests substitute their own, including
-    ones that deliberately raise to probe failure handling -- so its
-    contract of "return str | None, never raise" can't be enforced at the
-    type level. The real ``_fetch_latest_version`` already catches its own
-    failures, but this is the shared entry point for both the real refresh
-    subprocess and any test-injected ``fetch``, so it catches broadly too:
-    nothing reachable from here may ever surface as an exception.
-    """
     try:
         latest = fetch()
         if latest is not None:
@@ -290,25 +231,6 @@ def _refresh(fetch: Callable[[], str | None]) -> None:
 
 
 def _spawn_refresh_subprocess() -> subprocess.Popen[bytes] | None:
-    """Launch the cache-refreshing child process, detached from this one.
-
-    Stdio is closed and the child gets its own session
-    (``start_new_session=True``, POSIX-only -- silently ignored on Windows)
-    so it is not tied to this process's controlling terminal or process
-    group and keeps running after this process exits. ``Popen()`` itself
-    still returns as soon as the child is forked/spawned; it never waits for
-    the child, so this call adds no latency here.
-
-    On a normal (non-frozen) install, the child is ``python -m
-    xnatctl.core.update_check`` -- a real interpreter running this module's
-    :func:`main`. On a frozen (PyInstaller) binary, ``sys.executable`` is
-    the xnatctl binary itself, not an interpreter, so that ``-m`` form is
-    meaningless to it; instead this re-invokes the binary bare and passes
-    :data:`FROZEN_REFRESH_ENV_VAR` in its environment, which ``cli.main.
-    main()`` checks before touching Click at all, running the same refresh
-    in-process. Both forms are still a detached child process, never a
-    thread -- see the module docstring for why a thread can't work here.
-    """
     extra_kwargs: dict[str, Any] = {}
     if getattr(sys, "frozen", False):
         argv = [sys.executable]
@@ -329,7 +251,7 @@ def _spawn_refresh_subprocess() -> subprocess.Popen[bytes] | None:
     else:
         argv = [sys.executable, "-m", "xnatctl.core.update_check"]
     try:
-        return subprocess.Popen(  # noqa: S603 - fixed argv, no shell, no user input
+        return subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

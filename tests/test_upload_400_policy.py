@@ -1,14 +1,3 @@
-"""Telling a transient 400 from a permanent one.
-
-XNAT's import service returns 400 both for "two uploads met in the same
-session, try again" and for "that project does not exist". They were treated
-identically, so a mislabeled upload retried every file five times over 62
-seconds of backoff, then did it again in each of two salvage passes.
-
-The signatures are read off the messages compiled into the deployed XNAT
-1.9.2.1, not invented here -- see the constants in ``core.retry``.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -31,7 +20,6 @@ def _resp(status: int, body: str = "") -> httpx.Response:
 
 @pytest.fixture(autouse=True)
 def no_real_backoff(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Record backoff instead of sleeping it; the ladder is 62s."""
     slept: list[float] = []
     monkeypatch.setattr(
         "xnatctl.core.cancellation.CancellationToken.sleep",
@@ -41,8 +29,6 @@ def no_real_backoff(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 
 class TestClassification:
-    """Every string here was harvested from the running server."""
-
     @pytest.mark.parametrize(
         "body",
         [
@@ -76,18 +62,12 @@ class TestClassification:
         assert is_permanent_400(body) is True
 
     def test_an_unrecognised_body_is_treated_as_retryable(self) -> None:
-        """Drift must not turn a working upload into a failing one.
-
-        A denylist errs toward slow; an allowlist would err toward refusing
-        uploads that currently succeed whenever XNAT rewords a message.
-        """
         assert is_permanent_400("Something no XNAT version has said yet") is False
 
     def test_an_empty_body_is_treated_as_retryable(self) -> None:
         assert is_permanent_400("") is False
 
     def test_transient_wins_when_both_appear(self) -> None:
-        """Bodies can carry both; the self-clearing one decides."""
         body = (
             "Duplicate archive attempt. Prearchive session already archiving. "
             "Invalid modification of session UID via archive process."
@@ -98,13 +78,11 @@ class TestClassification:
         assert not set(TRANSIENT_400_SIGNATURES) & set(PERMANENT_400_SIGNATURES)
 
     def test_matching_is_case_insensitive(self) -> None:
-        """XNAT is inconsistent: "Unable to identify subject" vs "unable to deduce"."""
         assert is_permanent_400("UNABLE TO DEDUCE SESSION LABEL") is True
 
 
 class TestRetryBehaviour:
     def test_a_permanent_400_costs_exactly_one_attempt(self, no_real_backoff: list[float]) -> None:
-        """The headline fix: no 62 seconds spent confirming a typo."""
         calls: list[int] = []
 
         def attempt() -> httpx.Response:
@@ -118,7 +96,6 @@ class TestRetryBehaviour:
         assert resp.status_code == 400
 
     def test_a_transient_400_is_still_retried(self, no_real_backoff: list[float]) -> None:
-        """The behaviour 400-is-retryable existed for. Must not regress."""
         calls: list[int] = []
 
         def attempt() -> httpx.Response:
@@ -142,7 +119,6 @@ class TestRetryBehaviour:
         assert len(calls) == 3
 
     def test_other_statuses_are_unaffected(self, no_real_backoff: list[float]) -> None:
-        """The permanent check must apply to 400 only, not to 503."""
         calls: list[int] = []
 
         def attempt() -> httpx.Response:
@@ -154,10 +130,8 @@ class TestRetryBehaviour:
         assert len(calls) == 3, "a 503 body must not be read as a permanent 400"
 
     def test_a_body_that_cannot_be_read_does_not_raise(self, no_real_backoff: list[float]) -> None:
-        """A decode failure must not turn an HTTP failure into an exception."""
-
         class Undecodable(httpx.Response):
-            @property  # type: ignore[misc]
+            @property
             def text(self) -> str:
                 raise UnicodeDecodeError("utf-8", b"", 0, 1, "boom")
 
@@ -179,21 +153,18 @@ class TestRetryBudget:
         assert budget.exhausted is False
 
     def test_an_exhausted_budget_stops_the_ladder(self, no_real_backoff: list[float]) -> None:
-        """The backstop for signature drift across XNAT versions."""
         calls: list[int] = []
 
         def attempt() -> httpx.Response:
             calls.append(1)
             return _resp(400, "unrecognised wording")
 
-        # Enough for the first 2s rung only.
         upload_with_retry(attempt, label="t", max_retries=5, retry_budget=RetryBudget(2))
 
         assert no_real_backoff == [2]
         assert len(calls) == 2, "kept retrying past the budget"
 
     def test_the_budget_is_shared_across_files(self, no_real_backoff: list[float]) -> None:
-        """It bounds the operation, not each file -- that is the point."""
         budget = RetryBudget(2)
 
         def attempt() -> httpx.Response:
@@ -215,8 +186,6 @@ class TestRetryBudget:
 
 
 class TestWarmupCircuitBreaker:
-    """A uniformly-rejected warmup means the rest will be rejected too."""
-
     @staticmethod
     def _service():
         from unittest.mock import MagicMock
@@ -257,7 +226,6 @@ class TestWarmupCircuitBreaker:
         )
 
         assert summary.success is False
-        # It stopped at the warmup rather than working through all 20.
         assert len(attempts) < len(files), f"kept going: {len(attempts)} of {len(files)}"
         assert "Check the project, subject and session labels" in summary.errors[0]
         assert "unable to identify destination project" in summary.errors[0]
@@ -265,11 +233,6 @@ class TestWarmupCircuitBreaker:
     def test_mixed_warmup_failures_do_not_abort(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Only a *uniform* rejection is evidence about the remaining files.
-
-        One bad file among good ones is a per-file problem, and stopping the
-        whole upload for it would be worse than the bug being fixed.
-        """
         import xnatctl.services.upload.gradual as uploads
 
         files = []
@@ -291,7 +254,5 @@ class TestWarmupCircuitBreaker:
             files=files, project="P", subject="S", session="E", workers=4
         )
 
-        # Every file was attempted -- the run was not cut short. (``seen`` can
-        # exceed ``files``: the salvage passes retry the one that failed.)
         assert set(seen) == {str(f) for f in files}, "aborted despite most warmup files succeeding"
         assert summary.succeeded == len(files) - 1

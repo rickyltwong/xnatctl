@@ -42,10 +42,6 @@ from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.sessions import SessionService
 from xnatctl.services.subjects import SubjectService
 
-# =============================================================================
-# subject share / unshare
-# =============================================================================
-
 
 @subject.command("share")
 @click.argument("subject_id")
@@ -152,14 +148,6 @@ def subject_unshare(
 
     primary_project = resolved.project_id or project
 
-    # Same primary-project refusal `SubjectService.unshare` enforces --
-    # checked here too, before the dry-run branch, so `--dry-run` reports
-    # the same refusal execution would rather than returning early and
-    # reporting success for a call the service would reject. Stripped AND
-    # casefolded on both sides so the CLI and the service cannot disagree
-    # about what counts as a match -- padded input (e.g. a trailing space
-    # from a copy-paste) must not slip past this into the service's own
-    # check, which compares the same way.
     if target_project.strip().casefold() == primary_project.strip().casefold():
         raise InputValidationError(
             f"refusing to unshare subject {resolved.subject_id} from {target_project}: that is "
@@ -183,11 +171,6 @@ def subject_unshare(
         f"Removed subject {resolved.subject_label or resolved.subject_id}'s "
         f"share from {target_project}"
     )
-
-
-# =============================================================================
-# session share / unshare
-# =============================================================================
 
 
 @session.command("share")
@@ -327,11 +310,6 @@ def session_unshare(
         print_error(f"Session not found: {session_id}")
         raise SystemExit(1) from None
 
-    # Knowing the primary project is a precondition, not a nicety: unsharing
-    # a session FROM its primary project makes XNAT delete it outright (200,
-    # then 404), so the guard in SessionService.unshare needs a real value to
-    # compare against. Refuse rather than guess -- an unguarded unshare is
-    # the one failure mode here that destroys data.
     primary_project = resolved.project_id or project
     if not primary_project:
         print_error(
@@ -341,14 +319,6 @@ def session_unshare(
         )
         raise SystemExit(1)
 
-    # Same primary-project refusal `SessionService.unshare` enforces --
-    # checked here too, before the dry-run branch, so `--dry-run` reports
-    # the same refusal execution would rather than returning early and
-    # reporting success for a call the service would reject. Stripped AND
-    # casefolded on both sides so the CLI and the service cannot disagree
-    # about what counts as a match -- padded input (e.g. a trailing space
-    # from a copy-paste) must not slip past this into the service's own
-    # check, which compares the same way.
     if target_project.strip().casefold() == primary_project.strip().casefold():
         raise InputValidationError(
             f"refusing to unshare session {resolved.experiment_id} from {target_project}: that "

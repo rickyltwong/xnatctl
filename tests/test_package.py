@@ -1,11 +1,7 @@
-"""Tests for xnatctl package imports and exports."""
-
 from __future__ import annotations
 
 
 class TestPackageImports:
-    """Tests for package imports."""
-
     def test_import_xnatctl(self):
         import xnatctl
 
@@ -95,8 +91,6 @@ class TestPackageImports:
 
 
 class TestExceptionHierarchy:
-    """Tests for exception hierarchy."""
-
     def test_xnat_error_base(self):
         from xnatctl.core.exceptions import XNATCtlError
 

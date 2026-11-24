@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 
 def _is_dicom_resource(resource: dict[str, Any]) -> bool:
-    """Return True when a scan resource contains DICOM data."""
     label = str(resource.get("label") or "")
     resource_format = str(resource.get("format") or "")
     return label == "DICOM" or resource_format.upper() == "DICOM"
@@ -43,12 +42,6 @@ def _is_dicom_resource(resource: dict[str, Any]) -> bool:
 
 @dataclass
 class _DownloadedScan:
-    """Intermediate state for a scan downloaded but not yet uploaded.
-
-    Carries the validated ZIP path and destination metadata between the
-    download and upload phases of :meth:`ScanTransfer.transfer_scans`.
-    """
-
     scan_id: str
     zip_path: Path
     is_dicom: bool
@@ -122,7 +115,6 @@ class ScanTransfer:
         session_xsi_type: str,
         resource: dict[str, Any],
     ) -> bool:
-        """Check scan-resource filters, mapping DICOM-format aliases to DICOM."""
         label = str(resource.get("label") or "")
         if _is_dicom_resource(resource):
             return self.filter_engine.should_include_scan_resource(
@@ -184,7 +176,6 @@ class ScanTransfer:
 
         workers = min(self.config.scan_workers, len(filtered_scans))
 
-        # -- Phase A: Download all scans in parallel --
         downloaded, download_failures = self._download_all_scans(
             filtered_scans,
             exp,
@@ -202,21 +193,10 @@ class ScanTransfer:
         if not downloaded:
             return 0
 
-        # -- Phase B: Upload all downloaded scans in parallel --
         return self._upload_downloaded_scans(downloaded, exp, result, dicom_only, workers)
 
     @staticmethod
     def _casefold_preflight(filtered_scans: list[dict[str, Any]]) -> None:
-        """Reject scan IDs that would collide case-insensitively on disk.
-
-        Runs over the whole batch, sequentially, before any worker thread
-        starts (so no locking is needed): two scan IDs differing only by case
-        would share the same ``scan_{id}`` staging directory once download
-        workers write into it concurrently.
-
-        Args:
-            filtered_scans: Scans selected for this phase.
-        """
         seen_scan_dirs: set[str] = set()
         for s in filtered_scans:
             check_no_casefold_collision(s.get("ID", ""), seen_scan_dirs, "scan_id")
@@ -233,23 +213,6 @@ class ScanTransfer:
         create_missing_scans: bool,
         workers: int,
     ) -> tuple[list[_DownloadedScan], list[tuple[str, str]]]:
-        """Download every selected scan's resources (Phase A dispatch).
-
-        Args:
-            filtered_scans: Scans selected for this phase.
-            exp: Parent experiment entity.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            work_dir: Temporary working directory.
-            dicom_only: Phase selector (True=DICOM, False=non-DICOM).
-            scan_resources_cache: Shared cache of scan resources across phases.
-            create_missing_scans: Create/tolerate scan shells before generic
-                resource upload.
-            workers: Worker count decided by the caller for this phase.
-
-        Returns:
-            Tuple of (downloaded items, (scan_id, error) failures).
-        """
         downloaded: list[_DownloadedScan] = []
         download_failures: list[tuple[str, str]] = []
 
@@ -301,14 +264,6 @@ class ScanTransfer:
         result: TransferResult,
         dicom_only: bool,
     ) -> None:
-        """Fold Phase A download failures into the mutable result.
-
-        Args:
-            download_failures: (scan_id, error) pairs from Phase A.
-            exp: Parent experiment entity.
-            result: Mutable result to update.
-            dicom_only: Phase selector, for scans_* vs resources_* counters.
-        """
         for scan_id, error in download_failures:
             if dicom_only:
                 result.scans_failed += 1
@@ -324,18 +279,6 @@ class ScanTransfer:
         dicom_only: bool,
         workers: int,
     ) -> int:
-        """Upload previously-downloaded scan items in parallel (Phase B).
-
-        Args:
-            downloaded: Items downloaded and validated in Phase A.
-            exp: Parent experiment entity.
-            result: Mutable result to update.
-            dicom_only: Phase selector, for scans_* vs resources_* counters.
-            workers: Worker count decided by the caller for this phase.
-
-        Returns:
-            Number of scans successfully uploaded.
-        """
         processed = 0
 
         if workers > 1:
@@ -387,27 +330,8 @@ class ScanTransfer:
         scan_resources_cache: dict[str, list[dict[str, Any]]],
         create_missing_scans: bool,
     ) -> tuple[str, list[_DownloadedScan] | None, str]:
-        """Download resources for one scan (parallel worker task).
-
-        Args:
-            scan: Scan dict from source.
-            exp: Parent experiment entity.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            work_dir: Temporary working directory for the experiment.
-            dicom_only: Phase selector (True=DICOM, False=non-DICOM).
-            scan_resources_cache: Shared cache of scan resources across phases.
-            create_missing_scans: Create/tolerate a destination scan shell
-                before uploading generic resources.
-
-        Returns:
-            Tuple of (scan_id, downloaded_items_or_none, error_message).
-        """
         scan_id = scan.get("ID", "")
         try:
-            # Server-reported, not caller input, but still a local-path
-            # component -- a hostile/malformed ID fails just this one scan
-            # (caught below), not the whole transfer.
             safe_scan_id = validate_local_path_component(scan_id, "scan_id")
             scan_work_dir = work_dir / f"scan_{safe_scan_id}"
             items = self._download_single_scan(
@@ -429,15 +353,6 @@ class ScanTransfer:
         item: _DownloadedScan,
         exp: DiscoveredEntity,
     ) -> tuple[str, bool, str]:
-        """Upload one previously-downloaded scan item (parallel worker task).
-
-        Args:
-            item: Downloaded scan item with validated ZIP on disk.
-            exp: Parent experiment entity.
-
-        Returns:
-            Tuple of (scan_id, success, error_message).
-        """
         try:
             self._upload_single_scan(item, exp)
             return item.scan_id, True, ""
@@ -455,22 +370,6 @@ class ScanTransfer:
         scan_resources_cache: dict[str, list[dict[str, Any]]] | None = None,
         create_missing_scan: bool = False,
     ) -> list[_DownloadedScan]:
-        """Download and validate resources for a single scan.
-
-        Args:
-            scan: Scan dict from source.
-            exp: Parent experiment entity.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            work_dir: Temporary working directory for this scan.
-            dicom_only: Phase selector (True=DICOM, False=non-DICOM).
-            scan_resources_cache: Shared cache of scan resources across phases.
-            create_missing_scan: Create/tolerate a destination scan shell before
-                uploading generic resources.
-
-        Returns:
-            List of downloaded scan items ready for upload.
-        """
         scan_id = scan.get("ID", "")
         xsi_type = exp.xsi_type or ""
 
@@ -489,12 +388,6 @@ class ScanTransfer:
         )
 
         items: list[_DownloadedScan] = []
-        # Scoped to this one scan's call (not shared across threads/scans),
-        # so no locking is needed: two resources on the SAME scan whose
-        # labels differ only by case ("QA" then "qa") would stage their ZIPs
-        # under the same local name, and since every resource for a scan
-        # downloads before any of them uploads, the second would silently
-        # overwrite the first on disk before either reaches the destination.
         seen_resource_labels: set[str] = set()
         for res, is_dicom in self._filter_scan_resources_for_phase(resources, xsi_type, dicom_only):
             check_no_casefold_collision(
@@ -515,19 +408,6 @@ class ScanTransfer:
         exp: DiscoveredEntity,
         scan_resources_cache: dict[str, list[dict[str, Any]]] | None,
     ) -> list[dict[str, Any]]:
-        """Return the scan's resources from the cache, discovering on a miss.
-
-        Thread safety: each scan_id is processed by exactly one thread
-        within a phase, so dict keys are disjoint across workers (CPython GIL).
-
-        Args:
-            scan_id: Scan ID.
-            exp: Parent experiment entity.
-            scan_resources_cache: Shared cache of scan resources across phases.
-
-        Returns:
-            Resource dicts for this scan.
-        """
         cached = (scan_resources_cache or {}).get(scan_id)
         if cached is not None:
             return cached
@@ -542,22 +422,11 @@ class ScanTransfer:
         xsi_type: str,
         dicom_only: bool,
     ) -> list[tuple[dict[str, Any], bool]]:
-        """Select the resources that pass the filters and match the phase.
-
-        Args:
-            resources: Resource dicts for one scan.
-            xsi_type: Parent experiment XSI type.
-            dicom_only: Phase selector (True=DICOM, False=non-DICOM).
-
-        Returns:
-            (resource, is_dicom) pairs, in source order.
-        """
         selected: list[tuple[dict[str, Any], bool]] = []
         for res in resources:
             if not self._should_include_scan_resource(xsi_type, res):
                 continue
             is_dicom = _is_dicom_resource(res)
-            # Phase filtering: skip resources not matching current phase
             if is_dicom != dicom_only:
                 continue
             selected.append((res, is_dicom))
@@ -575,23 +444,6 @@ class ScanTransfer:
         dicom_only: bool,
         create_missing_scan: bool,
     ) -> None:
-        """Create a destination scan shell before non-DICOM upload if needed.
-
-        Scans without DICOM won't be created by DICOM import; create them
-        explicitly before uploading non-DICOM resources. 409 is tolerated:
-        auto-archive may have already created the scan.
-
-        Args:
-            scan: Scan dict from source.
-            exp: Parent experiment entity.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            scan_id: Scan ID.
-            xsi_type: Parent experiment XSI type.
-            resources: Scan resources discovered for this scan.
-            dicom_only: Phase selector (True=DICOM, False=non-DICOM).
-            create_missing_scan: Force shell creation even when DICOM exists.
-        """
         has_dicom = any(_is_dicom_resource(r) for r in resources)
         will_upload_generic_resource = not dicom_only and any(
             self._should_include_scan_resource(xsi_type, r) and not _is_dicom_resource(r)
@@ -635,20 +487,6 @@ class ScanTransfer:
         work_dir: Path,
         is_dicom: bool,
     ) -> _DownloadedScan:
-        """Download a single scan resource, DICOM or non-DICOM.
-
-        Args:
-            res: Resource dict from source.
-            scan_id: Scan ID.
-            exp: Parent experiment entity.
-            dest_project: Destination project ID.
-            subject: Parent subject entity.
-            work_dir: Temporary working directory for this scan.
-            is_dicom: Whether this resource is DICOM.
-
-        Returns:
-            Downloaded scan item ready for upload.
-        """
         res_label = res.get("label", "")
 
         if is_dicom:
@@ -701,12 +539,6 @@ class ScanTransfer:
         item: _DownloadedScan,
         exp: DiscoveredEntity,
     ) -> None:
-        """Upload a previously downloaded scan resource to the destination.
-
-        Args:
-            item: Downloaded scan item with validated ZIP on disk.
-            exp: Parent experiment entity.
-        """
         if item.is_dicom:
             self.executor.upload_scan_dicom(
                 zip_path=item.zip_path,

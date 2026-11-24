@@ -1,5 +1,3 @@
-"""Tests for resource upload CLI behavior."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,8 +10,6 @@ from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 
 
 class FakeClient:
-    """Minimal authenticated client stub."""
-
     is_authenticated = True
 
     def whoami(self) -> dict[str, str]:
@@ -21,8 +17,6 @@ class FakeClient:
 
 
 class ResourceServiceSpy:
-    """Capture ResourceService usage in CLI commands."""
-
     last_instance: ResourceServiceSpy | None = None
     raise_on_upload: str | None = None
 

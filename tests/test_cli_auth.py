@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI auth commands."""
-
 from __future__ import annotations
 
 import base64
@@ -22,12 +20,10 @@ from xnatctl.models.info import UserInfo
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with a default profile."""
     return Config(
         default_profile="default",
         profiles={
@@ -42,8 +38,6 @@ def _mock_config() -> Config:
 
 
 class TestAuthLogin:
-    """Tests for auth login command."""
-
     def test_login_success(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.authenticate.return_value = "fake-session-token"
@@ -131,8 +125,6 @@ class TestAuthLogin:
 
 
 class TestAuthLogout:
-    """Tests for auth logout command."""
-
     def test_logout_with_session(self, runner: CliRunner) -> None:
         mock_session = MagicMock()
         mock_session.token = "old-token"
@@ -166,8 +158,6 @@ class TestAuthLogout:
 
 
 class TestAuthStatus:
-    """Tests for auth status command."""
-
     def test_status_with_session(self, runner: CliRunner) -> None:
         mock_auth_mgr = MagicMock()
         mock_auth_mgr.get_session_info.return_value = {
@@ -199,7 +189,6 @@ class TestAuthStatus:
         assert "url" in result.output
 
     def test_status_tsv_output(self, runner: CliRunner) -> None:
-        """`-o tsv` emits a tab-separated header+row, not the Rich key-value view."""
         mock_auth_mgr = MagicMock()
         mock_auth_mgr.get_session_info.return_value = None
         mock_auth_mgr.get_credentials.return_value = (None, None)
@@ -226,8 +215,6 @@ class TestAuthStatus:
 
 
 class TestAuthTest:
-    """Tests for auth test command."""
-
     def test_auth_test_with_session(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.whoami.return_value = UserInfo(
@@ -289,17 +276,7 @@ class TestAuthTest:
 
 
 class TestAuthGlobalOptions:
-    """auth commands carry the standard decorator stack.
-
-    Command-local -p/-o declarations and hand-rolled print_error +
-    SystemExit would mean the exceptions' actionable hints never render on
-    this path, and the root-group flags would go unseen.
-    """
-
     def test_root_level_profile_flag_is_respected(self, runner: CliRunner) -> None:
-        """`xnatctl -p other auth status` -- the root-group flag reaches
-        auth commands.
-        """
         cfg = Config(
             default_profile="default",
             profiles={
@@ -342,7 +319,6 @@ class TestAuthGlobalOptions:
 
     @pytest.mark.parametrize("command", ["login", "logout", "status", "test"])
     def test_verbose_and_quiet_are_accepted(self, runner: CliRunner, command: str) -> None:
-        """-q and -v did not exist on these commands at all before."""
         result = runner.invoke(cli, ["auth", command, "--help"])
 
         assert result.exit_code == 0
@@ -351,8 +327,6 @@ class TestAuthGlobalOptions:
 
 
 class TestFirstRun:
-    """The no-config cliff."""
-
     def _empty(self) -> Config:
         return Config(profiles={})
 
@@ -366,9 +340,6 @@ class TestFirstRun:
         assert "Traceback" not in result.output
 
     def test_no_config_does_not_blame_a_missing_default_profile(self, runner: CliRunner) -> None:
-        """Saying `Profile not found: default` would send the user looking
-        for a typo that does not exist.
-        """
         with patch("xnatctl.cli.common.Config.load", return_value=self._empty()):
             result = runner.invoke(cli, ["auth", "login"])
 
@@ -377,12 +348,6 @@ class TestFirstRun:
 
 
 class TestAuthTestJsonShapePin:
-    """The exact `auth test -o json` bytes, pinned across the UserInfo migration.
-
-    The command spreads whoami's result into its JSON payload; converting the
-    typed model back to a dict at the call site must keep this byte-identical.
-    """
-
     def test_auth_test_json_shape_is_pinned(self, runner: CliRunner) -> None:
         mock_client = MagicMock()
         mock_client.whoami.return_value = UserInfo(
@@ -413,8 +378,6 @@ class TestAuthTestJsonShapePin:
             "email": "test@example.org",
             "enabled": True,
         }
-        # CliRunner mixes the stderr progress line into output; the JSON on
-        # stdout after it is the byte-exact payload.
         assert (
             result.output
             == "Testing with cached session...\n" + json.dumps(expected, indent=2) + "\n"

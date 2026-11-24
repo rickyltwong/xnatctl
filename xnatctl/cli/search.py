@@ -143,10 +143,6 @@ def search_run(
         return
 
     if not rows:
-        # No fixed column list exists to hand print_output() for an empty
-        # list -- see the docstring above -- so print the same "No results"
-        # notice print_table() would, directly, for table format; TSV's own
-        # "zero rows -> zero output" behavior needs no equivalent call.
         if ctx.output_format != OutputFormat.TSV:
             print_table([], [])
         return
@@ -184,10 +180,6 @@ def search_delete(ctx: Context, search_id: str, dry_run: bool) -> None:
     service = SearchService(ctx.get_client())
 
     if dry_run:
-        # Execution refuses an unknown search_id via delete()'s own
-        # get_definition() preflight (DELETE answers 200 even for a
-        # nonexistent id). Dry-run must run the same check rather than
-        # reporting success for a call execution would refuse.
         service.get_definition(search_id)
         click.echo(f"[DRY-RUN] Would delete saved search {search_id}", err=True)
         return

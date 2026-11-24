@@ -1,12 +1,3 @@
-"""Redaction invariants for the logging path and URL validation.
-
-Redaction applied only where a human explicitly remembers it --
-``print_error``/``print_warning`` and a couple of client call sites -- would
-leave ``logging.Logger`` records outside it, which blocks diagnostics:
-verbose HTTP diagnostics log full request URLs, and those carry query-string
-tokens.
-"""
-
 from __future__ import annotations
 
 import io
@@ -25,7 +16,6 @@ USERINFO_URL = "https://admin:s3cret@xnat.example.org/data"
 
 @pytest.fixture
 def filtered_logger() -> Iterator[tuple[logging.Logger, io.StringIO]]:
-    """A logger whose handler carries the filter, plus its output buffer."""
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     logger = logging.getLogger("xnatctl.test.redaction")
@@ -41,7 +31,6 @@ def filtered_logger() -> Iterator[tuple[logging.Logger, io.StringIO]]:
 
 @pytest.fixture
 def clean_root() -> Iterator[None]:
-    """Snapshot and restore the root logger, which setup_logging mutates."""
     root = logging.getLogger()
     saved_handlers = list(root.handlers)
     saved_filters = {id(h): list(h.filters) for h in saved_handlers}
@@ -54,11 +43,6 @@ def clean_root() -> Iterator[None]:
                 handler.filters = saved_filters[id(handler)]
         root.handlers = saved_handlers
         root.setLevel(saved_level)
-
-
-# =============================================================================
-# RedactionFilter
-# =============================================================================
 
 
 def test_query_token_is_redacted_in_emitted_output(
@@ -93,9 +77,6 @@ def test_records_without_secrets_are_left_untouched(
 
 
 def test_untouched_record_keeps_lazy_args() -> None:
-    """Only records we actually change get collapsed, so other handlers keep
-    the original %-args.
-    """
     record = logging.LogRecord("x", logging.INFO, __file__, 1, "plain %s", ("value",), None)
     assert RedactionFilter().filter(record) is True
     assert record.msg == "plain %s"
@@ -103,25 +84,14 @@ def test_untouched_record_keeps_lazy_args() -> None:
 
 
 def test_changed_record_is_collapsed_without_double_interpolation() -> None:
-    """After rewriting, ``args`` must be cleared or the next getMessage() would
-    try to interpolate an already-formatted string.
-    """
     record = logging.LogRecord("x", logging.WARNING, __file__, 1, "GET %s", (SECRET_URL,), None)
     assert RedactionFilter().filter(record) is True
     assert record.args is None
     assert "s3cret" not in record.getMessage()
-    # Calling twice must stay stable.
     assert record.getMessage() == record.getMessage()
 
 
 def test_third_party_logger_output_is_redacted_too() -> None:
-    """The reason the filter lives on the handler rather than at our call sites.
-
-    Under --verbose, httpx logs one INFO line per request containing the full
-    URL. xnatctl never formats that line, so no amount of call-site redaction
-    would cover it -- only a handler-level filter does. This is what makes
-    the filter a hard prerequisite for HTTP diagnostics rather than a nicety.
-    """
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     httpx_logger = logging.getLogger("httpx")
@@ -131,7 +101,6 @@ def test_third_party_logger_output_is_redacted_too() -> None:
     httpx_logger.setLevel(logging.INFO)
     install_redaction_filter(httpx_logger)
     try:
-        # Verbatim shape of httpx's own request log line.
         httpx_logger.info(
             'HTTP Request: GET %s "HTTP/1.1 200 OK"',
             "https://xnat.example.org/data/projects?token=s3cret&format=json",
@@ -148,7 +117,6 @@ def test_third_party_logger_output_is_redacted_too() -> None:
 
 @pytest.mark.usefixtures("clean_root")
 def test_setup_logging_installs_the_filter_exactly_once() -> None:
-    """setup_logging runs from both the CLI root group and @global_options."""
     setup_logging()
     setup_logging()
     setup_logging(verbose=True)
@@ -160,11 +128,6 @@ def test_setup_logging_installs_the_filter_exactly_once() -> None:
         assert len(installed) <= 1
 
 
-# =============================================================================
-# validate_server_url rejects embedded credentials
-# =============================================================================
-
-
 def test_userinfo_url_is_rejected() -> None:
     with pytest.raises(InvalidURLError) as exc_info:
         validate_server_url(USERINFO_URL)
@@ -173,10 +136,6 @@ def test_userinfo_url_is_rejected() -> None:
 
 
 def test_rejection_message_does_not_leak_the_password() -> None:
-    """The error raised *because* the URL held a credential must not repeat
-    it -- InvalidURLError echoes the value into the message and keeps it as
-    ``.value``.
-    """
     with pytest.raises(InvalidURLError) as exc_info:
         validate_server_url(USERINFO_URL)
 
@@ -187,10 +146,6 @@ def test_rejection_message_does_not_leak_the_password() -> None:
 
 
 def test_password_is_not_leaked_by_an_unrelated_rejection() -> None:
-    """A userinfo URL that fails an earlier check (scheme) must be redacted
-    too -- and that value is not http(s), so the text-scanning helper alone
-    would not have caught it.
-    """
     with pytest.raises(InvalidURLError) as exc_info:
         validate_server_url("ftp://admin:s3cret@xnat.example.org")
 
@@ -199,7 +154,6 @@ def test_password_is_not_leaked_by_an_unrelated_rejection() -> None:
 
 
 def test_bare_username_url_is_still_rejected() -> None:
-    """No password, but credentials in a URL are the wrong shape regardless."""
     with pytest.raises(InvalidURLError):
         validate_server_url("https://admin@xnat.example.org")
 

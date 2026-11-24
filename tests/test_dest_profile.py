@@ -1,5 +1,3 @@
-"""Tests for dest-profile CLI helper."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch

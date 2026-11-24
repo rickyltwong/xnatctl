@@ -1,21 +1,3 @@
-"""Saved (stored) searches, checked against a real server.
-
-Every claim SearchService depends on was verified once, by hand, against
-this same stack: the listing route returns a ``ResultSet`` envelope, the
-definition route (``show``) has NO JSON representation at all (``?format=json``
-404s even for a real, existing search -- only the default/``?format=xml``
-form works), the run route (``.../results``) supports JSON and returns a
-dynamic ``ResultSet.Columns``/``Result`` shape, and delete is
-idempotent-succeeds (a 200 even for an unknown id). This file is what keeps
-that verification from going stale.
-
-xnatctl ships no ``search create`` -- creating a saved search server-side
-has no clean single-call REST route (its ``PUT`` needs a full
-``xdat:stored_search`` XML bundle, the same shape the web UI's search
-builder produces) -- so this file builds one directly via the raw client,
-the same way the CLI's own escape hatch (``xnatctl api put``) would have to.
-"""
-
 from __future__ import annotations
 
 import uuid
@@ -44,7 +26,6 @@ sort-by-element-name="xnat:projectData" xmlns:xdat="http://nrg.wustl.edu/securit
 
 @pytest.fixture
 def saved_search(xnat_client: Any) -> Iterator[str]:
-    """A real saved search, created directly via PUT, deleted afterward."""
     search_id = f"xctlsrch{uuid.uuid4().hex[:10]}"
     xnat_client.put(
         f"/data/search/saved/{search_id}",
@@ -62,8 +43,6 @@ def saved_search(xnat_client: Any) -> Iterator[str]:
 
 
 class TestListSearches:
-    """List saved searches against the real server."""
-
     def test_created_search_appears_in_listing(self, xnat_client: Any, saved_search: str) -> None:
         service = SearchService(xnat_client)
 
@@ -73,8 +52,6 @@ class TestListSearches:
 
 
 class TestGetDefinition:
-    """Show a real saved search's XML definition."""
-
     def test_get_definition_returns_xml(self, xnat_client: Any, saved_search: str) -> None:
         service = SearchService(xnat_client)
 
@@ -85,8 +62,6 @@ class TestGetDefinition:
 
 
 class TestRun:
-    """Execute a real saved search."""
-
     def test_run_returns_a_list(self, xnat_client: Any, saved_search: str) -> None:
         service = SearchService(xnat_client)
 
@@ -96,15 +71,6 @@ class TestRun:
 
 
 class TestDelete:
-    """Delete, including the preflight that rejects an unknown id.
-
-    XNAT's own ``DELETE /data/search/saved/{id}`` is idempotent: it answers
-    success for an id that never existed, so a typo would print "Deleted
-    saved search X" having deleted nothing. ``delete()`` reads the
-    definition first and fails on an unknown id; the assertions below pin
-    the client-side behaviour, not the server's.
-    """
-
     def test_delete_removes_a_real_search(self, xnat_client: Any) -> None:
         service = SearchService(xnat_client)
         search_id = f"xctlsrch{uuid.uuid4().hex[:10]}"

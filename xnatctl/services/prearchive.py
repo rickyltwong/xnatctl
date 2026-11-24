@@ -18,15 +18,6 @@ from xnatctl.core.validation import quote_prearchive_segment as _quote_path_segm
 
 from .base import BaseService
 
-# The three meaningful project prearchive-routing codes, read out of
-# ``org.nrg.framework.constants.PrearchiveCode``'s static initializer in the
-# running server's ``framework-1.9.2.jar`` via ``javap -p -c`` (ordinal 0/1/2
-# -> code 0/4/5). The server itself does NOT validate what gets written to
-# ``PUT /data/projects/{id}/prearchive_code/{value}`` -- verified live,
-# ``.../3`` and ``.../9`` both answer 200 and are stored verbatim -- so this
-# mapping (and rejecting anything outside it, via the CLI's ``click.Choice``)
-# is the only thing standing between a typo and a project silently left in an
-# undefined routing state.
 PREARCHIVE_MODE_TO_CODE: dict[str, int] = {
     "manual": 0,
     "auto-archive": 4,
@@ -36,8 +27,6 @@ PREARCHIVE_CODE_TO_MODE: dict[int, str] = {
     code: mode for mode, code in PREARCHIVE_MODE_TO_CODE.items()
 }
 
-# XNAT's prearchive services answer HTTP 200 with an error-shaped body rather
-# than a 4xx, so the status code alone cannot be trusted.
 _EXPERIMENT_URI_RE = re.compile(r"/data/(?:archive/)?experiments/[^\s\"'<>]+")
 _CONFLICT_MARKERS = ("already exists", "conflict")
 _ERROR_MARKERS = ("error", "exception", "failed", "failure", "not allowed", "denied")
@@ -45,7 +34,6 @@ _RESULT_SNIPPET_CHARS = 200
 
 
 def _response_text(result: Any) -> str:
-    """Flatten a ``_post`` result (parsed JSON or text) to searchable text."""
     if result is None:
         return ""
     if isinstance(result, str):
@@ -54,19 +42,11 @@ def _response_text(result: Any) -> str:
 
 
 def _experiment_uri(result: Any) -> str | None:
-    """Return the archived experiment URI from a response body, if present."""
     match = _EXPERIMENT_URI_RE.search(_response_text(result))
     return match.group(0) if match else None
 
 
 def _raise_if_error_shaped(operation: str, result: Any, details: dict[str, Any]) -> None:
-    """Raise when a 200 response carries an error-shaped body.
-
-    Only positively error-shaped bodies raise. An empty or unrecognised body is
-    left alone: several XNAT deployments answer these services with a bare 200
-    and no payload, and failing those would be worse than the silence this check
-    exists to fix.
-    """
     text = _response_text(result).strip()
     if not text:
         return
@@ -77,8 +57,6 @@ def _raise_if_error_shaped(operation: str, result: Any, details: dict[str, Any])
     if any(marker in lowered for marker in _CONFLICT_MARKERS):
         raise ResourceExistsError("prearchive session", snippet)
 
-    # A body that names an experiment URI is a success report, even if some
-    # surrounding prose happens to contain one of the generic error words.
     if _experiment_uri(result) is None and any(marker in lowered for marker in _ERROR_MARKERS):
         raise OperationError(
             operation,
@@ -102,9 +80,6 @@ class PrearchiveService(BaseService):
         Returns:
             List of prearchive session dicts
         """
-        # `is not None`, not truthy: `project=""` is a caller mistake, not
-        # "no filter" -- it must not silently widen to every project's
-        # prearchive. _quote_path_segment already rejects the empty string.
         if project is not None:
             path = f"/data/prearchive/projects/{_quote_path_segment(project)}"
         else:
@@ -142,11 +117,6 @@ class PrearchiveService(BaseService):
         try:
             data = self._get(path, params=params)
         except ResourceNotFoundError as e:
-            # Re-scope the client's typed 404 to name the prearchive session.
-            # Matching the typed exception, not the text: a string match
-            # like `if "404" in str(e)` would also fire on any unrelated
-            # error whose text merely contains "404" -- a session labelled
-            # SUB404, for instance.
             raise ResourceNotFoundError(
                 "prearchive session",
                 f"{project}/{timestamp}/{session_name}",
@@ -186,22 +156,12 @@ class PrearchiveService(BaseService):
         data: dict[str, Any] = {"src": src}
 
         resolved_subject = subject
-        # `is not None`, not truthy: `experiment_label=""` must still trigger
-        # the subject lookup (and later get rejected at the point of use)
-        # rather than being silently treated the same as "no experiment
-        # label override".
         if experiment_label is not None and resolved_subject is None:
             session = self.get(project, timestamp, session_name)
             resolved_subject = session.get("subject")
             if not resolved_subject:
                 raise ValueError("Cannot archive to a specific experiment label without a subject")
 
-        # `is not None`, not truthy: an explicitly-supplied `subject=""`
-        # would skip a truthy check entirely (treated the same as "not
-        # provided"), silently falling back to XNAT's DICOM-derived subject
-        # instead of raising on the caller's empty value -- a different
-        # archive destination than either the caller or "no override" meant.
-        # _quote_path_segment below already rejects the empty string.
         if resolved_subject is not None:
             dest = (
                 f"/archive/projects/{encoded_project}"
@@ -216,11 +176,6 @@ class PrearchiveService(BaseService):
         try:
             result = self._post("/data/services/archive", data=data)
         except ResourceNotFoundError as exc:
-            # XNAT returns 404 when the prearchive path no longer exists. The
-            # most common cause is that the session was already archived (a
-            # successful archive removes it from the prearchive), so a bare
-            # "resource not found: /data/services/archive" is misleading. Raise
-            # an idempotency-aware, actionable error instead (see issue #20).
             raise OperationError(
                 "archive",
                 f"Prearchive session '{session_name}' was not found under "
@@ -231,8 +186,6 @@ class PrearchiveService(BaseService):
                 {"project": project, "timestamp": timestamp, "session": session_name},
             ) from exc
 
-        # A 2xx is not proof of success: XNAT reports conflicts and failures in
-        # the body of a 200.
         details = {"project": project, "timestamp": timestamp, "session": session_name}
         _raise_if_error_shaped("archive", result, details)
 

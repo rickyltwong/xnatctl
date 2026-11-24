@@ -1,12 +1,8 @@
-"""Tests for the experiment-XML overlay rewrite (pure XML transform)."""
-
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
 from xnatctl.services.transfer.xml_overlay import rewrite_experiment_xml
-
-# -- Sample XNAT experiment XML for XML overlay tests --
 
 _SAMPLE_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -58,7 +54,6 @@ class TestRewriteExperimentXml:
         cleaned = rewrite_experiment_xml(_SAMPLE_XML)
         root = ET.fromstring(cleaned)
 
-        # Flatten all local tag names
         all_tags = {
             elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag for elem in root.iter()
         }
@@ -75,8 +70,6 @@ class TestRewriteExperimentXml:
         cleaned = rewrite_experiment_xml(_SAMPLE_XML)
         root = ET.fromstring(cleaned)
 
-        # Session-level resources should be removed
-        # But scan-level elements should remain
         all_tags = {
             elem.tag.rsplit("}", 1)[-1] if "}" in elem.tag else elem.tag for elem in root.iter()
         }
@@ -174,7 +167,6 @@ class TestRewriteExperimentXml:
         assert root.attrib["project"] == "SRC"
 
     def test_strips_label_attribute(self) -> None:
-        """Label is always stripped to avoid 400 on destination PUT."""
         cleaned = rewrite_experiment_xml(_SAMPLE_XML)
         root = ET.fromstring(cleaned)
         assert "label" not in root.attrib

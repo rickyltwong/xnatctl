@@ -1,5 +1,3 @@
-"""Tests for ScanPipeline: subject/experiment orchestration and archive wait."""
-
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -102,7 +100,6 @@ class TestUploadDicomPhase:
         self,
         pipeline: ScanPipeline,
     ) -> None:
-        """Pipelined phase skips DICOM when the destination session exists."""
         exp = DiscoveredEntity(
             local_id="XNAT_E001",
             local_label="EXP001",
