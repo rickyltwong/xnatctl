@@ -41,6 +41,7 @@ launch this project sent queued as ``"success"`` regardless of validity
 from __future__ import annotations
 
 import builtins
+import re
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
@@ -140,6 +141,11 @@ class ScanLaunch(NamedTuple):
     params: dict[str, str]
 
 
+# A wrapper ID as typed: ASCII digits only. str.isdigit() also accepts
+# characters such as "²", which int() then rejects.
+_DECIMAL_ID = re.compile(r"[0-9]+")
+
+
 def _scan_xsi_type(document: Any) -> str | None:
     """Read ``items[0].meta["xsi:type"]`` from a single-scan ``?format=json`` document.
 
@@ -168,8 +174,9 @@ class ContainerService(BaseService):
     is a thin passthrough to it, and it avoids a circular import since
     ``commands.py`` never imports this module.
 
-    Every method returns plain ``dict``/``list[dict]``, except
-    :meth:`plan_scan_launch`'s small :class:`ScanLaunch` result -- see
+    Every method that returns server records returns them as plain
+    ``dict``/``list[dict]``; :meth:`plan_scan_launch` returns a small
+    :class:`ScanLaunch` of values it derived -- see
     :class:`~xnatctl.services.commands.CommandService`'s docstring for why.
     """
 
@@ -426,9 +433,11 @@ class ContainerService(BaseService):
         path = f"/xapi/projects/{quote_path_segment(project)}/commands/available"
         rows = _expect_list(self.client.get_json(path, params={"xsiType": xsi_type}), path)
         for index, row in enumerate(rows):
+            wrapper_id = row.get("wrapper-id") if isinstance(row, dict) else None
             if (
                 not isinstance(row, dict)
-                or not isinstance(row.get("wrapper-id"), int)
+                or not isinstance(wrapper_id, int)
+                or isinstance(wrapper_id, bool)
                 or not isinstance(row.get("enabled"), bool)
             ):
                 raise XNATCtlError(
@@ -441,7 +450,7 @@ class ContainerService(BaseService):
         """Find the one wrapper enabled in ``project`` for ``xsi_type`` that ``ref`` names.
 
         ``ref`` matches a wrapper's ``wrapper-label`` (what the Run menu
-        shows) or its ``wrapper-name``; a ``ref`` of digits only is a
+        shows) or its ``wrapper-name``; a ``ref`` of ASCII digits only is a
         ``wrapper-id`` and nothing else, as in :meth:`resolve_wrapper`, so
         the ID the ambiguity error suggests always selects one wrapper. Only
         wrappers enabled in the project are candidates, so a disabled
@@ -463,12 +472,14 @@ class ContainerService(BaseService):
             InputValidationError: If more than one enabled wrapper matches.
         """
         enabled = [r for r in self.available_wrappers(project, xsi_type) if r["enabled"]]
-        if ref.isdigit():
+        if _DECIMAL_ID.fullmatch(ref):
             matches = [r for r in enabled if r["wrapper-id"] == int(ref)]
         else:
             matches = [r for r in enabled if ref in (r.get("wrapper-label"), r.get("wrapper-name"))]
         if not matches:
-            offered = ", ".join(sorted(repr(_wrapper_display_name(r)) for r in enabled))
+            offered = ", ".join(
+                sorted(f"{_wrapper_display_name(r)!r} (ID {r['wrapper-id']})" for r in enabled)
+            )
             error = ResourceNotFoundError(f"pipeline for {xsi_type} in project {project}", ref)
             error.hint = (
                 f"Use a pipeline enabled for {xsi_type} in {project}: {offered}."
@@ -528,7 +539,7 @@ class ContainerService(BaseService):
                 wrapper's scan input.
             XNATCtlError: If a response lacks a field this relies on.
         """
-        validate_scan_id(scan)
+        scan = validate_scan_id(scan)
         ProjectService(self.client).get(project)
         session_id = SessionService(self.client).get(experiment, project=project).id
         # The lookup and the launched URI share these segments, so the scan
@@ -546,7 +557,10 @@ class ContainerService(BaseService):
         wrapper = self.resolve_available_wrapper(project, scan_type, wrapper_ref)
         input_name = wrapper.get("root-element-name")
         if not isinstance(input_name, str) or not input_name:
-            raise XNATCtlError(f"Wrapper {wrapper_ref!r} has no usable 'root-element-name'.")
+            raise XNATCtlError(
+                f"Unexpected row from GET /xapi/projects/{project}/commands/available: wrapper "
+                f"{wrapper['wrapper-id']} has no usable 'root-element-name'."
+            )
         if input_name in params:
             raise InputValidationError(
                 f"--scan conflicts with --param {input_name}=...: the wrapper's scan input is "

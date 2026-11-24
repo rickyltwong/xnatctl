@@ -366,8 +366,16 @@ class TestAvailableWrappers:
             [{k: v for k, v in _available_row(117, SCAN_LABEL).items() if k != "enabled"}],
             [dict(_available_row(117, SCAN_LABEL), enabled="true")],
             [dict(_available_row(117, SCAN_LABEL), **{"wrapper-id": "117"})],
+            [dict(_available_row(117, SCAN_LABEL), **{"wrapper-id": True})],
         ],
-        ids=["not-a-list", "null-row", "no-enabled", "string-enabled", "string-wrapper-id"],
+        ids=[
+            "not-a-list",
+            "null-row",
+            "no-enabled",
+            "string-enabled",
+            "string-wrapper-id",
+            "boolean-wrapper-id",
+        ],
     )
     def test_unexpected_shape_raises(self, fake_client, body: Any) -> None:
         fake_client.get_json.return_value = body
@@ -400,6 +408,14 @@ class TestResolveAvailableWrapper:
 
         assert service.resolve_available_wrapper("PROJ01", "xnat:mrScanData", "117") == by_id
 
+    def test_non_ascii_digit_label_is_a_label(self, fake_client) -> None:
+        """'²' passes str.isdigit() but is not a wrapper ID int() can read."""
+        row = _available_row(42, "²")
+        fake_client.get_json.return_value = [row]
+        service = ContainerService(fake_client)
+
+        assert service.resolve_available_wrapper("PROJ01", "xnat:mrScanData", "²") == row
+
     def test_disabled_wrapper_with_same_label_is_not_a_conflict(self, fake_client) -> None:
         enabled = _available_row(117, SCAN_LABEL)
         fake_client.get_json.return_value = [_available_row(99, SCAN_LABEL, enabled=False), enabled]
@@ -418,7 +434,7 @@ class TestResolveAvailableWrapper:
             service.resolve_available_wrapper("PROJ01", "xnat:mrScanData", "Old converter")
 
         assert excinfo.value.hint is not None
-        assert SCAN_LABEL in excinfo.value.hint
+        assert f"{SCAN_LABEL!r} (ID 117)" in excinfo.value.hint
 
     def test_nothing_enabled_says_so(self, fake_client) -> None:
         fake_client.get_json.return_value = [_available_row(99, "Old", enabled=False)]
@@ -534,6 +550,27 @@ class TestPlanScanLaunch:
         service = self._service(fake_client, response_factory, scan_body=scan_body)
 
         with pytest.raises(XNATCtlError, match="scans/7"):
+            service.plan_scan_launch("PROJ01", SCAN_LABEL, {}, experiment="PROJ01_S1_CT", scan="7")
+
+    def test_padded_scan_id_is_used_stripped(self, fake_client, response_factory) -> None:
+        service = self._service(fake_client, response_factory)
+
+        plan = service.plan_scan_launch(
+            "PROJ01", SCAN_LABEL, {}, experiment="PROJ01_S1_CT", scan=" 7 "
+        )
+
+        assert plan.params == {"image": SCAN_URI}
+        fake_client.get_json.assert_any_call(SCAN_PATH)
+
+    def test_wrapper_without_input_name_names_the_endpoint(
+        self, fake_client, response_factory
+    ) -> None:
+        service = self._service(fake_client, response_factory)
+        row = _available_row(117, SCAN_LABEL)
+        del row["root-element-name"]
+        fake_client.get_json.side_effect = _dispatch({SCAN_PATH: SCAN_BODY, AVAILABLE_PATH: [row]})
+
+        with pytest.raises(XNATCtlError, match="commands/available.*117"):
             service.plan_scan_launch("PROJ01", SCAN_LABEL, {}, experiment="PROJ01_S1_CT", scan="7")
 
     @pytest.mark.parametrize("scan", ["7 1", "7/1", ""], ids=["space", "slash", "empty"])
