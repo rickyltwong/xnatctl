@@ -18,7 +18,7 @@ from xnatctl.cli.common import (
     require_auth,
     require_project_from_context,
 )
-from xnatctl.core.exceptions import InputValidationError
+from xnatctl.core.exceptions import InputValidationError, XNATCtlError
 from xnatctl.core.output import OutputFormat, print_output, print_success
 from xnatctl.services.containers import ContainerService
 
@@ -380,7 +380,7 @@ def _launch_candidates(
     wrapper_id: int,
     workflow_id: str | None,
     launch_params: dict[str, str],
-    launcher: str,
+    launcher: str | None,
     known_ids: set[str],
 ) -> tuple[list[str], list[str]]:
     """List the containers that could be this launch's, and the other new ones of its wrapper.
@@ -394,7 +394,8 @@ def _launch_candidates(
 
     Without one, a container matches when it is not in the pre-launch
     snapshot, runs the wrapper we launched, was started by ``launcher``
-    (its ``user-id``, compared case-insensitively), and its ``raw`` inputs
+    (its ``user-id`` equals the server-confirmed login exactly, as Container
+    Service itself compares them), and its ``raw`` inputs
     equal the params we sent -- all of them and nothing more (see
     :func:`_raw_inputs`). Container Service records the request's own
     params as raw inputs, so a launch from this CLI is compared exactly.
@@ -422,15 +423,36 @@ def _launch_candidates(
         if row_id in known_ids:
             continue
         user = row.get("user-id")
-        if (
-            isinstance(user, str)
-            and user.casefold() == launcher.casefold()
-            and _raw_inputs(row) == launch_params
-        ):
+        if isinstance(user, str) and user == launcher and _raw_inputs(row) == launch_params:
             matches.append(row_id)
         else:
             others.append(row_id)
     return matches, others
+
+
+def _confirmed_login(ctx: Context, project: str) -> str:
+    """Return the server-confirmed login, which ``--wait``'s fallback matches ``user-id`` on.
+
+    Asked only after the launch and only when its response has no real
+    workflow-id, so a launch that does not need it never depends on it.
+    A configured or cached username is no substitute: it can name another
+    account than the session's.
+
+    Raises:
+        click.ClickException: When the server does not confirm the login.
+            The launch itself was already queued.
+    """
+    try:
+        login = ctx.get_client().current_username()
+    except XNATCtlError:
+        login = None
+    if not login:
+        raise click.ClickException(
+            "The launch was queued, but --wait cannot tie a container to it: the server "
+            "did not confirm which user is logged in. Find it with "
+            f"'xnatctl container list -P {project}'."
+        )
+    return login
 
 
 def _wait_for_launch(
@@ -440,7 +462,6 @@ def _wait_for_launch(
     project: str,
     wrapper_id: int,
     launch_params: dict[str, str],
-    launcher: str,
     launch_result: dict[str, Any],
     known_ids: set[str],
     timeout: int,
@@ -481,9 +502,11 @@ def _wait_for_launch(
         click.ClickException: On a ``timeout`` with no matching container
             found, or with one found but stuck at a non-terminal status; or
             when more than one container matches, which ``--wait`` will not
-            guess between.
+            guess between; or when the fallback needs the server-confirmed
+            login (see :func:`_confirmed_login`) and cannot get it.
     """
     workflow_id = _real_workflow_id(launch_result.get("workflow-id"))
+    launcher = None if workflow_id is not None else _confirmed_login(ctx, project)
     deadline = time.monotonic() + timeout
 
     if not ctx.quiet:
@@ -680,11 +703,6 @@ def container_launch(
         if wait
         else set()
     )
-    # Who is launching, so --wait can tell this user's container from a
-    # neighbour's (see _launch_candidates). Resolved before the POST, so a
-    # failure here cannot follow a launch that already went out.
-    launcher = ctx.get_client().whoami().username if wait else ""
-
     result = service.launch(resolved_project, wrapper_id, launch_params)
 
     # LaunchReport.Failure is declared on the plugin's own DTO (see
@@ -704,7 +722,6 @@ def container_launch(
             project=resolved_project,
             wrapper_id=wrapper_id,
             launch_params=launch_params,
-            launcher=launcher,
             launch_result=result,
             known_ids=known_ids,
             timeout=timeout,

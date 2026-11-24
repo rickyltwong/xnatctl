@@ -22,9 +22,12 @@ All notable changes to this project will be documented in this file.
   launch. When the server answers with the placeholder workflow-id, it used to take
   the first new container for the same wrapper in the project, which was
   often someone else's when several people launch the same pipeline at
-  once. It now takes only a new container of the same wrapper that the
-  same user started and whose recorded launch inputs equal the ones it
-  sent. The one case it still cannot settle is one user launching the same
+  once. It now takes only a new container of the same wrapper whose
+  `user-id` is exactly the login the server confirms for this session and
+  whose recorded launch inputs equal the ones it sent. That login is asked
+  for only after the launch, and only when the response has no real
+  workflow-id; if the server does not confirm it, `--wait` says the launch
+  was queued and stops, rather than trust a configured username. The one case it still cannot settle is one user launching the same
   pipeline with identical inputs twice at once: when both containers are
   visible it stops and lists them instead of guessing. A timeout lists
   the new containers of the wrapper that did not match. A missing, null

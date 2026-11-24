@@ -11,7 +11,7 @@ import pytest
 from conftest import AuthenticatedCLI, make_response
 
 from xnatctl.cli import container as container_cli
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import ResourceNotFoundError, XNATCtlError
 
 SAMPLE_CONTAINER = {
     "id": "501",
@@ -1107,15 +1107,57 @@ class TestContainerLaunchWaitCorrelation:
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["id"] == "802"
 
-    def test_launcher_is_compared_case_insensitively(
-        self, authenticated_cli: AuthenticatedCLI
+    def test_login_is_compared_exactly_as_container_service_does(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
     ) -> None:
-        ours = _scan_container("802", self.OURS, user="USER")
+        """A differently cased user-id is another account to Container Service."""
+        other_case = _scan_container("802", self.OURS, user="USER")
+
+        result = self._run(authenticated_cli, before=[], after=[other_case])
+
+        assert result.exit_code != 0
+        assert "(802)" in " ".join(result.output.split())
+
+    @pytest.mark.parametrize(
+        "login",
+        [None, ""],
+        ids=["no-login", "empty-login"],
+    )
+    def test_unconfirmed_login_reports_the_launch_as_queued(
+        self, authenticated_cli: AuthenticatedCLI, login: str | None
+    ) -> None:
+        """whoami()'s configured-username fallback ("user" here) is not used in its place."""
+        authenticated_cli.client.current_username.return_value = login
+        ours = _scan_container("802", self.OURS)
 
         result = self._run(authenticated_cli, before=[], after=[ours])
 
+        assert result.exit_code != 0
+        output = " ".join(result.output.split())
+        assert "The launch was queued" in output
+        assert "did not confirm which user is logged in" in output
+
+    def test_login_lookup_failure_after_the_launch_reports_it_as_queued(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        authenticated_cli.client.current_username.side_effect = XNATCtlError("denied")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[ours])
+
+        assert result.exit_code != 0
+        assert "The launch was queued" in " ".join(result.output.split())
+        assert authenticated_cli.client.post.call_count == 1
+
+    def test_real_workflow_id_needs_no_login(self, authenticated_cli: AuthenticatedCLI) -> None:
+        authenticated_cli.client.current_username.side_effect = XNATCtlError("denied")
+        ours = _scan_container("802", self.OURS, workflow_id="42")
+
+        result = self._run(authenticated_cli, before=[], after=[ours], workflow_id="42")
+
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["id"] == "802"
+        authenticated_cli.client.current_username.assert_not_called()
 
     def test_real_workflow_id_on_another_wrappers_row_is_not_a_match(
         self, authenticated_cli: AuthenticatedCLI
