@@ -10,7 +10,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_forwarding_alias_cb,
     apply_filter,
     apply_sort_limit,
     confirm_destructive,
@@ -57,16 +56,7 @@ def admin() -> None:
     "--experiment",
     "-E",
     multiple=True,
-    is_eager=True,
     help="Specific experiment IDs (can repeat)",
-)
-@click.option(
-    "-e",
-    "legacy_experiment_e",
-    multiple=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("-e", "experiment"),
 )
 @click.option("--limit", type=int, help="Limit number of experiments")
 @parallel_options

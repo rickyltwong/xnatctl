@@ -16,7 +16,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_forwarding_alias_cb,
     global_options,
     handle_errors,
     require_auth,
@@ -52,11 +51,45 @@ def _read_body(
     data: str | None,
     file_path: str | None,
 ) -> tuple[bytes | str | None, object, bytes | None, str | None]:
+    """Resolve the request body from ``-d``, ``--file``, or stdin.
+
+    Handles three input shapes:
+
+    * ``-d <string>``: env-vars are expanded, then the JSON-or-raw decision
+      tree is applied. JSON-decodable input becomes ``json_body``; anything
+      else becomes the raw string ``body``.
+    * ``--file <path>``: file contents are read as bytes. UTF-8 decoded input
+      passes through the same JSON-or-raw branch. Non-UTF-8 bytes are sent
+      as raw bytes (binary-safe). Env-var expansion is NOT applied to file
+      contents.
+    * ``-d -`` or ``--file -``: stdin is read once as bytes and follows the
+      same UTF-8 / JSON-or-raw branch as ``--file``. Env-var expansion is NOT
+      applied to stdin bytes. Specifying both ``-d -`` and ``--file -`` is a
+      usage error.
+
+    Args:
+        data: Value of the ``-d`` / ``--data`` option (may be the literal
+            ``-`` sentinel for stdin).
+        file_path: Value of the ``--file`` option (may be the literal ``-``
+            sentinel for stdin).
+
+    Returns:
+        ``(body, json_body, raw_bytes, decoded_text)``. ``body`` /
+        ``json_body`` are the values passed to the HTTP client; at most
+        one is non-None. ``raw_bytes`` and ``decoded_text`` carry the
+        underlying bytes and UTF-8 decode (when available) for callers
+        that need to drive content-type detection or send the body
+        verbatim under an explicit ``Content-Type``. ``(None, None,
+        None, None)`` indicates no body was given.
+
+    Raises:
+        click.UsageError: If both ``-d -`` and ``--file -`` are passed.
+    """
     data_is_stdin = data == _STDIN_SENTINEL
     file_is_stdin = file_path == _STDIN_SENTINEL
 
     if data_is_stdin and file_is_stdin:
-        raise click.UsageError("cannot combine -d - and -f -")
+        raise click.UsageError("cannot combine -d - and --file -")
 
     body: bytes | str | None = None
     json_body: object = None
@@ -138,6 +171,22 @@ def _detect_content_type(
     raw_bytes: bytes | None,
     decoded_text: str | None,
 ) -> str | None:
+    """Auto-detect a request ``Content-Type`` from a file body.
+
+    Args:
+        file_path: Path supplied via ``--file``, or ``None`` when no
+            file is in use.
+        raw_bytes: The file's bytes as read from disk, or ``None`` when
+            no file is in use.  Reserved for future content-sniffing
+            extensions; not inspected by the current rule set.
+        decoded_text: The file's UTF-8 decoded text, or ``None`` when
+            decoding failed.  ``None`` always maps to
+            ``application/octet-stream`` regardless of extension.
+
+    Returns:
+        A MIME type string when detection succeeds, or ``None`` when the
+        caller should fall back to the existing behavior.
+    """
     del raw_bytes
     if file_path is None:
         return None
@@ -181,7 +230,7 @@ def _maybe_add_inbody(path: str, params: tuple[str, ...], *, has_body: bool) -> 
     if inbody_value is not None and inbody_value.lower() == "true" and not has_body:
         raise click.UsageError(
             "inbody=true set but no request body supplied; "
-            "pass -f <file> or -d <data> (use '-' for stdin)"
+            "pass --file <file> or -d <data> (use '-' for stdin)"
         )
 
     if inbody_value is None and has_body and _is_resource_file_path(path):
@@ -303,13 +352,6 @@ def api_get(
     help="Read body from file. Use '-' to read from stdin.",
 )
 @click.option(
-    "-f",
-    "legacy_file_short",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("-f (api post/put)", "file_path"),
-)
-@click.option(
     "--content-type",
     "-t",
     "content_type",
@@ -336,7 +378,7 @@ def api_post(
     """POST request to any XNAT endpoint.
 
     Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
-    ``--file`` (``-f`` is a deprecated alias): payloads that are not valid
+    ``--file``: payloads that are not valid
     UTF-8 are sent as raw bytes without text decoding. Pass ``-d -`` or
     ``--file -`` to read the body from stdin (keeps secrets out of argv and
     shell history).
@@ -365,6 +407,7 @@ def api_post(
 
     body, json_body, raw_bytes, decoded_text = _read_body(data, file_path)
 
+    # Stdin sentinel (--file -) has no extension to detect from; treat as no file.
     detect_file = None if file_path == _STDIN_SENTINEL else file_path
     effective_type = content_type or _detect_content_type(detect_file, raw_bytes, decoded_text)
     headers: dict[str, str] | None = None
@@ -417,13 +460,6 @@ def api_post(
     help="Read body from file. Use '-' to read from stdin.",
 )
 @click.option(
-    "-f",
-    "legacy_file_short",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("-f (api post/put)", "file_path"),
-)
-@click.option(
     "--content-type",
     "-t",
     "content_type",
@@ -450,7 +486,7 @@ def api_put(
     """PUT request to any XNAT endpoint.
 
     Binary files (DICOM, ZIP archives, vendor blobs, etc.) are supported via
-    ``--file`` (``-f`` is a deprecated alias): payloads that are not valid
+    ``--file``: payloads that are not valid
     UTF-8 are sent as raw bytes without text decoding. Pass ``-d -`` or
     ``--file -`` to read the body from stdin (keeps secrets out of argv and
     shell history).
@@ -478,7 +514,7 @@ def api_put(
         xnatctl api put /data/projects/PROJ --file project.xml
 
         xnatctl api put /xapi/xsync/credentials/save/projects/PROJ \\
-            -f ./creds.txt -t text/plain
+            --file ./creds.txt -t text/plain
     """
     client = ctx.get_client()
 

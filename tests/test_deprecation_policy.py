@@ -6,10 +6,25 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from xnatctl.cli.common import DEPRECATED_FLAGS, deprecation_message
+from xnatctl.cli.common import DEPRECATED_FLAGS, DeprecatedFlag, deprecation_message
 from xnatctl.cli.main import cli
 
 CommandPath = tuple[str, ...]
+
+
+@pytest.fixture
+def registered_test_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Register test-only entries for the mechanism tests below.
+
+    The registry is empty since 0.7.0 removed the last deprecated flags, but
+    the message and the alias callbacks still have to work for the next one.
+    """
+    monkeypatch.setitem(
+        DEPRECATED_FLAGS, "--file", DeprecatedFlag("--output-file", "9.2.0", "9.0.0")
+    )
+    monkeypatch.setitem(
+        DEPRECATED_FLAGS, "-f (container logs)", DeprecatedFlag("--follow", "9.2.0", "9.0.0")
+    )
 
 
 def _walk(
@@ -23,9 +38,11 @@ def _walk(
     return [(path, command)]
 
 
-def _deprecated_options() -> list[tuple[CommandPath, click.Parameter, str]]:
+def _deprecated_options(
+    root: click.Command = cli,
+) -> list[tuple[CommandPath, click.Parameter, str]]:
     found: list[tuple[CommandPath, click.Parameter, str]] = []
-    for path, command in _walk(cli):
+    for path, command in _walk(root):
         for param in command.params:
             help_text = getattr(param, "help", None) or ""
             if "deprecat" not in help_text.lower():
@@ -36,9 +53,11 @@ def _deprecated_options() -> list[tuple[CommandPath, click.Parameter, str]]:
     return found
 
 
-def _wired_alias_params() -> list[tuple[CommandPath, click.Parameter, str]]:
+def _wired_alias_params(
+    root: click.Command = cli,
+) -> list[tuple[CommandPath, click.Parameter, str]]:
     found: list[tuple[CommandPath, click.Parameter, str]] = []
-    for path, command in _walk(cli):
+    for path, command in _walk(root):
         for param in command.params:
             callback = getattr(param, "callback", None)
             closure = getattr(callback, "__closure__", None)
@@ -66,7 +85,7 @@ class TestRegistryCoverage:
 
         assert not unregistered, (
             f"deprecated flags missing from DEPRECATED_FLAGS: {sorted(unregistered)}. "
-            "Register them in xnatctl/cli/common.py so the warning can name a "
+            "Register them in xnatctl/cli/common/deprecation.py so the warning can name a "
             "removal release."
         )
 
@@ -77,17 +96,13 @@ class TestRegistryCoverage:
         assert not stray, sorted(stray)
 
     def test_the_wired_alias_sites_are_exactly_the_expected_ones(self) -> None:
-        expected = {
-            (("scan", "delete"), "-s"),
-            (("scan", "download"), "-s"),
-            (("resource", "download"), "--file"),
-            (("pipeline", "run"), "-e"),
-            (("pipeline", "jobs"), "-e"),
-            (("admin", "refresh-catalogs"), "-e"),
-            (("api", "post"), "-f (api post/put)"),
-            (("api", "put"), "-f (api post/put)"),
-            (("container", "logs"), "-f (container logs)"),
-        }
+        """Pin every (command, flag) alias site, not just a count.
+
+        Removing a site fails here; adding one fails until it is listed here
+        deliberately. None is wired since 0.7.0 removed the flags deprecated
+        in 0.5.0; the next deprecation adds its sites to ``expected``.
+        """
+        expected: set[tuple[CommandPath, str]] = set()
         canonical = {deprecation_message(flag): flag for flag in DEPRECATED_FLAGS}
         actual = {
             (path, canonical.get(message, message))
@@ -130,6 +145,49 @@ class TestRegistryCoverage:
             )
 
 
+@pytest.mark.usefixtures("registered_test_flags")
+class TestTheSweepsFindAnAlias:
+    """Positive control: the real CLI has no alias since 0.7.0, so the sweeps
+    above come back empty there. Run them on a throwaway group that has one, so
+    a sweep that stopped finding aliases fails here instead of passing vacuously.
+    """
+
+    @staticmethod
+    def _group() -> click.Group:
+        from xnatctl.cli.common import _make_alias_cb
+
+        @click.group()
+        def root() -> None:
+            pass
+
+        @root.command("logs")
+        @click.option("--follow", is_flag=True, default=False)
+        @click.option(
+            "-f",
+            "legacy_follow_f",
+            is_flag=True,
+            hidden=True,
+            expose_value=False,
+            callback=_make_alias_cb("-f (container logs)", "follow", True),
+        )
+        @click.option("--old-name", hidden=True, help="Deprecated; use --follow.")
+        def logs(follow: bool, old_name: str | None) -> None:
+            pass
+
+        return root
+
+    def test_the_alias_sweep_finds_the_wired_alias(self) -> None:
+        sites = [(path, message) for path, _param, message in _wired_alias_params(self._group())]
+
+        assert sites == [(("logs",), deprecation_message("-f (container logs)"))]
+
+    def test_the_help_sweep_finds_the_marked_option(self) -> None:
+        found = [(path, flag) for path, _param, flag in _deprecated_options(self._group())]
+
+        assert found == [(("logs",), "--old-name")]
+
+
+@pytest.mark.usefixtures("registered_test_flags")
 class TestMessage:
     def test_a_replacement_is_named(self) -> None:
         message = deprecation_message("--file")
@@ -138,13 +196,14 @@ class TestMessage:
         assert "use --output-file instead" in message
 
     def test_the_removal_release_is_named(self) -> None:
-        assert "will be removed in 0.7.0" in deprecation_message("--file")
+        assert "will be removed in 9.2.0" in deprecation_message("--file")
 
     def test_an_unregistered_flag_raises(self) -> None:
         with pytest.raises(KeyError):
             deprecation_message("--never-existed")
 
 
+@pytest.mark.usefixtures("registered_test_flags")
 class TestWarningsAreVisible:
     @staticmethod
     def _harness() -> click.Command:
@@ -200,6 +259,11 @@ class TestWarningsAreVisible:
         assert deprecation_message("--file") in result.stderr
 
     def test_deprecated_flags_are_hidden_from_help(self) -> None:
+        """Both detection paths: help-marked options AND hidden alias callbacks.
+
+        Nothing is deprecated since 0.7.0, so both sweeps are empty today;
+        this guards the next deprecation.
+        """
         for path, param, flag in _deprecated_options():
             assert getattr(param, "hidden", False), (
                 f"{flag} on '{' '.join(path)}' is deprecated but still advertised in --help"

@@ -2,7 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.7.0 - 2026-11-24
+
+**Breaking**
+
+- The flags deprecated in 0.5.0 are removed, as their warnings announced.
+  Each now fails with "No such option"; use the replacement instead:
+  - `-e` -> `-E` / `--experiment` on `pipeline run`, `pipeline jobs` and
+    `admin refresh-catalogs`
+  - `resource download --file` -> `--output-file` / `-f`
+  - `api post -f` and `api put -f` -> `--file`
+  - `container logs -f` -> `--follow`
+  - `scan delete -s` and `scan download -s` -> `--scans`
+
+  `pipeline run --experiment`, `scan download --scans` and
+  `resource download --output-file` are now required by Click itself, so
+  leaving one out is reported before login instead of after it, with the
+  same message and exit code 2. An empty or whitespace-only `--experiment`,
+  and an empty `--output-file`, are also refused before login with exit
+  code 2.
 
 **Features**
 
@@ -57,7 +75,8 @@ All notable changes to this project will be documented in this file.
   session was cached last, and `-p user-profile` could run as the admin user.
   The cache now keeps one session per profile. A command uses its profile's
   session only while the profile still has the same URL and user (from
-  `XNAT_USER`, else the profile's `username`). Switching profiles no longer
+  `XNAT_USER`, else the profile's `username`); a profile that names no user
+  uses whatever session `auth login` cached for it. Switching profiles no longer
   evicts the other profile's session, and `auth logout` ends only the
   selected profile's session. A lock file next to the cache
   (`~/.config/xnatctl/.session.lock`) stops concurrent commands from

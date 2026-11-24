@@ -11,7 +11,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_forwarding_alias_cb,
     default_project_from_context,
     global_options,
     handle_errors,
@@ -59,19 +58,9 @@ from xnatctl.models.progress import (
 @click.option(
     "--scans",
     multiple=True,
-    # Eager so it is processed before the deprecated -s alias, which merges
-    # into this option's value (see _make_forwarding_alias_cb).
-    is_eager=True,
+    required=True,
     help="Scan IDs: repeatable (--scans 1 --scans 2), comma-separated "
     "(--scans 1,2,3), or '*' for all.",
-)
-@click.option(
-    "-s",
-    "legacy_scans_s",
-    multiple=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("-s", "scans"),
 )
 @click.option("--out", type=click.Path(), default=".", show_default=True, help="Output directory")
 @click.option(
@@ -139,14 +128,6 @@ def scan_download(  # noqa: C901  # pre-existing; see pyproject
         xnatctl scan download -P PROJECT -E SESSION --scans '*' --out ./data
         xnatctl scan download -E XNAT_E00001 --scans 1 --verify
     """
-    # `--scans` is not required=True at the Click level: the deprecated
-    # `-s` alias forwards into this same param via a callback that runs
-    # after Click's own required-check would already have fired (Click
-    # checks each option's own parsed value, not ctx.params), so
-    # required=True here would reject a bare `-s`. Enforced by hand instead.
-    if not scans:
-        raise click.UsageError("Missing option '--scans'.")
-
     unzip = extract or keep_zips
     cleanup = extract and not keep_zips
 

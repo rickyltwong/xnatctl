@@ -8,13 +8,13 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_forwarding_alias_cb,
     apply_filter,
     apply_sort_limit,
     confirm_destructive,
     global_options,
     handle_errors,
     list_options,
+    reject_blank_option_value,
     require_auth,
     resolve_columns,
 )
@@ -77,14 +77,9 @@ def pipeline_list(
 @click.option(
     "--experiment",
     "-E",
+    required=True,
+    callback=reject_blank_option_value,
     help="Experiment/session ID",
-)
-@click.option(
-    "-e",
-    "legacy_experiment_e",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("-e", "experiment"),
 )
 @click.option("--param", multiple=True, help="Pipeline parameter (key=value)")
 @click.option("--wait", is_flag=True, help="Wait for completion")
@@ -95,7 +90,7 @@ def pipeline_list(
 def pipeline_run(
     ctx: Context,
     pipeline_name: str,
-    experiment: str | None,
+    experiment: str,
     param: tuple[str, ...],
     wait: bool,
     timeout: int,
@@ -108,9 +103,6 @@ def pipeline_run(
         xnatctl pipeline run freesurfer -E XNAT_E00001 --wait
         xnatctl pipeline run myproc -E XNAT_E00001 --param param1=value1 --param param2=value2
     """
-    if not experiment:
-        raise click.UsageError("Missing option '--experiment' / '-E'.")
-
     params = {}
     for p in param:
         if "=" in p:
@@ -256,13 +248,6 @@ def pipeline_cancel(
     "--experiment",
     "-E",
     help="Filter by experiment ID",
-)
-@click.option(
-    "-e",
-    "legacy_experiment_e",
-    hidden=True,
-    expose_value=False,
-    callback=_make_forwarding_alias_cb("-e", "experiment"),
 )
 @click.option("--project", help="Filter by project ID")
 @click.option("--status", "-s", help="Filter by status")

@@ -25,13 +25,7 @@ class DeprecatedFlag(NamedTuple):
     two-MINOR-release survival window the policy promises."""
 
 
-DEPRECATED_FLAGS: dict[str, DeprecatedFlag] = {
-    "-e": DeprecatedFlag("-E", "0.7.0", "0.5.0"),
-    "--file": DeprecatedFlag("--output-file", "0.7.0", "0.5.0"),
-    "-f (api post/put)": DeprecatedFlag("--file", "0.7.0", "0.5.0"),
-    "-f (container logs)": DeprecatedFlag("--follow", "0.7.0", "0.5.0"),
-    "-s": DeprecatedFlag("--scans", "0.7.0", "0.5.0"),
-}
+DEPRECATED_FLAGS: dict[str, DeprecatedFlag] = {}
 """Every deprecated flag, what replaces it, and when it goes away.
 
 Registering a flag here is what dates the deprecation: the warning text names

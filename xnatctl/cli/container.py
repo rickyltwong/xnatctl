@@ -10,7 +10,6 @@ import click
 
 from xnatctl.cli.common import (
     Context,
-    _make_alias_cb,
     confirm_destructive,
     default_project_from_context,
     global_options,
@@ -207,14 +206,6 @@ def _follow_logs(
     is_flag=True,
     help="Keep polling for new log output until the container reaches a terminal "
     "status, or Ctrl+C. Re-fetches the full log each interval (see docstring for why).",
-)
-@click.option(
-    "-f",
-    "legacy_follow_f",
-    is_flag=True,
-    hidden=True,
-    expose_value=False,
-    callback=_make_alias_cb("-f (container logs)", "follow", True),
 )
 @click.option(
     "--interval",

@@ -59,6 +59,24 @@ from xnatctl.core.output import (
 )
 from xnatctl.core.redact import SECRET_QUERY_KEYS, redact_url_query
 
+# The imports above are `xnatctl.cli.common`'s importable surface: the
+# project symbols (the exceptions, FILE_ONLY_ATTR, debug_env_enabled,
+# print_error, print_hint) are real API that callers and tests import from
+# here even though they are defined in submodules. Stdlib and typing names
+# (`enum`, `fnmatch`, `json`, `NamedTuple`, `Sequence`, `overload`,
+# `traceback`) are deliberately NOT part of that surface: nobody should
+# import `json` from a CLI helper module.
+#
+# Below, the `X as X` redundant-alias idiom marks private helpers that
+# nonetheless cross module boundaries -- the deprecated-flag callbacks are
+# what a command module wires a deprecated alias with, and
+# `_parse_batch_text`/`_flag_given` are patched by dotted name in the tests.
+# With an `__all__` present, mypy's strict no-implicit-reexport treats
+# anything not aliased this way as private to the module, so a plain import
+# would make every consumer's import an error. The idiom says "deliberately
+# re-exported" without promoting these
+# into the package's public surface; `services/downloads/__init__.py` uses the
+# same pattern for the same reason.
 from .batch import _parse_batch_text as _parse_batch_text
 from .batch import batch_option
 from .credentials import dest_profile_options, read_password_stdin, reject_argv_password
