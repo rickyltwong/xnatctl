@@ -629,8 +629,9 @@ class TestContainerLaunch:
         already `Complete`. This test fails with a timed-out `ClickException`
         (non-zero exit, no "Complete" in the output) against that code.
         """
-        launched = dict(SAMPLE_CONTAINER, id="777", status="Complete")
+        launched = dict(SAMPLE_CONTAINER, id="777", status="Complete", inputs=[])
         launched["workflow-id"] = "99"  # a resolved id, never the placeholder string
+        launched["user-id"] = "user"  # the test client's whoami()
 
         post_has_fired = False
 
@@ -931,14 +932,19 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _scan_container(container_id: str, scan_uri: str, *, workflow_id: str = "1") -> dict[str, Any]:
-    """A container row for wrapper 117, its `inputs` shaped as verified live (type/name/value)."""
+def _scan_container(
+    container_id: str, scan_uri: str, *, workflow_id: str = "1", user: str = "user"
+) -> dict[str, Any]:
+    """A container row for wrapper 117, its `inputs` shaped as verified live (type/name/value).
+
+    ``user`` defaults to the test client's ``whoami()`` username.
+    """
     return {
         "id": container_id,
         "wrapper-id": 117,
         "status": "Complete",
         "workflow-id": workflow_id,
-        "user-id": "someone",
+        "user-id": user,
         "inputs": [
             {"type": "raw", "name": "scan", "value": scan_uri},
             {"type": "wrapper-external", "name": "scan", "value": scan_uri},
@@ -962,14 +968,20 @@ class TestContainerLaunchWaitCorrelation:
         after: list[Any],
         *,
         workflow_id: Any = "To be assigned",
+        later: list[list[Any]] | None = None,
     ) -> Any:
+        """Run the launch; ``after`` is the first post-launch listing, ``later`` the next ones."""
         post_has_fired = False
         get_json = dict(SCAN_LAUNCH_GET_JSON)
-        details = {f"/xapi/containers/{row['id']}": row for row in before + after}
+        polls = [after, *(later or [])]
+        rows = [r for listing in [before, *polls] for r in listing if isinstance(r, dict)]
+        details = {f"/xapi/containers/{row['id']}": row for row in rows}
 
         def get_json_dispatch(path: str, **_kwargs: Any) -> Any:
             if path == "/xapi/projects/TESTPROJ/containers":
-                return after if post_has_fired else before
+                if not post_has_fired:
+                    return before
+                return polls.pop(0) if len(polls) > 1 else polls[0]
             if path in details:
                 return details[path]
             if path in get_json:
@@ -1040,7 +1052,7 @@ class TestContainerLaunchWaitCorrelation:
         result = self._run(authenticated_cli, before=[], after=[superset])
 
         assert result.exit_code != 0
-        assert "none recorded this launch's inputs" in " ".join(result.output.split())
+        assert "with this launch's inputs" in " ".join(result.output.split())
         assert "801" in result.output
 
     def test_two_identical_matches_are_refused_not_guessed(
@@ -1079,6 +1091,61 @@ class TestContainerLaunchWaitCorrelation:
         ours = _scan_container("802", self.OURS)
 
         result = self._run(authenticated_cli, before=[], after=[odd, ours])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_another_users_identical_launch_seen_first_is_not_followed(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
+    ) -> None:
+        """A neighbour running the same request shows up one poll before ours."""
+        theirs = _scan_container("801", self.OURS, user="neighbour")
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[], after=[theirs], later=[[theirs, ours]])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_launcher_is_compared_case_insensitively(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        ours = _scan_container("802", self.OURS, user="USER")
+
+        result = self._run(authenticated_cli, before=[], after=[ours])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_real_workflow_id_on_another_wrappers_row_is_not_a_match(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        other_wrapper = dict(
+            _scan_container("801", self.OURS, workflow_id="42"), **{"wrapper-id": 99}
+        )
+        ours = _scan_container("802", self.OURS, workflow_id="42")
+
+        result = self._run(
+            authenticated_cli, before=[], after=[other_wrapper, ours], workflow_id="42"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["id"] == "802"
+
+    def test_timeout_lists_unmatched_containers_from_every_poll(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
+    ) -> None:
+        gone = _scan_container("803", "/archive/experiments/XNAT_E00002/scans/5")
+
+        result = self._run(authenticated_cli, before=[], after=[gone], later=[[]])
+
+        assert result.exit_code != 0
+        assert "803" in result.output
+
+    def test_malformed_listing_row_is_skipped(self, authenticated_cli: AuthenticatedCLI) -> None:
+        ours = _scan_container("802", self.OURS)
+
+        result = self._run(authenticated_cli, before=[None], after=[ours, None])
 
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["id"] == "802"
@@ -1123,11 +1190,12 @@ class TestContainerLaunchWaitWithoutScan:
     def test_follows_the_container_that_recorded_the_session(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        other = dict(SAMPLE_CONTAINER, id="801", inputs=[])
+        other = dict(SAMPLE_CONTAINER, id="801", inputs=[], **{"user-id": "user"})
         ours = dict(
             SAMPLE_CONTAINER,
             id="802",
             inputs=[{"type": "raw", "name": "session", "value": "XNAT_E00001"}],
+            **{"user-id": "user"},
         )
 
         result = self._run(authenticated_cli, after=[other, ours])
@@ -1138,7 +1206,7 @@ class TestContainerLaunchWaitWithoutScan:
     def test_timeout_names_the_new_containers_that_did_not_match(
         self, authenticated_cli: AuthenticatedCLI, fake_clock: None
     ) -> None:
-        other = dict(SAMPLE_CONTAINER, id="801", inputs=[])
+        other = dict(SAMPLE_CONTAINER, id="801", inputs=[], **{"user-id": "user"})
 
         result = self._run(authenticated_cli, after=[other])
 
@@ -1146,3 +1214,31 @@ class TestContainerLaunchWaitWithoutScan:
         output = " ".join(result.output.split())
         assert "timed out" in output
         assert "801" in output
+
+    def test_row_without_inputs_is_not_a_parameterless_match(
+        self, authenticated_cli: AuthenticatedCLI, fake_clock: None
+    ) -> None:
+        """A row that does not say what it was sent cannot match even a launch that sent nothing."""
+        unknown = dict(SAMPLE_CONTAINER, id="801", **{"user-id": "user"})
+        unknown.pop("inputs", None)
+        authenticated_cli.client.get_json.side_effect = _dispatch_get_json(
+            {
+                "/xapi/commands": [SAMPLE_COMMAND],
+                "/xapi/projects/TESTPROJ/containers": _Seq([[], [unknown], [unknown]]),
+            }
+        )
+        authenticated_cli.client.get.return_value = make_response(PROJECT_FOUND)
+        authenticated_cli.client.post.return_value = make_response(
+            {
+                "status": "success",
+                "params": {},
+                "command-id": 12,
+                "wrapper-id": 34,
+                "workflow-id": "To be assigned",
+            }
+        )
+
+        result = authenticated_cli.invoke(["container", "launch", "34", "--wait", "--timeout", "5"])
+
+        assert result.exit_code != 0
+        assert "801" in result.output

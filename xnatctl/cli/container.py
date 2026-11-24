@@ -355,13 +355,13 @@ def _raw_inputs(row: dict[str, Any]) -> dict[str, Any] | None:
     is a list of ``{"type", "name", "value"}`` objects, and the ``raw``
     entries carry the launch request's own keys and values (a session
     launched with ``{"session": "/archive/experiments/E1"}`` lists exactly
-    that). Returns ``None`` when ``inputs`` is a list holding a ``raw``
-    entry whose name is not a string -- a shape this cannot compare -- and
-    ``{}`` when the row records no raw inputs at all.
+    that). Returns ``None`` when the row does not say what it was sent:
+    ``inputs`` missing or not a list, or a ``raw`` entry whose name is not
+    a string. ``{}`` means the row records an empty input list.
     """
     inputs = row.get("inputs")
     if not isinstance(inputs, list):
-        return {}
+        return None
     raw: dict[str, Any] = {}
     for entry in inputs:
         if not isinstance(entry, dict) or entry.get("type") != "raw":
@@ -380,6 +380,7 @@ def _launch_candidates(
     wrapper_id: int,
     workflow_id: str | None,
     launch_params: dict[str, str],
+    launcher: str,
     known_ids: set[str],
 ) -> tuple[list[str], list[str]]:
     """List the containers that could be this launch's, and the other new ones of its wrapper.
@@ -388,17 +389,20 @@ def _launch_candidates(
     verified-vs-assumed parts.
 
     With a real workflow-id (see :func:`_real_workflow_id`) a container
-    matches when its own real workflow-id is the same, and nothing else is
-    considered.
+    matches when it runs the wrapper we launched and its own real
+    workflow-id is the same.
 
     Without one, a container matches when it is not in the pre-launch
-    snapshot, runs the wrapper we launched, and its ``raw`` inputs equal
-    the params we sent -- all of them and nothing more (see
-    :func:`_raw_inputs`). The inputs are what tell our container from a
+    snapshot, runs the wrapper we launched, was started by ``launcher``
+    (its ``user-id``, compared case-insensitively), and its ``raw`` inputs
+    equal the params we sent -- all of them and nothing more (see
+    :func:`_raw_inputs`). Container Service records the request's own
+    params as raw inputs, so a launch from this CLI is compared exactly.
+    The user and the inputs are what tell our container from a
     neighbour's when several people launch the same wrapper in one project
-    at once, each on their own scan. Two launches of the same wrapper with
-    identical params are still indistinguishable; the caller refuses to
-    guess between them.
+    at once. The one case left open is the same user launching the same
+    wrapper with identical params twice at once: either container ran
+    that request. The caller refuses to guess when both are visible.
 
     Returns:
         ``(matching ids, other new ids of this wrapper)``. The second list is
@@ -408,14 +412,21 @@ def _launch_candidates(
     matches: list[str] = []
     others: list[str] = []
     for row in service.list(project=project):
+        if not isinstance(row, dict) or row.get("wrapper-id") != wrapper_id:
+            continue
         row_id = str(row.get("id"))
         if workflow_id is not None:
             if _real_workflow_id(row.get("workflow-id")) == workflow_id:
                 matches.append(row_id)
             continue
-        if row.get("wrapper-id") != wrapper_id or row_id in known_ids:
+        if row_id in known_ids:
             continue
-        if _raw_inputs(row) == launch_params:
+        user = row.get("user-id")
+        if (
+            isinstance(user, str)
+            and user.casefold() == launcher.casefold()
+            and _raw_inputs(row) == launch_params
+        ):
             matches.append(row_id)
         else:
             others.append(row_id)
@@ -429,6 +440,7 @@ def _wait_for_launch(
     project: str,
     wrapper_id: int,
     launch_params: dict[str, str],
+    launcher: str,
     launch_result: dict[str, Any],
     known_ids: set[str],
     timeout: int,
@@ -482,6 +494,7 @@ def _wait_for_launch(
         )
         click.echo(f"Waiting for a container matching {target}...", err=True)
 
+    unmatched: dict[str, None] = {}  # every poll's, in first-seen order
     while True:
         matches, others = _launch_candidates(
             service,
@@ -489,27 +502,30 @@ def _wait_for_launch(
             wrapper_id=wrapper_id,
             workflow_id=workflow_id,
             launch_params=launch_params,
+            launcher=launcher,
             known_ids=known_ids,
         )
+        unmatched.update(dict.fromkeys(others))
         if len(matches) == 1:
             container_id = matches[0]
             break
         if len(matches) > 1:
             raise click.ClickException(
-                f"The launch was queued, but containers {', '.join(matches)} all match it "
-                f"(wrapper {wrapper_id}, the same inputs), so --wait cannot tell which one "
-                "is this launch. Follow one with 'xnatctl container show <id>'."
+                f"The launch was queued, but containers {', '.join(matches)} all match it, "
+                "so --wait cannot tell which one it started. Follow one with "
+                "'xnatctl container show <id>'."
             )
         if time.monotonic() >= deadline:
-            unmatched = (
-                f" {len(others)} new container(s) for wrapper {wrapper_id} appeared "
-                f"({', '.join(others)}), but none recorded this launch's inputs."
-                if others
+            seen = (
+                f" {len(unmatched)} new container(s) for wrapper {wrapper_id} appeared "
+                f"({', '.join(unmatched)}), but none was started by {launcher} with this "
+                "launch's inputs."
+                if unmatched
                 else ""
             )
             raise click.ClickException(
                 f"--wait timed out after {timeout}s: no container matching this launch "
-                f"appeared under project {project!r}.{unmatched}"
+                f"appeared under project {project!r}.{seen}"
             )
         time.sleep(_POLL_INTERVAL_SECONDS)
 
@@ -651,8 +667,18 @@ def container_launch(
     # to poison the "new container" fallback by pre-marking it known.
     # See _wait_for_launch's docstring.
     known_ids = (
-        {str(row.get("id")) for row in service.list(project=resolved_project)} if wait else set()
+        {
+            str(row.get("id"))
+            for row in service.list(project=resolved_project)
+            if isinstance(row, dict)
+        }
+        if wait
+        else set()
     )
+    # Who is launching, so --wait can tell this user's container from a
+    # neighbour's (see _launch_candidates). Resolved before the POST, so a
+    # failure here cannot follow a launch that already went out.
+    launcher = ctx.get_client().whoami().username if wait else ""
 
     result = service.launch(resolved_project, wrapper_id, launch_params)
 
@@ -673,6 +699,7 @@ def container_launch(
             project=resolved_project,
             wrapper_id=wrapper_id,
             launch_params=launch_params,
+            launcher=launcher,
             launch_result=result,
             known_ids=known_ids,
             timeout=timeout,

@@ -22,12 +22,14 @@ All notable changes to this project will be documented in this file.
   When the server answers with the placeholder workflow-id, it used to take
   the first new container for the same wrapper in the project, which was
   often someone else's when several people launch the same pipeline at
-  once. It now takes only a new container whose recorded launch inputs
-  equal the ones it sent. When two containers match (the same wrapper
-  launched with identical inputs), it says so and stops instead of
-  guessing, and a timeout lists any new containers of the wrapper that
-  did not match. A missing, null or placeholder workflow-id is no longer
-  compared as an id, so an older container carrying one is not a match.
+  once. It now takes only a new container of the same wrapper that the
+  same user started and whose recorded launch inputs equal the ones it
+  sent. The one case it still cannot settle is one user launching the same
+  pipeline with identical inputs twice at once: when both containers are
+  visible it stops and lists them instead of guessing. A timeout lists
+  the new containers of the wrapper that did not match. A missing, null
+  or placeholder workflow-id is no longer compared as an id, so an older
+  container carrying one is not a match.
 - A command no longer runs twice when one of its own requests is refused
   with 401 or 403. With a cached session and a stored password, the login
   check logged in again and re-ran the whole command, so for example
