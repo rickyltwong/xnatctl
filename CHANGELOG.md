@@ -45,6 +45,21 @@ All notable changes to this project will be documented in this file.
   file name and failed. `install.sh` now checks the download against the
   hash alone, ignoring the file name in the checksum file, so the older
   Windows checksum files cannot break it either.
+- `--profile` now decides which user a command runs as. Through 0.6.3 the
+  session cache held a single session matched by server URL alone. Two
+  profiles on one server with different users therefore shared whichever
+  session was cached last, and `-p user-profile` could run as the admin user.
+  The cache now keeps one session per profile. A command uses its profile's
+  session only while the profile still has the same URL and user (from
+  `XNAT_USER`, else the profile's `username`). Switching profiles no longer
+  evicts the other profile's session, and `auth logout` ends only the
+  selected profile's session. A lock file next to the cache
+  (`~/.config/xnatctl/.session.lock`) stops concurrent commands from
+  overwriting each other's cache changes. Upgrading discards the old cache
+  file: each profile logs in once more, and a profile with no stored
+  password needs `xnatctl auth login` again. `auth login -u NAME` for a
+  profile that names a different user now warns that the profile's commands
+  will not use that session.
 
 ## 0.6.3 - 2026-11-11
 

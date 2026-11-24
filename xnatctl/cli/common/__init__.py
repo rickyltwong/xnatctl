@@ -462,6 +462,8 @@ def require_auth(f: F) -> F:
         """Ensure the context client is authenticated before running."""
         client = ctx.get_client()
         had_session = client.is_authenticated
+        # The name get_client resolved the profile (and its cached session) by.
+        profile_name = ctx.profile_name or (ctx.config.default_profile if ctx.config else "default")
 
         if client.is_authenticated:
             # Only the session check may lead to a re-login. The command runs
@@ -471,7 +473,7 @@ def require_auth(f: F) -> F:
             try:
                 client.whoami()
             except AuthenticationError:
-                ctx.auth_manager.clear_session()
+                ctx.auth_manager.clear_session(profile_name)
                 client.session_token = None
             else:
                 return f(ctx, *args, **kwargs)
@@ -490,6 +492,7 @@ def require_auth(f: F) -> F:
                 try:
                     token = client.authenticate()
                     ctx.auth_manager.save_session(
+                        profile_name,
                         token=token,
                         url=client.base_url,
                         username=username,
@@ -497,9 +500,6 @@ def require_auth(f: F) -> F:
                 except AuthenticationError as e:
                     raise click.ClickException(str(e)) from e
             else:
-                profile_name = ctx.profile_name or (
-                    ctx.config.default_profile if ctx.config else "default"
-                )
                 prefix = "Session expired" if had_session else "Not authenticated"
                 raise click.ClickException(
                     f"{prefix}. "

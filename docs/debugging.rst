@@ -41,9 +41,8 @@ A healthy authentication flow
 
    $ xnatctl -v auth login --profile prod
    [DEBUG] xnatctl.core.auth: Environment credentials: XNAT_USER=unset, XNAT_PASS=unset
-   [DEBUG] xnatctl.core.auth: Session cache miss: /home/you/.config/xnatctl/.session does not exist
    [DEBUG] xnatctl.core.client: Authenticated as admin at https://xnat.example.org
-   [DEBUG] xnatctl.core.auth: Cached session for admin at /home/you/.config/xnatctl/.session (expires 2026-07-28T14:15:00)
+   [DEBUG] xnatctl.core.auth: Cached session for admin (profile prod) at /home/you/.config/xnatctl/.session (expires 2026-07-28T14:15:00)
 
 The credential lines report *where* each value came from and whether it was
 set -- never the value itself. A password or token appearing in this output is
@@ -53,13 +52,15 @@ On the next command the cache is warm:
 
 .. code-block:: console
 
-   $ xnatctl -v project list
-   [DEBUG] xnatctl.core.auth: Session cache hit for https://xnat.example.org (user admin)
+   $ xnatctl -v project list --profile prod
+   [DEBUG] xnatctl.core.auth: Session cache hit for profile prod: https://xnat.example.org (user admin)
    [DEBUG] xnatctl.core.client: GET https://xnat.example.org/data/projects?columns=ID%2Cname%2Cpi_lastname%2Cdescription&format=json -> 200 in 143ms (attempt 1/4)
 
-A ``cache miss`` line naming a *different* URL than the one you are targeting
-means the cached session belongs to another server and is being ignored --
-expected when you switch profiles.
+Each profile has its own cached session, so switching profiles is not a miss.
+A ``cache miss`` line naming a *different* URL or user than the one you are
+targeting means the profile's session no longer matches the profile -- its
+``url`` or ``username`` was edited, or ``XNAT_USER`` names someone else -- and is
+being ignored. The command then logs in afresh.
 
 A retried request
 -----------------

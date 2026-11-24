@@ -7,14 +7,15 @@ lazily-cached service accessors, and the context-manager login behaviour.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
 import pytest
 
+from xnatctl.core.auth import AuthManager
 from xnatctl.core.client import XNATClient
-from xnatctl.core.connect import build_client_from_profile
+from xnatctl.core.connect import build_client_from_profile, resolve_client_params
 from xnatctl.core.exceptions import ProfileNotFoundError
 from xnatctl.services.admin import AdminService
 from xnatctl.services.downloads import DownloadService
@@ -45,11 +46,13 @@ class _FakeAuthManager:
 
     env_token: str | None = None
     session: _FakeSession | None = None
+    lookups: list[tuple[str, str, str | None]] = field(default_factory=list)
 
     def get_token_from_env(self) -> str | None:
         return self.env_token
 
-    def load_session(self, url: str | None = None) -> _FakeSession | None:
+    def load_session(self, profile: str, url: str, username: str | None) -> _FakeSession | None:
+        self.lookups.append((profile, url, username))
         return self.session
 
 
@@ -88,8 +91,6 @@ def test_all_sources_present_resolves_the_full_param_dict(
     env creds beat profile creds, the env token beats the cached token, and the
     env username (not the cached session's) is the hint.
     """
-    from xnatctl.core.connect import resolve_client_params
-
     monkeypatch.setenv("XNAT_USER", "env-user")
     monkeypatch.setenv("XNAT_PASS", "env-pw")
     auth = _FakeAuthManager(env_token="ENV_TOKEN", session=_FakeSession("CACHED", "cached-bob"))
@@ -128,6 +129,8 @@ def test_cached_session_wins_over_profile_password(tmp_path: Path) -> None:
     # so a mid-operation reauth can still self-heal.
     assert client.username == "alice"  # profile username takes precedence over session
     assert client.password == "profile-pw"
+    # The session is looked up as this profile's, for the user it resolves to.
+    assert auth.lookups == [("prod", _URL, "alice")]
 
 
 def test_profile_password_used_when_no_token(tmp_path: Path) -> None:
@@ -150,6 +153,80 @@ def test_session_username_backfills_when_profile_has_none(tmp_path: Path) -> Non
     client = build_client_from_profile("prod", config_path=path, auth_manager=auth)
 
     assert client.username == "cached-user"
+
+
+# =============================================================================
+# Profiles sharing a server (issue #54)
+# =============================================================================
+
+
+def _write_two_profile_config(tmp_path: Path) -> Path:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "default_profile: admin-profile\n"
+        "profiles:\n"
+        "  admin-profile:\n"
+        f"    url: {_URL}\n"
+        "    username: admin_user\n"
+        "  user-profile:\n"
+        f"    url: {_URL}\n"
+        "    username: non_admin_user\n"
+    )
+    return path
+
+
+def test_profiles_sharing_a_server_each_resolve_their_own_session(tmp_path: Path) -> None:
+    auth = AuthManager(cache_file=tmp_path / ".session")
+    auth.save_session("admin-profile", "ADMIN_TOKEN", _URL, "admin_user")
+    auth.save_session("user-profile", "USER_TOKEN", _URL, "non_admin_user")
+    config_path = _write_two_profile_config(tmp_path)
+
+    admin = resolve_client_params("admin-profile", config_path=config_path, auth_manager=auth)
+    user = resolve_client_params("user-profile", config_path=config_path, auth_manager=auth)
+
+    assert (admin["session_token"], admin["username"]) == ("ADMIN_TOKEN", "admin_user")
+    assert (user["session_token"], user["username"]) == ("USER_TOKEN", "non_admin_user")
+
+
+def test_a_profile_never_borrows_another_profiles_session(tmp_path: Path) -> None:
+    """Only the admin profile has a session: the non-admin profile must log in
+    as its own user, not run with the admin token.
+    """
+    auth = AuthManager(cache_file=tmp_path / ".session")
+    auth.save_session("admin-profile", "ADMIN_TOKEN", _URL, "admin_user")
+
+    params = resolve_client_params(
+        "user-profile", config_path=_write_two_profile_config(tmp_path), auth_manager=auth
+    )
+
+    assert params["session_token"] is None
+    assert params["username"] == "non_admin_user"
+
+
+def test_the_default_profile_resolves_its_session_by_name(tmp_path: Path) -> None:
+    auth = AuthManager(cache_file=tmp_path / ".session")
+    auth.save_session("admin-profile", "ADMIN_TOKEN", _URL, "admin_user")
+
+    params = resolve_client_params(
+        None, config_path=_write_two_profile_config(tmp_path), auth_manager=auth
+    )
+
+    assert params["session_token"] == "ADMIN_TOKEN"
+
+
+def test_an_xnat_user_override_does_not_run_as_the_cached_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    auth = AuthManager(cache_file=tmp_path / ".session")
+    auth.save_session("user-profile", "USER_TOKEN", _URL, "non_admin_user")
+    monkeypatch.setenv("XNAT_USER", "someone_else")
+
+    params = resolve_client_params(
+        "user-profile", config_path=_write_two_profile_config(tmp_path), auth_manager=auth
+    )
+
+    assert params["session_token"] is None
+    assert params["username"] == "someone_else"
 
 
 # =============================================================================
