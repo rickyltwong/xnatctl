@@ -1174,7 +1174,7 @@ class TestCliNameValidation:
                 "download",
                 "-E",
                 "XNAT_E00001",
-                "-s",
+                "--scans",
                 "1",
                 "--out",
                 ".",

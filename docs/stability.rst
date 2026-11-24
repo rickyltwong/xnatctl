@@ -109,7 +109,7 @@ How deprecation works
 
 When a flag is replaced, the old one keeps working. Using it prints a warning
 on **stderr** -- never stdout, so it cannot corrupt a piped ``--output json``
-or ``--quiet`` result:
+or ``--quiet`` result. From 0.5.0 through 0.6.x, for example:
 
 .. code-block:: console
 
@@ -128,7 +128,7 @@ The rules:
    It does not move earlier.
 3. Removal happens in the named release, and only there.
 4. Every deprecated flag is registered in ``DEPRECATED_FLAGS`` in
-   ``xnatctl/cli/common.py``. A test walks the whole command tree and fails on
+   ``xnatctl/cli/common/deprecation.py``. A test walks the whole command tree and fails on
    any deprecated option missing from that table, so a flag cannot be retired
    without a dated warning.
 
@@ -139,17 +139,23 @@ They still work; they are just no longer advertised.
 Currently deprecated
 --------------------
 
-All of the flags below are removed in **0.7.0** -- deprecated to reconcile
-argument conventions across the CLI: a stray ``-e`` short flag that should
-have been ``-E`` all along, ``--file`` used for two different meanings
-depending on the command, and a ``-s``/``-S`` collision on the same command
-line.
+Nothing. The last deprecated flags were removed in 0.7.0.
+
+
+Removed in 0.7.0
+----------------
+
+Deprecated in 0.5.0 to reconcile argument conventions across the CLI: a stray
+``-e`` short flag that should have been ``-E`` all along, ``--file`` used for
+two different meanings depending on the command, and a ``-s``/``-S``
+collision on the same command line. Using any of them now fails with "No such
+option".
 
 .. list-table::
    :header-rows: 1
    :widths: 30 40 30
 
-   * - Deprecated
+   * - Removed
      - Use instead
      - Commands
    * - ``-e``

@@ -32,7 +32,7 @@ decision guide.
      - ``-E``, ``--workers``, ``-r``, ``--exclude-resource``, ``--session-resources``
    * - Download one or more specific scans from a session
      - ``scan download``
-     - ``-E``, ``-s``, ``-r`` / ``--resource``
+     - ``-E``, ``--scans``, ``-r`` / ``--resource``
    * - Download a single named resource (e.g., DICOM, NIFTI, BIDS)
      - ``resource download``
      - positional ``SESSION_ID`` and ``RESOURCE_LABEL``, ``--scan``
@@ -176,21 +176,21 @@ example, pulling just the T1-weighted anatomical for a segmentation pipeline.
 Download a single scan
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Specify the scan number with ``-s`` and the parent session with ``-E``.
+Specify the scan number with ``--scans`` and the parent session with ``-E``.
 
 .. code-block:: console
 
-   $ xnatctl scan download -E XNAT_E00001 -s 1 --out ./data
+   $ xnatctl scan download -E XNAT_E00001 --scans 1 --out ./data
 
 Download multiple scans
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Pass a comma-separated list to ``-s``, or use the wildcard ``'*'`` for all scans.
+Pass a comma-separated list to ``--scans``, or use the wildcard ``'*'`` for all scans.
 
 .. code-block:: console
 
-   $ xnatctl scan download -E XNAT_E00001 -s 1,2,3 --out ./data
-   $ xnatctl scan download -E XNAT_E00001 -s '*' --out ./data
+   $ xnatctl scan download -E XNAT_E00001 --scans 1,2,3 --out ./data
+   $ xnatctl scan download -E XNAT_E00001 --scans '*' --out ./data
 
 Download by session label
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -200,7 +200,7 @@ accession ID by providing ``-P``.
 
 .. code-block:: console
 
-   $ xnatctl scan download -P MYPROJECT -E SUB001_MR_20240115 -s 1 --out ./data
+   $ xnatctl scan download -P MYPROJECT -E SUB001_MR_20240115 --scans 1 --out ./data
 
 Download a specific resource type
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -210,7 +210,7 @@ you only need one resource type, use ``-r`` / ``--resource`` to filter.
 
 .. code-block:: console
 
-   $ xnatctl scan download -E XNAT_E00001 -s 1,2 --resource DICOM --out ./data
+   $ xnatctl scan download -E XNAT_E00001 --scans 1,2 --resource DICOM --out ./data
 
 This is useful when scans have both raw DICOMs and converted NIfTI files and
 you only need one format.
@@ -222,7 +222,7 @@ As with session downloads, you can extract and clean up in one step.
 
 .. code-block:: console
 
-   $ xnatctl scan download -E XNAT_E00001 -s 1 --out ./data --extract
+   $ xnatctl scan download -E XNAT_E00001 --scans 1 --out ./data --extract
 
 
 Download a Resource
@@ -239,7 +239,7 @@ Pass the session accession ID and the resource label as positional arguments.
 
 .. code-block:: console
 
-   $ xnatctl resource download XNAT_E00001 DICOM --file ./dicoms.zip
+   $ xnatctl resource download XNAT_E00001 DICOM --output-file ./dicoms.zip
 
 Scan-level resource
 ~~~~~~~~~~~~~~~~~~~
@@ -248,10 +248,10 @@ To download a resource from a specific scan, add ``--scan``.
 
 .. code-block:: console
 
-   $ xnatctl resource download XNAT_E00001 DICOM --scan 1 --file ./scan1_dicoms.zip
+   $ xnatctl resource download XNAT_E00001 DICOM --scan 1 --output-file ./scan1_dicoms.zip
 
 The output is always a single ZIP file written to the path you specify with
-``--file``.
+``--output-file`` (``-f``).
 
 
 JSON Output
@@ -308,7 +308,7 @@ instead of running the transfer.
      - Number of distinct scans covered, deduplicated (a scan touched by
        several resource requests still counts once). ``null`` when the
        command has no way to know the count -- the sequential single-ZIP
-       ``session download`` path and ``scan download -s '*'`` don't enumerate
+       ``session download`` path and ``scan download --scans '*'`` don't enumerate
        scans up front.
    * - ``files`` / ``bytes``
      - integer or null
@@ -429,7 +429,7 @@ Its summary reflects that:
 
 .. code-block:: console
 
-   $ xnatctl scan download -E XNAT_E00001 -s 1,2 --out ./data -o json
+   $ xnatctl scan download -E XNAT_E00001 --scans 1,2 --out ./data -o json
    {
      "operation": "download",
      "session_id": "XNAT_E00001",
@@ -443,7 +443,7 @@ Its summary reflects that:
      "...": "..."
    }
 
-``scans`` is the number of scan IDs requested, or ``null`` for ``-s '*'``
+``scans`` is the number of scan IDs requested, or ``null`` for ``--scans '*'``
 (the count isn't known without enumerating the session first).
 
 Verification in JSON output
@@ -613,7 +613,7 @@ previous attempt, making downloads effectively idempotent.
 .. tip::
 
    For very large sessions on unreliable networks, consider downloading scans
-   individually with ``scan download -s <id>`` so you can retry only the scans
+   individually with ``scan download --scans <id>`` so you can retry only the scans
    that failed rather than re-downloading the entire session.
 
 .. note::

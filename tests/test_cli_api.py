@@ -503,7 +503,7 @@ class TestApiPut:
                             "api",
                             "put",
                             "/data/projects/PROJ/resources/BIDS/files/params.json",
-                            "-f",
+                            "--file",
                             str(payload),
                         ],
                     )
@@ -535,7 +535,7 @@ class TestApiPut:
                             "/data/projects/PROJ/resources/BIDS/files/params.json",
                             "--params",
                             "inbody=false",
-                            "-f",
+                            "--file",
                             str(payload),
                         ],
                     )
@@ -832,7 +832,7 @@ class TestApiContentType:
                             "api",
                             "post",
                             "/xapi/some/endpoint",
-                            "-f",
+                            "--file",
                             str(payload),
                             "-t",
                             "text/plain",
@@ -871,7 +871,7 @@ class TestApiContentType:
                             "api",
                             "post",
                             "/xapi/xsync/credentials/check/projects/PROJ",
-                            "-f",
+                            "--file",
                             str(payload),
                             "-t",
                             "text/plain",
@@ -907,7 +907,7 @@ class TestApiContentType:
                             "api",
                             "put",
                             "/xapi/xsync/credentials/save/projects/PROJ",
-                            "-f",
+                            "--file",
                             str(payload),
                             "-t",
                             "text/plain",
@@ -940,7 +940,7 @@ class TestApiContentType:
                             "api",
                             "post",
                             "/data/services/import",
-                            "-f",
+                            "--file",
                             str(payload),
                         ],
                     )
@@ -968,7 +968,7 @@ class TestApiContentType:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/foo", "-f", str(notes)],
+                        ["api", "post", "/data/foo", "--file", str(notes)],
                     )
 
         assert result.exit_code == 0
@@ -993,7 +993,7 @@ class TestApiContentType:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "put", "/data/projects/PROJ", "-f", str(proj)],
+                        ["api", "put", "/data/projects/PROJ", "--file", str(proj)],
                     )
 
         assert result.exit_code == 0
@@ -1020,7 +1020,7 @@ class TestApiContentType:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/foo", "-f", str(blob)],
+                        ["api", "post", "/data/foo", "--file", str(blob)],
                     )
 
         assert result.exit_code == 0
@@ -1049,7 +1049,7 @@ class TestApiContentType:
                             "api",
                             "put",
                             "/data/foo/files/foo.dcm",
-                            "-f",
+                            "--file",
                             str(blob),
                         ],
                     )
@@ -1077,7 +1077,7 @@ class TestApiContentType:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/foo", "-f", str(bad)],
+                        ["api", "post", "/data/foo", "--file", str(bad)],
                     )
 
         assert result.exit_code == 0
@@ -1383,7 +1383,7 @@ class TestApiStdinBody:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/endpoint", "-f", "-"],
+                        ["api", "post", "/data/endpoint", "--file", "-"],
                         input='{"from":"stdin"}',
                     )
 
@@ -1401,12 +1401,12 @@ class TestApiStdinBody:
                 with patch("xnatctl.cli.common.XNATClient", return_value=client):
                     result = runner.invoke(
                         cli,
-                        ["api", "post", "/data/endpoint", "-d", "-", "-f", "-"],
+                        ["api", "post", "/data/endpoint", "-d", "-", "--file", "-"],
                         input='{"k":"v"}',
                     )
 
         assert result.exit_code != 0
-        assert "cannot combine -d - and -f -" in result.output
+        assert "cannot combine -d - and --file -" in result.output
         client.post.assert_not_called()
 
 

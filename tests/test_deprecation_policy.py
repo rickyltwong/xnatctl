@@ -18,10 +18,25 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from xnatctl.cli.common import DEPRECATED_FLAGS, deprecation_message
+from xnatctl.cli.common import DEPRECATED_FLAGS, DeprecatedFlag, deprecation_message
 from xnatctl.cli.main import cli
 
 CommandPath = tuple[str, ...]
+
+
+@pytest.fixture
+def registered_test_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Register test-only entries for the mechanism tests below.
+
+    The registry is empty since 0.7.0 removed the last deprecated flags, but
+    the message and the alias callbacks still have to work for the next one.
+    """
+    monkeypatch.setitem(
+        DEPRECATED_FLAGS, "--file", DeprecatedFlag("--output-file", "9.2.0", "9.0.0")
+    )
+    monkeypatch.setitem(
+        DEPRECATED_FLAGS, "-f (container logs)", DeprecatedFlag("--follow", "9.2.0", "9.0.0")
+    )
 
 
 def _walk(
@@ -133,26 +148,11 @@ class TestRegistryCoverage:
     def test_the_wired_alias_sites_are_exactly_the_expected_ones(self) -> None:
         """Pin every (command, flag) alias site, not just a count.
 
-        A count floor of len(DEPRECATED_FLAGS) would let duplicate sites
-        (the second ``-s``, two of the three ``-e``, one API ``-f``) vanish
-        silently while all five registry messages stayed wired somewhere.
-        Removing a site fails here; adding one fails until it is listed
-        here deliberately. This is also what keeps the closure sweep
-        honest: if a refactor changed how alias callbacks bake their
-        message, the sweep would come back empty and this equality fails
-        loudly instead of every sweep-based check passing vacuously.
+        Removing a site fails here; adding one fails until it is listed here
+        deliberately. None is wired since 0.7.0 removed the flags deprecated
+        in 0.5.0; the next deprecation adds its sites to ``expected``.
         """
-        expected = {
-            (("scan", "delete"), "-s"),
-            (("scan", "download"), "-s"),
-            (("resource", "download"), "--file"),
-            (("pipeline", "run"), "-e"),
-            (("pipeline", "jobs"), "-e"),
-            (("admin", "refresh-catalogs"), "-e"),
-            (("api", "post"), "-f (api post/put)"),
-            (("api", "put"), "-f (api post/put)"),
-            (("container", "logs"), "-f (container logs)"),
-        }
+        expected: set[tuple[CommandPath, str]] = set()
         canonical = {deprecation_message(flag): flag for flag in DEPRECATED_FLAGS}
         actual = {
             (path, canonical.get(message, message))
@@ -210,6 +210,7 @@ class TestRegistryCoverage:
             )
 
 
+@pytest.mark.usefixtures("registered_test_flags")
 class TestMessage:
     def test_a_replacement_is_named(self) -> None:
         message = deprecation_message("--file")
@@ -219,7 +220,7 @@ class TestMessage:
 
     def test_the_removal_release_is_named(self) -> None:
         """A user reading one warning line should know how long they have."""
-        assert "will be removed in 0.7.0" in deprecation_message("--file")
+        assert "will be removed in 9.2.0" in deprecation_message("--file")
 
     def test_an_unregistered_flag_raises(self) -> None:
         """Caught at import time, since the factories build the message eagerly."""
@@ -227,6 +228,7 @@ class TestMessage:
             deprecation_message("--never-existed")
 
 
+@pytest.mark.usefixtures("registered_test_flags")
 class TestWarningsAreVisible:
     """Warnings go to stderr, and only when the flag is actually used.
 
@@ -294,9 +296,8 @@ class TestWarningsAreVisible:
     def test_deprecated_flags_are_hidden_from_help(self) -> None:
         """Both detection paths: help-marked options AND hidden alias callbacks.
 
-        The alias sweep is what gives this test teeth at HEAD -- the
-        surviving aliases carry no help text, so ``_deprecated_options()``
-        alone would iterate zero times and the test would assert nothing.
+        Nothing is deprecated since 0.7.0, so both sweeps are empty today;
+        this guards the next deprecation.
         """
         for path, param, flag in _deprecated_options():
             assert getattr(param, "hidden", False), (
