@@ -871,11 +871,17 @@ container ID string -- both are accepted everywhere one is expected.
 
 .. note::
 
-   ``container launch --wait`` and ``container logs --follow`` could not be
-   exercised against a real, daemon-backed launch: this project's
-   integration stack has no reachable Docker daemon, so no container here
-   has ever run to a terminal status. Both are documented as best-effort,
-   code-grounded mechanisms rather than verified ones -- see
+   ``container launch --wait`` and ``container logs --follow`` stop at a
+   status Container Service itself treats as final: one that starts with
+   ``Complete``, ``Failed`` or ``Killed``, such as ``Failed (Upload)``.
+   ``--wait`` then prints the container and exits 0 whatever that status
+   is, so a script reads ``status`` from ``-o json`` output to tell a
+   failure (``--quiet`` prints only the container ID).
+
+   Neither could be exercised against a real, daemon-backed launch: this
+   project's integration stack has no reachable Docker daemon, so no
+   container here has ever run to a terminal status. Both are documented as
+   best-effort, code-grounded mechanisms rather than verified ones -- see
    ``ContainerService.launch`` and ``cli/container.py``'s
    ``_wait_for_launch``/``_follow_logs`` docstrings for exactly what was and
    was not confirmed live.

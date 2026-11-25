@@ -20,11 +20,9 @@ from xnatctl.cli.common import (
 )
 from xnatctl.core.exceptions import InputValidationError, XNATCtlError
 from xnatctl.core.output import OutputFormat, print_output, print_success
-from xnatctl.services.containers import ContainerService
+from xnatctl.services.containers import ContainerService, is_terminal_status
 
 _UNKNOWN = "-"
-
-_TERMINAL_CONTAINER_STATUSES = frozenset({"Complete", "Failed", "Killed", "Died"})
 
 _POLL_INTERVAL_SECONDS = 5.0
 
@@ -208,8 +206,8 @@ def _follow_logs(
     each interval from the verified ``logs/{stream}`` endpoint and writes
     only the bytes not already printed.
 
-    Stops when the container reaches a terminal status (see
-    ``_TERMINAL_CONTAINER_STATUSES``) or on ``KeyboardInterrupt``.
+    Stops when the container reaches a terminal status (see ``is_terminal_status``)
+    or on ``KeyboardInterrupt``.
     """
     seen = 0
     try:
@@ -221,7 +219,7 @@ def _follow_logs(
                 sink.flush()
                 seen = len(body)
             status = str(service.get(container_id).get("status", ""))
-            if status in _TERMINAL_CONTAINER_STATUSES:
+            if is_terminal_status(status):
                 return
             time.sleep(interval)
     except KeyboardInterrupt:
@@ -555,7 +553,7 @@ def _wait_for_launch(
         status = str(container.get("status", ""))
         if not ctx.quiet:
             click.echo(f"  Status: {status}", err=True)
-        if status in _TERMINAL_CONTAINER_STATUSES:
+        if is_terminal_status(status):
             return container
         if time.monotonic() >= deadline:
             raise click.ClickException(

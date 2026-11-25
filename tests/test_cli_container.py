@@ -330,6 +330,40 @@ class TestContainerLogsFollow:
         assert result.exit_code == 0
         assert result.output == "hello world"
 
+    @pytest.mark.parametrize("status", ["Failed (Upload)", "Failed (Rejected)", "Failed (Killed)"])
+    def test_follow_stops_at_a_suffixed_failure_status(
+        self, authenticated_cli: AuthenticatedCLI, status: str
+    ) -> None:
+        failed = dict(SAMPLE_CONTAINER, status=status)
+        # One poll: stream_logs' existence check, then the status check.
+        authenticated_cli.client.get_json.side_effect = [failed, failed]
+        authenticated_cli.client.stream.side_effect = [_stream_body_ctx(b"boom")]
+
+        result = authenticated_cli.invoke(
+            ["container", "logs", "501", "--follow", "--interval", "0.01"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert result.output == "boom"
+
+    def test_follow_keeps_polling_through_a_swarm_interim_failure_status(
+        self, authenticated_cli: AuthenticatedCLI
+    ) -> None:
+        interim = dict(SAMPLE_CONTAINER, status="Waiting (Failed (Rejected))")
+        final = dict(SAMPLE_CONTAINER, status="Failed (Rejected)")
+        authenticated_cli.client.get_json.side_effect = [interim, interim, final, final]
+        authenticated_cli.client.stream.side_effect = [
+            _stream_body_ctx(b"boom"),
+            _stream_body_ctx(b"boom"),
+        ]
+
+        result = authenticated_cli.invoke(
+            ["container", "logs", "501", "--follow", "--interval", "0.01"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert authenticated_cli.client.stream.call_count == 2
+
     def test_follow_nonexistent_container_reports_not_found(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
@@ -555,6 +589,38 @@ class TestContainerLaunch:
 
         assert result.exit_code == 0
         assert "Complete" in result.output
+
+    @pytest.mark.parametrize("status", ["Failed (Upload)", "Failed (Rejected)", "Failed (Killed)"])
+    def test_launch_wait_stops_at_a_suffixed_failure_status(
+        self, authenticated_cli: AuthenticatedCLI, monkeypatch: pytest.MonkeyPatch, status: str
+    ) -> None:
+        monkeypatch.setattr(container_cli, "_POLL_INTERVAL_SECONDS", 0)
+        launched = dict(SAMPLE_CONTAINER, id="777", status=status)
+        launched["workflow-id"] = "42"
+        authenticated_cli.client.get_json.side_effect = _dispatch_get_json(
+            {
+                "/xapi/commands": [SAMPLE_COMMAND],
+                "/xapi/projects/TESTPROJ/containers": _Seq([[], [launched]]),
+                "/xapi/containers/777": _Seq([launched]),
+            }
+        )
+        authenticated_cli.client.get.return_value = make_response(PROJECT_FOUND)
+        authenticated_cli.client.post.return_value = make_response(
+            {
+                "status": "success",
+                "params": {},
+                "command-id": 12,
+                "wrapper-id": 34,
+                "workflow-id": "42",
+            }
+        )
+
+        result = authenticated_cli.invoke(
+            ["container", "launch", "34", "--wait", "--timeout", "5", "-o", "json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["status"] == status
 
     def test_launch_wait_snapshot_taken_before_launch_not_after(
         self, authenticated_cli: AuthenticatedCLI

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -330,33 +331,96 @@ class TestSessionShow:
         first_get_call = mock_client.get_json.call_args_list[0]
         assert "/data/projects/TESTPROJ/experiments/SESS001" in first_get_call[0][0]
 
-    def test_session_show_non_mr_resolves_scan_xsi(self, runner: CliRunner) -> None:
-        ctx, mock_client = make_authenticated_context()
-        call_count = 0
-
+    @staticmethod
+    def _session_json_side(
+        session_xsi: str, scans_by_filter: dict[str | None, list[dict[str, Any]]]
+    ) -> Callable[..., dict[str, Any]]:
         def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
-            nonlocal call_count
-            call_count += 1
             if url.endswith("/scans"):
-                return {
-                    "ResultSet": {
-                        "Result": [
-                            {"ID": "1", "type": "EEG", "series_description": "EEG recording"}
-                        ]
-                    }
-                }
-            if url.endswith("/resources"):
+                xsi = (kwargs.get("params") or {}).get("xsiType")
+                return {"ResultSet": {"Result": scans_by_filter.get(xsi, [])}}
+            if url.endswith("/resources") or url.endswith("/projects"):
                 return {"ResultSet": {"Result": []}}
             return {
                 "ResultSet": {
                     "Result": [
                         {
                             "ID": "XNAT_E00010",
-                            "label": "EEG_SESS",
+                            "label": "SESS",
                             "subject_label": "SUB001",
                             "project": "TESTPROJ",
                             "date": "2025-06-01",
-                            "xsiType": "xnat:eegSessionData",
+                            "xsiType": session_xsi,
+                        }
+                    ]
+                }
+            }
+
+        return _get_json_side
+
+    def test_session_show_lists_scans_whose_type_differs_from_the_session(
+        self, runner: CliRunner
+    ) -> None:
+        ctx, mock_client = make_authenticated_context()
+        scans = [
+            {"ID": str(n), "type": t, "xsiType": "xnat:otherDicomScanData"}
+            for n, t in [(1, "Angiography"), (2, "Macular Cube"), (3, "Optic Disc Cube")]
+        ]
+        mock_client.get_json.side_effect = self._session_json_side(
+            "xnat:optSessionData", {None: scans, "xnat:optScanData": []}
+        )
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["session", "show", "-E", "XNAT_E00010", "-o", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert [s["ID"] for s in json.loads(result.stdout)["scans"]] == ["1", "2", "3"]
+
+    def test_session_show_filters_by_scan_type_only_when_the_plain_listing_is_empty(
+        self, runner: CliRunner
+    ) -> None:
+        ctx, mock_client = make_authenticated_context()
+        eeg = [{"ID": "1", "type": "EEG", "series_description": "EEG recording"}]
+        mock_client.get_json.side_effect = self._session_json_side(
+            "xnat:eegSessionData", {None: [], "xnat:eegScanData": eeg}
+        )
+
+        with authenticated_seams(ctx, mock_client):
+            result = runner.invoke(cli, ["session", "show", "-E", "XNAT_E00010", "-o", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert [s["ID"] for s in json.loads(result.stdout)["scans"]] == ["1"]
+        scan_filters = [
+            (c.kwargs.get("params") or {}).get("xsiType")
+            for c in mock_client.get_json.call_args_list
+            if c.args[0].endswith("/scans")
+        ]
+        assert scan_filters == [None, "xnat:eegScanData"]
+
+    def test_session_show_lists_scans_on_the_flat_route_when_no_subject_resolves(
+        self, runner: CliRunner
+    ) -> None:
+        # XNAT answers /data/projects/{P}/experiments/{E}/scans with the
+        # experiment document, so without a subject the flat route is the one
+        # that lists scans.
+        ctx, mock_client = make_authenticated_context()
+        flat_scans = "/data/experiments/XNAT_E00010/scans"
+
+        def _get_json_side(url: str, **kwargs: Any) -> dict[str, Any]:
+            if url == flat_scans:
+                return {"ResultSet": {"Result": [{"ID": "1", "type": "T1w"}]}}
+            if url.endswith("/scans"):
+                return {"items": [{"data_fields": {"ID": "XNAT_E00010"}}]}
+            if url.endswith("/resources") or url.endswith("/projects"):
+                return {"ResultSet": {"Result": []}}
+            return {
+                "ResultSet": {
+                    "Result": [
+                        {
+                            "ID": "XNAT_E00010",
+                            "label": "SESS",
+                            "project": "TESTPROJ",
+                            "xsiType": "xnat:mrSessionData",
                         }
                     ]
                 }
@@ -365,16 +429,13 @@ class TestSessionShow:
         mock_client.get_json.side_effect = _get_json_side
 
         with authenticated_seams(ctx, mock_client):
-            result = runner.invoke(cli, ["session", "show", "-E", "XNAT_E00010", "-o", "json"])
+            result = runner.invoke(
+                cli, ["session", "show", "-E", "XNAT_E00010", "-P", "TESTPROJ", "-o", "json"]
+            )
 
-        assert result.exit_code == 0
-        for call in mock_client.get_json.call_args_list:
-            if "/scans" in call[0][0]:
-                params = call[1].get("params", {})
-                assert params.get("xsiType") == "xnat:eegScanData"
-                break
-        else:
-            pytest.fail("No /scans call found")
+        assert result.exit_code == 0, result.output
+        assert [s["ID"] for s in json.loads(result.stdout)["scans"]] == ["1"]
+        assert any(c.args[0] == flat_scans for c in mock_client.get_json.call_args_list)
 
     def test_session_show_not_found(self, runner: CliRunner) -> None:
         ctx, mock_client = make_authenticated_context()

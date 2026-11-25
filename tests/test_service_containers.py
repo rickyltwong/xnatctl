@@ -7,7 +7,7 @@ import pytest
 
 from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError, XNATCtlError
 from xnatctl.services.commands import CommandService
-from xnatctl.services.containers import ContainerService, ScanLaunch
+from xnatctl.services.containers import ContainerService, ScanLaunch, is_terminal_status
 
 SAMPLE_CONTAINER = {
     "id": "501",
@@ -24,6 +24,40 @@ SAMPLE_WRAPPER = {
     "command-id": 12,
     "external-inputs": [{"name": "session", "type": "Session", "required": True}],
 }
+
+
+class TestIsTerminalStatus:
+    @pytest.mark.parametrize(
+        "status",
+        [
+            "Complete",
+            "Failed",
+            "Killed",
+            "Failed (Upload)",
+            "Failed (Rejected)",
+            "Failed (Killed)",
+            "Failed (User-set)",
+        ],
+    )
+    def test_final(self, status: str) -> None:
+        assert is_terminal_status(status)
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            "",
+            "Created",
+            "Running",
+            "Staging",
+            "Waiting",
+            "Finalizing",
+            "_Waiting (Failed (Rejected))",
+            "Waiting (Failed (Rejected))",
+            "Died",
+        ],
+    )
+    def test_not_final(self, status: str) -> None:
+        assert not is_terminal_status(status)
 
 
 class TestInit:
