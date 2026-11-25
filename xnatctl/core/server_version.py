@@ -24,6 +24,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+import httpx
+
 from xnatctl.core.exceptions import UnsupportedServerVersionError, XNATCtlError
 
 if TYPE_CHECKING:
@@ -109,10 +111,11 @@ def probe_server_version(client: XNATClient) -> ServerVersion | None:
             max_retries=0,
         )
         return parse_server_version(resp.text.strip())
-    except XNATCtlError as e:
-        logger.debug("Could not probe server version: %s", e)
-        return None
-    except Exception as e:  # noqa: BLE001 -- version probing must never break a working command
+    # XNATCtlError covers the request. Building the httpx client, when this is
+    # the client's first request, can also fail on the CA bundle (OSError) or
+    # the proxy variables (ValueError, httpx.InvalidURL, or ImportError for a
+    # SOCKS proxy without socksio).
+    except (XNATCtlError, OSError, ValueError, httpx.InvalidURL, ImportError) as e:
         logger.debug("Could not probe server version: %s", e)
         return None
 

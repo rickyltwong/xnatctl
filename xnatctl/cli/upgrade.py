@@ -35,6 +35,7 @@ it is running in.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import logging
 import os
@@ -215,12 +216,10 @@ def _release_asset_name(os_name: str, arch: str) -> str:
 
 
 def fetch_latest_release_tag(timeout: float = CHECK_FETCH_TIMEOUT_SECONDS) -> str | None:
-    """Fetch the latest GitHub release tag (e.g. ``"v0.5.0"``). None on any failure.
+    """Fetch the latest GitHub release tag (e.g. ``"v0.5.0"``), or None if that fails.
 
-    Deliberately catches every exception, for the same reason
-    ``update_check._fetch_latest_version`` does: this call crosses DNS, TLS,
-    HTTP, and JSON parsing, and the contract is "return the tag, or None --
-    never raise."
+    Like ``update_check._fetch_latest_version``, a failure anywhere across DNS,
+    TLS, HTTP or the JSON body returns None instead of raising.
     """
     try:
         request = urllib.request.Request(
@@ -230,7 +229,7 @@ def fetch_latest_release_tag(timeout: float = CHECK_FETCH_TIMEOUT_SECONDS) -> st
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
         tag = payload["tag_name"]
-    except Exception as e:  # noqa: BLE001 -- same silence contract as update_check
+    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError) as e:
         logger.debug("Could not fetch the latest release tag: %s", e)
         return None
     return tag if isinstance(tag, str) else None

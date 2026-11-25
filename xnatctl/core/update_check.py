@@ -33,6 +33,7 @@ effect for a command that does nothing else network-shaped.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -48,6 +49,7 @@ from packaging.version import InvalidVersion, Version
 
 from xnatctl.core.config import CONFIG_DIR
 from xnatctl.core.fsutil import atomic_private_write, ensure_private_dir
+from xnatctl.core.logging import FILE_ONLY_ATTR
 
 logger = logging.getLogger(__name__)
 
@@ -179,14 +181,14 @@ def _fetch_latest_version(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
         with urllib.request.urlopen(PYPI_PROJECT_URL, timeout=timeout) as response:
             payload = json.load(response)
         version = payload["info"]["version"]
-    except Exception as e:  # noqa: BLE001 -- "return version or None, never raise"
+    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError) as e:
         logger.debug("Update-check fetch failed: %s", e)
         return None
     return version if isinstance(version, str) else None
 
 
 def fetch_latest_version(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
-    """Synchronously fetch the latest published version from PyPI. Never raises.
+    """Synchronously fetch the latest published version from PyPI, or None on failure.
 
     Public wrapper around :func:`_fetch_latest_version`, for a caller that
     wants an on-demand fetch outside the detached background refresh --
@@ -197,7 +199,7 @@ def fetch_latest_version(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
 
 
 def refresh_cache_now(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
-    """Synchronously fetch and, on success, persist the latest version. Never raises.
+    """Synchronously fetch and, on success, persist the latest version; None on failure.
 
     The blocking counterpart to :func:`refresh_cache_async`: used for an
     explicit, user-requested check (``xnatctl upgrade --check``) rather than
@@ -226,7 +228,8 @@ def _refresh(fetch: Callable[[], str | None]) -> None:
         latest = fetch()
         if latest is not None:
             _write_cache(latest)
-    except Exception as e:  # noqa: BLE001 -- shared refresh entry point, must never raise
+    except Exception as e:
+        logger.exception("Update-check refresh failed", extra={FILE_ONLY_ATTR: True})
         logger.debug("Update-check refresh failed: %s", e)
 
 
@@ -309,7 +312,8 @@ def main() -> None:
     try:
         _cleanup_stale_tmp_files()
         _refresh(fetch=_fetch_latest_version)
-    except Exception as e:  # noqa: BLE001 -- detached subprocess, must never raise
+    except Exception as e:
+        logger.exception("Update-check refresh subprocess failed", extra={FILE_ONLY_ATTR: True})
         logger.debug("Update-check refresh subprocess failed: %s", e)
 
 

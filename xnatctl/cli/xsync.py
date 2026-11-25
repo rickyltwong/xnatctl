@@ -39,6 +39,7 @@ from xnatctl.cli.common import (
     require_project_from_context,
     resolve_columns,
 )
+from xnatctl.core.exceptions import XNATCtlError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -461,7 +462,11 @@ def xsync_refresh_credentials(
                 remote_project=effective_remote,
                 sync_new_only=sync_new_only,
             )
-        except Exception as exc:  # noqa: BLE001  # per-project isolation while refreshing credentials across --all-bound projects
+        # Named types, not a broad catch with a logged traceback: the traceback
+        # would write the message, unscrubbed, to the diagnostics file.
+        # ValueError is a non-JSON response body; AttributeError is a
+        # remoteREST answer that is JSON but not an object.
+        except (XNATCtlError, ValueError, AttributeError) as exc:
             message = str(exc).replace(remote_password, "***") if remote_password else str(exc)
             failed.append((proj, message))
             print_error(f"Refresh failed for {proj}: {message}")
