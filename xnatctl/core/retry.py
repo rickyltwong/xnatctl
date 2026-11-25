@@ -298,8 +298,13 @@ def _debug_log_retryable_400_body(resp: httpx.Response, label: str) -> None:
             return
         _retry_debug_snippets_emitted += 1
     snippet = _safe_body(resp).strip().replace("\n", " ")
-    if snippet:
+    if not snippet:
+        return
+    try:
         logger.debug("%s: retryable HTTP 400 body: %s", label, snippet[:200])
+    except Exception:
+        # Optional output: a handler that fails on this line must not end the retries.
+        logger.exception("could not log a retryable HTTP 400 body", extra={FILE_ONLY_ATTR: True})
 
 
 def _stop_instead_of_backoff(

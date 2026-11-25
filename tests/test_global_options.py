@@ -138,6 +138,23 @@ def _run_cli_in_subprocess(tmp_path, *args: str):
     )
 
 
+def _write_dicom_with_an_unknown_charset(path) -> None:
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.2"
+    ds.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID
+    ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
+    ds.SpecificCharacterSet = "ISO_IR 999"
+    ds.PatientName = "Test^Name"
+    ds.Modality = "CT"
+    ds.save_as(path, enforce_file_format=True)
+
+
 class TestCommandsWithoutGlobalOptions:
     @pytest.mark.parametrize(
         "root_args", [[], ["--log-file", "diag.jsonl"]], ids=["plain", "log-file"]
@@ -147,6 +164,20 @@ class TestCommandsWithoutGlobalOptions:
 
         assert result.returncode == 0, result.stderr
         assert "has unrecognized config keys" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("root_args", "shown"), [([], False), (["-v"], True)], ids=["default", "verbose"]
+    )
+    def test_pydicom_log_warnings_show_only_with_verbose(
+        self, tmp_path, root_args: list[str], shown: bool
+    ) -> None:
+        dicom_file = tmp_path / "charset.dcm"
+        _write_dicom_with_an_unknown_charset(dicom_file)
+
+        result = _run_cli_in_subprocess(tmp_path, *root_args, "dicom", "inspect", str(dicom_file))
+
+        assert result.returncode == 0, result.stderr
+        assert ("[WARNING] pydicom:" in result.stderr) is shown
 
     def test_a_failure_prints_no_diagnostics_only_record(self, tmp_path) -> None:
         result = _run_cli_in_subprocess(tmp_path, "config", "remove-profile", "nope", "--dry-run")

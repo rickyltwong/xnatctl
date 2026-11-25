@@ -6,7 +6,6 @@ import os
 import re
 import stat
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import click
@@ -48,21 +47,6 @@ _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 def _strip_timestamps(text: str) -> str:
     return _TIMESTAMP_RE.sub("<TS>", text)
-
-
-@pytest.fixture
-def clean_root() -> Iterator[None]:
-    root = logging.getLogger()
-    saved_handlers = list(root.handlers)
-    saved_level = root.level
-    try:
-        yield
-    finally:
-        for handler in root.handlers:
-            if handler not in saved_handlers:
-                handler.close()
-        root.handlers = saved_handlers
-        root.setLevel(saved_level)
 
 
 def _make_record(
@@ -953,41 +937,58 @@ class TestStderrParity:
         assert _strip_timestamps(without.output) == _strip_timestamps(with_file.output)
 
 
+class _FailingStream:
+    """A stream whose writes raise ``error``, such as a full disk."""
+
+    def __init__(self, error: OSError) -> None:
+        self.error = error
+
+    def write(self, _text: str) -> None:
+        raise self.error
+
+    def flush(self) -> None:
+        pass
+
+    def tell(self) -> int:
+        return 0
+
+    def seek(self, *_args: object) -> int:
+        return 0
+
+    def close(self) -> None:
+        pass
+
+
+def _diagnostics_handler() -> _JsonLinesFileHandler:
+    return next(h for h in logging.getLogger().handlers if isinstance(h, _JsonLinesFileHandler))
+
+
 class TestDiagnosticsFileFailures:
     def test_a_failed_write_reports_one_redacted_line(
         self, tmp_path: Path, clean_root: None, capsys: pytest.CaptureFixture[str]
     ) -> None:
         install_log_file(tmp_path / "diag.jsonl")
-        handler = next(
-            h for h in logging.getLogger().handlers if isinstance(h, _JsonLinesFileHandler)
+        _diagnostics_handler().stream = _FailingStream(
+            OSError(28, f"No space left on device at {SECRET_URL} JSESSIONID=ABCDEF0123456789")
         )
-
-        class FullDisk:
-            def write(self, _text: str) -> None:
-                raise OSError(28, "No space left on device")
-
-            def tell(self) -> int:
-                return 0
-
-            def seek(self, *_args: object) -> int:
-                return 0
-
-            def flush(self) -> None:
-                pass
-
-            def close(self) -> None:
-                pass
-
-        handler.stream = FullDisk()
         try:
-            raise RuntimeError(f"Cookie: JSESSIONID=ABCDEF0123456789 {SECRET_URL}")
+            raise RuntimeError(f"Cookie: JSESSIONID=FEDCBA9876543210 {SECRET_URL}")
         except RuntimeError:
             logging.getLogger("xnatctl.test").exception("boom", extra={FILE_ONLY_ATTR: True})
 
-        err = capsys.readouterr().err
-        assert "could not write the diagnostics file: [Errno 28] No space left on device" in err
-        assert "ABCDEF0123456789" not in err
-        assert "s3cret" not in err
+        assert capsys.readouterr().err == (
+            "xnatctl: could not write the diagnostics file: [Errno 28] No space left on device"
+            " at https://xnat.example.org/data?token=*** JSESSIONID=***\n"
+        )
+
+    def test_a_failed_write_with_a_broken_stderr_does_not_raise(
+        self, tmp_path: Path, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        install_log_file(tmp_path / "diag.jsonl")
+        _diagnostics_handler().stream = _FailingStream(OSError(28, "No space left on device"))
+        monkeypatch.setattr(sys, "stderr", _FailingStream(BrokenPipeError(32, "Broken pipe")))
+
+        logging.getLogger("xnatctl.test").error("boom", extra={FILE_ONLY_ATTR: True})
 
     def test_withheld_details_keep_the_frames_and_type_but_not_the_text(self) -> None:
         patient_id = "DOE" + "^JANE"

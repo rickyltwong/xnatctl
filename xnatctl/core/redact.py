@@ -139,8 +139,10 @@ def redact_url_query(text: str) -> str:
 # quote of httpcore's bytes repr), or comma.
 _SESSION_COOKIE_RE = re.compile(r"(JSESSIONID=)(?:\"[^\"]*\"|[^;\s'\",]+)", re.IGNORECASE)
 # The same value in a mapping's repr, such as a cookie dict: {'JSESSIONID': '...'}.
+# Either quote, str or bytes, escapes inside, and a value cut off at the end.
 _SESSION_COOKIE_ITEM_RE = re.compile(
-    r"""(['"]JSESSIONID['"]\s*:\s*)(['"])[^'"]*\2""", re.IGNORECASE
+    r"""(b?(['"])JSESSIONID\2\s*:\s*b?)(['"])(?:\\.?|(?!\3)[^\\])*(?:\3|\Z)""",
+    re.IGNORECASE,
 )
 
 
@@ -154,4 +156,4 @@ def redact_session_cookies(text: str) -> str:
     if "jsessionid" not in text.lower():
         return text
     text = _SESSION_COOKIE_RE.sub(r"\1***", text)
-    return _SESSION_COOKIE_ITEM_RE.sub(r"\1\2***\2", text)
+    return _SESSION_COOKIE_ITEM_RE.sub(r"\1\3***\3", text)

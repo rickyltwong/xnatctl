@@ -101,10 +101,20 @@ def test_url_redaction_ignores_the_scheme_case(text: str, expected: str) -> None
     assert redact_url_query(text) == expected
 
 
-def test_a_session_cookie_in_a_mapping_repr_is_redacted() -> None:
-    redacted = redact_session_cookies("cookies={'JSESSIONID': 'ABCDEF0123456789', 'x': '1'}")
-
-    assert redacted == "cookies={'JSESSIONID': '***', 'x': '1'}"
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("{'JSESSIONID': 'ABCDEF0123', 'x': '1'}", "{'JSESSIONID': '***', 'x': '1'}"),
+        ("""{'JSESSIONID': "ABC'DEF"}""", """{'JSESSIONID': "***"}"""),
+        ("{b'JSESSIONID': b'ABCDEF0123'}", "{b'JSESSIONID': b'***'}"),
+        ("""{'JSESSIONID': 'AB\\'C"D', 'x': 1}""", "{'JSESSIONID': '***', 'x': 1}"),
+        ('{"jsessionid": "abcdef0123"}', '{"jsessionid": "***"}'),
+        ("{'JSESSIONID': 'ABCDEF0123", "{'JSESSIONID': '***'"),
+    ],
+    ids=["str", "double-quoted", "bytes", "escaped-quote", "json", "truncated"],
+)
+def test_a_session_cookie_in_a_mapping_repr_is_redacted(text: str, expected: str) -> None:
+    assert redact_session_cookies(text) == expected
 
 
 def test_redaction_stays_linear_on_long_unparseable_urls() -> None:

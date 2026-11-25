@@ -112,7 +112,10 @@ before sending -- its batch logs record file paths and DICOM status codes,
 never a tag value. When one of these commands fails on a file, the
 `--log-file` diagnostics record keeps the traceback and the exception's type
 but not its text, which pydicom can build from an element's value
-(`withhold_details` in `core/logging.py`).
+(`withhold_details` in `core/logging.py`). The frames are the live ones: a
+handler that captures frame locals, which xnatctl's own formatters do not,
+sees the values in them, as it would in any traceback. pydicom's own log
+lines reach stderr only under `--verbose` or `XNATCTL_DEBUG=1`.
 
 Two things worth knowing about the boundaries of this:
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, Concatenate, ParamSpec, TypeVar
+from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar
 
 import click
 
@@ -164,6 +164,14 @@ __all__ = [
 
 P = ParamSpec("P")
 R = TypeVar("R")
+R_co = TypeVar("R_co", covariant=True)
+
+
+class ContextCommand(Protocol[P, R_co]):
+    """A command that takes the :class:`Context` first, by position or as ``ctx=``."""
+
+    def __call__(self, ctx: Context, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -369,11 +377,11 @@ def global_options(f: Callable[Concatenate[Context, ...], R]) -> Callable[..., R
     return wrapper
 
 
-def require_auth(f: Callable[..., R]) -> Callable[..., R]:
+def require_auth(f: Callable[Concatenate[Context, P], R]) -> ContextCommand[P, R]:
     """Ensure user is authenticated before running command."""
 
     @wraps(f)
-    def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> R:
+    def wrapper(ctx: Context, *args: P.args, **kwargs: P.kwargs) -> R:
         client = ctx.get_client()
         had_session = client.is_authenticated
         # The name get_client resolved the profile (and its cached session) by.

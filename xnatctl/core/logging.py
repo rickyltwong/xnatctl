@@ -5,6 +5,7 @@ Provides structured logging with audit trail support.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import logging.handlers
@@ -184,6 +185,9 @@ def setup_logging(
 
     ``--quiet`` wins over both: an explicit flag beats an ambient env var.
 
+    pydicom's own log stream is shown only with ``--verbose`` or
+    ``XNATCTL_DEBUG=1``; most of it repeats the Python warnings pydicom prints.
+
     Independent of all three tiers: once :func:`install_log_file` has attached
     a diagnostics file handler (this invocation or a prior call in the same
     process), this function keeps the root logger at DEBUG rather than
@@ -232,6 +236,10 @@ def setup_logging(
     logging.getLogger("httpcore").setLevel(
         logging.DEBUG if trace and not quiet else logging.WARNING
     )
+    # pydicom repeats most of its log warnings as Python warnings, and its log
+    # text can quote element values, so that stream shows only on request.
+    # Not by level: importing pydicom, which happens later, resets its level.
+    logging.getLogger("pydicom").propagate = not quiet and (verbose or trace)
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -265,7 +273,9 @@ class _JsonLinesFileHandler(logging.handlers.RotatingFileHandler):
         # The default report prints the record's own exception chain, unredacted.
         if logging.raiseExceptions and sys.stderr:
             failure = redact_session_cookies(redact_url_query(str(sys.exc_info()[1])))
-            sys.stderr.write(f"xnatctl: could not write the diagnostics file: {failure}\n")
+            # Nor may a closed stderr or a broken pipe end the command.
+            with contextlib.suppress(OSError, ValueError):
+                sys.stderr.write(f"xnatctl: could not write the diagnostics file: {failure}\n")
 
     def _open(self) -> Any:
         path = Path(self.baseFilename)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -27,21 +26,6 @@ def _config() -> Config:
             )
         },
     )
-
-
-@pytest.fixture
-def clean_root() -> Iterator[None]:
-    root = logging.getLogger()
-    saved_handlers = list(root.handlers)
-    saved_level = root.level
-    try:
-        yield
-    finally:
-        for handler in root.handlers:
-            if handler not in saved_handlers:
-                handler.close()
-        root.handlers = saved_handlers
-        root.setLevel(saved_level)
 
 
 @pytest.mark.usefixtures("clean_root")

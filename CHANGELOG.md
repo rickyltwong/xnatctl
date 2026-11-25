@@ -64,12 +64,15 @@ All notable changes to this project will be documented in this file.
   subcommands) now print warnings in the same `<time> [WARNING] <logger>:`
   format as every other command. With `--log-file` they used to print none,
   such as `config`'s warning that the config file is readable by other users
-  and stores a plaintext password. The `dicom` subcommands now also print
-  pydicom's own log warnings, as `session upload-dicom` already did. A failed
-  command no longer prints a record meant only for the diagnostics file: a
-  failed `config remove-profile` loses its stray `Command exited with code 1`,
-  and an unwritable `--log-file` gives the usual one-line error instead of a
-  `Command failed` traceback.
+  and stores a plaintext password. A root `-q` now silences them, as it does
+  for every other command. A failed command no longer prints a record meant
+  only for the diagnostics file: a failed `config remove-profile` loses its
+  stray `Command exited with code 1`, and an unwritable `--log-file` gives the
+  usual one-line error instead of a `Command failed` traceback.
+- pydicom's own log lines now appear only with `--verbose` or
+  `XNATCTL_DEBUG=1`. `session upload-dicom` printed them by default; most
+  repeat a Python warning pydicom prints anyway, and their text can quote a
+  DICOM element's value.
 
 ## 0.7.0 - 2026-11-24
 

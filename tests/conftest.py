@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 from collections.abc import Callable, Generator, Iterator
 from contextlib import ExitStack, contextmanager
@@ -254,3 +255,19 @@ def disable_rich_colour(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(con, "_force_terminal", False)
         monkeypatch.setattr(con, "_highlight", False, raising=False)
         monkeypatch.setattr(con, "highlighter", _NullHighlighter(), raising=False)
+
+
+@pytest.fixture
+def clean_root() -> Iterator[None]:
+    """Restore the root logger's handlers and level after a test changes them."""
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    try:
+        yield
+    finally:
+        for handler in root.handlers:
+            if handler not in saved_handlers:
+                handler.close()
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 from conftest import authenticated_seams, make_authenticated_context
 
@@ -147,6 +149,7 @@ class TestSubjectRenameFailurePaths:
         assert "Renamed: 0, Merged: 0, Skipped: 1" in result.output
         svc_cls.return_value.rename_raw.assert_called_once_with("TESTPROJ", "SUB001_v1", "SUB001")
 
+    @pytest.mark.usefixtures("clean_root")
     def test_a_failed_merge_reaches_only_the_diagnostics_file(self, tmp_path: Path) -> None:
         ctx, client = make_authenticated_context()
         svc_cls = MagicMock()
@@ -156,6 +159,9 @@ class TestSubjectRenameFailurePaths:
         ]
         svc_cls.return_value.merge_subjects.side_effect = RuntimeError("reassignment not verified")
         log_file = tmp_path / "diag.jsonl"
+        # pytest's capture handlers on the root logger would stop setup_logging from
+        # adding the console handler, and the Traceback check below needs that handler.
+        logging.getLogger().handlers = []
 
         with authenticated_seams(ctx, client), patch("xnatctl.cli.subject.SubjectService", svc_cls):
             result = runner.invoke(

@@ -63,3 +63,32 @@ def test_no_snippet_is_logged_once_the_quota_is_spent(
     _upload_400_then_200("transient")
 
     assert _snippet_lines(debug_log) == []
+
+
+def test_a_handler_that_fails_on_the_snippet_does_not_end_the_retries(
+    monkeypatch: pytest.MonkeyPatch, debug_log: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(retry, "_retry_debug_snippets_emitted", 0)
+
+    class FailsOnSnippet(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.msg == "%s: retryable HTTP 400 body: %s":
+                raise OSError("handler down")
+
+    responses = [_resp(400, "transient"), _resp(200)]
+    sent: list[httpx.Response] = []
+
+    def upload() -> httpx.Response:
+        sent.append(responses[len(sent)])
+        return sent[-1]
+
+    retry_logger = logging.getLogger("xnatctl.core.retry")
+    handler = FailsOnSnippet()
+    retry_logger.addHandler(handler)
+    try:
+        result = upload_with_retry(upload, label="t", max_retries=1)
+    finally:
+        retry_logger.removeHandler(handler)
+
+    assert result.status_code == 200
+    assert len(sent) == 2
