@@ -163,13 +163,12 @@ def container_show(ctx: Context, container_id: str) -> None:
 
 
 def _accepts_bytes(stream: Any, default: bool) -> bool:
-    # Any failure means "not this stream", as in Click's own probe.
     try:
         stream.write(b"")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 -- any failure means "not this stream", as in Click's probe
         try:
             stream.write("")
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 -- takes neither type: unprobeable, use the default
             return default
         return False
     return True
