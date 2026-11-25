@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import click
@@ -23,10 +24,13 @@ from xnatctl.cli.common import (
     resolve_workers_from_context,
 )
 from xnatctl.core.exceptions import XNATCtlError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.output import print_error, print_output, print_success
 from xnatctl.core.validation import validate_project_id
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.projects import ProjectService
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -648,7 +652,8 @@ def project_transfer_check(
                 "detail": src_info.version or "",
             }
         )
-    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
+    except Exception as e:
+        logger.exception("Source connectivity check failed", extra={FILE_ONLY_ATTR: True})
         checks.append(
             {
                 "check": "Source connectivity",
@@ -666,7 +671,8 @@ def project_transfer_check(
                 "detail": src_user.username,
             }
         )
-    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
+    except Exception as e:
+        logger.exception("Source auth check failed", extra={FILE_ONLY_ATTR: True})
         checks.append({"check": "Source auth", "status": "FAIL", "detail": str(e)})
 
     try:
@@ -679,7 +685,8 @@ def project_transfer_check(
                 "detail": dst_info.version or "",
             }
         )
-    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
+    except Exception as e:
+        logger.exception("Dest connectivity check failed", extra={FILE_ONLY_ATTR: True})
         checks.append(
             {
                 "check": "Dest connectivity",
@@ -697,7 +704,8 @@ def project_transfer_check(
                 "detail": dst_user.username,
             }
         )
-    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
+    except Exception as e:
+        logger.exception("Dest auth check failed", extra={FILE_ONLY_ATTR: True})
         checks.append({"check": "Dest auth", "status": "FAIL", "detail": str(e)})
 
     dest_client.close()

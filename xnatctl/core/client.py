@@ -296,7 +296,11 @@ class XNATClient:
                 # deprecates `cookies=` on individual calls.
                 client.cookies.set("JSESSIONID", self.session_token)
                 client.delete("/data/JSESSION")
-            except Exception:  # noqa: BLE001 -- best-effort logout, must not block client cleanup
+            # httpx.HTTPError covers the request. Building the httpx client on a
+            # first call can also fail on the CA bundle (OSError) or the proxy
+            # variables (ValueError, httpx.InvalidURL, or ImportError for a
+            # SOCKS proxy without socksio).
+            except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError, ImportError):
                 pass
             finally:
                 self.session_token = None

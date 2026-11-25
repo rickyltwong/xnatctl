@@ -14,6 +14,7 @@ from xnatctl.core.exceptions import (
     ServerError,
     SessionExpiredError,
     XNATConnectionError,
+    XNATCtlError,
 )
 from xnatctl.services.commands import CommandService
 from xnatctl.services.containers import ContainerService
@@ -123,7 +124,7 @@ def probe_command(xnat_client: Any) -> Iterator[int]:
     finally:
         try:
             xnat_client.delete(f"/xapi/commands/{command_id}")
-        except Exception as exc:  # noqa: BLE001  # teardown must not mask a test result
+        except XNATCtlError as exc:
             print(f"\nWARNING: could not delete probe command {command_id}: {exc}")
 
 
