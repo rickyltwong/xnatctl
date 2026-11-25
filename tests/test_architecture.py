@@ -277,6 +277,9 @@ CONSOLE_TRACEBACK_CALLS = sorted(
 )
 
 
+_LOG_METHODS = {"debug", "info", "warning", "error", "exception", "critical", "log"}
+
+
 def _logs_a_traceback(call: ast.Call) -> bool:
     if isinstance(call.func, ast.Attribute) and call.func.attr == "exception":
         return True
@@ -302,11 +305,13 @@ def _traceback_calls() -> list[tuple[str, ast.Call]]:
     for path in sorted(PACKAGE_DIR.rglob("*.py")):
         rel = path.relative_to(PACKAGE_DIR).as_posix()
         for node in ast.walk(ast.parse(path.read_text())):
+            # Any receiver: logger, logging, logging.getLogger(...) alike. A
+            # message argument tells a log call from Future.exception().
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "logger"
+                and node.func.attr in _LOG_METHODS
+                and node.args
                 and _logs_a_traceback(node)
             ):
                 calls.append((rel, node))
