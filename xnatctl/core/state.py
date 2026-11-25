@@ -37,6 +37,13 @@ class EntityStatus(str, Enum):
     DELETED = "deleted"
 
 
+def _inserted_row_id(cur: sqlite3.Cursor) -> int:
+    row_id = cur.lastrowid
+    if row_id is None:
+        raise sqlite3.DatabaseError("INSERT did not report a row id")
+    return row_id
+
+
 class TransferStateStore:
     """SQLite-backed state store for project transfers.
 
@@ -164,7 +171,7 @@ class TransferStateStore:
             ),
         )
         self._conn.commit()
-        return cur.lastrowid  # type: ignore[return-value]
+        return _inserted_row_id(cur)
 
     def end_sync(
         self,
@@ -308,7 +315,7 @@ class TransferStateStore:
             ),
         )
         self._conn.commit()
-        return cur.lastrowid  # type: ignore[return-value]
+        return _inserted_row_id(cur)
 
     def get_entities(
         self,

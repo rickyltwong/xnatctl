@@ -21,10 +21,10 @@ from xnatctl.core.output import print_output, print_success, print_warning
 from xnatctl.core.validation import validate_project_id
 from xnatctl.services.anon import AnonymizeService
 
-F = TypeVar("F", bound=Callable[..., Any])
+R = TypeVar("R")
 
 
-def read_script_argument(f: F) -> F:
+def read_script_argument(f: Callable[..., R]) -> Callable[..., R]:
     """Add a ``FILE`` positional argument, read as raw text.
 
     ``FILE`` is a path to a DicomEdit anonymization script, or ``-`` for
@@ -44,7 +44,7 @@ def read_script_argument(f: F) -> F:
 
     @click.argument("file", type=click.Path(exists=True, dir_okay=False, allow_dash=True))
     @wraps(f)
-    def wrapper(*args: Any, file: str, **kwargs: Any) -> Any:
+    def wrapper(*args: Any, file: str, **kwargs: Any) -> R:
         if file == "-":
             if sys.stdin.isatty():
                 raise click.UsageError(
@@ -65,7 +65,7 @@ def read_script_argument(f: F) -> F:
         kwargs["script_source"] = file
         return f(*args, **kwargs)
 
-    return wrapper  # type: ignore
+    return wrapper
 
 
 def _text_diff(before: str, after: str, *, label: str) -> str:
