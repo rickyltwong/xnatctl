@@ -23,6 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.state import EntityStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.conflicts import ConflictChecker
@@ -131,7 +132,7 @@ class ScanPipeline(_ExperimentFinalizeMixin):
             for ctx in deferred:
                 try:
                     ctx.work_dir_handle.cleanup()
-                except Exception:  # noqa: BLE001  # best-effort cleanup: temp work_dir removal must not fail the transfer
+                except OSError:
                     pass
 
     def _resolve_or_skip_conflicting_subject(
@@ -249,7 +250,8 @@ class ScanPipeline(_ExperimentFinalizeMixin):
                     self._finalize_experiment_no_dicom(
                         exp, sync_id, dest_project, subject, result, progress_callback
                     )
-            except Exception as e:  # noqa: BLE001  # per-experiment isolation: one experiment's failure must not abort the subject's dispatch loop
+            except Exception as e:
+                logger.exception("Experiment transfer failed", extra={FILE_ONLY_ATTR: True})
                 result.experiments_failed += 1
                 result.success = False
                 result.errors.append(f"Experiment {exp.local_label}: {e}")

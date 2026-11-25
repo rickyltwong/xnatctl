@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from xnatctl.core.cancellation import cancellable_pool
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import (
     check_no_casefold_collision,
     quote_path_segment,
@@ -345,7 +346,8 @@ class ScanTransfer:
                 create_missing_scan=create_missing_scans,
             )
             return scan_id, items, ""
-        except Exception as e:  # noqa: BLE001  # per-scan worker-pool isolation (parallel download task, see docstring)
+        except Exception as e:
+            logger.exception("Scan download failed", extra={FILE_ONLY_ATTR: True})
             return scan_id, None, str(e)
 
     def _upload_scan_task(
@@ -356,7 +358,8 @@ class ScanTransfer:
         try:
             self._upload_single_scan(item, exp)
             return item.scan_id, True, ""
-        except Exception as e:  # noqa: BLE001  # per-scan worker-pool isolation (parallel upload task, see docstring)
+        except Exception as e:
+            logger.exception("Scan upload failed", extra={FILE_ONLY_ATTR: True})
             return item.scan_id, False, str(e)
 
     def _download_single_scan(

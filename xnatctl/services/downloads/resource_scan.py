@@ -20,6 +20,7 @@ from xnatctl.core.exceptions import (
     ResourceNotFoundError,
     XNATCtlError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import (
     quote_path_segment,
     validate_local_path_component,
@@ -366,7 +367,8 @@ class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
                 skipped_unsafe_entries=len(skipped),
             )
 
-        except Exception as e:  # noqa: BLE001 -- documented batch contract: failure reported via DownloadSummary, not raised
+        except Exception as e:
+            logger.exception("Scan download failed", extra={FILE_ONLY_ATTR: True})
             duration = time.time() - start_time
             return DownloadSummary(
                 success=False,

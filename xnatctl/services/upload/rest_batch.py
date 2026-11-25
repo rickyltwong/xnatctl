@@ -23,6 +23,7 @@ from xnatctl.core.client import XNATClient
 from xnatctl.core.exceptions import (
     OperationCancelledError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.server_version import MIN_VERSION_DIRECT_ARCHIVE, require_server_version
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 from xnatctl.models.progress import OperationPhase, UploadProgress, UploadSummary
@@ -142,7 +143,8 @@ def _create_and_upload_batch(
         return _cancelled_result(
             batch_id, batch, duration=time.time() - start_time, archive_size=archive_size
         )
-    except Exception as e:  # noqa: BLE001  # per-batch worker-pool isolation: one archive-worker's failure must not abort the parallel batch
+    except Exception as e:
+        logger.exception("Upload of batch %d failed", batch_id, extra={FILE_ONLY_ATTR: True})
         return _UploadResult(
             batch_id=batch_id,
             success=False,
@@ -154,7 +156,7 @@ def _create_and_upload_batch(
     finally:
         try:
             archive_path.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001  # best-effort cleanup: temp archive removal must not fail the upload
+        except OSError:
             pass
 
 
