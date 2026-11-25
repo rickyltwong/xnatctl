@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from concurrent.futures import as_completed
+from typing import Any
 
 import click
 
@@ -24,6 +26,7 @@ from xnatctl.cli.common import (
 )
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import XNATCtlError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.output import (
     OutputFormat,
     create_progress,
@@ -35,6 +38,8 @@ from xnatctl.core.output import (
 from xnatctl.core.validation import validate_project_id
 from xnatctl.services.admin import AdminService
 from xnatctl.services.docker_admin import DockerAdminService
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -63,7 +68,7 @@ def admin() -> None:
 @global_options
 @handle_errors
 @require_auth
-def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
+def admin_refresh_catalogs(
     ctx: Context,
     project: str,
     option: tuple[str, ...],
@@ -91,15 +96,7 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
     options = list(option) if option else None
     experiment_ids = list(experiment) if experiment else None
 
-    results = service.list_experiments_for_refresh(project)
-
-    experiments = []
-    for entry in results:
-        exp_id = entry.get("ID", "").strip()
-        subject_id = entry.get("subject_ID", "").strip()
-
-        if exp_id and subject_id:
-            experiments.append((subject_id, exp_id))
+    experiments = _refreshable_experiments(service.list_experiments_for_refresh(project))
 
     if not experiments:
         click.echo(f"No experiments found for project {project}", err=True)
@@ -129,7 +126,8 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
         try:
             resp = service.refresh_catalog(resource_path, options_param)
             return exp_id, resp.status_code == 200, ""
-        except Exception as e:  # noqa: BLE001 -- per-experiment isolation in catalog-refresh batch
+        except Exception as e:
+            logger.exception("refresh-catalogs failed for %s", exp_id, extra={FILE_ONLY_ATTR: True})
             return exp_id, False, str(e)
 
     with create_progress() as progress:
@@ -154,6 +152,26 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
                     failed.append((exp_id, error))
                 progress.advance(task)
 
+    _print_refresh_results(ctx, project, refreshed, failed)
+
+
+def _refreshable_experiments(results: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    experiments = []
+    for entry in results:
+        exp_id = entry.get("ID", "").strip()
+        subject_id = entry.get("subject_ID", "").strip()
+
+        if exp_id and subject_id:
+            experiments.append((subject_id, exp_id))
+    return experiments
+
+
+def _print_refresh_results(
+    ctx: Context,
+    project: str,
+    refreshed: list[str],
+    failed: list[tuple[str, str]],
+) -> None:
     if ctx.output_format == OutputFormat.JSON:
         print_output(
             {
