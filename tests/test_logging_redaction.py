@@ -169,6 +169,7 @@ def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: 
         '{"my\'JSESSIONID":"green"}',
         "name='JSESSIONID', value=''",
         'JSESSIONID=\\"\\" ok',
+        "GET https://xnat.example.org/'JSESSIONID',value=public/data",
     ],
     ids=[
         "prose",
@@ -182,6 +183,7 @@ def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: 
         "mismatched-quotes",
         "empty-cookie-jar-value",
         "escaped-empty-value",
+        "url-path-with-the-name",
     ],
 )
 def test_text_that_only_mentions_the_cookie_is_kept(text: str) -> None:
@@ -225,6 +227,20 @@ def test_a_cookie_jar_repr_is_redacted() -> None:
     jar = response.cookies.jar
 
     for text in (repr(jar), repr(list(jar)), repr(jar._cookies), repr(repr(list(jar)))):
+        assert _TOKEN not in redact_session_cookies(text), text
+
+
+def test_a_quoted_cookie_value_is_redacted_in_json() -> None:
+    import httpx
+
+    response = httpx.Response(
+        200,
+        headers=[("Set-Cookie", f'JSESSIONID="{_TOKEN}"; Path=/')],
+        request=httpx.Request("GET", "https://xnat.example.org/data"),
+    )
+    cookies = dict(response.cookies)
+
+    for text in (json.dumps(cookies), repr(json.dumps(cookies)), json.dumps(json.dumps(cookies))):
         assert _TOKEN not in redact_session_cookies(text), text
 
 

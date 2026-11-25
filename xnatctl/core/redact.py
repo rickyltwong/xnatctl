@@ -138,15 +138,18 @@ def redact_url_query(text: str) -> str:
 # Cookie or Set-Cookie header, a mapping's repr, JSON, a cookie jar's
 # ``name='JSESSIONID', value='...'``, or any of those escaped inside another
 # repr -- it follows the name and a "=", or a ":" or ", value=" after a name
-# between matching quotes. Then come spaces, a bytes prefix, one opening quote
-# (or two different ones) and spaces again, in that order, so an empty value
-# ("" or '') is never taken for one; and it ends at the next quote, backslash,
-# whitespace, ";", "," or closing bracket. A space is whitespace or a backslash
-# run with an optional whitespace escape after it (\t \n \r, or JSON's \u0009
-# \u000a \u000d  ), at any escaping depth. Each character before the
-# value has one way to match, so the scan stays linear. Matching the quotes
-# themselves would need a rule per escaping depth.
-_SPACE = r"(?:\\++(?:[tnr]|u00(?:0[9ad]|20))?|\s)"
+# between matching quotes. Then come spaces, a bytes prefix, the opening
+# quotes and whitespace escapes, in that order; it ends at the next quote,
+# backslash, whitespace, ";", "," or closing bracket. Only an escape, never
+# literal whitespace, may follow the quotes, so an empty value ("" or '') is
+# never taken for one. A space is whitespace or a backslash run with an
+# optional whitespace escape after it; a whitespace escape is \t, \n or \r, or
+# JSON's four-digit form of tab, newline, return or space, at any escaping
+# depth. Each character before the value has one way to match, so the scan
+# stays linear. Matching the quotes themselves would need a rule per escaping
+# depth.
+_ESCAPED_SPACE = r"(?:[tnr]|u00(?:0[9ad]|20))"
+_SPACE = r"(?:\\++" + _ESCAPED_SPACE + r"?|\s)"
 _SESSION_COOKIE_RE = re.compile(
     r"""
     (
@@ -158,16 +161,16 @@ _SESSION_COOKIE_RE = re.compile(
       | (?<=(?P<quote>['"])JSESSIONID)(?=\\*(?P=quote))
         (?:"""
     + _SPACE
-    + r"""|['"])*+(?::|,\s*value=)
+    + r"""|['"])*+(?::|,[ ]value=)
       )
       """
     + _SPACE
     + r"""*+
       (?:b(?=\\*['"]))?
-      (?:\\*+(?P<open>['"])(?:\\*+(?!(?P=open))['"])?)?
-      """
-    + _SPACE
-    + r"""*+
+      (?:\\*+['"])*+
+      (?:\\++"""
+    + _ESCAPED_SPACE
+    + r""")*+
     )
     [^\s\\'";,)\]}]+
     """,
