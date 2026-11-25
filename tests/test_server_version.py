@@ -194,12 +194,15 @@ class TestServerVersionProperty:
         def access() -> tuple[int, int, int] | None:
             return client.server_version
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        pool = ThreadPoolExecutor(max_workers=2)
+        try:
             first = pool.submit(access)
             assert call_started.wait(timeout=5), "first thread never reached the probe"
             second = pool.submit(access)
             release.set()
             results = [first.result(timeout=5), second.result(timeout=5)]
+        finally:
+            pool.shutdown(wait=False)
 
         assert results == [(1, 9, 2), (1, 9, 2)]
         assert len(calls) == 1

@@ -39,7 +39,6 @@ from xnatctl.cli.common import (
     require_project_from_context,
     resolve_columns,
 )
-from xnatctl.core.exceptions import XNATCtlError
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -273,6 +272,10 @@ def _resolve_remote_password(*, pass_stdin: bool) -> str:
     return str(prompted)
 
 
+class _ProjectRefreshError(Exception):
+    """One project's credential refresh failed; the message has the password scrubbed."""
+
+
 def _refresh_one(
     service: XsyncService,
     *,
@@ -284,15 +287,19 @@ def _refresh_one(
     remote_project: str,
     sync_new_only: bool,
 ) -> dict[str, Any]:
-    return service.refresh_credentials(
-        project_id=project_id,
-        remote_url=remote_url,
-        remote_username=remote_username,
-        remote_password=remote_password,
-        local_project=local_project,
-        remote_project=remote_project,
-        sync_new_only=sync_new_only,
-    )
+    try:
+        return service.refresh_credentials(
+            project_id=project_id,
+            remote_url=remote_url,
+            remote_username=remote_username,
+            remote_password=remote_password,
+            local_project=local_project,
+            remote_project=remote_project,
+            sync_new_only=sync_new_only,
+        )
+    except Exception as exc:
+        message = str(exc).replace(remote_password, "***") if remote_password else str(exc)
+        raise _ProjectRefreshError(message) from exc
 
 
 def _enumerate_bound_projects(service: XsyncService, remote_url: str) -> list[str]:
@@ -462,12 +469,8 @@ def xsync_refresh_credentials(
                 remote_project=effective_remote,
                 sync_new_only=sync_new_only,
             )
-        # Named types, not a broad catch with a logged traceback: the traceback
-        # would write the message, unscrubbed, to the diagnostics file.
-        # ValueError is a non-JSON response body; AttributeError is a
-        # remoteREST answer that is JSON but not an object.
-        except (XNATCtlError, ValueError, AttributeError) as exc:
-            message = str(exc).replace(remote_password, "***") if remote_password else str(exc)
+        except _ProjectRefreshError as exc:
+            message = str(exc)
             failed.append((proj, message))
             print_error(f"Refresh failed for {proj}: {message}")
             continue

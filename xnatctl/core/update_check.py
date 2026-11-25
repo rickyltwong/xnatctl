@@ -33,7 +33,6 @@ effect for a command that does nothing else network-shaped.
 
 from __future__ import annotations
 
-import http.client
 import json
 import logging
 import os
@@ -181,14 +180,15 @@ def _fetch_latest_version(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
         with urllib.request.urlopen(PYPI_PROJECT_URL, timeout=timeout) as response:
             payload = json.load(response)
         version = payload["info"]["version"]
-    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError) as e:
+    except Exception as e:
+        logger.exception("Update-check fetch failed", extra={FILE_ONLY_ATTR: True})
         logger.debug("Update-check fetch failed: %s", e)
         return None
     return version if isinstance(version, str) else None
 
 
 def fetch_latest_version(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
-    """Synchronously fetch the latest published version from PyPI, or None on failure.
+    """Synchronously fetch the latest published version from PyPI. Never raises.
 
     Public wrapper around :func:`_fetch_latest_version`, for a caller that
     wants an on-demand fetch outside the detached background refresh --
@@ -199,7 +199,7 @@ def fetch_latest_version(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
 
 
 def refresh_cache_now(timeout: float = FETCH_TIMEOUT_SECONDS) -> str | None:
-    """Synchronously fetch and, on success, persist the latest version; None on failure.
+    """Synchronously fetch and, on success, persist the latest version. Never raises.
 
     The blocking counterpart to :func:`refresh_cache_async`: used for an
     explicit, user-requested check (``xnatctl upgrade --check``) rather than
