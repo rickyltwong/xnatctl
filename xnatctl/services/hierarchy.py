@@ -221,8 +221,8 @@ class HierarchyService(BaseService):
         """Fetch an experiment document, or one of its sub-resources, as JSON.
 
         The single raw read behind experiment inspection and the session-show
-        scans/resources listings. Keeping it here lets the CLI operate on
-        hierarchy refs without reaching through ``service.client``.
+        resources listing. Keeping it here lets the CLI operate on hierarchy
+        refs without reaching through ``service.client``.
         """
         path = self.build_experiment_path(ref, *parts)
         if params is None:

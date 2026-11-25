@@ -31,6 +31,11 @@ All notable changes to this project will be documented in this file.
   `Killed`. As with a plain `Failed`, `--wait` exits 0 and prints the
   container, so read its `status` from `-o json` output (not `--quiet`,
   which prints only the ID) to tell a failure. (#56)
+- `session show` now lists the scans of a session whose scans are of another
+  type than the session, such as the `xnat:otherDicomScanData` scans of an
+  `xnat:optSessionData` session. It asked XNAT only for scans of a type
+  guessed from the session's and showed none; it now lists them the way
+  `scan list` does. (#57)
 
 ## 0.7.0 - 2026-11-24
 

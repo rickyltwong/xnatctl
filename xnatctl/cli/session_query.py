@@ -139,12 +139,7 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     )
 
     try:
-        scan_params: dict[str, str] = {}
-        scan_xsi = hierarchy.resolve_scan_xsi_type(resolved.xsi_type)
-        if scan_xsi:
-            scan_params["xsiType"] = scan_xsi
-        scans_resp = hierarchy.get_experiment_json(nested_ref, "scans", params=scan_params)
-        scans = HierarchyService.extract_rows(scans_resp)
+        scans = hierarchy.list_scan_rows(nested_ref, resolved.xsi_type)
     except (XNATCtlError, ValueError) as exc:
         click.echo(f"Warning: could not list scans: {exc}", err=True)
         scans = []
