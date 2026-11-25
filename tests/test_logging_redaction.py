@@ -97,6 +97,25 @@ def test_redaction_stays_linear_on_long_unparseable_urls() -> None:
     assert time.perf_counter() - started < 1.0
 
 
+def test_redaction_stays_linear_on_long_trailing_punctuation() -> None:
+    text = "https://h/p?token=s3cret" + ")" * 200_000
+
+    started = time.perf_counter()
+    redacted = redact_url_query(text)
+    assert time.perf_counter() - started < 1.0
+    assert redacted == "https://h/p?token=***" + ")" * 200_000
+
+
+def test_a_record_whose_char_argument_overflows_is_still_emitted(
+    filtered_logger: tuple[logging.Logger, io.StringIO],
+) -> None:
+    logger, stream = filtered_logger
+
+    logger.info("code point %c", 10**10)
+
+    assert "code point %c" in stream.getvalue()
+
+
 def test_a_record_whose_args_do_not_fit_its_format_is_still_emitted(
     filtered_logger: tuple[logging.Logger, io.StringIO],
 ) -> None:
