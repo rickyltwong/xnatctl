@@ -25,17 +25,17 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "click>=8.1.0",
+    "click>=8.3.0",
     "httpx>=0.25.0",
     "pyyaml>=6.0",
     "rich>=13.0.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
     "defusedxml>=0.7.1",
-    "pydicom>=2.4.0",
+    "pydicom>=3.0.0",
     "pynetdicom>=2.0.0",
     "keyring>=24",
-    "packaging>=23",
+    "packaging>=24.2",
 ]
 
 [project.scripts]

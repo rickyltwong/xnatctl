@@ -347,7 +347,7 @@ class TestRemovedSpellings:
         result = runner.invoke(cli, args)
 
         assert result.exit_code == 2, result.output
-        # Click 8.1 prints "No such option: -e", later releases "No such option '-e'."
+        # Click 8.3.0 prints "No such option: -e", 8.4.2 "No such option '-e'."
         assert re.search(rf"No such option(: | '){re.escape(flag)}\b", result.output), result.output
 
 

@@ -303,29 +303,29 @@ def test_session_upload_mode_gradual_forwards_prearchive_flag(
     monkeypatch.setattr("xnatctl.services.upload.UploadService", UploadServiceSpy)
 
     runner = CliRunner()
-    with runner.isolated_filesystem(temp_dir=tmp_path):
-        monkeypatch.setenv("HOME", str(Path.cwd()))
-        dicom_dir = Path("dicoms")
-        dicom_dir.mkdir()
-        (dicom_dir / "a.dcm").write_bytes(b"payload")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(Path.cwd()))
+    dicom_dir = Path("dicoms")
+    dicom_dir.mkdir()
+    (dicom_dir / "a.dcm").write_bytes(b"payload")
 
-        result = runner.invoke(
-            cli,
-            [
-                "session",
-                "upload",
-                str(dicom_dir),
-                "-P",
-                "PROJ",
-                "-S",
-                "SUBJ",
-                "-E",
-                "SESS",
-                "--mode",
-                "gradual",
-                "--prearchive",
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        [
+            "session",
+            "upload",
+            str(dicom_dir),
+            "-P",
+            "PROJ",
+            "-S",
+            "SUBJ",
+            "-E",
+            "SESS",
+            "--mode",
+            "gradual",
+            "--prearchive",
+        ],
+    )
 
     assert result.exit_code == 0, result.output
     assert captured.get("direct_archive") is False, (
@@ -368,28 +368,28 @@ def test_session_upload_mode_gradual_default_is_direct_archive(
     monkeypatch.setattr("xnatctl.services.upload.UploadService", UploadServiceSpy)
 
     runner = CliRunner()
-    with runner.isolated_filesystem(temp_dir=tmp_path):
-        monkeypatch.setenv("HOME", str(Path.cwd()))
-        dicom_dir = Path("dicoms")
-        dicom_dir.mkdir()
-        (dicom_dir / "a.dcm").write_bytes(b"payload")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(Path.cwd()))
+    dicom_dir = Path("dicoms")
+    dicom_dir.mkdir()
+    (dicom_dir / "a.dcm").write_bytes(b"payload")
 
-        result = runner.invoke(
-            cli,
-            [
-                "session",
-                "upload",
-                str(dicom_dir),
-                "-P",
-                "PROJ",
-                "-S",
-                "SUBJ",
-                "-E",
-                "SESS",
-                "--mode",
-                "gradual",
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        [
+            "session",
+            "upload",
+            str(dicom_dir),
+            "-P",
+            "PROJ",
+            "-S",
+            "SUBJ",
+            "-E",
+            "SESS",
+            "--mode",
+            "gradual",
+        ],
+    )
 
     assert result.exit_code == 0, result.output
     assert captured.get("direct_archive") is True

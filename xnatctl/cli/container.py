@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from datetime import UTC, datetime
-from typing import IO, Any
+from typing import IO, Any, cast
 
 import click
 
@@ -161,6 +162,35 @@ def container_show(ctx: Context, container_id: str) -> None:
     print_output(data, format=ctx.output_format, quiet=ctx.quiet, id_field="id")
 
 
+def _accepts_bytes(stream: Any, default: bool) -> bool:
+    try:
+        stream.write(b"")
+    except Exception:  # noqa: BLE001 -- any failure means "not this stream", as in Click's probe
+        try:
+            stream.write("")
+        except Exception:  # noqa: BLE001 -- takes neither type: unprobeable, use the default
+            return default
+        return False
+    return True
+
+
+def _binary_stdout() -> IO[bytes]:
+    """Return the stdout stream that accepts bytes, as ``click.get_binary_stream`` did.
+
+    Click 8.5 deprecated that helper, so this repeats the probe it ran:
+    ``sys.stdout`` itself when an empty bytes write succeeds, otherwise its
+    ``buffer``, which counts as binary when it cannot be probed (a closed
+    one, say). A text-only stdout is refused before the log is fetched.
+    """
+    stdout: Any = sys.stdout
+    if _accepts_bytes(stdout, default=False):
+        return cast(IO[bytes], stdout)
+    buffer = getattr(stdout, "buffer", None)
+    if buffer is not None and _accepts_bytes(buffer, default=True):
+        return cast(IO[bytes], buffer)
+    raise click.ClickException("stdout does not accept bytes, so the raw log cannot be written")
+
+
 def _follow_logs(
     service: ContainerService,
     container_id: str,
@@ -243,7 +273,7 @@ def container_logs(
     """
     service = ContainerService(ctx.get_client())
     stream_name = "stderr" if stderr_stream else "stdout"
-    sink = click.get_binary_stream("stdout")
+    sink = _binary_stdout()
 
     if follow:
         _follow_logs(service, container_id, stream_name, sink, interval)
