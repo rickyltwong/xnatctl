@@ -167,6 +167,8 @@ def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: 
         'Cookie: JSESSIONID="" status=204',
         '{"JSESSIONID":""}',
         '{"my\'JSESSIONID":"green"}',
+        "name='JSESSIONID', value=''",
+        'JSESSIONID=\\"\\" ok',
     ],
     ids=[
         "prose",
@@ -178,6 +180,8 @@ def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: 
         "empty-header-value",
         "empty-json-value",
         "mismatched-quotes",
+        "empty-cookie-jar-value",
+        "escaped-empty-value",
     ],
 )
 def test_text_that_only_mentions_the_cookie_is_kept(text: str) -> None:
@@ -192,6 +196,7 @@ def test_text_that_only_mentions_the_cookie_is_kept(text: str) -> None:
         repr('{"JSESSIONID"\t: "' + _TOKEN + '"}'),
         '"Set-Cookie: JSESSIONID\\u0009=' + _TOKEN + '; Path=/"',
         repr('"Set-Cookie: JSESSIONID\\u0009=' + _TOKEN + '; Path=/"'),
+        repr((b"Set-Cookie", b'JSESSIONID="\t' + _TOKEN.encode() + b'"; Path=/')),
     ],
     ids=[
         "escaped-tab-two-reprs-deep",
@@ -199,6 +204,7 @@ def test_text_that_only_mentions_the_cookie_is_kept(text: str) -> None:
         "escaped-tab-before-a-colon",
         "json-unicode-tab",
         "json-unicode-tab-in-a-repr",
+        "escaped-tab-inside-the-quotes",
     ],
 )
 def test_a_token_behind_escaped_whitespace_is_redacted(text: str) -> None:
@@ -206,6 +212,20 @@ def test_a_token_behind_escaped_whitespace_is_redacted(text: str) -> None:
 
     assert _TOKEN not in redacted
     assert "***" in redacted
+
+
+def test_a_cookie_jar_repr_is_redacted() -> None:
+    import httpx
+
+    response = httpx.Response(
+        200,
+        headers=[("Set-Cookie", f"JSESSIONID={_TOKEN}; Path=/")],
+        request=httpx.Request("GET", "https://xnat.example.org/data"),
+    )
+    jar = response.cookies.jar
+
+    for text in (repr(jar), repr(list(jar)), repr(jar._cookies), repr(repr(list(jar)))):
+        assert _TOKEN not in redact_session_cookies(text), text
 
 
 def test_a_session_cookie_value_ends_at_a_quote_or_backslash() -> None:

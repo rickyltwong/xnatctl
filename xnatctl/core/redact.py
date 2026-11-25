@@ -135,27 +135,39 @@ def redact_url_query(text: str) -> str:
 
 
 # A JSESSIONID value is the server's hex session id. Wherever it appears -- a
-# Cookie or Set-Cookie header, a mapping's repr, JSON, or any of those escaped
-# inside another repr -- it follows the name and a "=", or a ":" after a name
-# between matching quotes. Then come whitespace and whitespace escapes (\t \n \r
-# \u0009 \u000a \u000d  , at any depth), a bytes prefix and the opening
-# quotes, in that order, so an empty value ("" or '') is never taken for one;
-# and it ends at the next quote, backslash, whitespace, ";", "," or closing
-# bracket. Each character before the value has one way to match, so the scan
-# stays linear. Matching the quotes themselves would need a rule per escaping
-# depth.
+# Cookie or Set-Cookie header, a mapping's repr, JSON, a cookie jar's
+# ``name='JSESSIONID', value='...'``, or any of those escaped inside another
+# repr -- it follows the name and a "=", or a ":" or ", value=" after a name
+# between matching quotes. Then come spaces, a bytes prefix, one opening quote
+# (or two different ones) and spaces again, in that order, so an empty value
+# ("" or '') is never taken for one; and it ends at the next quote, backslash,
+# whitespace, ";", "," or closing bracket. A space is whitespace or a backslash
+# run with an optional whitespace escape after it (\t \n \r, or JSON's \u0009
+# \u000a \u000d  ), at any escaping depth. Each character before the
+# value has one way to match, so the scan stays linear. Matching the quotes
+# themselves would need a rule per escaping depth.
+_SPACE = r"(?:\\++(?:[tnr]|u00(?:0[9ad]|20))?|\s)"
 _SESSION_COOKIE_RE = re.compile(
     r"""
     (
       JSESSIONID
       (?:
-        (?:\\++(?:[tnr]|u00(?:0[9ad]|20))?|['"\s])*+=
+        (?:"""
+    + _SPACE
+    + r"""|['"])*+=
       | (?<=(?P<quote>['"])JSESSIONID)(?=\\*(?P=quote))
-        (?:\\++(?:[tnr]|u00(?:0[9ad]|20))?|['"\s])*+:
+        (?:"""
+    + _SPACE
+    + r"""|['"])*+(?::|,\s*value=)
       )
-      (?:\\++(?:[tnr]|u00(?:0[9ad]|20))?|\s)*+
+      """
+    + _SPACE
+    + r"""*+
       (?:b(?=\\*['"]))?
-      (?:\\*+['"])*+
+      (?:\\*+(?P<open>['"])(?:\\*+(?!(?P=open))['"])?)?
+      """
+    + _SPACE
+    + r"""*+
     )
     [^\s\\'";,)\]}]+
     """,
