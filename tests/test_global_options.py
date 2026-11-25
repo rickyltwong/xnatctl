@@ -110,3 +110,47 @@ class TestInheritance:
 
         assert result.exit_code == 0, result.stderr
         assert _PROBE_CAPTURE["profile_name"] == "staging"
+
+
+def _run_cli_in_subprocess(tmp_path, *args: str):
+    import os
+    import subprocess
+    import sys
+
+    config_dir = tmp_path / "home" / ".config" / "xnatctl"
+    config_dir.mkdir(parents=True)
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "version: 1\ndefault_profile: default\nbogus_key: 1\n"
+        "profiles:\n  default:\n    url: http://127.0.0.1:9\n"
+    )
+    config_file.chmod(0o600)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("XNAT")}
+    env.update(HOME=str(tmp_path / "home"), XNAT_NO_UPDATE_CHECK="1")
+    return subprocess.run(
+        [sys.executable, "-m", "xnatctl", *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=60,
+        check=False,
+    )
+
+
+class TestCommandsWithoutGlobalOptions:
+    @pytest.mark.parametrize(
+        "root_args", [[], ["--log-file", "diag.jsonl"]], ids=["plain", "log-file"]
+    )
+    def test_config_warnings_reach_stderr(self, tmp_path, root_args: list[str]) -> None:
+        result = _run_cli_in_subprocess(tmp_path, *root_args, "config", "current-context")
+
+        assert result.returncode == 0, result.stderr
+        assert "has unrecognized config keys" in result.stderr
+
+    def test_a_failure_prints_no_diagnostics_only_record(self, tmp_path) -> None:
+        result = _run_cli_in_subprocess(tmp_path, "config", "remove-profile", "nope", "--dry-run")
+
+        assert result.returncode == 1
+        assert "Profile 'nope' not found" in result.stderr
+        assert "Command exited with code" not in result.stderr

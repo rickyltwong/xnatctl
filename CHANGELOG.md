@@ -36,11 +36,13 @@ All notable changes to this project will be documented in this file.
   `xnat:optSessionData` session. It asked XNAT only for scans of a type
   guessed from the session's and showed none; it now lists them the way
   `scan list` does. (#57)
-- The `--log-file` diagnostics file now records the traceback of each
-  failure that xnatctl reports and carries on past, such as one subject
-  failing in a `subject rename` batch, one scan or resource in a
-  `session download`, a failed audit-log write or a failed update check.
-  Console output is unchanged.
+- The `--log-file` diagnostics file now records the traceback of failures
+  that xnatctl reports and carries on past, such as one subject failing in a
+  `subject rename` batch, one scan or resource in a `session download`, a
+  failed audit-log write or a failed update check. Console output is
+  unchanged. A Python program that configures its own logging receives these
+  records too, at `ERROR` level; each carries an `xnatctl_file_only`
+  attribute to filter on.
 - The `--log-file` diagnostics file now redacts `JSESSIONID` session cookies
   inside tracebacks, as it already did inside messages. Before, a traceback
   that quoted a cookie header wrote the live session token to the file.
@@ -51,6 +53,13 @@ All notable changes to this project will be documented in this file.
 - As a library, xnatctl no longer prints its log records to stderr through
   Python's last-resort handler when the application has not configured
   logging. Configure logging to see them.
+- The commands that skip the global options (the `config` subcommands,
+  `local extract`, `project transfer-init`, and the `dicom` and `completion`
+  subcommands) now print warnings in the same `<time> [WARNING] <logger>:`
+  format as every other command. With `--log-file` they used to print none,
+  such as `config`'s warning that the config file is readable by other users
+  and stores a plaintext password. A failed `config remove-profile` also no
+  longer prints a stray `Command exited with code 1`.
 
 ## 0.7.0 - 2026-11-24
 

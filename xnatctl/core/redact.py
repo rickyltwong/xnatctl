@@ -120,11 +120,9 @@ def redact_url_query(text: str) -> str:
         return text
 
     def _scrub(match: re.Match[str]) -> str:
-        url = match.group(0)
-        trailing = ""
-        while url and url[-1] in _TRAILING_PUNCT:
-            trailing = url[-1] + trailing
-            url = url[:-1]
+        full = match.group(0)
+        url = full.rstrip(_TRAILING_PUNCT)
+        trailing = full[len(url) :]
 
         head, netloc, path, query, fragment = _split_url(url)
         netloc, netloc_changed = _scrub_userinfo(netloc)

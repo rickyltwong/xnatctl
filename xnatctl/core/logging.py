@@ -72,7 +72,7 @@ class RedactionFilter(logging.Filter):
         """Rewrite ``record`` in place when it contains something to redact."""
         try:
             message = record.getMessage()
-        except (TypeError, ValueError, KeyError):
+        except (TypeError, ValueError, KeyError, OverflowError):
             # The errors %-formatting raises for arguments that do not fit the
             # format string. Raising here would escape the logging call itself.
             message = f"{record.msg} {record.args!r}"

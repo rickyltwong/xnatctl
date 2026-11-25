@@ -43,7 +43,11 @@ def _make_console(*, stderr: bool = False) -> Console:
 
 
 def _set_color_system(con: Console, *, no_color: bool) -> None:
-    con._color_system = None if no_color else con._detect_color_system()
+    # Both attributes are private to Rich, which has no upper bound here.
+    try:
+        con._color_system = None if no_color else con._detect_color_system()
+    except AttributeError:
+        pass
 
 
 console = _make_console()

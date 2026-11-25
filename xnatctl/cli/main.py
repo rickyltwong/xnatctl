@@ -175,8 +175,9 @@ def cli(
     if verbose:
         cli_ctx.verbose = True
 
-    if quiet or verbose:
-        setup_logging(quiet=quiet, verbose=verbose)
+    # Commands without @global_options never call setup_logging themselves;
+    # WARNING matches what Python's last-resort handler showed them before.
+    setup_logging(logging.WARNING, quiet=quiet, verbose=verbose)
 
     remove_log_file()
     cli_ctx.log_file = log_file
