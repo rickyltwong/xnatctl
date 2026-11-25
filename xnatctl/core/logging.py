@@ -13,7 +13,7 @@ import os
 import stat
 import sys
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -76,7 +76,9 @@ class RedactionFilter(logging.Filter):
         except (TypeError, ValueError, KeyError, OverflowError):
             # The errors %-formatting raises for arguments that do not fit the
             # format string. Raising here would escape the logging call itself.
-            message = f"{record.msg} {record.args!r}"
+            # Only the arguments' types are kept: without the format, nothing
+            # marks which of them is a secret.
+            message = f"{record.msg} [arguments not shown: {_type_names(record.args)}]"
             record.msg, record.args = message, None
         redacted = redact_session_cookies(redact_url_query(message))
         if redacted != message:
@@ -166,6 +168,26 @@ def install_redaction_filter(logger: logging.Logger | None = None) -> None:
             handler.addFilter(CorrelationFilter())
 
 
+def _type_names(args: object) -> str:
+    if isinstance(args, Mapping):
+        values = list(args.values())
+    elif isinstance(args, tuple):
+        values = list(args)
+    else:
+        values = [args]
+    return ", ".join(type(value).__name__ for value in values)
+
+
+def _report_handler_failure(what: str) -> None:
+    # The default report prints the record and the active exception chain,
+    # unredacted. This prints one redacted line instead.
+    if logging.raiseExceptions and sys.stderr:
+        failure = redact_session_cookies(redact_url_query(str(sys.exc_info()[1])))
+        # Nor may a closed stderr or a broken pipe end the command.
+        with contextlib.suppress(OSError, ValueError):
+            sys.stderr.write(f"xnatctl: {what}: {failure}\n")
+
+
 class _CurrentStderrHandler(logging.StreamHandler[TextIO]):
     """Write to whatever ``sys.stderr`` is when a record is emitted.
 
@@ -186,11 +208,7 @@ class _CurrentStderrHandler(logging.StreamHandler[TextIO]):
         raise AttributeError("this handler always writes to the current sys.stderr")
 
     def handleError(self, record: logging.LogRecord) -> None:
-        # The default report also goes to sys.stderr, which may be the stream that
-        # failed. It absorbs an OSError there itself, but a closed stream raises
-        # ValueError.
-        with contextlib.suppress(ValueError):
-            super().handleError(record)
+        _report_handler_failure("could not write a log message")
 
 
 def setup_logging(
@@ -296,12 +314,7 @@ def withhold_details(exc: BaseException) -> DetailsWithheldError:
 
 class _JsonLinesFileHandler(logging.handlers.RotatingFileHandler):
     def handleError(self, record: logging.LogRecord) -> None:
-        # The default report prints the record's own exception chain, unredacted.
-        if logging.raiseExceptions and sys.stderr:
-            failure = redact_session_cookies(redact_url_query(str(sys.exc_info()[1])))
-            # Nor may a closed stderr or a broken pipe end the command.
-            with contextlib.suppress(OSError, ValueError):
-                sys.stderr.write(f"xnatctl: could not write the diagnostics file: {failure}\n")
+        _report_handler_failure("could not write the diagnostics file")
 
     def _open(self) -> Any:
         path = Path(self.baseFilename)

@@ -155,9 +155,10 @@ anything, tagged ``"event"`` (``command_failed``/``cancelled``/``exit``) so
 you can jump straight to it. It never duplicates the traceback stderr already
 shows under ``-v``; it is the *only* copy when stderr is quiet.
 
-A failure that xnatctl reports and carries on past -- one item in a batch or
-worker pool, the audit-log write, the update notice -- is recorded here at
-``ERROR`` level with its traceback, and never on stderr. Where the exception's
+An unexpected failure that xnatctl reports and carries on past -- one item in a
+batch or worker pool, the audit-log write, the update notice -- is recorded
+here at ``ERROR`` level with its traceback, and never on stderr. An expected
+one, such as a file that is not a ZIP or DICOM file, is only reported. Where the exception's
 text can quote DICOM values or a session token (a file that ``dicom validate``
 or ``dicom anonymize`` skips, a failed C-STORE send, logout), the record keeps
 the traceback and the exception's type but not its text. A Python program that

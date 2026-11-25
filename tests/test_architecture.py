@@ -277,7 +277,17 @@ CONSOLE_TRACEBACK_CALLS = sorted(
 )
 
 
-_LOG_METHODS = {"debug", "info", "warning", "error", "exception", "critical", "log"}
+_LOG_METHODS = {
+    "debug",
+    "info",
+    "warning",
+    "warn",
+    "error",
+    "exception",
+    "critical",
+    "fatal",
+    "log",
+}
 
 
 def _logs_a_traceback(call: ast.Call) -> bool:
@@ -300,31 +310,67 @@ def _marks_file_only(call: ast.Call) -> bool:
     )
 
 
+def _message(call: ast.Call) -> ast.expr | None:
+    if call.args:
+        return call.args[0]
+    return next((k.value for k in call.keywords if k.arg == "msg"), None)
+
+
+def _traceback_calls_in(tree: ast.AST) -> list[ast.Call]:
+    # Any receiver: logger, logging, logging.getLogger(...) alike. A message
+    # argument tells a log call from Future.exception().
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _LOG_METHODS
+        and _message(node) is not None
+        and _logs_a_traceback(node)
+    ]
+
+
 def _traceback_calls() -> list[tuple[str, ast.Call]]:
     calls = []
     for path in sorted(PACKAGE_DIR.rglob("*.py")):
         rel = path.relative_to(PACKAGE_DIR).as_posix()
-        for node in ast.walk(ast.parse(path.read_text())):
-            # Any receiver: logger, logging, logging.getLogger(...) alike. A
-            # message argument tells a log call from Future.exception().
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in _LOG_METHODS
-                and node.args
-                and _logs_a_traceback(node)
-            ):
-                calls.append((rel, node))
+        calls.extend((rel, node) for node in _traceback_calls_in(ast.parse(path.read_text())))
     return calls
 
 
 def test_logged_tracebacks_go_to_the_diagnostics_file_only() -> None:
     calls = _traceback_calls()
     console = sorted(
-        (rel, ast.unparse(call.args[0]) if call.args else "")
+        (rel, ast.unparse(message))
         for rel, call in calls
-        if not _marks_file_only(call)
+        if (message := _message(call)) is not None and not _marks_file_only(call)
     )
 
     assert len(calls) > 60
     assert console == CONSOLE_TRACEBACK_CALLS
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'logger.exception(msg="failed")',
+        'logger.fatal("failed", exc_info=True)',
+        'logger.warn("failed", exc_info=err)',
+        'logging.getLogger(__name__).error("failed", exc_info=True)',
+        'logging.exception("failed")',
+        'logger.exception("failed", extra={FILE_ONLY_ATTR: False})',
+    ],
+)
+def test_traceback_guard_catches_console_forms(source: str) -> None:
+    calls = _traceback_calls_in(ast.parse(source))
+
+    assert len(calls) == 1
+    assert not _marks_file_only(calls[0])
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["future.exception()", 'logger.error("failed")', 'logger.error("failed", exc_info=False)'],
+)
+def test_traceback_guard_ignores_calls_without_a_traceback(source: str) -> None:
+    assert _traceback_calls_in(ast.parse(source)) == []

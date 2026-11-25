@@ -321,3 +321,24 @@ def test_an_unusable_stderr_does_not_turn_a_warning_into_an_error(
     monkeypatch.setattr(sys, "stderr", stderr)
 
     logging.getLogger("xnatctl.test").warning("nowhere to go")
+
+
+@pytest.mark.usefixtures("clean_root")
+def test_a_failed_console_write_does_not_print_the_exception_being_handled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = "0123456789ABCDEF0123456789ABCDEF"
+    logging.getLogger().handlers = []
+    setup_logging(logging.WARNING)
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(raw, encoding="ascii", errors="strict"))
+
+    try:
+        raise ValueError(f"JSESSIONID={token}")
+    except ValueError:
+        logging.getLogger("xnatctl.test").warning("caf\u00e9")
+    sys.stderr.flush()
+
+    output = raw.getvalue().decode("ascii")
+    assert token not in output
+    assert "xnatctl: could not write a log message:" in output

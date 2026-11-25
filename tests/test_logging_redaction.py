@@ -161,11 +161,41 @@ def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: 
         "the JSESSIONID cookie expired",
         "XNAT JSESSIONID: refresh required",
         "{'previous_JSESSIONID': 'green'}",
+        "{'previous-JSESSIONID': 'green'}",
+        "{'oldJSESSIONID': 'green'}",
+        "'JSESSIONID: refresh'",
     ],
-    ids=["prose", "prose-with-a-colon", "longer-name"],
+    ids=[
+        "prose",
+        "prose-with-a-colon",
+        "longer-name",
+        "hyphenated-name",
+        "run-on-name",
+        "quoted-prose",
+    ],
 )
 def test_text_that_only_mentions_the_cookie_is_kept(text: str) -> None:
     assert redact_session_cookies(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        repr(repr(b"JSESSIONID=\t " + _TOKEN.encode() + b"; Path=/")),
+        repr(repr(repr(b"JSESSIONID=\t\n " + _TOKEN.encode()))),
+        repr('{"JSESSIONID"\t: "' + _TOKEN + '"}'),
+    ],
+    ids=[
+        "escaped-tab-two-reprs-deep",
+        "escaped-tab-three-reprs-deep",
+        "escaped-tab-before-a-colon",
+    ],
+)
+def test_a_token_behind_escaped_whitespace_is_redacted(text: str) -> None:
+    redacted = redact_session_cookies(text)
+
+    assert _TOKEN not in redacted
+    assert "***" in redacted
 
 
 def test_a_session_cookie_value_ends_at_a_quote_or_backslash() -> None:
@@ -239,6 +269,23 @@ def test_a_record_with_a_broken_format_is_still_emitted_and_redacted(
     output = stream.getvalue()
     assert msg in output
     assert "s3cret" not in output
+
+
+@pytest.mark.parametrize(
+    "msg",
+    ["Cookie: JSESSIONID=%s %s", "GET https://host/data?token=%s %s"],
+    ids=["cookie", "url-query"],
+)
+def test_arguments_that_do_not_fit_the_format_are_not_shown(
+    filtered_logger: tuple[logging.Logger, io.StringIO], msg: str
+) -> None:
+    logger, stream = filtered_logger
+
+    logger.warning(msg, _TOKEN)
+
+    output = stream.getvalue()
+    assert _TOKEN not in output
+    assert "arguments not shown: str" in output
 
 
 def test_records_without_secrets_are_left_untouched(

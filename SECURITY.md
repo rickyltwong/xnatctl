@@ -125,10 +125,11 @@ failing to convert a malformed value shows. The frames are the live ones: a hand
 locals, which xnatctl's own formatters do not, sees the values in them, as it
 would in any traceback. The CLI never shows pydicom's own log lines, whose
 text can quote an element's value. Two other channels still reach stderr:
-pydicom's Python warnings, which can quote one too, and pynetdicom's own log,
-which names the SOP Class of a dataset the peer accepted no presentation
-context for and, under `session upload-dicom --verbose`, each instance's SOP
-Instance UID.
+pydicom's Python warnings, which can quote one too, and pynetdicom's own log.
+That log names the SOP Class of a dataset the peer accepted no presentation
+context for, prints the traceback of a dataset it cannot encode for the
+accepted transfer syntax (whose text can quote the element's value), and,
+under `session upload-dicom --verbose`, names each instance's SOP Instance UID.
 
 Two things worth knowing about the boundaries of this:
 

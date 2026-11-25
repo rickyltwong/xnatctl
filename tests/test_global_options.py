@@ -156,10 +156,14 @@ def _write_dicom_with_an_unknown_charset(path) -> None:
 
 
 class TestCommandsWithoutGlobalOptions:
-    def test_their_log_keeps_warnings_and_drops_info(self, clean_root: None) -> None:
+    def test_their_log_keeps_warnings_and_drops_info(
+        self, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import logging
 
         import click
+
+        monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
 
         messages: list[str] = []
 

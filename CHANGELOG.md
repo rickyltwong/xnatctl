@@ -52,12 +52,13 @@ All notable changes to this project will be documented in this file.
   Redaction now also covers URLs with an uppercase scheme (`HTTPS://`) and a
   session cookie however it is quoted, such as in a mapping
   (`{'JSESSIONID': '...'}`) or in JSON inside another repr, and a failed
-  write to the file prints one redacted line instead of the record's
-  exception.
+  write to the file or to stderr prints one redacted line instead of the
+  record and the exception being handled.
 - A logging call no longer raises when its message holds a malformed URL,
   such as one with an unbalanced `[` host, or when its arguments do not fit
   its format string. The malformed URL's secret-shaped query values and
-  password are still redacted.
+  password are still redacted, and arguments that do not fit are shown only
+  by type.
 - As a library, xnatctl no longer prints its log records to stderr through
   Python's last-resort handler when the application has not configured
   logging. Configure logging to see them.
