@@ -169,7 +169,7 @@ def _upload_single_file_gradual(
 
         return name, False, _extract_error_detail(resp)
     except Exception as e:
-        logger.exception("Gradual upload failed for %s", name, extra={FILE_ONLY_ATTR: True})
+        logger.exception("Gradual upload failed", extra={FILE_ONLY_ATTR: True})
         return name, False, str(e)
 
 
