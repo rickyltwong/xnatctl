@@ -128,6 +128,7 @@ class TestDirectRunEntersItsOwnScope:
         client.username = "u"
         client.password = "p"
         client.server_version = None
+        client.httpx_verify.return_value = True
 
         pool = GradualClientPool()
         created_clients: list[object] = []

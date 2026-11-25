@@ -185,6 +185,10 @@ jobs:
     # Prove the declared `>=` floors actually resolve and pass.
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # The workflow-wide UV_FROZEN installs uv.lock as-is and ignores
+      # --resolution, which would test the locked versions, not the floors.
+      UV_FROZEN: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -202,7 +206,8 @@ jobs:
         run: uv sync --dev --resolution lowest-direct
 
       - name: Run tests
-        run: uv run pytest tests/ -x -q
+        # --no-sync: a plain `uv run` re-resolves at the highest versions.
+        run: uv run --no-sync pytest tests/ -x -q
 
   build:
     runs-on: ubuntu-latest

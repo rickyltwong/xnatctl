@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+**Fixes**
+
+- A pip install now requires Click 8.3 or later. pip kept an older Click
+  that was already installed, and on it some options misbehaved without an
+  error:
+  - on Click 8.1 and 8.2, `session upload-exam --wait-timeout N` and
+    `--no-wait-for-archive` were ignored unless `--wait` came before them on
+    the command line, so the command kept its default of waiting up to 4
+    hours for the session to archive before attaching resources;
+  - on Click 8.2.2, `session upload` and `session upload-exam` sent the
+    upload to the prearchive unless `--direct-archive` was given, ignoring
+    the profile's `direct_archive`, and `config init` skipped its
+    "Log in now?" prompt.
+
+  The release binaries and the container image ship the locked Click 8.4.2
+  and were not affected.
+- A pip install now requires pydicom 3.0 or later, the oldest version the
+  test suite runs against.
+
 ## 0.7.0 - 2026-11-24
 
 **Breaking**
