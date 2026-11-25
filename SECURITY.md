@@ -108,14 +108,16 @@ name assembled at runtime (e.g. string concatenation), which is a real,
 documented gap in the test's own module docstring, not a claim of
 completeness. `services/upload/dicom_store.py` (the C-STORE transport) does
 parse DICOM files with `pydicom`, but only to populate missing SOP UIDs
-before sending -- its batch logs record file paths and DICOM status codes,
-never a tag value. When one of these commands fails on a file, the
-`--log-file` diagnostics record keeps the traceback and the exception's type
-but not its text, which pydicom can build from an element's value
+before sending -- its batch logs record file paths, DICOM status codes and,
+when a send raises, the exception's text, which names the dataset's SOP Class
+UID when the peer accepted no presentation context for it. When one of these
+commands fails on a file, the `--log-file` diagnostics record keeps the
+traceback and the exception's type but not its text, which pydicom can build
+from an element's value
 (`withhold_details` in `core/logging.py`). The frames are the live ones: a
 handler that captures frame locals, which xnatctl's own formatters do not,
-sees the values in them, as it would in any traceback. pydicom's own log
-lines reach stderr only under `--verbose` or `XNATCTL_DEBUG=1`.
+sees the values in them, as it would in any traceback. The CLI never shows
+pydicom's own log lines, whose text can quote an element's value.
 
 Two things worth knowing about the boundaries of this:
 

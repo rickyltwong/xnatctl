@@ -69,10 +69,9 @@ All notable changes to this project will be documented in this file.
   only for the diagnostics file: a failed `config remove-profile` loses its
   stray `Command exited with code 1`, and an unwritable `--log-file` gives the
   usual one-line error instead of a `Command failed` traceback.
-- pydicom's own log lines now appear only with `--verbose` or
-  `XNATCTL_DEBUG=1`. `session upload-dicom` printed them by default; most
-  repeat a Python warning pydicom prints anyway, and their text can quote a
-  DICOM element's value.
+- The CLI no longer shows pydicom's own log lines, whose text can quote a
+  DICOM element's value. `session upload-dicom` printed them; most repeat a
+  Python warning that pydicom still prints.
 
 ## 0.7.0 - 2026-11-24
 

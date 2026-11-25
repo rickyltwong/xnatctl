@@ -112,7 +112,7 @@ class TestInheritance:
         assert _PROBE_CAPTURE["profile_name"] == "staging"
 
 
-def _run_cli_in_subprocess(tmp_path, *args: str):
+def _run_cli_in_subprocess(tmp_path, *args: str, env: dict[str, str] | None = None):
     import os
     import subprocess
     import sys
@@ -125,13 +125,13 @@ def _run_cli_in_subprocess(tmp_path, *args: str):
         "profiles:\n  default:\n    url: http://127.0.0.1:9\n"
     )
     config_file.chmod(0o600)
-    env = {k: v for k, v in os.environ.items() if not k.startswith("XNAT")}
-    env.update(HOME=str(tmp_path / "home"), XNAT_NO_UPDATE_CHECK="1")
+    child_env = {k: v for k, v in os.environ.items() if not k.startswith("XNAT")}
+    child_env.update(HOME=str(tmp_path / "home"), XNAT_NO_UPDATE_CHECK="1", **(env or {}))
     return subprocess.run(
         [sys.executable, "-m", "xnatctl", *args],
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env,
         cwd=tmp_path,
         timeout=60,
         check=False,
@@ -166,18 +166,23 @@ class TestCommandsWithoutGlobalOptions:
         assert "has unrecognized config keys" in result.stderr
 
     @pytest.mark.parametrize(
-        ("root_args", "shown"), [([], False), (["-v"], True)], ids=["default", "verbose"]
+        ("root_args", "env"),
+        [([], {}), (["-v"], {}), ([], {"XNATCTL_DEBUG": "1"})],
+        ids=["default", "verbose", "wire-trace"],
     )
-    def test_pydicom_log_warnings_show_only_with_verbose(
-        self, tmp_path, root_args: list[str], shown: bool
+    def test_pydicom_log_lines_are_never_shown(
+        self, tmp_path, root_args: list[str], env: dict[str, str]
     ) -> None:
         dicom_file = tmp_path / "charset.dcm"
         _write_dicom_with_an_unknown_charset(dicom_file)
 
-        result = _run_cli_in_subprocess(tmp_path, *root_args, "dicom", "inspect", str(dicom_file))
+        result = _run_cli_in_subprocess(
+            tmp_path, *root_args, "dicom", "inspect", str(dicom_file), env=env
+        )
 
         assert result.returncode == 0, result.stderr
-        assert ("[WARNING] pydicom:" in result.stderr) is shown
+        assert "Unknown encoding 'ISO_IR 999'" in result.stderr
+        assert "pydicom:" not in result.stderr
 
     def test_a_failure_prints_no_diagnostics_only_record(self, tmp_path) -> None:
         result = _run_cli_in_subprocess(tmp_path, "config", "remove-profile", "nope", "--dry-run")

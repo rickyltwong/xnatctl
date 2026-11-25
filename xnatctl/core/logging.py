@@ -17,7 +17,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from xnatctl.core.fsutil import (
     _private_opener,
@@ -166,6 +166,26 @@ def install_redaction_filter(logger: logging.Logger | None = None) -> None:
             handler.addFilter(CorrelationFilter())
 
 
+class _CurrentStderrHandler(logging.StreamHandler[TextIO]):
+    """Write to whatever ``sys.stderr`` is when a record is emitted.
+
+    ``logging.lastResort`` does the same. A handler bound to the stream at setup
+    would keep writing to a replaced one, such as an earlier in-process run's
+    captured stderr.
+    """
+
+    def __init__(self) -> None:
+        logging.Handler.__init__(self)
+
+    @property
+    def stream(self) -> TextIO:
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value: TextIO) -> None:
+        raise AttributeError("this handler always writes to the current sys.stderr")
+
+
 def setup_logging(
     level: int = logging.INFO,
     *,
@@ -185,8 +205,7 @@ def setup_logging(
 
     ``--quiet`` wins over both: an explicit flag beats an ambient env var.
 
-    pydicom's own log stream is shown only with ``--verbose`` or
-    ``XNATCTL_DEBUG=1``; most of it repeats the Python warnings pydicom prints.
+    pydicom's own log stream is never shown, on any tier.
 
     Independent of all three tiers: once :func:`install_log_file` has attached
     a diagnostics file handler (this invocation or a prior call in the same
@@ -209,7 +228,7 @@ def setup_logging(
 
     root = logging.getLogger()
     if not any(not isinstance(h, logging.FileHandler) for h in root.handlers):
-        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler = _CurrentStderrHandler()
         stderr_handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
         root.addHandler(stderr_handler)
 
@@ -236,10 +255,10 @@ def setup_logging(
     logging.getLogger("httpcore").setLevel(
         logging.DEBUG if trace and not quiet else logging.WARNING
     )
-    # pydicom repeats most of its log warnings as Python warnings, and its log
-    # text can quote element values, so that stream shows only on request.
-    # Not by level: importing pydicom, which happens later, resets its level.
-    logging.getLogger("pydicom").propagate = not quiet and (verbose or trace)
+    # pydicom's log text can quote element values, and pydicom prints most of
+    # it as Python warnings anyway. Not by level: importing pydicom, which
+    # happens later, resets its level.
+    logging.getLogger("pydicom").propagate = False
 
 
 def get_logger(name: str) -> logging.Logger:

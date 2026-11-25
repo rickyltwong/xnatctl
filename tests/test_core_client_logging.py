@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import logging
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -296,3 +298,18 @@ def test_quiet_wins_over_debug_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert logging.getLogger().level == logging.ERROR
     assert logging.getLogger("httpcore").level == logging.WARNING
+
+
+@pytest.mark.usefixtures("clean_root")
+def test_the_console_handler_writes_to_the_current_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logging.getLogger().handlers = []
+    setup_logging(logging.WARNING)
+
+    for run in ("first", "second"):
+        stderr = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", stderr)
+        logging.getLogger("xnatctl.test").warning("%s run", run)
+
+        assert f"{run} run" in stderr.getvalue()

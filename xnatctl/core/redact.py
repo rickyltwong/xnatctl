@@ -139,10 +139,23 @@ def redact_url_query(text: str) -> str:
 # quote of httpcore's bytes repr), or comma.
 _SESSION_COOKIE_RE = re.compile(r"(JSESSIONID=)(?:\"[^\"]*\"|[^;\s'\",]+)", re.IGNORECASE)
 # The same value in a mapping's repr, such as a cookie dict: {'JSESSIONID': '...'}.
-# Either quote, str or bytes, escapes inside, and a value cut off at the end.
+# Either quote, str or bytes, escapes inside, and a value cut off at the end. The
+# quotes are themselves escaped when that repr sits inside another, such as a
+# bytes repr logged with %r: b'{\'JSESSIONID\': \'...\'}'.
 _SESSION_COOKIE_ITEM_RE = re.compile(
-    r"""(b?(['"])JSESSIONID\2\s*:\s*b?)(['"])(?:\\.?|(?!\3)[^\\])*(?:\3|\Z)""",
-    re.IGNORECASE,
+    r"""
+    (                                   # 1: the key and the value's opening quote
+      b?(\\?)(['"])JSESSIONID\2\3        # the key, its quotes escaped (2) or not
+      \s*:\s*b?
+      (\\)?(['"])                       # the value's quote, escaped (4) or not
+    )
+    (?(4)
+      (?:(?!\\\5)[\s\S])*+(?:\\\5|\Z)        # escaped: to the next escaped quote
+    |
+      (?:\\[\s\S]?|(?!\5)[^\\])*+(?:\5|\Z)   # plain: to the next unescaped quote
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 
@@ -156,4 +169,4 @@ def redact_session_cookies(text: str) -> str:
     if "jsessionid" not in text.lower():
         return text
     text = _SESSION_COOKIE_RE.sub(r"\1***", text)
-    return _SESSION_COOKIE_ITEM_RE.sub(r"\1\3***\3", text)
+    return _SESSION_COOKIE_ITEM_RE.sub(r"\1***\4\5", text)
