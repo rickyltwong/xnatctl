@@ -9,7 +9,7 @@ import pytest
 
 from xnatctl.core.exceptions import InvalidURLError
 from xnatctl.core.logging import RedactionFilter, install_redaction_filter, setup_logging
-from xnatctl.core.redact import redact_url_query
+from xnatctl.core.redact import redact_session_cookies, redact_url_query
 from xnatctl.core.validation import validate_server_url
 
 SECRET_URL = "https://xnat.example.org/data?token=s3cret"
@@ -87,6 +87,24 @@ def test_a_url_urlsplit_rejects_is_still_redacted_without_raising(
     logger.info("request %s", text)
 
     assert stream.getvalue() == f"request {expected}\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("HTTPS://dest.example/?token=s3cret", "HTTPS://dest.example/?token=***"),
+        ("Http://admin:s3cret@dest.example/x", "Http://admin:***@dest.example/x"),
+    ],
+    ids=["uppercase-query", "mixed-case-userinfo"],
+)
+def test_url_redaction_ignores_the_scheme_case(text: str, expected: str) -> None:
+    assert redact_url_query(text) == expected
+
+
+def test_a_session_cookie_in_a_mapping_repr_is_redacted() -> None:
+    redacted = redact_session_cookies("cookies={'JSESSIONID': 'ABCDEF0123456789', 'x': '1'}")
+
+    assert redacted == "cookies={'JSESSIONID': '***', 'x': '1'}"
 
 
 def test_redaction_stays_linear_on_long_unparseable_urls() -> None:

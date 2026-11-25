@@ -11,7 +11,7 @@ from typing import Any
 
 import click
 
-from xnatctl.core.logging import FILE_ONLY_ATTR
+from xnatctl.core.logging import FILE_ONLY_ATTR, withhold_details
 from xnatctl.core.output import (
     print_error,
     print_json,
@@ -141,7 +141,10 @@ def dicom_validate(
             )
         except Exception as e:
             logger.exception(
-                "dicom validate failed for %s", file_path, extra={FILE_ONLY_ATTR: True}
+                "dicom validate failed for %s",
+                file_path,
+                exc_info=withhold_details(e),
+                extra={FILE_ONLY_ATTR: True},
             )
             invalid_count += 1
             results.append(
@@ -386,7 +389,12 @@ def dicom_anonymize(
         except pydicom.errors.InvalidDicomError:
             skipped += 1
         except Exception as e:
-            logger.exception("dicom anonymize failed for %s", in_file, extra={FILE_ONLY_ATTR: True})
+            logger.exception(
+                "dicom anonymize failed for %s",
+                in_file,
+                exc_info=withhold_details(e),
+                extra={FILE_ONLY_ATTR: True},
+            )
             click.echo(f"Error processing {in_file}: {e}", err=True)
             skipped += 1
 

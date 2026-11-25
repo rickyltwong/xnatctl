@@ -382,7 +382,12 @@ def subject_list(
         for subj in subjects:
             try:
                 subj["sessions"] = len(service.experiment_rows(project, subj["id"]))
-            except (XNATCtlError, ValueError):
+            except Exception:
+                logger.exception(
+                    "Counting sessions of subject %s failed",
+                    subj.get("id"),
+                    extra={FILE_ONLY_ATTR: True},
+                )
                 subj["sessions"] = "?"
         enriched = True
     elif needs_sessions_for_controls:

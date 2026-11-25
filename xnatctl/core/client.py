@@ -38,6 +38,7 @@ from xnatctl.core.exceptions import (
 from xnatctl.core.exceptions import (
     RequestTimeoutError as XNATTimeoutError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR, withhold_details
 from xnatctl.core.redact import redact_url_query
 from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, RETRYABLE_TRANSPORT_ERRORS
 from xnatctl.core.server_version import probe_server_version
@@ -296,12 +297,14 @@ class XNATClient:
                 # deprecates `cookies=` on individual calls.
                 client.cookies.set("JSESSIONID", self.session_token)
                 client.delete("/data/JSESSION")
-            # httpx.HTTPError covers the request. Building the httpx client on a
-            # first call can also fail on the CA bundle (OSError) or the proxy
-            # variables (ValueError, httpx.InvalidURL, or ImportError for a
-            # SOCKS proxy without socksio).
-            except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError, ImportError):
-                pass
+            # Best effort, through whatever transport the caller supplied. The
+            # failure's text can quote the session token.
+            except Exception as e:
+                logger.exception(
+                    "Session logout failed",
+                    exc_info=withhold_details(e),
+                    extra={FILE_ONLY_ATTR: True},
+                )
             finally:
                 self.session_token = None
                 if self._client is not None:

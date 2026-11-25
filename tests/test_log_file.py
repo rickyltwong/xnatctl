@@ -11,6 +11,7 @@ from pathlib import Path
 
 import click
 import httpx
+import pydicom
 import pytest
 from click.testing import CliRunner
 from conftest import config_seam
@@ -22,12 +23,15 @@ from xnatctl.core.config import Config, Profile
 from xnatctl.core.exceptions import ServerUnreachableError
 from xnatctl.core.fsutil import POSIX_PERMISSIONS
 from xnatctl.core.logging import (
+    FILE_ONLY_ATTR,
     LOG_FILE_BACKUP_COUNT,
+    DetailsWithheldError,
     JsonLinesFormatter,
     _JsonLinesFileHandler,
     install_log_file,
     new_correlation_id,
     remove_log_file,
+    withhold_details,
 )
 
 SECRET_URL = "https://xnat.example.org/data?token=s3cret"
@@ -947,3 +951,82 @@ class TestStderrParity:
         assert without.exit_code == 0, without.output
         assert with_file.exit_code == 0, with_file.output
         assert _strip_timestamps(without.output) == _strip_timestamps(with_file.output)
+
+
+class TestDiagnosticsFileFailures:
+    def test_a_failed_write_reports_one_redacted_line(
+        self, tmp_path: Path, clean_root: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        install_log_file(tmp_path / "diag.jsonl")
+        handler = next(
+            h for h in logging.getLogger().handlers if isinstance(h, _JsonLinesFileHandler)
+        )
+
+        class FullDisk:
+            def write(self, _text: str) -> None:
+                raise OSError(28, "No space left on device")
+
+            def tell(self) -> int:
+                return 0
+
+            def seek(self, *_args: object) -> int:
+                return 0
+
+            def flush(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        handler.stream = FullDisk()
+        try:
+            raise RuntimeError(f"Cookie: JSESSIONID=ABCDEF0123456789 {SECRET_URL}")
+        except RuntimeError:
+            logging.getLogger("xnatctl.test").exception("boom", extra={FILE_ONLY_ATTR: True})
+
+        err = capsys.readouterr().err
+        assert "could not write the diagnostics file: [Errno 28] No space left on device" in err
+        assert "ABCDEF0123456789" not in err
+        assert "s3cret" not in err
+
+    def test_withheld_details_keep_the_frames_and_type_but_not_the_text(self) -> None:
+        patient_id = "DOE" + "^JANE"
+        try:
+            raise ValueError(f"PatientID {patient_id} has an invalid length")
+        except ValueError as e:
+            withheld = withhold_details(e)
+            record = _make_record(
+                "read failed",
+                level=logging.ERROR,
+                exc_info=(DetailsWithheldError, withheld, withheld.__traceback__),
+            )
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert patient_id not in payload["exc"]
+        assert "DetailsWithheldError: ValueError" in payload["exc"]
+        assert "test_withheld_details_keep_the_frames_and_type_but_not_the_text" in payload["exc"]
+
+    def test_dicom_validate_keeps_dicom_values_out_of_the_file(
+        self, tmp_path: Path, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dicom_file = tmp_path / "scan.dcm"
+        dicom_file.write_bytes(b"not read")
+        log_file = tmp_path / "diag.jsonl"
+
+        patient_id = "DOE" + "^JANE"
+
+        def unreadable(*_args: object, **_kwargs: object) -> None:
+            raise ValueError(f"PatientID {patient_id} has an invalid length")
+
+        monkeypatch.setattr(pydicom, "dcmread", unreadable)
+
+        result = CliRunner().invoke(
+            cli, ["--log-file", str(log_file), "dicom", "validate", str(dicom_file)]
+        )
+
+        assert patient_id in result.output
+        records = [r for r in read_lines(log_file) if r.get("msg", "").startswith("dicom validate")]
+        assert len(records) == 1
+        assert patient_id not in json.dumps(records)
+        assert "DetailsWithheldError: ValueError" in records[0]["exc"]

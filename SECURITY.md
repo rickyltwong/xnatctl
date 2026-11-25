@@ -109,7 +109,10 @@ documented gap in the test's own module docstring, not a claim of
 completeness. `services/upload/dicom_store.py` (the C-STORE transport) does
 parse DICOM files with `pydicom`, but only to populate missing SOP UIDs
 before sending -- its batch logs record file paths and DICOM status codes,
-never a tag value.
+never a tag value. When one of these commands fails on a file, the
+`--log-file` diagnostics record keeps the traceback and the exception's type
+but not its text, which pydicom can build from an element's value
+(`withhold_details` in `core/logging.py`).
 
 Two things worth knowing about the boundaries of this:
 

@@ -39,13 +39,19 @@ All notable changes to this project will be documented in this file.
 - The `--log-file` diagnostics file now records the traceback of failures
   that xnatctl reports and carries on past, such as one subject failing in a
   `subject rename` batch, one scan or resource in a `session download`, a
-  failed audit-log write or a failed update check. Console output is
-  unchanged. A Python program that configures its own logging receives these
-  records too, at `ERROR` level; each carries an `xnatctl_file_only`
-  attribute to filter on.
+  failed audit-log write or a failed update notice. Console output is
+  unchanged. Where the exception's text can quote DICOM values or a session
+  token (the `dicom` commands, DICOM C-STORE, logout), the record keeps the
+  traceback and the exception's type but not its text. A Python program that
+  configures its own logging receives these records too, at `ERROR` level;
+  each carries an `xnatctl_file_only` attribute to filter on.
 - The `--log-file` diagnostics file now redacts `JSESSIONID` session cookies
   inside tracebacks, as it already did inside messages. Before, a traceback
   that quoted a cookie header wrote the live session token to the file.
+  Redaction now also covers URLs with an uppercase scheme (`HTTPS://`) and a
+  session cookie shown as a mapping (`{'JSESSIONID': '...'}`), and a failed
+  write to the file prints one redacted line instead of the record's
+  exception.
 - A logging call no longer raises when its message holds a malformed URL,
   such as one with an unbalanced `[` host, or when its arguments do not fit
   its format string. The malformed URL's secret-shaped query values and
@@ -58,8 +64,12 @@ All notable changes to this project will be documented in this file.
   subcommands) now print warnings in the same `<time> [WARNING] <logger>:`
   format as every other command. With `--log-file` they used to print none,
   such as `config`'s warning that the config file is readable by other users
-  and stores a plaintext password. A failed `config remove-profile` also no
-  longer prints a stray `Command exited with code 1`.
+  and stores a plaintext password. The `dicom` subcommands now also print
+  pydicom's own log warnings, as `session upload-dicom` already did. A failed
+  command no longer prints a record meant only for the diagnostics file: a
+  failed `config remove-profile` loses its stray `Command exited with code 1`,
+  and an unwritable `--log-file` gives the usual one-line error instead of a
+  `Command failed` traceback.
 
 ## 0.7.0 - 2026-11-24
 

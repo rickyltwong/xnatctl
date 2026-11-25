@@ -246,7 +246,27 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
+class DetailsWithheldError(Exception):
+    """Stands in for a logged exception whose text must not be recorded."""
+
+
+def withhold_details(exc: BaseException) -> DetailsWithheldError:
+    """Return a stand-in for ``exc`` to pass as ``exc_info=``: its frames, its type, no text.
+
+    For a failure whose message can quote DICOM element values or a session
+    token, which no log record may carry. Every handler, a library caller's
+    included, then sees where it failed but not what the exception said.
+    """
+    return DetailsWithheldError(type(exc).__qualname__).with_traceback(exc.__traceback__)
+
+
 class _JsonLinesFileHandler(logging.handlers.RotatingFileHandler):
+    def handleError(self, record: logging.LogRecord) -> None:
+        # The default report prints the record's own exception chain, unredacted.
+        if logging.raiseExceptions and sys.stderr:
+            failure = redact_session_cookies(redact_url_query(str(sys.exc_info()[1])))
+            sys.stderr.write(f"xnatctl: could not write the diagnostics file: {failure}\n")
+
     def _open(self) -> Any:
         path = Path(self.baseFilename)
         ensure_private_dir(path.parent)

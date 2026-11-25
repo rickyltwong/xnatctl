@@ -369,13 +369,11 @@ def global_options(f: Callable[Concatenate[Context, ...], R]) -> Callable[..., R
     return wrapper
 
 
-def require_auth(
-    f: Callable[Concatenate[Context, P], R],
-) -> Callable[Concatenate[Context, P], R]:
+def require_auth(f: Callable[..., R]) -> Callable[..., R]:
     """Ensure user is authenticated before running command."""
 
     @wraps(f)
-    def wrapper(ctx: Context, /, *args: P.args, **kwargs: P.kwargs) -> R:
+    def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> R:
         client = ctx.get_client()
         had_session = client.is_authenticated
         # The name get_client resolved the profile (and its cached session) by.

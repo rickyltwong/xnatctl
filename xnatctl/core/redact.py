@@ -39,7 +39,7 @@ SECRET_QUERY_KEYS: frozenset[str] = frozenset(
     }
 )
 
-_URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
+_URL_RE = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
 _TRAILING_PUNCT = ".,);]"
 
 _USERINFO_RE = re.compile(r"(//)([^/\s]*@)")
@@ -116,7 +116,7 @@ def redact_url_query(text: str) -> str:
         The input string with secret-shaped query values redacted. If no
         redaction is needed, the input is returned unchanged.
     """
-    if "http" not in text or ("?" not in text and "@" not in text):
+    if "http" not in text.lower() or ("?" not in text and "@" not in text):
         return text
 
     def _scrub(match: re.Match[str]) -> str:
@@ -138,6 +138,10 @@ def redact_url_query(text: str) -> str:
 # it) or runs to the next attribute separator, whitespace, quote (the closing
 # quote of httpcore's bytes repr), or comma.
 _SESSION_COOKIE_RE = re.compile(r"(JSESSIONID=)(?:\"[^\"]*\"|[^;\s'\",]+)", re.IGNORECASE)
+# The same value in a mapping's repr, such as a cookie dict: {'JSESSIONID': '...'}.
+_SESSION_COOKIE_ITEM_RE = re.compile(
+    r"""(['"]JSESSIONID['"]\s*:\s*)(['"])[^'"]*\2""", re.IGNORECASE
+)
 
 
 def redact_session_cookies(text: str) -> str:
@@ -147,6 +151,7 @@ def redact_session_cookies(text: str) -> str:
     ``Set-Cookie: JSESSIONID=...`` included, and that value is a live session.
     Text without a session cookie is returned unchanged.
     """
-    if "jsessionid=" not in text.lower():
+    if "jsessionid" not in text.lower():
         return text
-    return _SESSION_COOKIE_RE.sub(r"\1***", text)
+    text = _SESSION_COOKIE_RE.sub(r"\1***", text)
+    return _SESSION_COOKIE_ITEM_RE.sub(r"\1\2***\2", text)
