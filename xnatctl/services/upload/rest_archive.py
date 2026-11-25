@@ -29,6 +29,7 @@ from xnatctl.core.exceptions import (
     UploadError,
 )
 from xnatctl.core.exceptions import RequestTimeoutError as XNATTimeoutError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.retry import RETRYABLE_STATUS_CODES, UPLOAD_MAX_RETRIES, upload_with_retry
 from xnatctl.core.server_version import MIN_VERSION_DIRECT_ARCHIVE, require_server_version
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS, build_httpx_timeout
@@ -273,7 +274,7 @@ def upload_single_archive(
                             "/data/JSESSION",
                             headers=session_cookie_header(cookies.get("JSESSIONID")),
                         )
-                    except Exception:  # noqa: BLE001  # best-effort cleanup: deleting a created JSESSION must not fail the upload
+                    except httpx.HTTPError:
                         pass
 
             return _classify_import_response(resp)
@@ -286,7 +287,10 @@ def upload_single_archive(
             return ArchiveUploadResult(
                 False, f"Connection failed (after retries): {e}", exception=e
             )
-        except Exception as e:  # noqa: BLE001  # worker-pool isolation: batch result returned for tallying, not raised (see module docstring)
+        except Exception as e:
+            logger.exception(
+                "Archive upload failed for %s", archive_path.name, extra={FILE_ONLY_ATTR: True}
+            )
             return ArchiveUploadResult(False, str(e), exception=e)
 
 

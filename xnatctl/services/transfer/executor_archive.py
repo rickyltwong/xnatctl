@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import quote_prearchive_segment as _quote_path_segment
 from xnatctl.services.transfer.executor_base import _ExecutorAttrs
 
@@ -83,7 +84,13 @@ class _ArchiveMixin(_ExecutorAttrs):
     ) -> int:
         try:
             return self.count_dest_scans(dest_project, subject_label, experiment_label)
-        except Exception as exc:  # noqa: BLE001  # best-effort poll helper: returns 0 on failure, retried next cycle (see docstring)
+        except Exception as exc:
+            logger.exception(
+                "count_dest_scans failed for %s (%s)",
+                experiment_label,
+                context,
+                extra={FILE_ONLY_ATTR: True},
+            )
             logger.debug(
                 "count_dest_scans failed for %s (%s): %s",
                 experiment_label,
@@ -146,7 +153,10 @@ class _ArchiveMixin(_ExecutorAttrs):
     ) -> bool:
         try:
             entry = self.find_prearchive_entry(dest_project, experiment_label)
-        except Exception:  # noqa: BLE001  # per-poll-cycle isolation: prearchive lookup failure retried next cycle
+        except Exception:
+            logger.exception(
+                "Prearchive poll failed for %s", experiment_label, extra={FILE_ONLY_ATTR: True}
+            )
             logger.debug(
                 "Poll cycle error for %s, retrying next cycle",
                 experiment_label,

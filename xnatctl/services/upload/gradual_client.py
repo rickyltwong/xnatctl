@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.retry import upload_with_retry
 from xnatctl.core.timeouts import build_httpx_timeout
 from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
@@ -54,7 +55,7 @@ class GradualClientPool:
             if client is not None:
                 try:
                     client.close()
-                except Exception:  # noqa: BLE001  # best-effort cleanup: closing a stale httpx client must not fail the operation
+                except OSError:
                     pass
 
             client = httpx.Client(
@@ -72,11 +73,8 @@ class GradualClientPool:
 
     def close_all(self) -> None:
         """Close every thread-local client this pool has created."""
-        try:
-            self._local.client = None
-            self._local.key = None
-        except Exception:  # noqa: BLE001  # best-effort cleanup: clearing thread-local client refs
-            pass
+        self._local.client = None
+        self._local.key = None
 
         with self._registry_lock:
             clients = list(self._registry)
@@ -84,7 +82,7 @@ class GradualClientPool:
         for c in clients:
             try:
                 c.close()
-            except Exception:  # noqa: BLE001  # best-effort cleanup: closing pooled httpx clients must not fail teardown
+            except OSError:
                 pass
 
     @contextlib.contextmanager
@@ -170,7 +168,8 @@ def _upload_single_file_gradual(
             return name, True, ""
 
         return name, False, _extract_error_detail(resp)
-    except Exception as e:  # noqa: BLE001  # per-file worker-pool isolation: any failure becomes a documented (name, False, msg) tuple
+    except Exception as e:
+        logger.exception("Gradual upload failed for %s", name, extra={FILE_ONLY_ATTR: True})
         return name, False, str(e)
 
 
@@ -178,7 +177,8 @@ def _extract_error_detail(resp: httpx.Response) -> str:
     snippet = ""
     try:
         snippet = resp.text.strip().replace("\n", " ")
-    except Exception:  # noqa: BLE001  # best-effort debug-info extraction: must not crash the error-reporting path itself
+    except Exception:
+        logger.exception("Could not read the error response body", extra={FILE_ONLY_ATTR: True})
         snippet = ""
     if snippet:
         snippet = snippet[:200]

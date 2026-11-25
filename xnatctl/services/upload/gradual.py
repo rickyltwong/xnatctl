@@ -24,6 +24,7 @@ from typing import Any
 
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken, cancellable_pool
 from xnatctl.core.client import XNATClient
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.server_version import MIN_VERSION_DIRECT_ARCHIVE, require_server_version
 from xnatctl.models.progress import OperationPhase, UploadProgress, UploadSummary
 
@@ -258,7 +259,10 @@ class GradualUploadRun:
 
                     try:
                         _name, ok, err = future.result()
-                    except Exception as e:  # noqa: BLE001  # worker-pool isolation: future.result() can re-raise anything the upload task raised
+                    except Exception as e:
+                        logger.exception(
+                            "Gradual upload task failed for %s", p, extra={FILE_ONLY_ATTR: True}
+                        )
                         ok = False
                         err = str(e)
 
@@ -332,7 +336,10 @@ class GradualUploadRun:
                     p = retry_future_to_path.pop(future)
                     try:
                         _name, ok, err = future.result()
-                    except Exception as e:  # noqa: BLE001  # worker-pool isolation: future.result() re-raise, salvage pass
+                    except Exception as e:
+                        logger.exception(
+                            "Gradual salvage task failed for %s", p, extra={FILE_ONLY_ATTR: True}
+                        )
                         ok = False
                         err = str(e)
 

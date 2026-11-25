@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import logging
 from collections.abc import Callable
 from concurrent.futures import as_completed
 from typing import Any
@@ -11,11 +12,14 @@ import httpx
 
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 from xnatctl.models.scan import Scan
 
 from .base import BaseService
 from .hierarchy import HierarchyService
+
+logger = logging.getLogger(__name__)
 
 
 def _scan_collection_path(session_id: str, project: str | None) -> str:
@@ -172,7 +176,8 @@ class ScanService(BaseService):
             try:
                 self.delete(session_id, scan_id, project=project, remove_files=remove_files)
                 return (scan_id, True, "")
-            except Exception as e:  # noqa: BLE001 -- per-scan worker-pool isolation in delete_scan task
+            except Exception as e:
+                logger.exception("Deleting scan %s failed", scan_id, extra={FILE_ONLY_ATTR: True})
                 return (scan_id, False, str(e))
 
         if parallel and len(scan_ids) > 1:

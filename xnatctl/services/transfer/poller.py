@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.state import EntityStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.discovery import DiscoveredEntity
@@ -215,7 +216,10 @@ class ArchivePoller:
                 item.subject.local_label,
                 item.exp.local_label,
             )
-        except Exception:  # noqa: BLE001  # per-cycle isolation: scan-count query failure retried next poll cycle
+        except Exception:
+            logger.exception(
+                "Scan count poll failed for %s", item.exp.local_label, extra={FILE_ONLY_ATTR: True}
+            )
             logger.debug(
                 "count_dest_scans failed for %s, will retry",
                 item.exp.local_label,
@@ -258,7 +262,10 @@ def service_prearchive_actions(
 
         try:
             entry = executor.find_prearchive_entry(ctx.dest_project, ctx.exp.local_label)
-        except Exception:  # noqa: BLE001  # per-item isolation: one experiment's prearchive resolution failure must not block others
+        except Exception:
+            logger.exception(
+                "Prearchive lookup failed for %s", ctx.exp.local_label, extra={FILE_ONLY_ATTR: True}
+            )
             ctx.archive_retries += 1
             logger.warning(
                 "Prearchive resolution failed for %s (attempt %d), will retry",
@@ -368,7 +375,10 @@ def drain_ready(
             continue
         try:
             finalize(ctx, result, progress_callback)
-        except Exception as e:  # noqa: BLE001  # per-experiment isolation: finalize() failure recorded via _record_experiment_failure, drain continues
+        except Exception as e:
+            logger.exception(
+                "Finalizing %s failed", ctx.exp.local_label, extra={FILE_ONLY_ATTR: True}
+            )
             _record_experiment_failure(state_store, ctx, result, str(e))
         drained = True
     return drained
@@ -402,7 +412,12 @@ def _resolve_deferred_prearchive_blocking(
                     ctx.exp.local_label,
                     exc_info=True,
                 )
-    except Exception:  # noqa: BLE001  # documented fallback: prearchive lookup failure logged, left for wait_for_archive fallback
+    except Exception:
+        logger.exception(
+            "Prearchive resolution failed for %s in blocking drain",
+            ctx.exp.local_label,
+            extra={FILE_ONLY_ATTR: True},
+        )
         logger.warning(
             "Prearchive resolution failed for %s in blocking drain, "
             "falling back to wait_for_archive",
@@ -477,5 +492,10 @@ def drain_all_blocking(
 
         try:
             finalize(ctx, result, progress_callback)
-        except Exception as e:  # noqa: BLE001  # per-experiment isolation: finalize() failure recorded via _record_experiment_failure
+        except Exception as e:
+            logger.exception(
+                "Finalizing %s failed in blocking drain",
+                ctx.exp.local_label,
+                extra={FILE_ONLY_ATTR: True},
+            )
             _record_experiment_failure(state_store, ctx, result, str(e))

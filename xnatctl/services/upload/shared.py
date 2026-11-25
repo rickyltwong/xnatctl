@@ -109,7 +109,7 @@ class SessionRefresher:
 
             if stale_token:
                 AuthManager().replace_token(stale_token, token)
-        except Exception as e:  # noqa: BLE001  # best-effort cache write (see docstring): failing the upload over an uncached token would be absurd
+        except OSError as e:
             logger.debug("Could not update the session cache after refresh: %s", e)
 
     @property

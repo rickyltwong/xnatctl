@@ -25,6 +25,7 @@ from typing import Any
 
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import UploadError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 
 from .shared import collect_dicom_files, split_into_n_batches
 
@@ -196,7 +197,8 @@ def _send_dicom_batch(
 
             try:
                 status = assoc.send_c_store(ds)
-            except Exception as e:  # noqa: BLE001  # per-file C-STORE isolation: pynetdicom/network failures are non-enumerable
+            except Exception as e:
+                logger.exception("C-STORE failed for %s", file_path, extra={FILE_ONLY_ATTR: True})
                 failed += 1
                 log.write(f"Store error {file_path}: {type(e).__name__}: {e}\n")
                 continue

@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.state import EntityStatus, SyncStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.conflicts import ConflictChecker
@@ -129,7 +130,10 @@ class TransferOrchestrator:
 
         try:
             dest_subject_ids = self.executor.list_dest_subjects(dst_proj)
-        except Exception:  # noqa: BLE001  # best-effort reconciliation: failed dest-subject query skips reconciliation, doesn't block sync
+        except Exception:
+            logger.exception(
+                "Dest subject query for reconciliation failed", extra={FILE_ONLY_ATTR: True}
+            )
             logger.warning("Failed to query dest subjects for reconciliation", exc_info=True)
             return []
 
@@ -179,7 +183,10 @@ class TransferOrchestrator:
 
         try:
             dest_exp_ids = self.executor.list_dest_experiments(dst_proj)
-        except Exception:  # noqa: BLE001  # best-effort reconciliation: failed dest-experiment query skips reconciliation, doesn't block sync
+        except Exception:
+            logger.exception(
+                "Dest experiment query for reconciliation failed", extra={FILE_ONLY_ATTR: True}
+            )
             logger.warning("Failed to query dest experiments for reconciliation", exc_info=True)
             return []
 
@@ -260,7 +267,10 @@ class TransferOrchestrator:
                 subject, sync_id, dst_proj, result, progress_callback
             )
             result.subjects_synced += 1
-        except Exception as e:  # noqa: BLE001  # per-subject transfer isolation: one subject's failure must not abort the sync run
+        except Exception as e:
+            logger.exception(
+                "Transfer failed for subject %s", subject.local_label, extra={FILE_ONLY_ATTR: True}
+            )
             result.subjects_failed += 1
             result.success = False
             result.errors.append(f"Subject {subject.local_label}: {e}")
@@ -342,7 +352,8 @@ class TransferOrchestrator:
                 subjects_skipped=result.subjects_skipped,
             )
 
-        except Exception as e:  # noqa: BLE001  # top-level pipeline boundary: guarantees state_store.end_sync() runs even on unexpected failure
+        except Exception as e:
+            logger.exception("Transfer run failed", extra={FILE_ONLY_ATTR: True})
             result.success = False
             result.errors.append(str(e))
             self.state_store.end_sync(sync_id, SyncStatus.FAILED)
