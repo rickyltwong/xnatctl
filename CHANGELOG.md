@@ -20,8 +20,8 @@ All notable changes to this project will be documented in this file.
 
   The release binaries and the container image ship the locked Click 8.4.2
   and were not affected.
-- A pip install now requires pydicom 3.0 or later, the oldest version the
-  test suite runs against.
+- A pip install now requires pydicom 3.0 and packaging 24.2 or later, the
+  oldest versions the test suite runs against.
 
 ## 0.7.0 - 2026-11-24
 

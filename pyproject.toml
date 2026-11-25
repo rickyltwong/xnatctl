@@ -35,7 +35,7 @@ dependencies = [
     "pydicom>=3.0.0",
     "pynetdicom>=2.0.0",
     "keyring>=24",
-    "packaging>=23",
+    "packaging>=24.2",
 ]
 
 [project.scripts]
