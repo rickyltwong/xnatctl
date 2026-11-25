@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx
 
 from xnatctl.core.client import XNATClient
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.timeouts import build_httpx_timeout
 
 logger = logging.getLogger(__name__)
@@ -109,7 +110,8 @@ class SessionRefresher:
 
             if stale_token:
                 AuthManager().replace_token(stale_token, token)
-        except OSError as e:
+        except Exception as e:
+            logger.exception("Session cache update failed", extra={FILE_ONLY_ATTR: True})
             logger.debug("Could not update the session cache after refresh: %s", e)
 
     @property

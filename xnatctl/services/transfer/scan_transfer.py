@@ -347,7 +347,7 @@ class ScanTransfer:
             )
             return scan_id, items, ""
         except Exception as e:
-            logger.exception("Downloading scan %s failed", scan_id, extra={FILE_ONLY_ATTR: True})
+            logger.exception("Scan download failed", extra={FILE_ONLY_ATTR: True})
             return scan_id, None, str(e)
 
     def _upload_scan_task(
@@ -359,7 +359,7 @@ class ScanTransfer:
             self._upload_single_scan(item, exp)
             return item.scan_id, True, ""
         except Exception as e:
-            logger.exception("Uploading scan %s failed", item.scan_id, extra={FILE_ONLY_ATTR: True})
+            logger.exception("Scan upload failed", extra={FILE_ONLY_ATTR: True})
             return item.scan_id, False, str(e)
 
     def _download_single_scan(

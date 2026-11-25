@@ -268,9 +268,7 @@ class TransferOrchestrator:
             )
             result.subjects_synced += 1
         except Exception as e:
-            logger.exception(
-                "Transfer failed for subject %s", subject.local_label, extra={FILE_ONLY_ATTR: True}
-            )
+            logger.exception("Subject transfer failed", extra={FILE_ONLY_ATTR: True})
             result.subjects_failed += 1
             result.success = False
             result.errors.append(f"Subject {subject.local_label}: {e}")

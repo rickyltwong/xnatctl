@@ -472,7 +472,7 @@ class SessionLabelService(BaseService):
             except SessionExpiredError:
                 raise
             except Exception as exc:
-                logger.exception("Renaming %s failed", item["id"], extra={FILE_ONLY_ATTR: True})
+                logger.exception("Experiment rename failed", extra={FILE_ONLY_ATTR: True})
                 failed.append(
                     {
                         "id": item["id"],

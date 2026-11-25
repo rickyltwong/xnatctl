@@ -200,9 +200,7 @@ class _ExperimentFinalizeMixin:
             if progress_callback:
                 progress_callback(applied_message)
         except Exception:
-            logger.exception(
-                "XML overlay failed for %s", exp.local_label, extra={FILE_ONLY_ATTR: True}
-            )
+            logger.exception("XML overlay failed", extra={FILE_ONLY_ATTR: True})
             logger.warning(failed_message, exp.local_label, exc_info=True)
 
     def _transfer_session_resources(
@@ -219,11 +217,7 @@ class _ExperimentFinalizeMixin:
         try:
             resources = self.executor.discover_session_resources(exp.local_id)
         except Exception as e:
-            logger.exception(
-                "Session resource discovery failed for %s",
-                exp.local_label,
-                extra={FILE_ONLY_ATTR: True},
-            )
+            logger.exception("Session resource discovery failed", extra={FILE_ONLY_ATTR: True})
             logger.warning(
                 "Failed to discover session resources for %s: %s",
                 exp.local_label,
@@ -255,12 +249,7 @@ class _ExperimentFinalizeMixin:
                 )
                 result.resources_synced += 1
             except Exception as e:
-                logger.exception(
-                    "Session resource %s transfer failed for %s",
-                    res_label,
-                    exp.local_label,
-                    extra={FILE_ONLY_ATTR: True},
-                )
+                logger.exception("Session resource transfer failed", extra={FILE_ONLY_ATTR: True})
                 result.resources_failed += 1
                 result.errors.append(f"Session resource {res_label} ({exp.local_label}): {e}")
 
@@ -282,9 +271,7 @@ class _ExperimentFinalizeMixin:
         try:
             verification = self.verifier.verify_experiment(src_path, dst_path)
         except Exception as e:
-            logger.exception(
-                "Verification raised for %s", exp.local_label, extra={FILE_ONLY_ATTR: True}
-            )
+            logger.exception("Experiment verification raised", extra={FILE_ONLY_ATTR: True})
             logger.warning("Verification failed for %s: %s", exp.local_label, e)
             verification = None
 

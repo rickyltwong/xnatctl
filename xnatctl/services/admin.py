@@ -86,9 +86,7 @@ class AdminService(BaseService):
                 self._put(path, params=params)
                 return (exp_id, True, "")
             except Exception as e:
-                logger.exception(
-                    "Catalog refresh failed for %s", exp_id, extra={FILE_ONLY_ATTR: True}
-                )
+                logger.exception("Catalog refresh failed", extra={FILE_ONLY_ATTR: True})
                 return (exp_id, False, str(e))
 
         if parallel and total > 1:
@@ -162,9 +160,7 @@ class AdminService(BaseService):
                 self._put(path)
                 results["added"].append(group)
             except Exception as e:
-                logger.exception(
-                    "Adding user to group %s failed", group, extra={FILE_ONLY_ATTR: True}
-                )
+                logger.exception("Adding a user to a group failed", extra={FILE_ONLY_ATTR: True})
                 results["failed"].append(group)
                 results["errors"].append({"group": group, "error": str(e)})
 
@@ -213,7 +209,7 @@ class AdminService(BaseService):
                     results["removed"].append(group)
             except Exception as e:
                 logger.exception(
-                    "Removing user from group %s failed", group, extra={FILE_ONLY_ATTR: True}
+                    "Removing a user from a group failed", extra={FILE_ONLY_ATTR: True}
                 )
                 results["failed"].append(group)
                 results["errors"].append({"group": group, "error": str(e)})

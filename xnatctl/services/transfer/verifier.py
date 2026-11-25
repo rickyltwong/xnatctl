@@ -181,12 +181,7 @@ class Verifier:
                         self._dest, f"{dst_scan_path}/resources/{q_res_label}/files"
                     )
                 except Exception as e:
-                    logger.exception(
-                        "Dest file count failed for scan %s/%s",
-                        scan_id,
-                        res_label,
-                        extra={FILE_ONLY_ATTR: True},
-                    )
+                    logger.exception("Dest file count failed", extra={FILE_ONLY_ATTR: True})
                     logger.debug(
                         "Could not fetch dest file count for scan %s/%s: %s",
                         scan_id,

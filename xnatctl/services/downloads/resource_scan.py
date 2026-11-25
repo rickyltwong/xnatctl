@@ -368,9 +368,7 @@ class _ResourceScanDownloadMixin(_HierarchyResolveMixin):
             )
 
         except Exception as e:
-            logger.exception(
-                "Scan download failed for %s", session_id, extra={FILE_ONLY_ATTR: True}
-            )
+            logger.exception("Scan download failed", extra={FILE_ONLY_ATTR: True})
             duration = time.time() - start_time
             return DownloadSummary(
                 success=False,

@@ -274,8 +274,10 @@ def upload_single_archive(
                             "/data/JSESSION",
                             headers=session_cookie_header(cookies.get("JSESSIONID")),
                         )
-                    except httpx.HTTPError:
-                        pass
+                    except Exception:
+                        logger.exception(
+                            "Upload session delete failed", extra={FILE_ONLY_ATTR: True}
+                        )
 
             return _classify_import_response(resp)
 

@@ -217,9 +217,7 @@ class ArchivePoller:
                 item.exp.local_label,
             )
         except Exception:
-            logger.exception(
-                "Scan count poll failed for %s", item.exp.local_label, extra={FILE_ONLY_ATTR: True}
-            )
+            logger.exception("Scan count poll failed", extra={FILE_ONLY_ATTR: True})
             logger.debug(
                 "count_dest_scans failed for %s, will retry",
                 item.exp.local_label,
@@ -263,9 +261,7 @@ def service_prearchive_actions(
         try:
             entry = executor.find_prearchive_entry(ctx.dest_project, ctx.exp.local_label)
         except Exception:
-            logger.exception(
-                "Prearchive lookup failed for %s", ctx.exp.local_label, extra={FILE_ONLY_ATTR: True}
-            )
+            logger.exception("Prearchive lookup failed", extra={FILE_ONLY_ATTR: True})
             ctx.archive_retries += 1
             logger.warning(
                 "Prearchive resolution failed for %s (attempt %d), will retry",
@@ -376,9 +372,7 @@ def drain_ready(
         try:
             finalize(ctx, result, progress_callback)
         except Exception as e:
-            logger.exception(
-                "Finalizing %s failed", ctx.exp.local_label, extra={FILE_ONLY_ATTR: True}
-            )
+            logger.exception("Experiment finalize failed", extra={FILE_ONLY_ATTR: True})
             _record_experiment_failure(state_store, ctx, result, str(e))
         drained = True
     return drained
@@ -414,9 +408,7 @@ def _resolve_deferred_prearchive_blocking(
                 )
     except Exception:
         logger.exception(
-            "Prearchive resolution failed for %s in blocking drain",
-            ctx.exp.local_label,
-            extra={FILE_ONLY_ATTR: True},
+            "Prearchive resolution failed in blocking drain", extra={FILE_ONLY_ATTR: True}
         )
         logger.warning(
             "Prearchive resolution failed for %s in blocking drain, "
@@ -494,8 +486,6 @@ def drain_all_blocking(
             finalize(ctx, result, progress_callback)
         except Exception as e:
             logger.exception(
-                "Finalizing %s failed in blocking drain",
-                ctx.exp.local_label,
-                extra={FILE_ONLY_ATTR: True},
+                "Experiment finalize failed in blocking drain", extra={FILE_ONLY_ATTR: True}
             )
             _record_experiment_failure(state_store, ctx, result, str(e))

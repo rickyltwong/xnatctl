@@ -251,11 +251,7 @@ class ScanPipeline(_ExperimentFinalizeMixin):
                         exp, sync_id, dest_project, subject, result, progress_callback
                     )
             except Exception as e:
-                logger.exception(
-                    "Transfer failed for experiment %s",
-                    exp.local_label,
-                    extra={FILE_ONLY_ATTR: True},
-                )
+                logger.exception("Experiment transfer failed", extra={FILE_ONLY_ATTR: True})
                 result.experiments_failed += 1
                 result.success = False
                 result.errors.append(f"Experiment {exp.local_label}: {e}")

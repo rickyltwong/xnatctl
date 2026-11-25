@@ -85,12 +85,7 @@ class _ArchiveMixin(_ExecutorAttrs):
         try:
             return self.count_dest_scans(dest_project, subject_label, experiment_label)
         except Exception as exc:
-            logger.exception(
-                "count_dest_scans failed for %s (%s)",
-                experiment_label,
-                context,
-                extra={FILE_ONLY_ATTR: True},
-            )
+            logger.exception("Dest scan count failed", extra={FILE_ONLY_ATTR: True})
             logger.debug(
                 "count_dest_scans failed for %s (%s): %s",
                 experiment_label,
@@ -154,9 +149,7 @@ class _ArchiveMixin(_ExecutorAttrs):
         try:
             entry = self.find_prearchive_entry(dest_project, experiment_label)
         except Exception:
-            logger.exception(
-                "Prearchive poll failed for %s", experiment_label, extra={FILE_ONLY_ATTR: True}
-            )
+            logger.exception("Prearchive poll failed", extra={FILE_ONLY_ATTR: True})
             logger.debug(
                 "Poll cycle error for %s, retrying next cycle",
                 experiment_label,

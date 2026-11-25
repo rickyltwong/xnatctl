@@ -177,7 +177,7 @@ class ScanService(BaseService):
                 self.delete(session_id, scan_id, project=project, remove_files=remove_files)
                 return (scan_id, True, "")
             except Exception as e:
-                logger.exception("Deleting scan %s failed", scan_id, extra={FILE_ONLY_ATTR: True})
+                logger.exception("Scan delete failed", extra={FILE_ONLY_ATTR: True})
                 return (scan_id, False, str(e))
 
         if parallel and len(scan_ids) > 1:
