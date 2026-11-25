@@ -36,6 +36,11 @@ All notable changes to this project will be documented in this file.
   `xnat:optSessionData` session. It asked XNAT only for scans of a type
   guessed from the session's and showed none; it now lists them the way
   `scan list` does. (#57)
+- The `--log-file` diagnostics file now records the traceback of each
+  failure that xnatctl reports and carries on past, such as one subject
+  failing in a `subject rename` batch, one scan or resource in a
+  `session download`, a failed audit-log write or a failed update check.
+  Console output is unchanged.
 - The `--log-file` diagnostics file now redacts `JSESSIONID` session cookies
   inside tracebacks, as it already did inside messages. Before, a traceback
   that quoted a cookie header wrote the live session token to the file.
