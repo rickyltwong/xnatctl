@@ -43,10 +43,7 @@ def _make_console(*, stderr: bool = False) -> Console:
 
 
 def _set_color_system(con: Console, *, no_color: bool) -> None:
-    try:
-        con._color_system = None if no_color else con._detect_color_system()
-    except AttributeError:  # pragma: no cover - future-Rich fallback
-        pass
+    con._color_system = None if no_color else con._detect_color_system()
 
 
 console = _make_console()

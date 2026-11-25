@@ -57,6 +57,7 @@ from xnatctl.cli.wrapper import wrapper
 from xnatctl.cli.xsync import xsync
 from xnatctl.core import update_check
 from xnatctl.core.logging import (
+    FILE_ONLY_ATTR,
     install_log_file,
     new_correlation_id,
     remove_log_file,
@@ -264,7 +265,8 @@ def _after_command(result: Any, **kwargs: Any) -> None:
         click_ctx = click.get_current_context(silent=True)
         ctx_obj = click_ctx.obj if click_ctx is not None else None
         _maybe_notify_update(ctx_obj)
-    except Exception as e:  # noqa: BLE001 -- pragma: no cover - update-check courtesy, never the command's failure
+    except Exception as e:
+        logger.exception("Update-availability notice failed", extra={FILE_ONLY_ATTR: True})
         logger.debug("Update-availability notice failed: %s", e)
 
 
@@ -363,8 +365,7 @@ def completion() -> None:
 
 def _render_completion(shell: str) -> str:
     comp_cls = get_completion_class(shell)
-    if comp_cls is None:  # pragma: no cover - bash/zsh/fish all ship with Click
-        raise click.ClickException(f"No completion support for shell: {shell}")
+    assert comp_cls is not None
     return comp_cls(cli, {}, "xnatctl", "_XNATCTL_COMPLETE").source()
 
 
@@ -438,8 +439,8 @@ def main() -> None:
 
     try:
         cli()
-    except Exception as e:  # noqa: BLE001 -- process-level last-resort handler outside @handle_errors
-        sys.exit(render_cli_error(e))
+    except Exception as e:
+        raise SystemExit(render_cli_error(e)) from e
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ from typing import Any, TypeVar
 
 import click
 
-F = TypeVar("F", bound=Callable[..., Any])
+R = TypeVar("R")
 
 
 def reject_argv_password(
@@ -65,7 +65,7 @@ def read_password_stdin(flag_name: str) -> str:
     return secret
 
 
-def dest_profile_options(f: F) -> F:
+def dest_profile_options(f: Callable[..., R]) -> Callable[..., R]:
     """Add destination profile options for transfer commands.
 
     ``--dest-pass`` is argv-rejected; the wrapper resolves
@@ -92,8 +92,8 @@ def dest_profile_options(f: F) -> F:
         help="Read the destination password from stdin (one line)",
     )
     @wraps(f)
-    def wrapper(*args: Any, dest_pass_stdin: bool = False, **kwargs: Any) -> Any:
+    def wrapper(*args: Any, dest_pass_stdin: bool = False, **kwargs: Any) -> R:
         kwargs["dest_pass"] = read_password_stdin("--dest-pass-stdin") if dest_pass_stdin else None
         return f(*args, **kwargs)
 
-    return wrapper  # type: ignore
+    return wrapper

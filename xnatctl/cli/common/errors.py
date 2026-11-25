@@ -8,7 +8,7 @@ import sys
 import traceback
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 import click
 
@@ -24,7 +24,8 @@ from xnatctl.core.logging import FILE_ONLY_ATTR, debug_env_enabled
 from xnatctl.core.output import print_error, print_hint
 from xnatctl.core.redact import redact_url_query
 
-F = TypeVar("F", bound=Callable[..., Any])
+P = ParamSpec("P")
+R = TypeVar("R")
 
 AUDIT_ERROR_KEY = "xnatctl.audit_error"
 
@@ -90,7 +91,7 @@ def render_cli_error(exc: BaseException) -> int:
     return exit_code_for(exc)
 
 
-def handle_errors(f: F) -> F:
+def handle_errors(f: Callable[P, R]) -> Callable[P, R]:
     """Handle common errors and convert to CLI exceptions.
 
     Under ``--verbose`` or ``XNATCTL_DEBUG=1`` a full (redacted) traceback is
@@ -99,7 +100,7 @@ def handle_errors(f: F) -> F:
     """
 
     @wraps(f)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return f(*args, **kwargs)
         except click.Abort:
@@ -132,13 +133,13 @@ def handle_errors(f: F) -> F:
             exit_level = logging.ERROR if e.code not in (None, 0) else logging.INFO
             _log_file_only("Command exited with code %s", e.code, level=exit_level, event="exit")
             raise
-        except Exception as e:  # noqa: BLE001 -- this is @handle_errors, the CLI's top-level last-resort handler
+        except Exception as e:
             click_ctx = click.get_current_context(silent=True)
             if click_ctx is not None:
                 click_ctx.meta[AUDIT_ERROR_KEY] = type(e).__name__
-            sys.exit(render_cli_error(e))
+            raise SystemExit(render_cli_error(e)) from e
 
-    return wrapper  # type: ignore
+    return wrapper
 
 
 class ExitCode(enum.IntEnum):
