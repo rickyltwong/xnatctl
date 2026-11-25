@@ -134,26 +134,13 @@ def redact_url_query(text: str) -> str:
     return _URL_RE.sub(_scrub, text)
 
 
-# A session cookie's value is either a double-quoted string (RFC 6265 allows
-# it) or runs to the next attribute separator, whitespace, quote (the closing
-# quote of httpcore's bytes repr), or comma.
-_SESSION_COOKIE_RE = re.compile(r"(JSESSIONID=)(?:\"[^\"]*\"|[^;\s'\",]+)", re.IGNORECASE)
-# The same value in a mapping's repr, such as a cookie dict: {'JSESSIONID': '...'}.
-# Either quote, str or bytes, and a value cut off at the end. Each repr the mapping
-# sits inside, such as a bytes repr logged with %r, escapes its quotes once more:
-# b'{\'JSESSIONID\': \'...\'}'. The value ends at a quote escaped exactly as its
-# opening one was; a quote with more backslashes before it is part of the value.
-_SESSION_COOKIE_ITEM_RE = re.compile(
-    r"""
-    (                                   # 1: the key and the value's opening quote
-      b?(\\*)(['"])JSESSIONID\2\3        # the key, its quotes escaped (2) or not
-      \s*:\s*b?
-      (\\*)(['"])                       # the value's quote, escaped (4) or not
-    )
-    (?:(?!(?<!\\)\4\5)[\s\S])*+          # the value
-    (?:\4\5|\Z)
-    """,
-    re.IGNORECASE | re.VERBOSE,
+# A JSESSIONID value is the server's hex session id. Wherever it appears -- a
+# Cookie or Set-Cookie header, a mapping's repr, JSON, or any of those escaped
+# inside another repr -- it follows the name, a "=" or ":", and any quotes and
+# backslashes, and it ends at the next quote, backslash, whitespace, ";" or ",".
+# Matching the quotes themselves would need a rule per escaping depth.
+_SESSION_COOKIE_RE = re.compile(
+    r"""(JSESSIONID[\\'"]*\s*[:=]\s*(?:b(?=['"]))?[\\'"]*)[^\s\\'";,]+""", re.IGNORECASE
 )
 
 
@@ -166,5 +153,4 @@ def redact_session_cookies(text: str) -> str:
     """
     if "jsessionid" not in text.lower():
         return text
-    text = _SESSION_COOKIE_RE.sub(r"\1***", text)
-    return _SESSION_COOKIE_ITEM_RE.sub(r"\1***\4\5", text)
+    return _SESSION_COOKIE_RE.sub(r"\1***", text)

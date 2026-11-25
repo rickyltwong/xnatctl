@@ -50,7 +50,8 @@ All notable changes to this project will be documented in this file.
   inside tracebacks, as it already did inside messages. Before, a traceback
   that quoted a cookie header wrote the live session token to the file.
   Redaction now also covers URLs with an uppercase scheme (`HTTPS://`) and a
-  session cookie shown as a mapping (`{'JSESSIONID': '...'}`), and a failed
+  session cookie however it is quoted, such as in a mapping
+  (`{'JSESSIONID': '...'}`) or in JSON inside another repr, and a failed
   write to the file prints one redacted line instead of the record's
   exception.
 - A logging call no longer raises when its message holds a malformed URL,

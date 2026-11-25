@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import time
 from collections.abc import Iterator
@@ -101,49 +102,66 @@ def test_url_redaction_ignores_the_scheme_case(text: str, expected: str) -> None
     assert redact_url_query(text) == expected
 
 
+_TOKEN = "0123456789ABCDEF0123456789ABCDEF"
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("{'JSESSIONID': 'ABCDEF0123', 'x': '1'}", "{'JSESSIONID': '***', 'x': '1'}"),
-        ("""{'JSESSIONID': "ABC'DEF"}""", """{'JSESSIONID': "***"}"""),
-        ("{b'JSESSIONID': b'ABCDEF0123'}", "{b'JSESSIONID': b'***'}"),
-        ("""{'JSESSIONID': 'AB\\'C"D', 'x': 1}""", "{'JSESSIONID': '***', 'x': 1}"),
-        ('{"jsessionid": "abcdef0123"}', '{"jsessionid": "***"}'),
-        ("{'JSESSIONID': 'ABCDEF0123", "{'JSESSIONID': '***'"),
+        (f"Cookie: JSESSIONID={_TOKEN}; Path=/", "Cookie: JSESSIONID=***; Path=/"),
+        (f"JSESSIONID={_TOKEN}.node1", "JSESSIONID=***"),
+        (repr({"JSESSIONID": _TOKEN, "x": "1"}), "{'JSESSIONID': '***', 'x': '1'}"),
+        (repr({b"JSESSIONID": _TOKEN.encode()}), "{b'JSESSIONID': b'***'}"),
+        (json.dumps({"jsessionid": _TOKEN}), '{"jsessionid": "***"}'),
+        ("{'JSESSIONID': '" + _TOKEN[:10], "{'JSESSIONID': '***"),
+        (repr(str({"JSESSIONID": _TOKEN}).encode()), """b"{'JSESSIONID': '***'}\""""),
+        (repr(json.dumps({"JSESSIONID": _TOKEN})), """'{"JSESSIONID": "***"}'"""),
         (
-            repr(b"{'JSESSIONID': 'ABCDEF0123', 'x': \"s\"}"),
-            """b'{\\'JSESSIONID\\': \\'***\\', \\'x\\': "s"}'""",
+            repr(repr(str({"JSESSIONID": _TOKEN}).encode())),
+            repr("""b"{'JSESSIONID': '***'}\""""),
         ),
         (
-            '{\\"JSESSIONID\\": \\"ABCDEF0123\\", \\"x\\": 1}',
-            '{\\"JSESSIONID\\": \\"***\\", \\"x\\": 1}',
-        ),
-        ("{\\'JSESSIONID\\': \\'ABCDEF0123", "{\\'JSESSIONID\\': \\'***\\'"),
-        (
-            repr(b"{'JSESSIONID': 'ABC\\'SECRET', 'x': \"s\"}"),
-            """b'{\\'JSESSIONID\\': \\'***\\', \\'x\\': "s"}'""",
+            json.dumps(f'Set-Cookie: JSESSIONID="{_TOKEN}"; Path=/'),
+            '"Set-Cookie: JSESSIONID=\\"***\\"; Path=/"',
         ),
         (
-            repr(repr(b"{'JSESSIONID': 'ABC\\'SECRET', 'x': \"s\"}")),
-            repr("""b'{\\'JSESSIONID\\': \\'***\\', \\'x\\': "s"}'"""),
+            repr({"JSESSIONID": "AB\\"}) + " " + repr({"JSESSIONID": _TOKEN}),
+            "{'JSESSIONID': '***\\\\'} {'JSESSIONID': '***'}",
         ),
     ],
     ids=[
-        "str",
-        "double-quoted",
-        "bytes",
-        "escaped-quote",
+        "header",
+        "with-a-route",
+        "mapping",
+        "bytes-mapping",
         "json",
         "truncated",
         "inside-a-bytes-repr",
-        "json-inside-json",
-        "inside-a-repr-truncated",
-        "escaped-quote-inside-a-bytes-repr",
-        "escaped-quote-two-reprs-deep",
+        "json-inside-a-repr",
+        "two-reprs-deep",
+        "json-escaped-header",
+        "after-a-value-ending-in-a-backslash",
     ],
 )
-def test_a_session_cookie_in_a_mapping_repr_is_redacted(text: str, expected: str) -> None:
+def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: str) -> None:
     assert redact_session_cookies(text) == expected
+
+
+def test_a_session_cookie_value_ends_at_a_quote_or_backslash() -> None:
+    # Server session ids never hold either, so the tail of a made-up one that
+    # does stays visible: the matcher does not parse quoting.
+    assert (
+        redact_session_cookies("""{'JSESSIONID': "ABC'DEF"}""") == """{'JSESSIONID': "***'DEF"}"""
+    )
+
+
+def test_session_cookie_redaction_stays_linear_on_long_backslash_runs() -> None:
+    text = "JSESSIONID " + "\\" * 200_000
+
+    started = time.perf_counter()
+    redact_session_cookies(text)
+
+    assert time.perf_counter() - started < 1.0
 
 
 def test_redaction_stays_linear_on_long_unparseable_urls() -> None:
