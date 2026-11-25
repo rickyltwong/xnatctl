@@ -22,6 +22,15 @@ All notable changes to this project will be documented in this file.
   and were not affected.
 - A pip install now requires pydicom 3.0 and packaging 24.2 or later, the
   oldest versions the test suite runs against.
+- `container logs --follow` now stops, and `container launch --wait` now
+  returns, when a container ends in a suffixed failure status such as
+  `Failed (Upload)` or `Failed (Rejected)`. `--follow` used to poll until
+  Ctrl+C, and `--wait` until its `--timeout` (an hour by default), which it
+  then reported as a timeout. Both now stop at the statuses Container Service
+  itself treats as final: those starting with `Complete`, `Failed` or
+  `Killed`. As with a plain `Failed`, `--wait` exits 0 and prints the
+  container, so read its `status` from `-o json` output (not `--quiet`,
+  which prints only the ID) to tell a failure. (#56)
 
 ## 0.7.0 - 2026-11-24
 

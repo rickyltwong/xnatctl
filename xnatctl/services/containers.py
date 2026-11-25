@@ -59,6 +59,19 @@ if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
 
 
+_TERMINAL_STATUS_PREFIXES = ("Complete", "Failed", "Killed")
+
+
+def is_terminal_status(status: str) -> bool:
+    """Tell whether a container status is final, by Container Service's own rule.
+
+    ``ContainerUtils.statusIsTerminal`` is a prefix match, so ``Failed (Upload)``
+    and ``Failed (Rejected)`` are final, while a Swarm interim status such as
+    ``Waiting (Failed (Rejected))`` is not.
+    """
+    return status.startswith(_TERMINAL_STATUS_PREFIXES)
+
+
 def _expect_list(data: Any, path: str) -> builtins.list[dict[str, Any]]:
     if not isinstance(data, list):
         raise XNATCtlError(
