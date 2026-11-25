@@ -34,6 +34,7 @@ from xnatctl.core.exceptions import (
 from xnatctl.core.exceptions import (
     RequestTimeoutError as XNATTimeoutError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.redact import redact_url_query
 from xnatctl.core.retry import (
     _AMBIGUOUS_RETRY_CODES,
@@ -96,18 +97,19 @@ def drop_cookies_off_server(server_url: str) -> Callable[[httpx.Request], None]:
 def _body_snippet(resp: httpx.Response) -> str:
     try:
         return redact_url_query(resp.text[:_BODY_SNIPPET_CHARS])
-    except Exception:  # noqa: BLE001  # best-effort response-body read for an error-message snippet
+    except Exception:
+        logger.exception("could not build the error body snippet", extra={FILE_ONLY_ATTR: True})
         return ""
 
 
 def _read_stream_body(resp: httpx.Response) -> None:
     try:
         resp.read()
-    except Exception:  # noqa: BLE001  # a truncated error body must not eclipse the status it describes
-        pass
+    except Exception:
+        logger.exception("could not read the error response body", extra={FILE_ONLY_ATTR: True})
 
 
-_STREAM_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
+_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
     httpx.ConnectTimeout,
     httpx.ConnectError,
     httpx.TimeoutException,
@@ -142,7 +144,7 @@ def _raise_for_xnat_status(base_url: str, resp: httpx.Response, method: str, pat
         raise ServerError(code, method, path, _body_snippet(resp))
 
 
-def _stream_transport_error(
+def _transport_error(
     base_url: str,
     exc: Exception,
     *,
@@ -235,8 +237,8 @@ def stream(
                 timeout=request_timeout,
             )
             response = http_client.send(request, auth=auth, stream=True)
-        except _STREAM_TRANSPORT_ERRORS as e:
-            last_error = _stream_transport_error(
+        except _TRANSPORT_ERRORS as e:
+            last_error = _transport_error(
                 client.base_url,
                 e,
                 method_upper=method_upper,
@@ -349,7 +351,7 @@ def stream(
     raise RetryExhaustedError("request", client.max_retries + 1, last_error)
 
 
-def request(  # noqa: C901  # pre-existing; see pyproject
+def request(
     client: XNATClient,
     method: str,
     path: str,
@@ -515,31 +517,15 @@ def request(  # noqa: C901  # pre-existing; see pyproject
 
             return resp
 
-        except httpx.ConnectTimeout as e:
-            raise XNATTimeoutError(client.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
-        except httpx.ConnectError:
-            last_error = ServerUnreachableError(client.base_url)
-        except httpx.TimeoutException as e:
-            if not may_retry_after_send:
-                raise XNATTimeoutError(
-                    client.base_url,
-                    read_timeout,
-                    f"{method.upper()} {path} timed out after the request was sent; "
-                    "it may have partially executed on the server. Not retried "
-                    "automatically - check server state before repeating it.",
-                ) from e
-            last_error = NetworkError(client.base_url, f"Timeout after {read_timeout}s")
-        except PERMANENT_TRANSPORT_ERRORS as e:
-            raise NetworkError(client.base_url, f"{type(e).__name__}: {e}") from e
-        except RETRYABLE_TRANSPORT_ERRORS as e:
-            if not may_retry_after_send:
-                raise NetworkError(
-                    client.base_url,
-                    f"{type(e).__name__} on {method.upper()} {path} after the request "
-                    "was sent; it may have partially executed on the server. "
-                    "Not retried automatically.",
-                ) from e
-            last_error = NetworkError(client.base_url, f"{type(e).__name__}: {e}")
+        except _TRANSPORT_ERRORS as e:
+            last_error = _transport_error(
+                client.base_url,
+                e,
+                method_upper=method.upper(),
+                path=path,
+                read_timeout=read_timeout,
+                may_retry_after_send=may_retry_after_send,
+            )
         except (AuthenticationError, ResourceNotFoundError):
             raise
 
