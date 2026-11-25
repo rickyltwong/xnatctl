@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import click
 
@@ -28,6 +30,7 @@ from xnatctl.core.exceptions import (
     ResourceNotFoundError,
     XNATCtlError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.output import print_error, print_output, print_success
 from xnatctl.core.validation import (
     validate_project_id,
@@ -38,6 +41,8 @@ from xnatctl.core.validation import (
 from xnatctl.models.hierarchy import SubjectRef
 from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.subjects import SubjectService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -123,6 +128,196 @@ def _load_patterns_file(
     return compiled
 
 
+def _rename_project(ctx: Context, project: str | None, patterns_file: str | None) -> str:
+    if not project:
+        project = default_project_from_context(ctx)
+        if not project and patterns_file:
+            try:
+                projects = _projects_in_patterns_file(patterns_file)
+            except (OSError, json.JSONDecodeError) as e:
+                raise click.ClickException(f"Failed to read patterns file: {e}") from e
+
+            if len(projects) == 1:
+                project = next(iter(projects))
+            elif len(projects) > 1:
+                profile_name = ctx.profile_name or (
+                    ctx.config.default_profile if ctx.config else "default"
+                )
+                raise click.ClickException(
+                    "Project required. Pass --project/-P or set default_project in profile "
+                    f"'{profile_name}'. Patterns file contains multiple projects: {', '.join(sorted(projects))}"
+                )
+        project = require_project_from_context(ctx, project)
+
+    return validate_project_id(require_project_from_context(ctx, project))
+
+
+@dataclass
+class _RenameRun:
+    """One ``subject rename`` run; ``current_labels`` follows the project as subjects change."""
+
+    service: SubjectService
+    project: str
+    dry_run: bool
+    quiet: bool
+    current_labels: set[str]
+    renamed: dict[str, str] = field(default_factory=dict)
+    merged: dict[str, str] = field(default_factory=dict)
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+
+    def apply(self, label: str, target: str, description: str | None = None) -> None:
+        invalid_reason = _validate_rename_target(target)
+        if invalid_reason is not None:
+            self.skipped.append((label, f"invalid target label: {invalid_reason}"))
+            return
+
+        target_exists = target in self.current_labels
+        if self.dry_run:
+            if target_exists:
+                self.merged[label] = target
+            else:
+                self.renamed[label] = target
+            if description and not self.quiet:
+                click.echo(f"  Rule: {description}")
+            return
+
+        if target_exists:
+            self._merge(label, target, description)
+        else:
+            self._rename(label, target, description)
+
+    def _merge(self, label: str, target: str, description: str | None) -> None:
+        try:
+            result = self.service.merge_subjects(
+                project=self.project,
+                source_label=label,
+                target_label=target,
+                dry_run=False,
+            )
+            self.merged[label] = target
+            self.current_labels.discard(label)
+            if not self.quiet:
+                desc = f" ({description})" if description else ""
+                click.echo(
+                    f"  Merged {label} -> {target} ({result['experiments_moved']} experiments){desc}"
+                )
+        except Exception as e:
+            logger.exception(
+                "Merging subject %s into %s failed", label, target, extra={FILE_ONLY_ATTR: True}
+            )
+            self.skipped.append((label, f"merge failed: {e}"))
+
+    def _rename(self, label: str, target: str, description: str | None) -> None:
+        resp = self.service.rename_raw(self.project, label, target)
+        if resp.status_code == 200:
+            self.renamed[label] = target
+            self.current_labels.discard(label)
+            self.current_labels.add(target)
+            if description and not self.quiet:
+                click.echo(f"  Renamed {label} -> {target} ({description})")
+        else:
+            self.skipped.append((label, f"failed: {resp.status_code}"))
+
+
+def _rename_by_patterns_file(
+    run: _RenameRun, subjects: list[dict[str, Any]], patterns_file: str
+) -> None:
+    try:
+        rules = _load_patterns_file(path=patterns_file, project=run.project)
+    except (OSError, json.JSONDecodeError, ValueError, ConfigurationError) as e:
+        print_error(f"Failed to load patterns file: {e}")
+        raise SystemExit(1) from e
+
+    for subj in subjects:
+        label = subj.get("label")
+        if not isinstance(label, str) or not label:
+            continue
+        if label not in run.current_labels:
+            continue
+
+        match = None
+        matched_to = None
+        matched_desc = None
+        for regex, to_tmpl, desc in rules:
+            m = regex.fullmatch(label)
+            if m:
+                match = m
+                matched_to = to_tmpl
+                matched_desc = desc
+                break
+
+        if not match or not matched_to:
+            continue
+
+        target = _apply_template(template=matched_to, project=run.project, groups=match.groups())
+        if target == label:
+            run.skipped.append((label, "already matches"))
+            continue
+        run.apply(label, target, matched_desc)
+
+
+def _rename_by_mapping(run: _RenameRun, mapping: str) -> None:
+    with open(mapping) as f:
+        rename_map = json.load(f)
+
+    for old_label, new_label in rename_map.items():
+        if old_label not in run.current_labels:
+            run.skipped.append((old_label, "not found"))
+            continue
+
+        if old_label == new_label:
+            run.skipped.append((old_label, "same label"))
+            continue
+
+        if not isinstance(new_label, str):
+            run.skipped.append((old_label, "invalid target label: must be a string"))
+            continue
+
+        run.apply(old_label, new_label)
+
+
+def _rename_by_pattern(
+    run: _RenameRun, subjects: list[dict[str, Any]], pattern: str, to_template: str
+) -> None:
+    regex = validate_regex_pattern(pattern)
+
+    for subj in subjects:
+        label = subj["label"]
+        match = regex.fullmatch(label)
+        if not match:
+            continue
+
+        target = _apply_template(template=to_template, project=run.project, groups=match.groups())
+        if target == label:
+            run.skipped.append((label, "already matches"))
+            continue
+        run.apply(label, target)
+
+
+def _print_rename_report(run: _RenameRun) -> None:
+    prefix = "[DRY-RUN] " if run.dry_run else ""
+
+    if run.renamed:
+        click.echo(f"\n{prefix}Renamed ({len(run.renamed)}):")
+        for old, new in run.renamed.items():
+            click.echo(f"  {old} -> {new}")
+
+    if run.merged:
+        click.echo(f"\n{prefix}Merged ({len(run.merged)}):")
+        for old, new in run.merged.items():
+            click.echo(f"  {old} -> {new}")
+
+    if run.skipped:
+        click.echo(f"\nSkipped ({len(run.skipped)}):")
+        for label, reason in run.skipped:
+            click.echo(f"  {label}: {reason}")
+
+    if not run.dry_run:
+        print_success(
+            f"Renamed: {len(run.renamed)}, Merged: {len(run.merged)}, Skipped: {len(run.skipped)}"
+        )
+
+
 @click.group()
 def subject() -> None:
     """Manage XNAT subjects."""
@@ -187,7 +382,7 @@ def subject_list(
         for subj in subjects:
             try:
                 subj["sessions"] = len(service.experiment_rows(project, subj["id"]))
-            except Exception:  # noqa: BLE001  # per-subject isolation while enriching list with session counts
+            except (XNATCtlError, ValueError):
                 subj["sessions"] = "?"
         enriched = True
     elif needs_sessions_for_controls:
@@ -368,7 +563,7 @@ def subject_delete(
 @global_options
 @handle_errors
 @require_auth
-def subject_rename(  # noqa: C901  # pre-existing; see pyproject
+def subject_rename(
     ctx: Context,
     project: str | None,
     patterns_file: str | None,
@@ -392,27 +587,7 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
         # Using a patterns file (rules are filtered by -P project)
         xnatctl subject rename -P MYPROJ --patterns-file patterns.json --dry-run
     """
-    if not project:
-        project = default_project_from_context(ctx)
-        if not project and patterns_file:
-            try:
-                projects = _projects_in_patterns_file(patterns_file)
-            except (OSError, json.JSONDecodeError) as e:
-                raise click.ClickException(f"Failed to read patterns file: {e}") from e
-
-            if len(projects) == 1:
-                project = next(iter(projects))
-            elif len(projects) > 1:
-                profile_name = ctx.profile_name or (
-                    ctx.config.default_profile if ctx.config else "default"
-                )
-                raise click.ClickException(
-                    "Project required. Pass --project/-P or set default_project in profile "
-                    f"'{profile_name}'. Patterns file contains multiple projects: {', '.join(sorted(projects))}"
-                )
-        project = require_project_from_context(ctx, project)
-
-    project = validate_project_id(require_project_from_context(ctx, project))
+    project = _rename_project(ctx, project, patterns_file)
     subject_svc = SubjectService(ctx.get_client())
 
     if patterns_file:
@@ -424,215 +599,19 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
         raise SystemExit(1)
 
     subjects = subject_svc.list_rows(project)
-    current_labels = {s["label"] for s in subjects}
-
-    renamed = {}
-    merged = {}
-    skipped = []
+    run = _RenameRun(
+        service=subject_svc,
+        project=project,
+        dry_run=dry_run,
+        quiet=ctx.quiet,
+        current_labels={s["label"] for s in subjects},
+    )
 
     if patterns_file:
-        try:
-            rules = _load_patterns_file(path=patterns_file, project=project)
-        except (OSError, json.JSONDecodeError, ValueError, ConfigurationError) as e:
-            print_error(f"Failed to load patterns file: {e}")
-            raise SystemExit(1) from e
-
-        for subj in subjects:
-            label = subj.get("label")
-            if not isinstance(label, str) or not label:
-                continue
-            if label not in current_labels:
-                continue
-
-            match = None
-            matched_to = None
-            matched_desc = None
-            for regex, to_tmpl, desc in rules:
-                m = regex.fullmatch(label)
-                if m:
-                    match = m
-                    matched_to = to_tmpl
-                    matched_desc = desc
-                    break
-
-            if not match or not matched_to:
-                continue
-
-            target = _apply_template(template=matched_to, project=project, groups=match.groups())
-            if target == label:
-                skipped.append((label, "already matches"))
-                continue
-
-            invalid_reason = _validate_rename_target(target)
-            if invalid_reason is not None:
-                skipped.append((label, f"invalid target label: {invalid_reason}"))
-                continue
-
-            target_exists = target in current_labels
-            if dry_run:
-                if target_exists:
-                    merged[label] = target
-                else:
-                    renamed[label] = target
-                if matched_desc and not ctx.quiet:
-                    click.echo(f"  Rule: {matched_desc}")
-                continue
-
-            if target_exists:
-                try:
-                    result = subject_svc.merge_subjects(
-                        project=project,
-                        source_label=label,
-                        target_label=target,
-                        dry_run=False,
-                    )
-                    merged[label] = target
-                    current_labels.discard(label)
-                    if not ctx.quiet:
-                        desc = f" ({matched_desc})" if matched_desc else ""
-                        click.echo(
-                            f"  Merged {label} -> {target} ({result['experiments_moved']} experiments){desc}"
-                        )
-                except Exception as e:  # noqa: BLE001  # per-subject isolation in a patterns/mapping merge loop
-                    skipped.append((label, f"merge failed: {e}"))
-            else:
-                resp = subject_svc.rename_raw(project, label, target)
-                if resp.status_code == 200:
-                    renamed[label] = target
-                    current_labels.discard(label)
-                    current_labels.add(target)
-                    if matched_desc and not ctx.quiet:
-                        click.echo(f"  Renamed {label} -> {target} ({matched_desc})")
-                else:
-                    skipped.append((label, f"failed: {resp.status_code}"))
-
+        _rename_by_patterns_file(run, subjects, patterns_file)
     elif mapping:
-        with open(mapping) as f:
-            rename_map = json.load(f)
-
-        for old_label, new_label in rename_map.items():
-            if old_label not in current_labels:
-                skipped.append((old_label, "not found"))
-                continue
-
-            if old_label == new_label:
-                skipped.append((old_label, "same label"))
-                continue
-
-            if not isinstance(new_label, str):
-                skipped.append((old_label, "invalid target label: must be a string"))
-                continue
-
-            invalid_reason = _validate_rename_target(new_label)
-            if invalid_reason is not None:
-                skipped.append((old_label, f"invalid target label: {invalid_reason}"))
-                continue
-
-            target_exists = new_label in current_labels
-
-            if dry_run:
-                if target_exists:
-                    merged[old_label] = new_label
-                else:
-                    renamed[old_label] = new_label
-            else:
-                if target_exists:
-                    try:
-                        result = subject_svc.merge_subjects(
-                            project=project,
-                            source_label=old_label,
-                            target_label=new_label,
-                            dry_run=False,
-                        )
-                        merged[old_label] = new_label
-                        current_labels.discard(old_label)
-                        if not ctx.quiet:
-                            click.echo(
-                                f"  Merged {old_label} -> {new_label} ({result['experiments_moved']} experiments)"
-                            )
-                    except Exception as e:  # noqa: BLE001  # per-subject isolation in a patterns/mapping merge loop
-                        skipped.append((old_label, f"merge failed: {e}"))
-                else:
-                    resp = subject_svc.rename_raw(project, old_label, new_label)
-                    if resp.status_code == 200:
-                        renamed[old_label] = new_label
-                        current_labels.discard(old_label)
-                        current_labels.add(new_label)
-                    else:
-                        skipped.append((old_label, f"failed: {resp.status_code}"))
-
+        _rename_by_mapping(run, mapping)
     elif pattern and to_template:
-        regex = validate_regex_pattern(pattern)
+        _rename_by_pattern(run, subjects, pattern, to_template)
 
-        for subj in subjects:
-            label = subj["label"]
-            match = regex.fullmatch(label)
-            if not match:
-                continue
-
-            groups = match.groups()
-            target = to_template.replace("{project}", project)
-            for i, g in enumerate(groups, start=1):
-                target = target.replace(f"{{{i}}}", g or "")
-
-            if target == label:
-                skipped.append((label, "already matches"))
-                continue
-
-            invalid_reason = _validate_rename_target(target)
-            if invalid_reason is not None:
-                skipped.append((label, f"invalid target label: {invalid_reason}"))
-                continue
-
-            target_exists = target in current_labels
-
-            if dry_run:
-                if target_exists:
-                    merged[label] = target
-                else:
-                    renamed[label] = target
-            else:
-                if target_exists:
-                    try:
-                        result = subject_svc.merge_subjects(
-                            project=project,
-                            source_label=label,
-                            target_label=target,
-                            dry_run=False,
-                        )
-                        merged[label] = target
-                        current_labels.discard(label)
-                        if not ctx.quiet:
-                            click.echo(
-                                f"  Merged {label} -> {target} ({result['experiments_moved']} experiments)"
-                            )
-                    except Exception as e:  # noqa: BLE001  # per-subject isolation in a patterns/mapping merge loop
-                        skipped.append((label, f"merge failed: {e}"))
-                else:
-                    resp = subject_svc.rename_raw(project, label, target)
-                    if resp.status_code == 200:
-                        renamed[label] = target
-                        current_labels.discard(label)
-                        current_labels.add(target)
-                    else:
-                        skipped.append((label, f"failed: {resp.status_code}"))
-
-    prefix = "[DRY-RUN] " if dry_run else ""
-
-    if renamed:
-        click.echo(f"\n{prefix}Renamed ({len(renamed)}):")
-        for old, new in renamed.items():
-            click.echo(f"  {old} -> {new}")
-
-    if merged:
-        click.echo(f"\n{prefix}Merged ({len(merged)}):")
-        for old, new in merged.items():
-            click.echo(f"  {old} -> {new}")
-
-    if skipped:
-        click.echo(f"\nSkipped ({len(skipped)}):")
-        for label, reason in skipped:
-            click.echo(f"  {label}: {reason}")
-
-    if not dry_run:
-        print_success(f"Renamed: {len(renamed)}, Merged: {len(merged)}, Skipped: {len(skipped)}")
+    _print_rename_report(run)
