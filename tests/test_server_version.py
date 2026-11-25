@@ -179,6 +179,7 @@ class TestServerVersionProperty:
 
     def test_concurrent_access_probes_at_most_once(self) -> None:
         import threading
+        from concurrent.futures import ThreadPoolExecutor
 
         call_started = threading.Event()
         release = threading.Event()
@@ -189,26 +190,17 @@ class TestServerVersionProperty:
             return httpx.Response(200, text="1.9.2")
 
         client, calls = make_client(handler)
-        results: list[tuple[int, int, int] | None] = []
-        errors: list[BaseException] = []
 
-        def access() -> None:
-            try:
-                results.append(client.server_version)
-            except BaseException as e:  # noqa: BLE001 -- surfaced via `errors` below
-                errors.append(e)
+        def access() -> tuple[int, int, int] | None:
+            return client.server_version
 
-        first = threading.Thread(target=access)
-        second = threading.Thread(target=access)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(access)
+            assert call_started.wait(timeout=5), "first thread never reached the probe"
+            second = pool.submit(access)
+            release.set()
+            results = [first.result(timeout=5), second.result(timeout=5)]
 
-        first.start()
-        assert call_started.wait(timeout=5), "first thread never reached the probe"
-        second.start()
-        release.set()
-        first.join(timeout=5)
-        second.join(timeout=5)
-
-        assert not errors, errors
         assert results == [(1, 9, 2), (1, 9, 2)]
         assert len(calls) == 1
 

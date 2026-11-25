@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from xnatctl.core.exceptions import XNATCtlError
 from xnatctl.services.prearchive import (
     PREARCHIVE_CODE_TO_MODE,
     PREARCHIVE_MODE_TO_CODE,
@@ -24,7 +25,7 @@ def routing_project(xnat_client: Any) -> Iterator[str]:
     finally:
         try:
             xnat_client.delete(f"/data/projects/{project_id}", params={"removeFiles": "true"})
-        except Exception as exc:  # noqa: BLE001 -- teardown must not mask a test result
+        except XNATCtlError as exc:
             print(f"\nWARNING: could not delete test project {project_id}: {exc}")
 
 

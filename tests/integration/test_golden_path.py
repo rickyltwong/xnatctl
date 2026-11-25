@@ -188,6 +188,7 @@ class TestRoundTrip:
         tmp_path: Path,
     ) -> None:
         import pydicom
+        from pydicom.errors import InvalidDicomError
 
         from xnatctl.services.downloads import DownloadService
 
@@ -206,7 +207,7 @@ class TestRoundTrip:
                 continue
             try:
                 ds = pydicom.dcmread(path)
-            except Exception:  # noqa: BLE001  # non-DICOM sidecars are not the subject
+            except InvalidDicomError:
                 continue
             got[str(ds.SOPInstanceUID)] = hashlib.sha256(ds.PixelData).hexdigest()
 

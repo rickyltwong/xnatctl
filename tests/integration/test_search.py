@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import ResourceNotFoundError, XNATCtlError
 from xnatctl.services.search import SearchService
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
@@ -38,7 +38,7 @@ def saved_search(xnat_client: Any) -> Iterator[str]:
     finally:
         try:
             xnat_client.delete(f"/data/search/saved/{search_id}")
-        except Exception as exc:  # noqa: BLE001 -- teardown must not mask a test result
+        except XNATCtlError as exc:
             print(f"\nWARNING: could not delete test saved search {search_id}: {exc}")
 
 
