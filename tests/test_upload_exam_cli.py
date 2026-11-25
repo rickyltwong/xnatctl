@@ -41,44 +41,46 @@ def test_session_upload_exam_dry_run_prints_physio_and_misc(
     runner: CliRunner,
     auth_client: FakeClient,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    with runner.isolated_filesystem():
-        monkeypatch.setenv("HOME", str(Path.cwd()))
-        exam_root = Path("exam")
-        dicom_dir = exam_root / "DICOM" / "scan"
-        dicom_dir.mkdir(parents=True)
-        (dicom_dir / "a.dcm").write_text("payload")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(Path.cwd()))
+    exam_root = Path("exam")
+    dicom_dir = exam_root / "DICOM" / "scan"
+    dicom_dir.mkdir(parents=True)
+    (dicom_dir / "a.dcm").write_text("payload")
 
-        physio_dir = exam_root / "Physio"
-        physio_dir.mkdir(parents=True)
-        (physio_dir / "trace.txt").write_text("payload")
-        (exam_root / "notes.txt").write_text("payload")
+    physio_dir = exam_root / "Physio"
+    physio_dir.mkdir(parents=True)
+    (physio_dir / "trace.txt").write_text("payload")
+    (exam_root / "notes.txt").write_text("payload")
 
-        result = runner.invoke(
-            cli,
-            [
-                "session",
-                "upload-exam",
-                str(exam_root),
-                "-P",
-                "P",
-                "-S",
-                "S",
-                "-E",
-                "E",
-                "--dry-run",
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        [
+            "session",
+            "upload-exam",
+            str(exam_root),
+            "-P",
+            "P",
+            "-S",
+            "S",
+            "-E",
+            "E",
+            "--dry-run",
+        ],
+    )
 
-        assert result.exit_code == 0, result.output
-        assert "Physio" in result.output
-        assert "MISC" in result.output
+    assert result.exit_code == 0, result.output
+    assert "Physio" in result.output
+    assert "MISC" in result.output
 
 
 def test_session_upload_exam_only_dicoms_does_not_resolve_experiment_id(
     runner: CliRunner,
     auth_client: FakeClient,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     class UploadServiceSpy:
         last_instance: UploadServiceSpy | None = None
@@ -110,37 +112,38 @@ def test_session_upload_exam_only_dicoms_does_not_resolve_experiment_id(
 
     monkeypatch.setattr("xnatctl.services.upload.UploadService", UploadServiceSpy)
 
-    with runner.isolated_filesystem():
-        monkeypatch.setenv("HOME", str(Path.cwd()))
-        exam_root = Path("exam")
-        dicom_dir = exam_root / "DICOM" / "scan"
-        dicom_dir.mkdir(parents=True)
-        (dicom_dir / "a.dcm").write_text("payload")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(Path.cwd()))
+    exam_root = Path("exam")
+    dicom_dir = exam_root / "DICOM" / "scan"
+    dicom_dir.mkdir(parents=True)
+    (dicom_dir / "a.dcm").write_text("payload")
 
-        result = runner.invoke(
-            cli,
-            [
-                "session",
-                "upload-exam",
-                str(exam_root),
-                "-P",
-                "P",
-                "-S",
-                "S",
-                "-E",
-                "E",
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        [
+            "session",
+            "upload-exam",
+            str(exam_root),
+            "-P",
+            "P",
+            "-S",
+            "S",
+            "-E",
+            "E",
+        ],
+    )
 
-        assert result.exit_code == 0, result.output
-        assert UploadServiceSpy.last_instance is not None
-        assert UploadServiceSpy.last_files_len == 1
+    assert result.exit_code == 0, result.output
+    assert UploadServiceSpy.last_instance is not None
+    assert UploadServiceSpy.last_files_len == 1
 
 
 def test_session_upload_exam_wait_for_archive_default_succeeds(
     runner: CliRunner,
     auth_client: FakeClient,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     class UploadServiceStub:
         def __init__(self, client: FakeClient) -> None:
@@ -245,59 +248,60 @@ def test_session_upload_exam_wait_for_archive_default_succeeds(
 
     monkeypatch.setattr(auth_client, "get_json", fake_get_json)
 
-    with runner.isolated_filesystem():
-        monkeypatch.setenv("HOME", str(Path.cwd()))
-        exam_root = Path("exam")
-        dicom_dir = exam_root / "DICOM" / "scan"
-        dicom_dir.mkdir(parents=True)
-        (dicom_dir / "a.dcm").write_text("payload")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(Path.cwd()))
+    exam_root = Path("exam")
+    dicom_dir = exam_root / "DICOM" / "scan"
+    dicom_dir.mkdir(parents=True)
+    (dicom_dir / "a.dcm").write_text("payload")
 
-        physio_dir = exam_root / "Physio"
-        physio_dir.mkdir(parents=True)
-        (physio_dir / "trace.txt").write_text("payload")
+    physio_dir = exam_root / "Physio"
+    physio_dir.mkdir(parents=True)
+    (physio_dir / "trace.txt").write_text("payload")
 
-        result = runner.invoke(
-            cli,
-            [
-                "session",
-                "upload-exam",
-                str(exam_root),
-                "-P",
-                "P",
-                "-S",
-                "S",
-                "-E",
-                "E",
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        [
+            "session",
+            "upload-exam",
+            str(exam_root),
+            "-P",
+            "P",
+            "-S",
+            "S",
+            "-E",
+            "E",
+        ],
+    )
 
-        assert result.exit_code == 0, result.output
-        assert resolve_calls["count"] == 2
-        assert ResourceServiceSpy.calls == [
-            (
-                "create",
-                {
-                    "session_id": resolved_experiment_id,
-                    "resource_label": "Physio",
-                    "project": "P",
-                },
-            ),
-            (
-                "upload_directory",
-                {
-                    "session_id": resolved_experiment_id,
-                    "resource_label": "Physio",
-                    "directory_name": "Physio",
-                    "project": "P",
-                },
-            ),
-        ]
+    assert result.exit_code == 0, result.output
+    assert resolve_calls["count"] == 2
+    assert ResourceServiceSpy.calls == [
+        (
+            "create",
+            {
+                "session_id": resolved_experiment_id,
+                "resource_label": "Physio",
+                "project": "P",
+            },
+        ),
+        (
+            "upload_directory",
+            {
+                "session_id": resolved_experiment_id,
+                "resource_label": "Physio",
+                "directory_name": "Physio",
+                "project": "P",
+            },
+        ),
+    ]
 
 
 def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
     runner: CliRunner,
     auth_client: FakeClient,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     class UploadServiceStub:
         def __init__(self, client: FakeClient) -> None:
@@ -342,42 +346,42 @@ def test_session_upload_exam_wait_for_archive_timeout_degrades_gracefully(
 
     monkeypatch.setattr(auth_client, "get_json", fake_get_json)
 
-    with runner.isolated_filesystem():
-        monkeypatch.setenv("HOME", str(Path.cwd()))
-        exam_root = Path("exam")
-        dicom_dir = exam_root / "DICOM" / "scan"
-        dicom_dir.mkdir(parents=True)
-        (dicom_dir / "a.dcm").write_text("payload")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(Path.cwd()))
+    exam_root = Path("exam")
+    dicom_dir = exam_root / "DICOM" / "scan"
+    dicom_dir.mkdir(parents=True)
+    (dicom_dir / "a.dcm").write_text("payload")
 
-        physio_dir = exam_root / "Physio"
-        physio_dir.mkdir(parents=True)
-        (physio_dir / "trace.txt").write_text("payload")
+    physio_dir = exam_root / "Physio"
+    physio_dir.mkdir(parents=True)
+    (physio_dir / "trace.txt").write_text("payload")
 
-        result = runner.invoke(
-            cli,
-            [
-                "session",
-                "upload-exam",
-                str(exam_root),
-                "-P",
-                "P",
-                "-S",
-                "S",
-                "-E",
-                "E",
-                "-o",
-                "json",
-                "--wait-timeout",
-                "1",
-                "--wait-interval",
-                "1",
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        [
+            "session",
+            "upload-exam",
+            str(exam_root),
+            "-P",
+            "P",
+            "-S",
+            "S",
+            "-E",
+            "E",
+            "-o",
+            "json",
+            "--wait-timeout",
+            "1",
+            "--wait-interval",
+            "1",
+        ],
+    )
 
-        assert "No such option" not in result.output
-        assert result.exit_code == 0
-        assert "ResourceNotFoundError" not in result.output
-        assert "Timed out waiting for archived experiment ID" not in result.output
-        assert '"attached": false' in result.output
-        assert '"pending": 1' in result.output
-        assert "--attach-only" in result.output
+    assert "No such option" not in result.output
+    assert result.exit_code == 0
+    assert "ResourceNotFoundError" not in result.output
+    assert "Timed out waiting for archived experiment ID" not in result.output
+    assert '"attached": false' in result.output
+    assert '"pending": 1' in result.output
+    assert "--attach-only" in result.output

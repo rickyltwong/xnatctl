@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import json
+import sys
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import click
 import pytest
 from conftest import AuthenticatedCLI, make_response
 
@@ -210,6 +213,28 @@ class TestContainerShow:
 
         assert result.exit_code == 0
         authenticated_cli.client.get_json.assert_called_once_with("/xapi/containers/weu6k9c3f1a2")
+
+
+class TestBinaryStdout:
+    def test_a_binary_stdout_is_written_to_directly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        out = io.BytesIO()
+        monkeypatch.setattr(sys, "stdout", out)
+
+        assert container_cli._binary_stdout() is out
+
+    def test_a_text_stdout_is_written_through_its_buffer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        out = io.TextIOWrapper(io.BytesIO())
+        monkeypatch.setattr(sys, "stdout", out)
+
+        assert container_cli._binary_stdout() is out.buffer
+
+    def test_a_text_only_stdout_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "stdout", io.StringIO())
+
+        with pytest.raises(click.ClickException, match="does not accept bytes"):
+            container_cli._binary_stdout()
 
 
 class TestContainerLogs:

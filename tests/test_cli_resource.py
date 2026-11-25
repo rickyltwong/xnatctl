@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -683,53 +684,57 @@ class TestResourceScopeLevels:
             ),
         ],
     )
-    def test_download_scope_urls(self, runner: CliRunner, args, expected_url) -> None:
+    def test_download_scope_urls(
+        self, runner: CliRunner, args, expected_url, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = _mock_client()
         capture: dict = {}
         _wire_stream(client, capture)
 
-        with runner.isolated_filesystem():
-            with core_config_seam(_mock_config()):
-                with config_seam(_mock_config()):
-                    with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                        result = runner.invoke(
-                            cli, ["resource", "download", *args, "-f", "out.zip"]
-                        )
+        monkeypatch.chdir(tmp_path)
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["resource", "download", *args, "-f", "out.zip"])
 
         assert result.exit_code == 0, result.output
         assert capture["url"] == expected_url
 
-    def test_download_no_scope_rejected(self, runner: CliRunner) -> None:
+    def test_download_no_scope_rejected(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = _mock_client()
 
-        with runner.isolated_filesystem():
-            with core_config_seam(_mock_config()):
-                with config_seam(_mock_config()):
-                    with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                        result = runner.invoke(
-                            cli, ["resource", "download", "TEMPLATEFLOW", "-f", "out.zip"]
-                        )
+        monkeypatch.chdir(tmp_path)
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["resource", "download", "TEMPLATEFLOW", "-f", "out.zip"]
+                    )
 
         assert result.exit_code != 0
         assert "Provide a SESSION argument" in result.output
 
-    def test_download_typed_failure_exits_cleanly(self, runner: CliRunner) -> None:
+    def test_download_typed_failure_exits_cleanly(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from xnatctl.core.exceptions import SessionExpiredError
 
         client = _mock_client()
 
-        with runner.isolated_filesystem():
-            with core_config_seam(_mock_config()):
-                with config_seam(_mock_config()):
-                    with patch("xnatctl.cli.common.XNATClient", return_value=client):
-                        with patch(
-                            "xnatctl.cli.resource.stream_to_file",
-                            side_effect=SessionExpiredError("https://xnat.example.org"),
-                        ):
-                            result = runner.invoke(
-                                cli,
-                                ["resource", "download", "XNAT_E00001", "DICOM", "-f", "out.zip"],
-                            )
+        monkeypatch.chdir(tmp_path)
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    with patch(
+                        "xnatctl.cli.resource.stream_to_file",
+                        side_effect=SessionExpiredError("https://xnat.example.org"),
+                    ):
+                        result = runner.invoke(
+                            cli,
+                            ["resource", "download", "XNAT_E00001", "DICOM", "-f", "out.zip"],
+                        )
 
         assert result.exit_code == 3, result.output
         assert "Session expired" in result.output
