@@ -51,7 +51,7 @@ class TestIsTerminalStatus:
             "Staging",
             "Waiting",
             "Finalizing",
-            "Queued for finalizing",
+            "_Waiting (Failed (Rejected))",
             "Waiting (Failed (Rejected))",
             "Died",
         ],
