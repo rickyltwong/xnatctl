@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import builtins
+import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -12,11 +13,14 @@ from xnatctl.core.exceptions import (
     InputValidationError,
     ResourceNotFoundError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.subject import Subject
 
 from .hierarchy import HierarchyService
 from .subjects_sharing import _SubjectSharingMixin
+
+logger = logging.getLogger(__name__)
 
 _FIELD_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]+")
 
@@ -277,7 +281,10 @@ class SubjectService(_SubjectSharingMixin):
                         "reason": "not found",
                     }
                 )
-            except Exception as e:  # noqa: BLE001  # per-item batch isolation in rename_batch/rename_pattern
+            except Exception as e:
+                logger.exception(
+                    "subject rename failed for %s", old_label, extra={FILE_ONLY_ATTR: True}
+                )
                 results["errors"].append(
                     {
                         "label": old_label,
@@ -287,7 +294,7 @@ class SubjectService(_SubjectSharingMixin):
 
         return results
 
-    def rename_pattern(  # noqa: C901  # pre-existing; see pyproject
+    def rename_pattern(
         self,
         project: str,
         match_pattern: str,
@@ -349,21 +356,7 @@ class SubjectService(_SubjectSharingMixin):
                                 }
                             )
                         else:
-                            try:
-                                self.rename(old_label, new_label, project=project)
-                                results["merged"].append(
-                                    {
-                                        "from": old_label,
-                                        "to": new_label,
-                                    }
-                                )
-                            except Exception as e:  # noqa: BLE001  # per-item batch isolation in rename_batch/rename_pattern
-                                results["errors"].append(
-                                    {
-                                        "label": old_label,
-                                        "error": str(e),
-                                    }
-                                )
+                            self._rename_into(results, "merged", old_label, new_label, project)
                 else:
                     for old_label in old_labels:
                         results["skipped"].append(
@@ -389,23 +382,36 @@ class SubjectService(_SubjectSharingMixin):
                         }
                     )
                 else:
-                    try:
-                        self.rename(old_label, new_label, project=project)
-                        results["renamed"].append(
-                            {
-                                "from": old_label,
-                                "to": new_label,
-                            }
-                        )
-                    except Exception as e:  # noqa: BLE001  # per-item batch isolation in rename_batch/rename_pattern
-                        results["errors"].append(
-                            {
-                                "label": old_label,
-                                "error": str(e),
-                            }
-                        )
+                    self._rename_into(results, "renamed", old_label, new_label, project)
 
         return results
+
+    def _rename_into(
+        self,
+        results: dict[str, Any],
+        bucket: Literal["renamed", "merged"],
+        old_label: str,
+        new_label: str,
+        project: str,
+    ) -> None:
+        try:
+            self.rename(old_label, new_label, project=project)
+            results[bucket].append(
+                {
+                    "from": old_label,
+                    "to": new_label,
+                }
+            )
+        except Exception as e:
+            logger.exception(
+                "subject rename failed for %s", old_label, extra={FILE_ONLY_ATTR: True}
+            )
+            results["errors"].append(
+                {
+                    "label": old_label,
+                    "error": str(e),
+                }
+            )
 
     def get_sessions(
         self,
