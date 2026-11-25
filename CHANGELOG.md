@@ -36,15 +36,16 @@ All notable changes to this project will be documented in this file.
   `xnat:optSessionData` session. It asked XNAT only for scans of a type
   guessed from the session's and showed none; it now lists them the way
   `scan list` does. (#57)
-- The `--log-file` diagnostics file now records the traceback of failures
-  that xnatctl reports and carries on past, such as one subject failing in a
+- The `--log-file` diagnostics file now records the traceback of failures that
+  xnatctl reports and carries on past, such as one subject failing in a
   `subject rename` batch, one scan or resource in a `session download`, a
   failed audit-log write or a failed update notice. Console output is
   unchanged. Where the exception's text can quote DICOM values or a session
-  token (the `dicom` commands, DICOM C-STORE, logout), the record keeps the
-  traceback and the exception's type but not its text. A Python program that
-  configures its own logging receives these records too, at `ERROR` level;
-  each carries an `xnatctl_file_only` attribute to filter on.
+  token (a file that `dicom validate` or `dicom anonymize` skips, a failed
+  C-STORE send, logout), the record keeps the traceback and the exception's
+  type but not its text. A Python program that configures its own logging
+  receives these records too, at `ERROR` level; each carries an
+  `xnatctl_file_only` attribute to filter on.
 - The `--log-file` diagnostics file now redacts `JSESSIONID` session cookies
   inside tracebacks, as it already did inside messages. Before, a traceback
   that quoted a cookie header wrote the live session token to the file.

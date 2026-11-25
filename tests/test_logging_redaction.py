@@ -119,6 +119,14 @@ def test_url_redaction_ignores_the_scheme_case(text: str, expected: str) -> None
             '{\\"JSESSIONID\\": \\"***\\", \\"x\\": 1}',
         ),
         ("{\\'JSESSIONID\\': \\'ABCDEF0123", "{\\'JSESSIONID\\': \\'***\\'"),
+        (
+            repr(b"{'JSESSIONID': 'ABC\\'SECRET', 'x': \"s\"}"),
+            """b'{\\'JSESSIONID\\': \\'***\\', \\'x\\': "s"}'""",
+        ),
+        (
+            repr(repr(b"{'JSESSIONID': 'ABC\\'SECRET', 'x': \"s\"}")),
+            repr("""b'{\\'JSESSIONID\\': \\'***\\', \\'x\\': "s"}'"""),
+        ),
     ],
     ids=[
         "str",
@@ -130,6 +138,8 @@ def test_url_redaction_ignores_the_scheme_case(text: str, expected: str) -> None
         "inside-a-bytes-repr",
         "json-inside-json",
         "inside-a-repr-truncated",
+        "escaped-quote-inside-a-bytes-repr",
+        "escaped-quote-two-reprs-deep",
     ],
 )
 def test_a_session_cookie_in_a_mapping_repr_is_redacted(text: str, expected: str) -> None:

@@ -303,7 +303,8 @@ def _debug_log_retryable_400_body(resp: httpx.Response, label: str) -> None:
     try:
         logger.debug("%s: retryable HTTP 400 body: %s", label, snippet[:200])
     except Exception:
-        # Optional output: a handler that fails on this line must not end the retries.
+        # Optional output: a handler that fails on this line must not end the
+        # retries. One that also fails on this record still does.
         logger.exception("could not log a retryable HTTP 400 body", extra={FILE_ONLY_ATTR: True})
 
 

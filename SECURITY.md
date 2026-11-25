@@ -110,14 +110,20 @@ completeness. `services/upload/dicom_store.py` (the C-STORE transport) does
 parse DICOM files with `pydicom`, but only to populate missing SOP UIDs
 before sending -- its batch logs record file paths, DICOM status codes and,
 when a send raises, the exception's text, which names the dataset's SOP Class
-UID when the peer accepted no presentation context for it. When one of these
-commands fails on a file, the `--log-file` diagnostics record keeps the
-traceback and the exception's type but not its text, which pydicom can build
-from an element's value
-(`withhold_details` in `core/logging.py`). The frames are the live ones: a
-handler that captures frame locals, which xnatctl's own formatters do not,
-sees the values in them, as it would in any traceback. The CLI never shows
-pydicom's own log lines, whose text can quote an element's value.
+UID when the peer accepted no presentation context for it. When `dicom
+validate`, `dicom anonymize` or a C-STORE send fails on one file and goes on
+to the next, the `--log-file` record of that failure keeps the traceback and
+the exception's type but not its text, which pydicom can build from an
+element's value (`withhold_details` in `core/logging.py`). A failure that ends
+the command is different: `dicom inspect` failing to convert a malformed
+value prints the exception's text on stderr, and the diagnostics file's
+`Command failed` record keeps it. The frames are the live ones: a handler that
+captures frame locals, which xnatctl's own formatters do not, sees the values
+in them, as it would in any traceback. The CLI never shows pydicom's own log
+lines, whose text can quote an element's value. Two other channels still
+reach stderr: pydicom's Python warnings, which can quote one too, and
+pynetdicom's log under `session upload-dicom --verbose`, which names each
+instance's SOP Instance UID.
 
 Two things worth knowing about the boundaries of this:
 

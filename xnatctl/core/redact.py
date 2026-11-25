@@ -139,21 +139,19 @@ def redact_url_query(text: str) -> str:
 # quote of httpcore's bytes repr), or comma.
 _SESSION_COOKIE_RE = re.compile(r"(JSESSIONID=)(?:\"[^\"]*\"|[^;\s'\",]+)", re.IGNORECASE)
 # The same value in a mapping's repr, such as a cookie dict: {'JSESSIONID': '...'}.
-# Either quote, str or bytes, escapes inside, and a value cut off at the end. The
-# quotes are themselves escaped when that repr sits inside another, such as a
-# bytes repr logged with %r: b'{\'JSESSIONID\': \'...\'}'.
+# Either quote, str or bytes, and a value cut off at the end. Each repr the mapping
+# sits inside, such as a bytes repr logged with %r, escapes its quotes once more:
+# b'{\'JSESSIONID\': \'...\'}'. The value ends at a quote escaped exactly as its
+# opening one was; a quote with more backslashes before it is part of the value.
 _SESSION_COOKIE_ITEM_RE = re.compile(
     r"""
     (                                   # 1: the key and the value's opening quote
-      b?(\\?)(['"])JSESSIONID\2\3        # the key, its quotes escaped (2) or not
+      b?(\\*)(['"])JSESSIONID\2\3        # the key, its quotes escaped (2) or not
       \s*:\s*b?
-      (\\)?(['"])                       # the value's quote, escaped (4) or not
+      (\\*)(['"])                       # the value's quote, escaped (4) or not
     )
-    (?(4)
-      (?:(?!\\\5)[\s\S])*+(?:\\\5|\Z)        # escaped: to the next escaped quote
-    |
-      (?:\\[\s\S]?|(?!\5)[^\\])*+(?:\5|\Z)   # plain: to the next unescaped quote
-    )
+    (?:(?!(?<!\\)\4\5)[\s\S])*+          # the value
+    (?:\4\5|\Z)
     """,
     re.IGNORECASE | re.VERBOSE,
 )

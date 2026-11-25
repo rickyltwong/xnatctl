@@ -158,8 +158,9 @@ shows under ``-v``; it is the *only* copy when stderr is quiet.
 A failure that xnatctl reports and carries on past -- one item in a batch or
 worker pool, the audit-log write, the update notice -- is recorded here at
 ``ERROR`` level with its traceback, and never on stderr. Where the exception's
-text can quote DICOM values or a session token, the record keeps the
-traceback and the exception's type but not its text. A Python program that
+text can quote DICOM values or a session token (a file that ``dicom validate``
+or ``dicom anonymize`` skips, a failed C-STORE send, logout), the record keeps
+the traceback and the exception's type but not its text. A Python program that
 configures its own logging receives those records too. Each such failure is
 already reported in the call's return value, and the record carries an
 ``xnatctl_file_only`` attribute (``xnatctl.core.logging.FILE_ONLY_ATTR``), so

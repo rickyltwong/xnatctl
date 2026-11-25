@@ -313,3 +313,16 @@ def test_the_console_handler_writes_to_the_current_stderr(
         logging.getLogger("xnatctl.test").warning("%s run", run)
 
         assert f"{run} run" in stderr.getvalue()
+
+
+@pytest.mark.usefixtures("clean_root")
+def test_a_closed_stderr_does_not_turn_a_warning_into_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logging.getLogger().handlers = []
+    setup_logging(logging.WARNING)
+    closed = io.StringIO()
+    closed.close()
+    monkeypatch.setattr(sys, "stderr", closed)
+
+    logging.getLogger("xnatctl.test").warning("nowhere to go")
