@@ -302,14 +302,22 @@ def test_the_console_handler_writes_to_the_current_stderr(
         assert f"{run} run" in stderr.getvalue()
 
 
+class _BrokenPipe(io.StringIO):
+    def write(self, _text: str) -> int:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
 @pytest.mark.usefixtures("clean_root")
-def test_a_closed_stderr_does_not_turn_a_warning_into_an_error(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("stderr_kind", ["closed", "broken-pipe"])
+def test_an_unusable_stderr_does_not_turn_a_warning_into_an_error(
+    monkeypatch: pytest.MonkeyPatch, stderr_kind: str
 ) -> None:
     logging.getLogger().handlers = []
     setup_logging(logging.WARNING)
-    closed = io.StringIO()
-    closed.close()
-    monkeypatch.setattr(sys, "stderr", closed)
+    stderr: io.StringIO = _BrokenPipe()
+    if stderr_kind == "closed":
+        stderr = io.StringIO()
+        stderr.close()
+    monkeypatch.setattr(sys, "stderr", stderr)
 
     logging.getLogger("xnatctl.test").warning("nowhere to go")

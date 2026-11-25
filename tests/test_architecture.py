@@ -244,12 +244,60 @@ def test_call_guard_ignores_non_client_code(source: str) -> None:
 
 
 PACKAGE_DIR = CLI_DIR.parent
-# Logged on the console before tracebacks moved to the diagnostics file, and
-# left there: a failed token refresh is something the user acts on.
-CONSOLE_EXCEPTION_CALLS = {("services/upload/shared.py", "Session refresh failed")}
+# Log calls that put a traceback on the console. Each was there before
+# tracebacks moved to the diagnostics file and is left as it was; any other
+# call that logs a traceback marks it file-only.
+CONSOLE_TRACEBACK_CALLS = sorted(
+    [
+        ("services/transfer/executor_archive.py", "'%s for %s'"),
+        ("services/transfer/executor_archive.py", "'Poll cycle error for %s, retrying next cycle'"),
+        (
+            "services/transfer/orchestrator.py",
+            "'Failed to query dest experiments for reconciliation'",
+        ),
+        ("services/transfer/orchestrator.py", "'Failed to query dest subjects for reconciliation'"),
+        ("services/transfer/poller.py", "'Archive poller crashed'"),
+        ("services/transfer/poller.py", "'Archive wait failed for %s in blocking drain'"),
+        ("services/transfer/poller.py", "'Failed to fetch prearchive snapshot'"),
+        ("services/transfer/poller.py", "'Prearchive archive failed for %s in blocking drain'"),
+        ("services/transfer/poller.py", "'Prearchive archive failed for %s'"),
+        (
+            "services/transfer/poller.py",
+            "'Prearchive resolution failed for %s (attempt %d), will retry'",
+        ),
+        (
+            "services/transfer/poller.py",
+            "'Prearchive resolution failed for %s in blocking drain, falling back to "
+            "wait_for_archive'",
+        ),
+        ("services/transfer/poller.py", "'count_dest_scans failed for %s, will retry'"),
+        ("services/transfer/scan_pipeline_finalize.py", "failed_message"),
+        ("services/upload/shared.py", "'Session refresh failed'"),
+    ]
+)
 
 
-def _exception_calls() -> list[tuple[str, int, ast.Call]]:
+def _logs_a_traceback(call: ast.Call) -> bool:
+    if isinstance(call.func, ast.Attribute) and call.func.attr == "exception":
+        return True
+    exc_info = next((k.value for k in call.keywords if k.arg == "exc_info"), None)
+    if exc_info is None:
+        return False
+    return not (isinstance(exc_info, ast.Constant) and exc_info.value in (False, None))
+
+
+def _marks_file_only(call: ast.Call) -> bool:
+    extra = next((k.value for k in call.keywords if k.arg == "extra"), None)
+    return isinstance(extra, ast.Dict) and any(
+        isinstance(key, ast.Name)
+        and key.id == "FILE_ONLY_ATTR"
+        and isinstance(value, ast.Constant)
+        and value.value is True
+        for key, value in zip(extra.keys, extra.values, strict=True)
+    )
+
+
+def _traceback_calls() -> list[tuple[str, ast.Call]]:
     calls = []
     for path in sorted(PACKAGE_DIR.rglob("*.py")):
         rel = path.relative_to(PACKAGE_DIR).as_posix()
@@ -257,28 +305,21 @@ def _exception_calls() -> list[tuple[str, int, ast.Call]]:
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "exception"
                 and isinstance(node.func.value, ast.Name)
                 and node.func.value.id == "logger"
+                and _logs_a_traceback(node)
             ):
-                calls.append((rel, node.lineno, node))
+                calls.append((rel, node))
     return calls
 
 
-def _marks_file_only(call: ast.Call) -> bool:
-    extra = next((k.value for k in call.keywords if k.arg == "extra"), None)
-    return isinstance(extra, ast.Dict) and any(
-        isinstance(key, ast.Name) and key.id == "FILE_ONLY_ATTR" for key in extra.keys
+def test_logged_tracebacks_go_to_the_diagnostics_file_only() -> None:
+    calls = _traceback_calls()
+    console = sorted(
+        (rel, ast.unparse(call.args[0]) if call.args else "")
+        for rel, call in calls
+        if not _marks_file_only(call)
     )
 
-
-def _first_arg(call: ast.Call) -> object:
-    return call.args[0].value if call.args and isinstance(call.args[0], ast.Constant) else None
-
-
-def test_logged_tracebacks_go_to_the_diagnostics_file_only() -> None:
-    calls = _exception_calls()
-    console = {(rel, _first_arg(call)) for rel, _, call in calls if not _marks_file_only(call)}
-
-    assert len(calls) > 50
-    assert console == CONSOLE_EXCEPTION_CALLS
+    assert len(calls) > 60
+    assert console == CONSOLE_TRACEBACK_CALLS

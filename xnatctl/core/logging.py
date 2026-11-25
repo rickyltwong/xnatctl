@@ -186,8 +186,10 @@ class _CurrentStderrHandler(logging.StreamHandler[TextIO]):
         raise AttributeError("this handler always writes to the current sys.stderr")
 
     def handleError(self, record: logging.LogRecord) -> None:
-        # The default report also goes to sys.stderr, which may be the stream that failed.
-        with contextlib.suppress(OSError, ValueError):
+        # The default report also goes to sys.stderr, which may be the stream that
+        # failed. It absorbs an OSError there itself, but a closed stream raises
+        # ValueError.
+        with contextlib.suppress(ValueError):
             super().handleError(record)
 
 

@@ -125,6 +125,11 @@ _TOKEN = "0123456789ABCDEF0123456789ABCDEF"
             "'a=b\\r\\nJSESSIONID=***; Path=/'",
         ),
         ("Cookie: a=b%3BJSESSIONID=" + _TOKEN, "Cookie: a=b%3BJSESSIONID=***"),
+        (
+            "Set-Cookie: XNAT_JSESSIONID=" + _TOKEN + "; Path=/",
+            "Set-Cookie: XNAT_JSESSIONID=***; Path=/",
+        ),
+        ("Cookie: proxy_jsessionid=" + _TOKEN, "Cookie: proxy_jsessionid=***"),
     ],
     ids=[
         "header",
@@ -142,6 +147,8 @@ _TOKEN = "0123456789ABCDEF0123456789ABCDEF"
         "escaped-whitespace-before-the-value",
         "after-an-escaped-newline",
         "after-an-encoded-separator",
+        "prefixed-name-in-a-header",
+        "prefixed-name-in-a-cookie-header",
     ],
 )
 def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: str) -> None:
