@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 import types
 from collections.abc import Iterator
@@ -293,3 +294,35 @@ def test_patch_target_is_the_module_not_an_attribute() -> None:
     with pytest.raises(AttributeError):
         with patch.object(dicom_store_mod, "AE"):
             pass
+
+
+def test_a_failed_send_keeps_the_exception_text_out_of_the_log_record(
+    service: UploadService, dicom_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uid = "1.2.826.0.1.3680043.99.42"
+
+    def failing_send(self: FakeAssociation, ds: object) -> FakeStatus:
+        raise ValueError(f"no presentation context for {uid}")
+
+    monkeypatch.setattr(FakeAssociation, "send_c_store", failing_send)
+    records: list[logging.LogRecord] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    store_logger = logging.getLogger("xnatctl.services.upload.dicom_store")
+    capture = Capture()
+    store_logger.addHandler(capture)
+    try:
+        summary = service.upload_dicom_store(dicom_root, "host", "XNAT", workers=1)
+    finally:
+        store_logger.removeHandler(capture)
+
+    assert summary.failed == 6
+    failures = [r for r in records if r.exc_info]
+    assert len(failures) == 6
+    for record in failures:
+        assert record.exc_info is not None
+        assert type(record.exc_info[1]).__name__ == "DetailsWithheldError"
+        assert uid not in logging.Formatter().format(record)

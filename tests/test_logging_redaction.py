@@ -120,6 +120,11 @@ _TOKEN = "0123456789ABCDEF0123456789ABCDEF"
             repr((b"Set-Cookie", b"JSESSIONID=\t " + _TOKEN.encode() + b"; Path=/")),
             "(b'Set-Cookie', b'JSESSIONID=\\t ***; Path=/')",
         ),
+        (
+            repr("a=b\r\nJSESSIONID=" + _TOKEN + "; Path=/"),
+            "'a=b\\r\\nJSESSIONID=***; Path=/'",
+        ),
+        ("Cookie: a=b%3BJSESSIONID=" + _TOKEN, "Cookie: a=b%3BJSESSIONID=***"),
     ],
     ids=[
         "header",
@@ -135,6 +140,8 @@ _TOKEN = "0123456789ABCDEF0123456789ABCDEF"
         "after-a-value-ending-in-a-backslash",
         "bytes-mapping-two-reprs-deep",
         "escaped-whitespace-before-the-value",
+        "after-an-escaped-newline",
+        "after-an-encoded-separator",
     ],
 )
 def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: str) -> None:
@@ -207,6 +214,23 @@ def test_a_record_whose_args_do_not_fit_its_format_is_still_emitted(
 
     output = stream.getvalue()
     assert "got %d from %s" in output
+    assert "s3cret" not in output
+
+
+@pytest.mark.parametrize(
+    ("msg", "args"),
+    [("%(missing)s from %(url)s", ({"url": SECRET_URL},)), ("bad %y from %s", (1, SECRET_URL))],
+    ids=["missing-key", "unknown-conversion"],
+)
+def test_a_record_with_a_broken_format_is_still_emitted_and_redacted(
+    filtered_logger: tuple[logging.Logger, io.StringIO], msg: str, args: tuple[object, ...]
+) -> None:
+    logger, stream = filtered_logger
+
+    logger.info(msg, *args)
+
+    output = stream.getvalue()
+    assert msg in output
     assert "s3cret" not in output
 
 

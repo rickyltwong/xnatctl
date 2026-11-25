@@ -61,16 +61,15 @@ All notable changes to this project will be documented in this file.
 - As a library, xnatctl no longer prints its log records to stderr through
   Python's last-resort handler when the application has not configured
   logging. Configure logging to see them.
-- The commands that skip the global options (the `config` subcommands,
-  `local extract`, `project transfer-init`, and the `dicom` and `completion`
+- The commands that skip the global options (the `config` subcommands, `local
+  extract`, `project transfer-init`, and the `dicom` and `completion`
   subcommands) now print warnings in the same `<time> [WARNING] <logger>:`
   format as every other command. With `--log-file` they used to print none,
   such as `config`'s warning that the config file is readable by other users
-  and stores a plaintext password. A root `-q` now silences them, as it does
-  for every other command. A failed command no longer prints a record meant
-  only for the diagnostics file: a failed `config remove-profile` loses its
-  stray `Command exited with code 1`, and an unwritable `--log-file` gives the
-  usual one-line error instead of a `Command failed` traceback.
+  and stores a plaintext password. A failed command no longer prints a record
+  meant only for the diagnostics file: a failed `config remove-profile` loses
+  its stray `Command exited with code 1`, and an unwritable `--log-file` gives
+  the usual one-line error instead of a `Command failed` traceback.
 - The CLI no longer shows pydicom's own log lines, whose text can quote a
   DICOM element's value. `session upload-dicom` printed them; most repeat a
   Python warning that pydicom still prints.

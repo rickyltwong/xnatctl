@@ -156,6 +156,33 @@ def _write_dicom_with_an_unknown_charset(path) -> None:
 
 
 class TestCommandsWithoutGlobalOptions:
+    def test_their_log_keeps_warnings_and_drops_info(self, clean_root: None) -> None:
+        import logging
+
+        import click
+
+        messages: list[str] = []
+
+        class Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                messages.append(record.getMessage())
+
+        @click.command("probe-no-globals")
+        def probe() -> None:
+            log = logging.getLogger("xnatctl.test.no_globals")
+            log.info("info line")
+            log.warning("warning line")
+
+        logging.getLogger().addHandler(Capture())
+        cli.add_command(probe)
+        try:
+            result = CliRunner().invoke(cli, ["probe-no-globals"])
+        finally:
+            cli.commands.pop("probe-no-globals")
+
+        assert result.exit_code == 0, result.output
+        assert messages == ["warning line"]
+
     @pytest.mark.parametrize(
         "root_args", [[], ["--log-file", "diag.jsonl"]], ids=["plain", "log-file"]
     )

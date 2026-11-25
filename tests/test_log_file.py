@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -981,12 +982,21 @@ class TestDiagnosticsFileFailures:
             " at https://xnat.example.org/data?token=*** JSESSIONID=***\n"
         )
 
-    def test_a_failed_write_with_a_broken_stderr_does_not_raise(
-        self, tmp_path: Path, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("stderr_kind", ["broken-pipe", "closed"])
+    def test_a_failed_write_with_an_unusable_stderr_does_not_raise(
+        self,
+        tmp_path: Path,
+        clean_root: None,
+        monkeypatch: pytest.MonkeyPatch,
+        stderr_kind: str,
     ) -> None:
         install_log_file(tmp_path / "diag.jsonl")
         _diagnostics_handler().stream = _FailingStream(OSError(28, "No space left on device"))
-        monkeypatch.setattr(sys, "stderr", _FailingStream(BrokenPipeError(32, "Broken pipe")))
+        stderr: object = _FailingStream(BrokenPipeError(32, "Broken pipe"))
+        if stderr_kind == "closed":
+            stderr = io.StringIO()
+            stderr.close()
+        monkeypatch.setattr(sys, "stderr", stderr)
 
         logging.getLogger("xnatctl.test").error("boom", extra={FILE_ONLY_ATTR: True})
 
@@ -1031,3 +1041,34 @@ class TestDiagnosticsFileFailures:
         assert len(records) == 1
         assert patient_id not in json.dumps(records)
         assert "DetailsWithheldError: ValueError" in records[0]["exc"]
+
+    def test_dicom_anonymize_keeps_dicom_values_out_of_the_file(
+        self, tmp_path: Path, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dicom_file = tmp_path / "scan.dcm"
+        dicom_file.write_bytes(b"not read")
+        log_file = tmp_path / "diag.jsonl"
+        patient_id = "DOE" + "^JANE"
+
+        def unreadable(*_args: object, **_kwargs: object) -> None:
+            raise ValueError(f"PatientID {patient_id} has an invalid length")
+
+        monkeypatch.setattr(pydicom, "dcmread", unreadable)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--log-file",
+                str(log_file),
+                "dicom",
+                "anonymize",
+                str(dicom_file),
+                str(tmp_path / "out.dcm"),
+            ],
+        )
+
+        assert patient_id in result.output
+        records = [r for r in read_lines(log_file) if "exc" in r]
+        assert records
+        assert patient_id not in json.dumps(records)
+        assert all("DetailsWithheldError: ValueError" in r["exc"] for r in records)

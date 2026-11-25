@@ -241,3 +241,44 @@ def test_call_guard_catches_raw_http_forms(source: str) -> None:
 )
 def test_call_guard_ignores_non_client_code(source: str) -> None:
     assert not _raw_http_calls(ast.parse(source))
+
+
+PACKAGE_DIR = CLI_DIR.parent
+# Logged on the console before tracebacks moved to the diagnostics file, and
+# left there: a failed token refresh is something the user acts on.
+CONSOLE_EXCEPTION_CALLS = {("services/upload/shared.py", "Session refresh failed")}
+
+
+def _exception_calls() -> list[tuple[str, int, ast.Call]]:
+    calls = []
+    for path in sorted(PACKAGE_DIR.rglob("*.py")):
+        rel = path.relative_to(PACKAGE_DIR).as_posix()
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "exception"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "logger"
+            ):
+                calls.append((rel, node.lineno, node))
+    return calls
+
+
+def _marks_file_only(call: ast.Call) -> bool:
+    extra = next((k.value for k in call.keywords if k.arg == "extra"), None)
+    return isinstance(extra, ast.Dict) and any(
+        isinstance(key, ast.Name) and key.id == "FILE_ONLY_ATTR" for key in extra.keys
+    )
+
+
+def _first_arg(call: ast.Call) -> object:
+    return call.args[0].value if call.args and isinstance(call.args[0], ast.Constant) else None
+
+
+def test_logged_tracebacks_go_to_the_diagnostics_file_only() -> None:
+    calls = _exception_calls()
+    console = {(rel, _first_arg(call)) for rel, _, call in calls if not _marks_file_only(call)}
+
+    assert len(calls) > 50
+    assert console == CONSOLE_EXCEPTION_CALLS
