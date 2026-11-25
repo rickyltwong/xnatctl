@@ -259,15 +259,24 @@ def disable_rich_colour(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def clean_root() -> Iterator[None]:
-    """Restore the root logger's handlers and level after a test changes them."""
+    """Undo what setup_logging and install_log_file change on the logging tree."""
     root = logging.getLogger()
-    saved_handlers = list(root.handlers)
+    saved_handlers = [(h, h.level, list(h.filters)) for h in root.handlers]
     saved_level = root.level
+    saved_levels = {name: logging.getLogger(name).level for name in ("httpx", "httpcore")}
+    pydicom_propagates = logging.getLogger("pydicom").propagate
     try:
         yield
     finally:
+        kept = [h for h, _, _ in saved_handlers]
         for handler in root.handlers:
-            if handler not in saved_handlers:
+            if handler not in kept:
                 handler.close()
-        root.handlers = saved_handlers
+        for handler, level, filters in saved_handlers:
+            handler.setLevel(level)
+            handler.filters = filters
+        root.handlers = kept
         root.setLevel(saved_level)
+        for name, level in saved_levels.items():
+            logging.getLogger(name).setLevel(level)
+        logging.getLogger("pydicom").propagate = pydicom_propagates

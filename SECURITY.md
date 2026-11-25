@@ -91,7 +91,7 @@ history, and `AuditLogger` (`core/logging.py`) records them for the same
 reason -- an audit trail that only starts once the operator remembers to turn
 it on is useless.
 
-**xnatctl's own log calls never quote DICOM tag *values* read out of files.**
+**DICOM tag *values* read out of files reach a log only through an exception's text.**
 `PatientName`, `PatientID`, `PatientBirthDate`, `PatientSex`,
 `AccessionNumber`, `InstitutionName` and the rest of the identifying tag set
 are parsed in exactly one place in the codebase: `cli/dicom_cmd.py` (`dicom
@@ -118,15 +118,17 @@ failure shows its text, `dicom validate` in its report on stdout and `dicom
 anonymize` on stderr. When `dicom validate`, `dicom anonymize` or a C-STORE
 send fails on one file and goes on to the next, the `--log-file` record of
 that failure keeps the traceback and the exception's type but not its text
-(`withhold_details` in `core/logging.py`). A failure that ends the command is
-different: its text is printed on stderr and kept in the diagnostics file's
-`Command failed` record, as `dicom inspect` failing to convert a malformed
-value shows. The frames are the live ones: a handler that captures frame
+(`withhold_details` in `core/logging.py`). An exception the command does not
+catch is different: it ends the command, and its text is printed on stderr and
+kept in the diagnostics file's `Command failed` record, as `dicom inspect`
+failing to convert a malformed value shows. The frames are the live ones: a handler that captures frame
 locals, which xnatctl's own formatters do not, sees the values in them, as it
 would in any traceback. The CLI never shows pydicom's own log lines, whose
 text can quote an element's value. Two other channels still reach stderr:
-pydicom's Python warnings, which can quote one too, and pynetdicom's log under
-`session upload-dicom --verbose`, which names each instance's SOP Instance UID.
+pydicom's Python warnings, which can quote one too, and pynetdicom's own log,
+which names the SOP Class of a dataset the peer accepted no presentation
+context for and, under `session upload-dicom --verbose`, each instance's SOP
+Instance UID.
 
 Two things worth knowing about the boundaries of this:
 
@@ -165,8 +167,8 @@ limits: a traceback printed to stderr is not scrubbed by the filter (the
 CLI's own `-v` traceback in `cli/common/errors.py` redacts URL secrets
 separately, but not session cookies), and it does not redact DICOM/patient
 content: xnatctl's own log calls place none in a message (see above), but the
-`Command failed` record of a DICOM failure that ends a command keeps the
-exception's text.
+`Command failed` record of an exception a `dicom` command does not catch keeps
+that exception's text.
 
 ## Session Cache on Windows
 

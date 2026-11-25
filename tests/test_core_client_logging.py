@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -29,19 +29,6 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def no_debug_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
-
-
-@pytest.fixture
-def clean_root() -> Iterator[None]:
-    root = logging.getLogger()
-    saved = (list(root.handlers), root.level)
-    saved_levels = {n: logging.getLogger(n).level for n in ("httpx", "httpcore")}
-    try:
-        yield
-    finally:
-        root.handlers, root.level = saved[0], saved[1]
-        for name, lvl in saved_levels.items():
-            logging.getLogger(name).setLevel(lvl)
 
 
 def make_client(handler: Handler, *, max_retries: int = 3, **kwargs: object) -> XNATClient:

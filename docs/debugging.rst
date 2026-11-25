@@ -161,9 +161,9 @@ worker pool, the audit-log write, the update notice -- is recorded here at
 text can quote DICOM values or a session token (a file that ``dicom validate``
 or ``dicom anonymize`` skips, a failed C-STORE send, logout), the record keeps
 the traceback and the exception's type but not its text. A Python program that
-configures its own logging receives those records too. Each such failure,
-except a failed logout, which clears the local session either way, is already
-reported in the call's return value, and the record carries an
+configures its own logging receives those records too. The call's return value
+usually reports the failure as well; a failed logout or update notice has no
+return value to report it in. Each record carries an
 ``xnatctl_file_only`` attribute (``xnatctl.core.logging.FILE_ONLY_ATTR``), so
 a logging filter on that attribute drops them. Their tracebacks are the live
 ones, so a handler that captures frame locals sees the values in those frames.

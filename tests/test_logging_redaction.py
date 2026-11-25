@@ -32,22 +32,6 @@ def filtered_logger() -> Iterator[tuple[logging.Logger, io.StringIO]]:
         logger.handlers = []
 
 
-@pytest.fixture
-def clean_root() -> Iterator[None]:
-    root = logging.getLogger()
-    saved_handlers = list(root.handlers)
-    saved_filters = {id(h): list(h.filters) for h in saved_handlers}
-    saved_level = root.level
-    try:
-        yield
-    finally:
-        for handler in root.handlers:
-            if id(handler) in saved_filters:
-                handler.filters = saved_filters[id(handler)]
-        root.handlers = saved_handlers
-        root.setLevel(saved_level)
-
-
 def test_query_token_is_redacted_in_emitted_output(
     filtered_logger: tuple[logging.Logger, io.StringIO],
 ) -> None:
@@ -128,6 +112,14 @@ _TOKEN = "0123456789ABCDEF0123456789ABCDEF"
             repr({"JSESSIONID": "AB\\"}) + " " + repr({"JSESSIONID": _TOKEN}),
             "{'JSESSIONID': '***\\\\'} {'JSESSIONID': '***'}",
         ),
+        (
+            repr(repr({b"JSESSIONID": _TOKEN.encode(), b"other": b'"'})),
+            repr(repr({b"JSESSIONID": b"***", b"other": b'"'})),
+        ),
+        (
+            repr((b"Set-Cookie", b"JSESSIONID=\t " + _TOKEN.encode() + b"; Path=/")),
+            "(b'Set-Cookie', b'JSESSIONID=\\t ***; Path=/')",
+        ),
     ],
     ids=[
         "header",
@@ -141,10 +133,25 @@ _TOKEN = "0123456789ABCDEF0123456789ABCDEF"
         "two-reprs-deep",
         "json-escaped-header",
         "after-a-value-ending-in-a-backslash",
+        "bytes-mapping-two-reprs-deep",
+        "escaped-whitespace-before-the-value",
     ],
 )
 def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: str) -> None:
     assert redact_session_cookies(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "the JSESSIONID cookie expired",
+        "XNAT JSESSIONID: refresh required",
+        "{'previous_JSESSIONID': 'green'}",
+    ],
+    ids=["prose", "prose-with-a-colon", "longer-name"],
+)
+def test_text_that_only_mentions_the_cookie_is_kept(text: str) -> None:
+    assert redact_session_cookies(text) == text
 
 
 def test_a_session_cookie_value_ends_at_a_quote_or_backslash() -> None:
