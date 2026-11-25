@@ -177,6 +177,8 @@ class TestCommandsWithoutGlobalOptions:
             log.info("info line")
             log.warning("warning line")
 
+        # Python's own default is WARNING; start lower so a missing setup shows.
+        logging.getLogger().setLevel(logging.INFO)
         logging.getLogger().addHandler(Capture())
         cli.add_command(probe)
         try:

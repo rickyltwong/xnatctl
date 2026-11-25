@@ -164,6 +164,9 @@ def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: 
         "{'previous-JSESSIONID': 'green'}",
         "{'oldJSESSIONID': 'green'}",
         "'JSESSIONID: refresh'",
+        'Cookie: JSESSIONID="" status=204',
+        '{"JSESSIONID":""}',
+        '{"my\'JSESSIONID":"green"}',
     ],
     ids=[
         "prose",
@@ -172,6 +175,9 @@ def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: 
         "hyphenated-name",
         "run-on-name",
         "quoted-prose",
+        "empty-header-value",
+        "empty-json-value",
+        "mismatched-quotes",
     ],
 )
 def test_text_that_only_mentions_the_cookie_is_kept(text: str) -> None:
@@ -184,11 +190,15 @@ def test_text_that_only_mentions_the_cookie_is_kept(text: str) -> None:
         repr(repr(b"JSESSIONID=\t " + _TOKEN.encode() + b"; Path=/")),
         repr(repr(repr(b"JSESSIONID=\t\n " + _TOKEN.encode()))),
         repr('{"JSESSIONID"\t: "' + _TOKEN + '"}'),
+        '"Set-Cookie: JSESSIONID\\u0009=' + _TOKEN + '; Path=/"',
+        repr('"Set-Cookie: JSESSIONID\\u0009=' + _TOKEN + '; Path=/"'),
     ],
     ids=[
         "escaped-tab-two-reprs-deep",
         "escaped-tab-three-reprs-deep",
         "escaped-tab-before-a-colon",
+        "json-unicode-tab",
+        "json-unicode-tab-in-a-repr",
     ],
 )
 def test_a_token_behind_escaped_whitespace_is_redacted(text: str) -> None:
@@ -286,6 +296,20 @@ def test_arguments_that_do_not_fit_the_format_are_not_shown(
     output = stream.getvalue()
     assert _TOKEN not in output
     assert "arguments not shown: str" in output
+
+
+def test_a_mapping_argument_is_not_read_when_the_format_does_not_fit(
+    filtered_logger: tuple[logging.Logger, io.StringIO],
+) -> None:
+    class Unreadable(dict[str, object]):
+        def values(self) -> object:
+            raise OSError("not readable")
+
+    logger, stream = filtered_logger
+
+    logger.warning("%(missing)s", Unreadable(present=1))
+
+    assert "%(missing)s [arguments not shown: Unreadable]" in stream.getvalue()
 
 
 def test_records_without_secrets_are_left_untouched(

@@ -13,7 +13,7 @@ import os
 import stat
 import sys
 import uuid
-from collections.abc import Generator, Mapping
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -78,7 +78,8 @@ class RedactionFilter(logging.Filter):
             # format string. Raising here would escape the logging call itself.
             # Only the arguments' types are kept: without the format, nothing
             # marks which of them is a secret.
-            message = f"{record.msg} [arguments not shown: {_type_names(record.args)}]"
+            msg = record.msg if isinstance(record.msg, str) else f"<{type(record.msg).__name__}>"
+            message = f"{msg} [arguments not shown: {_type_names(record.args)}]"
             record.msg, record.args = message, None
         redacted = redact_session_cookies(redact_url_query(message))
         if redacted != message:
@@ -169,13 +170,11 @@ def install_redaction_filter(logger: logging.Logger | None = None) -> None:
 
 
 def _type_names(args: object) -> str:
-    if isinstance(args, Mapping):
-        values = list(args.values())
-    elif isinstance(args, tuple):
-        values = list(args)
-    else:
-        values = [args]
-    return ", ".join(type(value).__name__ for value in values)
+    # logging passes a tuple, or the one mapping it was given. None of the
+    # mapping's own methods is called: one that raised would escape the call.
+    if type(args) is tuple:
+        return ", ".join(type(value).__name__ for value in args)
+    return type(args).__name__
 
 
 def _report_handler_failure(what: str) -> None:

@@ -38,8 +38,8 @@ All notable changes to this project will be documented in this file.
   `scan list` does. (#57)
 - The `--log-file` diagnostics file now records the traceback of failures that
   xnatctl reports and carries on past, such as one subject failing in a
-  `subject rename` batch, one scan or resource in a `session download`, a
-  failed audit-log write or a failed update notice. Console output is
+  `subject rename` batch, one scan or resource in a `session download`, or a
+  failed update notice. Console output is
   unchanged. Where the exception's text can quote DICOM values or a session
   token (a file that `dicom validate` or `dicom anonymize` skips, a failed
   C-STORE send, logout), the record keeps the traceback and the exception's

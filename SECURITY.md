@@ -91,7 +91,7 @@ history, and `AuditLogger` (`core/logging.py`) records them for the same
 reason -- an audit trail that only starts once the operator remembers to turn
 it on is useless.
 
-**DICOM tag *values* read out of files reach a log only through an exception's text.**
+**Outside an exception's text and the dependency logs listed below, DICOM tag *values* read out of files never reach a log.**
 `PatientName`, `PatientID`, `PatientBirthDate`, `PatientSex`,
 `AccessionNumber`, `InstitutionName` and the rest of the identifying tag set
 are parsed in exactly one place in the codebase: `cli/dicom_cmd.py` (`dicom

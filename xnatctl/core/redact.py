@@ -136,22 +136,28 @@ def redact_url_query(text: str) -> str:
 
 # A JSESSIONID value is the server's hex session id. Wherever it appears -- a
 # Cookie or Set-Cookie header, a mapping's repr, JSON, or any of those escaped
-# inside another repr -- it follows the name and a "=", or a ":" after a quoted
-# name; then quotes, whitespace, backslash escapes (\t \n \r at any depth) and
-# a bytes prefix; and it ends at the next quote, backslash, whitespace, ";" or
-# ",". Each character before the value has one way to match, so the scan stays
-# linear. Matching the quotes themselves would need a rule per escaping depth.
+# inside another repr -- it follows the name and a "=", or a ":" after a name
+# between matching quotes. Then come whitespace and whitespace escapes (\t \n \r
+# \u0009 \u000a \u000d  , at any depth), a bytes prefix and the opening
+# quotes, in that order, so an empty value ("" or '') is never taken for one;
+# and it ends at the next quote, backslash, whitespace, ";", "," or closing
+# bracket. Each character before the value has one way to match, so the scan
+# stays linear. Matching the quotes themselves would need a rule per escaping
+# depth.
 _SESSION_COOKIE_RE = re.compile(
     r"""
     (
       JSESSIONID
       (?:
-        (?:\\++[tnr]?|['"\s])*+=
-      | (?<=['"]JSESSIONID)(?=\\*['"])(?:\\++[tnr]?|['"\s])*+:
+        (?:\\++(?:[tnr]|u00(?:0[9ad]|20))?|['"\s])*+=
+      | (?<=(?P<quote>['"])JSESSIONID)(?=\\*(?P=quote))
+        (?:\\++(?:[tnr]|u00(?:0[9ad]|20))?|['"\s])*+:
       )
-      (?:\\++[tnr]?|['"\s]|b(?=\\*['"]))*+
+      (?:\\++(?:[tnr]|u00(?:0[9ad]|20))?|\s)*+
+      (?:b(?=\\*['"]))?
+      (?:\\*+['"])*+
     )
-    [^\s\\'";,]+
+    [^\s\\'";,)\]}]+
     """,
     re.IGNORECASE | re.VERBOSE,
 )

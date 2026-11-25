@@ -156,7 +156,7 @@ you can jump straight to it. It never duplicates the traceback stderr already
 shows under ``-v``; it is the *only* copy when stderr is quiet.
 
 An unexpected failure that xnatctl reports and carries on past -- one item in a
-batch or worker pool, the audit-log write, the update notice -- is recorded
+batch or worker pool, the update notice -- is recorded
 here at ``ERROR`` level with its traceback, and never on stderr. An expected
 one, such as a file that is not a ZIP or DICOM file, is only reported. Where the exception's
 text can quote DICOM values or a session token (a file that ``dicom validate``

@@ -374,3 +374,18 @@ def test_traceback_guard_catches_console_forms(source: str) -> None:
 )
 def test_traceback_guard_ignores_calls_without_a_traceback(source: str) -> None:
     assert _traceback_calls_in(ast.parse(source)) == []
+
+
+def test_no_module_imports_a_logging_function_by_name() -> None:
+    # The traceback guard matches attribute calls, so a bare exception(...)
+    # after "from logging import exception" would slip past it.
+    offenders = [
+        f"{path.relative_to(PACKAGE_DIR).as_posix()}: {alias.name}"
+        for path in sorted(PACKAGE_DIR.rglob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.ImportFrom) and node.module == "logging"
+        for alias in node.names
+        if alias.name in _LOG_METHODS or alias.name == "*"
+    ]
+
+    assert offenders == []
