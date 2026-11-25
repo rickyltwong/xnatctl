@@ -20,7 +20,6 @@ from xnatctl.cli.common import (
     require_auth,
     resolve_workers_from_context,
 )
-from xnatctl.cli.session import session
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -164,7 +163,7 @@ def _upload_dicom_store(
         raise SystemExit(1)
 
 
-@session.command("upload-dicom")
+@click.command("upload-dicom")
 @click.argument("input_path", type=click.Path(exists=True))
 @click.option(
     "--host",

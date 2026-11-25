@@ -21,7 +21,6 @@ from xnatctl.cli.common import (
     resolve_direct_archive_from_context,
     resolve_workers_from_context,
 )
-from xnatctl.cli.session import session
 from xnatctl.core.output import (
     OutputFormat,
     print_output,
@@ -69,7 +68,7 @@ def _render_exam_upload_result(ctx: Context, result: ExamUploadResult) -> None:
     print_success(f"Upload-exam complete: {dicom_msg}; {resources_msg}")
 
 
-@session.command("upload-exam")
+@click.command("upload-exam")
 @click.argument("exam_root", type=click.Path(exists=True, file_okay=False))
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--subject", "-S", required=True, help="Subject ID")

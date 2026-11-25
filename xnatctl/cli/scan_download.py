@@ -17,7 +17,6 @@ from xnatctl.cli.common import (
     require_auth,
     validate_local_path_option_cb,
 )
-from xnatctl.cli.scan import scan
 from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
 from xnatctl.core.output import OutputFormat, print_error, print_json, print_success
 from xnatctl.core.validation import (
@@ -40,7 +39,7 @@ if TYPE_CHECKING:
     from xnatctl.services.downloads import DownloadService
 
 
-@scan.command("download")
+@click.command("download")
 @click.option(
     "--experiment",
     "-E",

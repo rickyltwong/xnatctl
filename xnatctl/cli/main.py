@@ -11,28 +11,8 @@ import click
 from click.shell_completion import get_completion_class
 
 from xnatctl import __version__
-from xnatctl.cli import (
-    admin_user as _admin_user,  # noqa: F401  # registers the user group on the admin group
-)
-from xnatctl.cli import (
-    custom_vars as _custom_vars,  # noqa: F401  # registers vars/vars-set on the subject/session groups
-)
-from xnatctl.cli import (
-    scan_download as _scan_download,  # noqa: F401  # registers download on the scan group
-)
-from xnatctl.cli import (
-    session_labels as _session_labels,  # noqa: F401  # registers normalize-labels on the session group
-)
-from xnatctl.cli import (
-    session_query as _session_query,  # noqa: F401  # registers list/show commands on the session group
-)
-from xnatctl.cli import (
-    session_upload as _session_upload,  # noqa: F401  # registers upload commands on the session group
-)
-from xnatctl.cli import (
-    sharing as _sharing,  # noqa: F401  # registers share/unshare on the subject/session groups
-)
 from xnatctl.cli.admin import admin
+from xnatctl.cli.admin_user import user
 from xnatctl.cli.anon import anon
 from xnatctl.cli.api import api
 from xnatctl.cli.auth import auth
@@ -40,6 +20,7 @@ from xnatctl.cli.command_cmd import command
 from xnatctl.cli.common import Context, ExitCode, global_options, handle_errors, render_cli_error
 from xnatctl.cli.config_cmd import config
 from xnatctl.cli.container import container
+from xnatctl.cli.custom_vars import session_vars, subject_vars
 from xnatctl.cli.dicom_cmd import dicom
 from xnatctl.cli.event import event
 from xnatctl.cli.local import local
@@ -48,9 +29,14 @@ from xnatctl.cli.prearchive import prearchive
 from xnatctl.cli.project import project
 from xnatctl.cli.resource import resource
 from xnatctl.cli.scan import scan
+from xnatctl.cli.scan_download import scan_download
 from xnatctl.cli.scp import scp
 from xnatctl.cli.search import search
 from xnatctl.cli.session import session
+from xnatctl.cli.session_labels import session_normalize_labels
+from xnatctl.cli.session_query import session_list, session_show
+from xnatctl.cli.session_upload import session_upload, session_upload_dicom, session_upload_exam
+from xnatctl.cli.sharing import session_share, session_unshare, subject_share, subject_unshare
 from xnatctl.cli.subject import subject
 from xnatctl.cli.upgrade import cleanup_stale_backup, upgrade
 from xnatctl.cli.wrapper import wrapper
@@ -229,6 +215,21 @@ cli.add_command(anon)
 cli.add_command(scp)
 cli.add_command(search)
 cli.add_command(event)
+
+admin.add_command(user)
+scan.add_command(scan_download)
+session.add_command(session_list)
+session.add_command(session_show)
+session.add_command(session_upload)
+session.add_command(session_upload_exam)
+session.add_command(session_upload_dicom)
+session.add_command(session_normalize_labels)
+session.add_command(session_share)
+session.add_command(session_unshare)
+session.add_command(session_vars)
+subject.add_command(subject_share)
+subject.add_command(subject_unshare)
+subject.add_command(subject_vars)
 
 
 def _stderr_is_tty() -> bool:
