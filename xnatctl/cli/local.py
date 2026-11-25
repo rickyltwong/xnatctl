@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import zipfile
 from pathlib import Path
@@ -9,7 +10,10 @@ from pathlib import Path
 import click
 
 from xnatctl.cli.common import handle_errors
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.output import print_error, print_success
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -24,7 +28,7 @@ def local() -> None:
 @click.option("--recursive", "-r", is_flag=True, help="Process subdirectories")
 @click.option("--dry-run", is_flag=True, help="Preview what would be extracted")
 @handle_errors
-def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool) -> None:  # noqa: C901  # pre-existing; see pyproject
+def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool) -> None:
     """Extract downloaded XNAT session ZIPs.
 
     This command extracts ZIP files from previously downloaded sessions,
@@ -71,28 +75,7 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
         click.echo(f"Extracting {zip_path.name}...", err=True)
 
         try:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                for member in zf.infolist():
-                    if member.is_dir():
-                        continue
-
-                    member_path = Path(member.filename)
-                    if any(part.startswith(".") for part in member_path.parts):
-                        continue
-
-                    parts = member_path.parts
-                    if len(parts) < 2:
-                        continue
-
-                    stripped_path = Path(*parts[1:])
-                    output_path = zip_path.parent / stripped_path
-                    if not output_path.resolve().is_relative_to(zip_path.parent.resolve()):
-                        continue
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    with zf.open(member) as source, open(output_path, "wb") as target:
-                        shutil.copyfileobj(source, target)
-
+            _extract_beside(zip_path)
             extracted += 1
 
             if cleanup:
@@ -101,7 +84,8 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
         except zipfile.BadZipFile:
             print_error(f"Invalid ZIP file: {zip_path.name}")
             failed += 1
-        except Exception as e:  # noqa: BLE001  # per-ZIP isolation in batch local-extract loop
+        except Exception as e:
+            logger.exception("local extract failed for %s", zip_path, extra={FILE_ONLY_ATTR: True})
             print_error(f"Failed to extract {zip_path.name}: {e}")
             failed += 1
 
@@ -109,3 +93,27 @@ def local_extract(input_dir: str, cleanup: bool, recursive: bool, dry_run: bool)
         click.echo(f"\nExtracted: {extracted}, Failed: {failed}", err=True)
     else:
         print_success(f"Extracted {extracted} ZIP file(s)")
+
+
+def _extract_beside(zip_path: Path) -> None:
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for member in zf.infolist():
+            if member.is_dir():
+                continue
+
+            member_path = Path(member.filename)
+            if any(part.startswith(".") for part in member_path.parts):
+                continue
+
+            parts = member_path.parts
+            if len(parts) < 2:
+                continue
+
+            stripped_path = Path(*parts[1:])
+            output_path = zip_path.parent / stripped_path
+            if not output_path.resolve().is_relative_to(zip_path.parent.resolve()):
+                continue
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with zf.open(member) as source, open(output_path, "wb") as target:
+                shutil.copyfileobj(source, target)

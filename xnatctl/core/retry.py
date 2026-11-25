@@ -38,6 +38,7 @@ import httpx
 
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken
 from xnatctl.core.exceptions import OperationCancelledError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 
 logger = logging.getLogger(__name__)
 
@@ -285,11 +286,35 @@ _retry_debug_lock = threading.Lock()
 def _safe_body(resp: httpx.Response) -> str:
     try:
         return resp.text
-    except Exception:  # noqa: BLE001  # best-effort response-body read; undecodable body must not mask the HTTP failure
+    except Exception:
+        logger.exception("could not read the upload response body", extra={FILE_ONLY_ATTR: True})
         return ""
 
 
-def upload_with_retry(  # noqa: C901  # pre-existing; see pyproject
+def _debug_log_retryable_400_body(resp: httpx.Response, label: str) -> None:
+    global _retry_debug_snippets_emitted
+    with _retry_debug_lock:
+        if _retry_debug_snippets_emitted >= _RETRY_DEBUG_MAX_SNIPPETS:
+            return
+        _retry_debug_snippets_emitted += 1
+    snippet = _safe_body(resp).strip().replace("\n", " ")
+    if snippet:
+        logger.debug("%s: retryable HTTP 400 body: %s", label, snippet[:200])
+
+
+def _stop_instead_of_backoff(
+    label: str,
+    delay: int,
+    retry_budget: RetryBudget | None,
+    cancel_token: CancellationToken,
+) -> bool:
+    if retry_budget is not None and not retry_budget.claim(delay):
+        logger.warning("%s: retry budget exhausted, giving up", label)
+        return True
+    return cancel_token.sleep(delay)
+
+
+def upload_with_retry(
     upload_fn: Callable[[], httpx.Response],
     *,
     max_retries: int = UPLOAD_MAX_RETRIES,
@@ -338,22 +363,7 @@ def upload_with_retry(  # noqa: C901  # pre-existing; see pyproject
             if attempt < max_retries:
                 delay = backoff_base ** (attempt + 1)
                 if resp.status_code == 400 and logger.isEnabledFor(logging.DEBUG):
-                    global _retry_debug_snippets_emitted
-                    with _retry_debug_lock:
-                        should_log = _retry_debug_snippets_emitted < _RETRY_DEBUG_MAX_SNIPPETS
-                        if should_log:
-                            _retry_debug_snippets_emitted += 1
-                    if should_log:
-                        try:
-                            snippet = resp.text.strip().replace("\n", " ")
-                            if snippet:
-                                logger.debug(
-                                    "%s: retryable HTTP 400 body: %s",
-                                    label,
-                                    snippet[:200],
-                                )
-                        except Exception:  # noqa: BLE001  # best-effort debug-only snippet logging; must not affect the retry ladder
-                            pass
+                    _debug_log_retryable_400_body(resp, label)
                 logger.warning(
                     "%s: HTTP %d on attempt %d/%d, retrying in %ds",
                     label,
@@ -362,10 +372,7 @@ def upload_with_retry(  # noqa: C901  # pre-existing; see pyproject
                     max_retries + 1,
                     delay,
                 )
-                if retry_budget is not None and not retry_budget.claim(delay):
-                    logger.warning("%s: retry budget exhausted, giving up", label)
-                    break
-                if cancel_token.sleep(delay):
+                if _stop_instead_of_backoff(label, delay, retry_budget, cancel_token):
                     break
         except httpx.ConnectTimeout:
             logger.warning("%s: connect timed out; not retrying", label)
@@ -384,10 +391,7 @@ def upload_with_retry(  # noqa: C901  # pre-existing; see pyproject
                     max_retries + 1,
                     delay,
                 )
-                if retry_budget is not None and not retry_budget.claim(delay):
-                    logger.warning("%s: retry budget exhausted, giving up", label)
-                    break
-                if cancel_token.sleep(delay):
+                if _stop_instead_of_backoff(label, delay, retry_budget, cancel_token):
                     break
 
     if last_resp is not None:

@@ -17,6 +17,7 @@ from typing import NamedTuple
 
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import (
     check_no_casefold_collision,
     quote_path_segment,
@@ -57,8 +58,33 @@ class DownloadOutcome(NamedTuple):
     skipped_unsafe_entries: int = 0
 
 
+def _download_tasks(
+    scan_ids: list[str], include_resources: tuple[str, ...]
+) -> list[tuple[str, str | None]]:
+    download_tasks: list[tuple[str, str | None]] = []
+    if include_resources:
+        for sid in scan_ids:
+            for res in include_resources:
+                download_tasks.append((sid, res))
+    else:
+        for sid in scan_ids:
+            download_tasks.append((sid, None))
+    return download_tasks
+
+
+def _scan_status(resource_label: str | None, extracted: int, renamed: int) -> str:
+    parts = []
+    if resource_label:
+        parts.append(resource_label)
+    if extracted == 0:
+        parts.append("empty")
+    if renamed:
+        parts.append(f"renamed {renamed} duplicates")
+    return ", ".join(parts) if parts else ""
+
+
 class _SessionDownloadMixin(BaseService):
-    def download_session_fast(  # noqa: C901  # pre-existing; see pyproject
+    def download_session_fast(
         self,
         *,
         session_project: str,
@@ -127,15 +153,7 @@ class _SessionDownloadMixin(BaseService):
             return DownloadOutcome(succeeded=0, failed=[], files=0)
 
         exclude_set = frozenset(exclude_resources)
-
-        download_tasks: list[tuple[str, str | None]] = []
-        if include_resources:
-            for sid in scan_ids:
-                for res in include_resources:
-                    download_tasks.append((sid, res))
-        else:
-            for sid in scan_ids:
-                download_tasks.append((sid, None))
+        download_tasks = _download_tasks(scan_ids, include_resources)
 
         def download_and_extract(
             scan_id: str,
@@ -177,19 +195,15 @@ class _SessionDownloadMixin(BaseService):
                 finally:
                     tmp_path.unlink(missing_ok=True)
 
-                parts = []
-                if resource_label:
-                    parts.append(resource_label)
-                if extracted == 0:
-                    parts.append("empty")
-                if renamed:
-                    parts.append(f"renamed {renamed} duplicates")
-                status = ", ".join(parts) if parts else ""
+                status = _scan_status(resource_label, extracted, renamed)
                 return ScanResult(scan_id, True, extracted, status, len(skipped))
             except ResourceNotFoundError:
                 label_desc = f" ({resource_label})" if resource_label else ""
                 return ScanResult(scan_id, True, 0, f"no files{label_desc}")
-            except Exception as e:  # noqa: BLE001 -- per-scan worker-pool isolation
+            except Exception as e:
+                logger.exception(
+                    "scan download failed for %s", scan_id, extra={FILE_ONLY_ATTR: True}
+                )
                 return ScanResult(scan_id, False, 0, str(e))
 
         succeeded: list[str] = []
