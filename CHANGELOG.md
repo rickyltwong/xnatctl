@@ -36,6 +36,16 @@ All notable changes to this project will be documented in this file.
   `xnat:optSessionData` session. It asked XNAT only for scans of a type
   guessed from the session's and showed none; it now lists them the way
   `scan list` does. (#57)
+- The `--log-file` diagnostics file now redacts `JSESSIONID` session cookies
+  inside tracebacks, as it already did inside messages. Before, a traceback
+  that quoted a cookie header wrote the live session token to the file.
+- A logging call no longer raises when its message holds a malformed URL,
+  such as one with an unbalanced `[` host, or when its arguments do not fit
+  its format string. The malformed URL's secret-shaped query values and
+  password are still redacted.
+- As a library, xnatctl no longer prints its log records to stderr through
+  Python's last-resort handler when the application has not configured
+  logging. Configure logging to see them.
 
 ## 0.7.0 - 2026-11-24
 

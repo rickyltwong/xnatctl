@@ -14,6 +14,7 @@ module re-exports the client, config, service classes, resource/progress
 models, and the full exception hierarchy as the supported public surface.
 """
 
+import logging
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING
@@ -104,6 +105,10 @@ if TYPE_CHECKING:
     from xnatctl.services.sessions import SessionService
     from xnatctl.services.subjects import SubjectService
     from xnatctl.services.upload import UploadService
+
+# The library convention: records reach only the handlers an application
+# configures, never logging.lastResort on stderr.
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 _LAZY_EXPORTS = {
     "XNATClient": "xnatctl.core.client",

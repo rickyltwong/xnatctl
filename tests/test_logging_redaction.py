@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 from collections.abc import Iterator
 
 import pytest
 
 from xnatctl.core.exceptions import InvalidURLError
 from xnatctl.core.logging import RedactionFilter, install_redaction_filter, setup_logging
+from xnatctl.core.redact import redact_url_query
 from xnatctl.core.validation import validate_server_url
 
 SECRET_URL = "https://xnat.example.org/data?token=s3cret"
@@ -65,6 +67,46 @@ def test_userinfo_password_is_redacted_in_emitted_output(
     output = stream.getvalue()
     assert "s3cret" not in output
     assert "admin:***@" in output
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("see http://[x?token=s3cret&a=1 there", "see http://[x?token=***&a=1 there"),
+        ("http://admin:s3cret@[x?pwd=hunter2", "http://admin:***@[x?pwd=***"),
+        ("http://[x/path&x?token=s3cret", "http://[x/path&x?token=***"),
+        ("http://u:s3cret@[x?token=pre@hunter2", "http://u:***@[x?token=***"),
+    ],
+    ids=["query", "userinfo-and-query", "ampersand-in-path", "at-sign-in-query"],
+)
+def test_a_url_urlsplit_rejects_is_still_redacted_without_raising(
+    filtered_logger: tuple[logging.Logger, io.StringIO], text: str, expected: str
+) -> None:
+    logger, stream = filtered_logger
+
+    logger.info("request %s", text)
+
+    assert stream.getvalue() == f"request {expected}\n"
+
+
+def test_redaction_stays_linear_on_long_unparseable_urls() -> None:
+    text = "http://[x" + "?" * 200_000
+
+    started = time.perf_counter()
+    assert redact_url_query(text) == text
+    assert time.perf_counter() - started < 1.0
+
+
+def test_a_record_whose_args_do_not_fit_its_format_is_still_emitted(
+    filtered_logger: tuple[logging.Logger, io.StringIO],
+) -> None:
+    logger, stream = filtered_logger
+
+    logger.info("got %d from %s", "not-a-number", SECRET_URL)
+
+    output = stream.getvalue()
+    assert "got %d from %s" in output
+    assert "s3cret" not in output
 
 
 def test_records_without_secrets_are_left_untouched(

@@ -23,7 +23,7 @@ is not actually leaking a secret.
 from __future__ import annotations
 
 import re
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import unquote
 
 SECRET_QUERY_KEYS: frozenset[str] = frozenset(
     {
@@ -74,6 +74,31 @@ def redact_url_userinfo(url: str) -> str:
     return _USERINFO_RE.sub(_mask, url)
 
 
+def _split_url(url: str) -> tuple[str, str, str, str, str]:
+    # Not urlsplit: it raises on text that still looks like a URL, such as an
+    # unbalanced "[" host, and redaction runs inside logging calls.
+    scheme, _, rest = url.partition("://")
+    authority_end = min((i for i in map(rest.find, "/?#") if i != -1), default=len(rest))
+    netloc, rest = rest[:authority_end], rest[authority_end:]
+    rest, hash_mark, fragment = rest.partition("#")
+    path, question_mark, query = rest.partition("?")
+    return f"{scheme}://", netloc, path + question_mark, query, hash_mark + fragment
+
+
+def _scrub_query(query: str) -> tuple[str, bool]:
+    changed = False
+    new_parts: list[str] = []
+    for raw_pair in query.split("&"):
+        if "=" in raw_pair:
+            raw_key, raw_value = raw_pair.split("=", 1)
+            if unquote(raw_key).lower() in SECRET_QUERY_KEYS and raw_value:
+                new_parts.append(f"{raw_key}=***")
+                changed = True
+                continue
+        new_parts.append(raw_pair)
+    return "&".join(new_parts), changed
+
+
 def redact_url_query(text: str) -> str:
     """Return ``text`` with secret-shaped URL values rewritten to ``***``.
 
@@ -101,27 +126,12 @@ def redact_url_query(text: str) -> str:
             trailing = url[-1] + trailing
             url = url[:-1]
 
-        scheme, netloc, path, query, fragment = urlsplit(url)
-
-        netloc, changed = _scrub_userinfo(netloc)
-
-        new_parts: list[str] = []
-        for raw_pair in query.split("&"):
-            if "=" in raw_pair:
-                raw_key, raw_value = raw_pair.split("=", 1)
-                decoded_key = unquote(raw_key)
-                if decoded_key.lower() in SECRET_QUERY_KEYS and raw_value:
-                    new_parts.append(f"{raw_key}=***")
-                    changed = True
-                else:
-                    new_parts.append(raw_pair)
-            else:
-                new_parts.append(raw_pair)
-
-        if not changed:
+        head, netloc, path, query, fragment = _split_url(url)
+        netloc, netloc_changed = _scrub_userinfo(netloc)
+        query, query_changed = _scrub_query(query)
+        if not (netloc_changed or query_changed):
             return url + trailing
-
-        return urlunsplit((scheme, netloc, path, "&".join(new_parts), fragment)) + trailing
+        return f"{head}{netloc}{path}{query}{fragment}{trailing}"
 
     return _URL_RE.sub(_scrub, text)
 

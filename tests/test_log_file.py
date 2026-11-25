@@ -141,6 +141,44 @@ class TestJsonLinesFormatterTracebackRedaction:
         payload = json.loads(JsonLinesFormatter().format(record))
         assert "plain failure, no urls here" in payload["exc"]
 
+    def test_traceback_session_cookie_is_redacted(self) -> None:
+        try:
+            raise ValueError("bad header: Cookie: JSESSIONID=ABCDEF0123456789")
+        except ValueError:
+            record = _make_record("Operation failed", level=logging.ERROR, exc_info=sys.exc_info())
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert "ABCDEF0123456789" not in payload["exc"]
+        assert "JSESSIONID=***" in payload["exc"]
+
+    def test_a_malformed_url_in_the_traceback_does_not_break_formatting(self) -> None:
+        try:
+            raise ValueError("bad url http://[x?token=s3cret")
+        except ValueError:
+            record = _make_record("Operation failed", level=logging.ERROR, exc_info=sys.exc_info())
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert "s3cret" not in payload["exc"]
+
+    def test_a_non_string_field_is_redacted_and_still_serializes(self) -> None:
+        record = _make_record(
+            "request",
+            extra={
+                "event": "http",
+                "method": b"Cookie: JSESSIONID=ABCDEF0123456789",
+                "status": 500,
+            },
+        )
+        record.attempt = {(1, 2): SECRET_URL}
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert "ABCDEF0123456789" not in payload["method"]
+        assert "s3cret" not in payload["attempt"]
+        assert payload["status"] == 500
+
     def test_no_exc_info_means_no_exc_key(self) -> None:
         record = _make_record("Operation failed", level=logging.ERROR)
         payload = json.loads(JsonLinesFormatter().format(record))

@@ -63,14 +63,20 @@ class RedactionFilter(logging.Filter):
 
     Scope boundary: this covers the formatted message only. Exception
     tracebacks are rendered by the Formatter *after* filters run, so a secret
-    inside a traceback is not scrubbed here. The CLI's own traceback path
-    already redacts (``cli/common.py``); a Formatter-level fix belongs with
-    future log-file work.
+    inside a traceback is not scrubbed here. The CLI's own error path redacts
+    separately (``cli/common/errors.py``), and :class:`JsonLinesFormatter`
+    scrubs every field of the diagnostics file, the traceback included.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         """Rewrite ``record`` in place when it contains something to redact."""
-        message = record.getMessage()
+        try:
+            message = record.getMessage()
+        except (TypeError, ValueError, KeyError):
+            # The errors %-formatting raises for arguments that do not fit the
+            # format string. Raising here would escape the logging call itself.
+            message = f"{record.msg} {record.args!r}"
+            record.msg, record.args = message, None
         redacted = redact_session_cookies(redact_url_query(message))
         if redacted != message:
             record.msg = redacted
@@ -316,10 +322,10 @@ class JsonLinesFormatter(logging.Formatter):
             payload["exc"] = self.formatException(record.exc_info)
 
         for key, value in payload.items():
-            if isinstance(value, str):
-                payload[key] = redact_url_query(value)
+            if not isinstance(value, int | float):
+                payload[key] = redact_session_cookies(redact_url_query(str(value)))
 
-        return json.dumps(payload, default=str)
+        return json.dumps(payload)
 
 
 def install_log_file(path: str | Path) -> None:

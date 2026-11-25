@@ -141,11 +141,13 @@ Two things worth knowing about the boundaries of this:
 (`core/redact.py`, `core/logging.py`) scrub secret-shaped URL query
 parameters (`password`, `token`, `api_key`, and the rest of
 `SECRET_QUERY_KEYS`) and the password half of a `user:pass@host` authority,
-applied to every log record's formatted message. Two honest limits: it does
-not cover exception tracebacks (the CLI's own traceback path in
-`cli/common.py` redacts separately; a `Formatter`-level fix is future log-file
-work), and it does not redact DICOM/patient content -- because, per the audit
-above, none is ever placed in a log message to begin with.
+applied to every log record's formatted message, along with `JSESSIONID`
+session cookies. The `--log-file` diagnostics formatter applies the same
+redaction to every field it writes, exception tracebacks included; on the
+console, the CLI's own error path in `cli/common/errors.py` redacts
+separately. One honest limit: it does not redact DICOM/patient content --
+because, per the audit above, none is ever placed in a log message to begin
+with.
 
 ## Session Cache on Windows
 
