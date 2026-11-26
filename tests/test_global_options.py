@@ -126,7 +126,9 @@ def _run_cli_in_subprocess(tmp_path, *args: str, env: dict[str, str] | None = No
     )
     config_file.chmod(0o600)
     child_env = {k: v for k, v in os.environ.items() if not k.startswith("XNAT")}
-    child_env.update(HOME=str(tmp_path / "home"), XNAT_NO_UPDATE_CHECK="1", **(env or {}))
+    home = str(tmp_path / "home")
+    # Path.home() reads USERPROFILE on Windows, HOME elsewhere.
+    child_env.update(HOME=home, USERPROFILE=home, XNAT_NO_UPDATE_CHECK="1", **(env or {}))
     return subprocess.run(
         [sys.executable, "-m", "xnatctl", *args],
         capture_output=True,
