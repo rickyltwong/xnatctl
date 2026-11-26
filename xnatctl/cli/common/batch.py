@@ -10,7 +10,7 @@ from typing import Any, TypeVar
 
 import click
 
-F = TypeVar("F", bound=Callable[..., Any])
+R = TypeVar("R")
 
 
 def _parse_batch_text(text: str) -> list[str]:
@@ -33,7 +33,7 @@ def _parse_batch_text(text: str) -> list[str]:
     return [item.strip() for item in parsed if item.strip()]
 
 
-def batch_option(f: F) -> F:
+def batch_option(f: Callable[..., R]) -> Callable[..., R]:
     """Add a ``--batch`` option for bulk operations.
 
     Reads a file of IDs (one per line, or a JSON array of strings) and
@@ -61,7 +61,7 @@ def batch_option(f: F) -> F:
         help="File with IDs (one per line) or JSON array; use '-' for stdin",
     )
     @wraps(f)
-    def wrapper(*args: Any, batch: str | None, **kwargs: Any) -> Any:
+    def wrapper(*args: Any, batch: str | None, **kwargs: Any) -> R:
         batch_ids: list[str] | None = None
         if batch is not None:
             if batch == "-":
@@ -86,4 +86,4 @@ def batch_option(f: F) -> F:
         kwargs["batch_ids"] = batch_ids
         return f(*args, **kwargs)
 
-    return wrapper  # type: ignore
+    return wrapper

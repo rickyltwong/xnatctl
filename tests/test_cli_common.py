@@ -69,6 +69,23 @@ def test_require_auth_reauthenticates_on_stale_session():
     assert mock_client.session_token == "new-token"
 
 
+def test_require_auth_accepts_the_context_as_a_keyword():
+    ctx = Context()
+
+    class SignedInClient:
+        base_url = "https://example.org"
+        session_token = "token"
+        is_authenticated = True
+
+        def whoami(self) -> dict[str, str]:
+            return {"username": "user"}
+
+    ctx.client = cast(Any, SignedInClient())
+    ctx.auth_manager = MagicMock()
+
+    assert require_auth(_protected_command)(ctx=ctx) == "ok"
+
+
 def test_require_auth_raises_when_session_expired_and_no_creds(monkeypatch):
     monkeypatch.delenv("XNAT_USER", raising=False)
     monkeypatch.delenv("XNAT_PASS", raising=False)

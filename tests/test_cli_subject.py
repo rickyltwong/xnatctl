@@ -65,6 +65,33 @@ class TestSubjectList:
         assert result.exit_code == 0
         assert "SUB001" in result.output
 
+    def test_subject_list_shows_a_failed_count_as_unknown_and_goes_on(
+        self, runner: CliRunner
+    ) -> None:
+        client = _mock_client()
+        client.get_json.side_effect = [
+            {
+                "ResultSet": {
+                    "Result": [
+                        {"ID": "XNAT_S001", "label": "SUB001", "src": ""},
+                        {"ID": "XNAT_S002", "label": "SUB002", "src": ""},
+                    ]
+                }
+            },
+            AttributeError("malformed row"),
+            {"ResultSet": {"Result": [{"ID": "EXP2"}, {"ID": "EXP3"}]}},
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["subject", "list", "--project", "TESTPROJ", "-o", "json"]
+                    )
+
+        assert result.exit_code == 0, result.output
+        assert [row["sessions"] for row in json.loads(result.stdout)] == ["?", 2]
+
     def test_subject_list_uses_default_project(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.return_value = {

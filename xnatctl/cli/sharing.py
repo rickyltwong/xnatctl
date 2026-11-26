@@ -1,10 +1,8 @@
 """Cross-project sharing commands for xnatctl (subject share/unshare, session share/unshare).
 
-Registers ``subject share``/``subject unshare`` onto the ``subject`` group
-defined in :mod:`xnatctl.cli.subject`, and ``session share``/``session
-unshare`` onto the ``session`` group defined in :mod:`xnatctl.cli.session`,
-mirroring how :mod:`xnatctl.cli.session_query` registers ``list``/``show``
-onto the same ``session`` group.
+Defines ``subject share``/``subject unshare`` and ``session share``/``session
+unshare``; ``xnatctl/cli/main.py`` registers them on the ``subject`` and
+``session`` groups.
 
 XNAT lets a subject or experiment be shared into a second project without
 moving it -- the resource keeps one primary project and gains visibility in
@@ -27,8 +25,6 @@ from xnatctl.cli.common import (
     require_auth,
     require_project_from_context,
 )
-from xnatctl.cli.session import session
-from xnatctl.cli.subject import subject
 from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
 from xnatctl.core.output import print_error, print_success
 from xnatctl.core.validation import (
@@ -43,7 +39,7 @@ from xnatctl.services.sessions import SessionService
 from xnatctl.services.subjects import SubjectService
 
 
-@subject.command("share")
+@click.command("share")
 @click.argument("subject_id")
 @click.option("--into", "target_project", required=True, help="Project to share the subject into")
 @click.option("--project", "-P", help="Source project ID (defaults to profile default_project)")
@@ -106,7 +102,7 @@ def subject_share(
     )
 
 
-@subject.command("unshare")
+@click.command("unshare")
 @click.argument("subject_id")
 @click.option("--from", "target_project", required=True, help="Project to remove the share from")
 @click.option("--project", "-P", help="Source project ID (defaults to profile default_project)")
@@ -173,7 +169,7 @@ def subject_unshare(
     )
 
 
-@session.command("share")
+@click.command("share")
 @click.option(
     "--experiment",
     "-E",
@@ -254,7 +250,7 @@ def session_share(
     )
 
 
-@session.command("unshare")
+@click.command("unshare")
 @click.option(
     "--experiment",
     "-E",

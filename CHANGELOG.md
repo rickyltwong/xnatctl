@@ -36,6 +36,44 @@ All notable changes to this project will be documented in this file.
   `xnat:optSessionData` session. It asked XNAT only for scans of a type
   guessed from the session's and showed none; it now lists them the way
   `scan list` does. (#57)
+- The `--log-file` diagnostics file now records the traceback of failures that
+  xnatctl reports and carries on past, such as one subject failing in a
+  `subject rename` batch, one scan or resource in a `session download`, or a
+  failed update notice. Console output is
+  unchanged. Where the exception's text can quote DICOM values or a session
+  token (a file that `dicom validate` or `dicom anonymize` skips, a failed
+  C-STORE send, logout), the record keeps the traceback and the exception's
+  type but not its text. A Python program that configures its own logging
+  receives these records too, at `ERROR` level; each carries an
+  `xnatctl_file_only` attribute to filter on.
+- The `--log-file` diagnostics file now redacts `JSESSIONID` session cookies
+  inside tracebacks, as it already did inside messages. Before, a traceback
+  that quoted a cookie header wrote the live session token to the file.
+  Redaction now also covers URLs with an uppercase scheme (`HTTPS://`) and a
+  session cookie however it is quoted, such as in a mapping
+  (`{'JSESSIONID': '...'}`) or in JSON inside another repr, and a failed
+  write to the file or to stderr prints one redacted line instead of the
+  record and the exception being handled.
+- A logging call no longer raises when its message holds a malformed URL,
+  such as one with an unbalanced `[` host, or when its arguments do not fit
+  its format string. The malformed URL's secret-shaped query values and
+  password are still redacted, and arguments that do not fit are shown only
+  by type.
+- As a library, xnatctl no longer prints its log records to stderr through
+  Python's last-resort handler when the application has not configured
+  logging. Configure logging to see them.
+- The commands that skip the global options (the `config` subcommands, `local
+  extract`, `project transfer-init`, and the `dicom` and `completion`
+  subcommands) now print warnings in the same `<time> [WARNING] <logger>:`
+  format as every other command. With `--log-file` they used to print none,
+  such as `config`'s warning that the config file is readable by other users
+  and stores a plaintext password. A failed command no longer prints a record
+  meant only for the diagnostics file: a failed `config remove-profile` loses
+  its stray `Command exited with code 1`, and an unwritable `--log-file` gives
+  the usual one-line error instead of a `Command failed` traceback.
+- The CLI no longer shows pydicom's own log lines, whose text can quote a
+  DICOM element's value. `session upload-dicom` printed them; most repeat a
+  Python warning that pydicom still prints.
 
 ## 0.7.0 - 2026-11-24
 

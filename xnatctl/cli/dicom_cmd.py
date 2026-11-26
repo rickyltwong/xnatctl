@@ -2,19 +2,33 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import click
 
+from xnatctl.core.logging import FILE_ONLY_ATTR, withhold_details
 from xnatctl.core.output import (
     print_error,
     print_json,
     print_success,
     print_table,
 )
+
+logger = logging.getLogger(__name__)
+
+_REQUIRED_TAGS = [
+    ("PatientID", 0x00100020),
+    ("PatientName", 0x00100010),
+    ("StudyInstanceUID", 0x0020000D),
+    ("SeriesInstanceUID", 0x0020000E),
+    ("SOPInstanceUID", 0x00080018),
+    ("Modality", 0x00080060),
+]
 
 
 def _normalize_errors(errors: object) -> list[str]:
@@ -23,6 +37,33 @@ def _normalize_errors(errors: object) -> list[str]:
     if errors:
         return [str(errors)]
     return []
+
+
+def _is_empty_required_value(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (bytes, bytearray)):
+        return len(value) == 0
+    s = str(value)
+    return s.strip() == ""
+
+
+def _validation_findings(ds: Any) -> tuple[list[str], list[str]]:
+    errors = []
+    warnings = []
+
+    for name, tag in _REQUIRED_TAGS:
+        elem = ds.get(tag)
+        if elem is None:
+            errors.append(f"Missing required tag: {name}")
+        elif _is_empty_required_value(getattr(elem, "value", None)):
+            errors.append(f"Empty required tag value: {name}")
+
+    private_count = sum(1 for elem in ds if elem.tag.is_private)
+    if private_count > 100:
+        warnings.append(f"High number of private tags: {private_count}")
+
+    return errors, warnings
 
 
 @click.group()
@@ -35,7 +76,7 @@ def dicom() -> None:
 @click.option("--recursive", "-r", is_flag=True, help="Search recursively")
 @click.option("--output", "-o", type=click.Choice(["json", "table"]), default="table")
 @click.option("--quiet", "-q", is_flag=True, help="Only output invalid files")
-def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
+def dicom_validate(
     path: str,
     recursive: bool,
     output: str,
@@ -68,37 +109,7 @@ def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
     for file_path in files:
         try:
             ds = pydicom.dcmread(str(file_path), stop_before_pixels=True)
-
-            errors = []
-            warnings = []
-
-            def _is_empty_required_value(value: object) -> bool:
-                if value is None:
-                    return True
-                if isinstance(value, (bytes, bytearray)):
-                    return len(value) == 0
-                s = str(value)
-                return s.strip() == ""
-
-            required_tags = [
-                ("PatientID", 0x00100020),
-                ("PatientName", 0x00100010),
-                ("StudyInstanceUID", 0x0020000D),
-                ("SeriesInstanceUID", 0x0020000E),
-                ("SOPInstanceUID", 0x00080018),
-                ("Modality", 0x00080060),
-            ]
-
-            for name, tag in required_tags:
-                elem = ds.get(tag)
-                if elem is None:
-                    errors.append(f"Missing required tag: {name}")
-                elif _is_empty_required_value(getattr(elem, "value", None)):
-                    errors.append(f"Empty required tag value: {name}")
-
-            private_count = sum(1 for elem in ds if elem.tag.is_private)
-            if private_count > 100:
-                warnings.append(f"High number of private tags: {private_count}")
+            errors, warnings = _validation_findings(ds)
 
             is_valid = len(errors) == 0
             if is_valid:
@@ -128,7 +139,13 @@ def dicom_validate(  # noqa: C901  # pre-existing; see pyproject
                     "warnings": [],
                 }
             )
-        except Exception as e:  # noqa: BLE001  # per-file isolation in batch validate loop
+        except Exception as e:
+            logger.exception(
+                "dicom validate failed for %s",
+                file_path,
+                exc_info=withhold_details(e),
+                extra={FILE_ONLY_ATTR: True},
+            )
             invalid_count += 1
             results.append(
                 {
@@ -312,7 +329,7 @@ def dicom_list_tags(
 @click.option("--remove-private", is_flag=True, help="Remove private tags")
 @click.option("--recursive", "-r", is_flag=True, help="Process directory recursively")
 @click.option("--dry-run", is_flag=True, help="Preview without saving")
-def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
+def dicom_anonymize(
     input_path: str,
     output_path: str,
     patient_id: str | None,
@@ -330,22 +347,7 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
     """
     import pydicom
 
-    input_obj = Path(input_path)
-    output_obj = Path(output_path)
-
-    if input_obj.is_file():
-        files = [(input_obj, output_obj)]
-    elif recursive:
-        files = []
-        for f in input_obj.rglob("*"):
-            if f.is_file():
-                rel = f.relative_to(input_obj)
-                files.append((f, output_obj / rel))
-    else:
-        files = []
-        for f in input_obj.glob("*"):
-            if f.is_file():
-                files.append((f, output_obj / f.name))
+    files = _anonymize_targets(Path(input_path), Path(output_path), recursive)
 
     processed = 0
     skipped = 0
@@ -386,7 +388,13 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
 
         except pydicom.errors.InvalidDicomError:
             skipped += 1
-        except Exception as e:  # noqa: BLE001  # per-file isolation in batch anonymize loop
+        except Exception as e:
+            logger.exception(
+                "dicom anonymize failed for %s",
+                in_file,
+                exc_info=withhold_details(e),
+                extra={FILE_ONLY_ATTR: True},
+            )
             click.echo(f"Error processing {in_file}: {e}", err=True)
             skipped += 1
 
@@ -394,6 +402,25 @@ def dicom_anonymize(  # noqa: C901  # pre-existing; see pyproject
         click.echo(f"\nWould process {processed} files, skip {skipped} files")
     else:
         print_success(f"Processed {processed} files, skipped {skipped} files")
+
+
+def _anonymize_targets(
+    input_obj: Path, output_obj: Path, recursive: bool
+) -> list[tuple[Path, Path]]:
+    if input_obj.is_file():
+        files = [(input_obj, output_obj)]
+    elif recursive:
+        files = []
+        for f in input_obj.rglob("*"):
+            if f.is_file():
+                rel = f.relative_to(input_obj)
+                files.append((f, output_obj / rel))
+    else:
+        files = []
+        for f in input_obj.glob("*"):
+            if f.is_file():
+                files.append((f, output_obj / f.name))
+    return files
 
 
 def _parse_tag_pair(raw: str) -> tuple[str, str]:
@@ -404,6 +431,30 @@ def _parse_tag_pair(raw: str) -> tuple[str, str]:
     if not keyword:
         raise click.BadParameter(f"Empty keyword in tag pair '{raw}'")
     return keyword, value
+
+
+def _parse_known_tag_pairs(tags: tuple[str, ...]) -> list[tuple[str, str]]:
+    from pydicom.datadict import tag_for_keyword
+
+    parsed_tags: list[tuple[str, str]] = []
+    for raw in tags:
+        keyword, value = _parse_tag_pair(raw)
+        if tag_for_keyword(keyword) is None:
+            raise click.BadParameter(
+                f"Unknown DICOM keyword '{keyword}'. "
+                "Use 'xnatctl dicom list-tags <file>' to see valid keywords."
+            )
+        parsed_tags.append((keyword, value))
+    return parsed_tags
+
+
+def _apply_tags(ds: Any, parsed_tags: list[tuple[str, str]]) -> list[str]:
+    changes: list[str] = []
+    for keyword, value in parsed_tags:
+        old = str(getattr(ds, keyword, "(absent)"))
+        setattr(ds, keyword, value)
+        changes.append(f"{keyword}: {old} -> {value}")
+    return changes
 
 
 def _collect_dicom_files(path: Path, recursive: bool) -> list[Path]:
@@ -433,7 +484,7 @@ def _collect_dicom_files(path: Path, recursive: bool) -> list[Path]:
     default="table",
 )
 @click.option("--dry-run", is_flag=True, help="Preview changes without writing")
-def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
+def dicom_modify(
     path: str,
     tags: tuple[str, ...],
     recursive: bool,
@@ -453,17 +504,8 @@ def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
         xnatctl dicom modify ./dicoms -r -t PatientID=ANON --backup --dry-run
     """
     import pydicom
-    from pydicom.datadict import tag_for_keyword
 
-    parsed_tags: list[tuple[str, str]] = []
-    for raw in tags:
-        keyword, value = _parse_tag_pair(raw)
-        if tag_for_keyword(keyword) is None:
-            raise click.BadParameter(
-                f"Unknown DICOM keyword '{keyword}'. "
-                "Use 'xnatctl dicom list-tags <file>' to see valid keywords."
-            )
-        parsed_tags.append((keyword, value))
+    parsed_tags = _parse_known_tag_pairs(tags)
 
     path_obj = Path(path)
     files = _collect_dicom_files(path_obj, recursive)
@@ -485,12 +527,8 @@ def dicom_modify(  # noqa: C901  # pre-existing; see pyproject
             results.append({"file": str(file_path), "status": "failed", "changes": [str(e)]})
             continue
 
-        changes: list[str] = []
         try:
-            for keyword, value in parsed_tags:
-                old = str(getattr(ds, keyword, "(absent)"))
-                setattr(ds, keyword, value)
-                changes.append(f"{keyword}: {old} -> {value}")
+            changes = _apply_tags(ds, parsed_tags)
         except (ValueError, TypeError) as e:
             failed += 1
             results.append({"file": str(file_path), "status": "failed", "changes": [str(e)]})

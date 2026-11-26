@@ -58,6 +58,7 @@ import xnatctl
 from xnatctl.cli.common import Context, ExitCode, global_options, handle_errors
 from xnatctl.core import update_check
 from xnatctl.core.exceptions import UpgradeError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.output import print_error, print_hint, print_success
 
 logger = logging.getLogger(__name__)
@@ -230,7 +231,8 @@ def fetch_latest_release_tag(timeout: float = CHECK_FETCH_TIMEOUT_SECONDS) -> st
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
         tag = payload["tag_name"]
-    except Exception as e:  # noqa: BLE001 -- same silence contract as update_check
+    except Exception as e:
+        logger.exception("Release tag fetch failed", extra={FILE_ONLY_ATTR: True})
         logger.debug("Could not fetch the latest release tag: %s", e)
         return None
     return tag if isinstance(tag, str) else None

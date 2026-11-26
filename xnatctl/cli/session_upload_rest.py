@@ -28,7 +28,6 @@ from xnatctl.cli.common import (
     resolve_overwrite_from_context,
     resolve_workers_from_context,
 )
-from xnatctl.cli.session import session
 from xnatctl.core.config import get_credentials
 from xnatctl.core.output import (
     OutputFormat,
@@ -52,7 +51,7 @@ def _echo_error_overflow(errors: list[str], *, limit: int = 5) -> None:
         click.echo(f"  ... and {len(errors) - limit} more errors", err=True)
 
 
-@session.command("upload")
+@click.command("upload")
 @click.argument("input_path", type=click.Path(exists=True))
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--subject", "-S", required=True, help="Subject ID")

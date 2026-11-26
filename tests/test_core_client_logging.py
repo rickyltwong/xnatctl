@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import logging
-from collections.abc import Callable, Iterator
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -27,19 +29,6 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def no_debug_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
-
-
-@pytest.fixture
-def clean_root() -> Iterator[None]:
-    root = logging.getLogger()
-    saved = (list(root.handlers), root.level)
-    saved_levels = {n: logging.getLogger(n).level for n in ("httpx", "httpcore")}
-    try:
-        yield
-    finally:
-        root.handlers, root.level = saved[0], saved[1]
-        for name, lvl in saved_levels.items():
-            logging.getLogger(name).setLevel(lvl)
 
 
 def make_client(handler: Handler, *, max_retries: int = 3, **kwargs: object) -> XNATClient:
@@ -296,3 +285,60 @@ def test_quiet_wins_over_debug_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert logging.getLogger().level == logging.ERROR
     assert logging.getLogger("httpcore").level == logging.WARNING
+
+
+@pytest.mark.usefixtures("clean_root")
+def test_the_console_handler_writes_to_the_current_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logging.getLogger().handlers = []
+    setup_logging(logging.WARNING)
+
+    for run in ("first", "second"):
+        stderr = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", stderr)
+        logging.getLogger("xnatctl.test").warning("%s run", run)
+
+        assert f"{run} run" in stderr.getvalue()
+
+
+class _BrokenPipe(io.StringIO):
+    def write(self, _text: str) -> int:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+@pytest.mark.usefixtures("clean_root")
+@pytest.mark.parametrize("stderr_kind", ["closed", "broken-pipe"])
+def test_an_unusable_stderr_does_not_turn_a_warning_into_an_error(
+    monkeypatch: pytest.MonkeyPatch, stderr_kind: str
+) -> None:
+    logging.getLogger().handlers = []
+    setup_logging(logging.WARNING)
+    stderr: io.StringIO = _BrokenPipe()
+    if stderr_kind == "closed":
+        stderr = io.StringIO()
+        stderr.close()
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    logging.getLogger("xnatctl.test").warning("nowhere to go")
+
+
+@pytest.mark.usefixtures("clean_root")
+def test_a_failed_console_write_does_not_print_the_exception_being_handled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = "0123456789ABCDEF0123456789ABCDEF"
+    logging.getLogger().handlers = []
+    setup_logging(logging.WARNING)
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(raw, encoding="ascii", errors="strict"))
+
+    try:
+        raise ValueError(f"JSESSIONID={token}")
+    except ValueError:
+        logging.getLogger("xnatctl.test").warning("caf\u00e9")
+    sys.stderr.flush()
+
+    output = raw.getvalue().decode("ascii")
+    assert token not in output
+    assert "xnatctl: could not write a log message:" in output

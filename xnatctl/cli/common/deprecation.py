@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, NamedTuple, TypeVar
+from typing import Any, NamedTuple, ParamSpec, TypeVar
 
 import click
 
-F = TypeVar("F", bound=Callable[..., Any])
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class DeprecatedFlag(NamedTuple):
@@ -121,13 +122,20 @@ def _make_forwarding_alias_cb(
     Returns:
         A Click callback function.
     """
-    message = deprecation_message(old_flag)
+    return _ForwardingAliasCallback(deprecation_message(old_flag), target_param)
 
-    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
+
+class _ForwardingAliasCallback:
+    def __init__(self, message: str, target_param: str) -> None:
+        self._message = message
+        self._forwarding_alias_target = target_param
+
+    def __call__(self, ctx: click.Context, param: click.Parameter, value: Any) -> Any:
         if value is None or not _flag_given(ctx, param):
             return value
-        click.echo(message, err=True)
+        click.echo(self._message, err=True)
 
+        target_param = self._forwarding_alias_target
         target = next((p for p in ctx.command.params if p.name == target_param), None)
         target_given = (
             ctx.get_parameter_source(target_param) == click.core.ParameterSource.COMMANDLINE
@@ -140,11 +148,8 @@ def _make_forwarding_alias_cb(
             ctx.params[target_param] = value
         return value
 
-    callback._forwarding_alias_target = target_param  # type: ignore[attr-defined]
-    return callback
 
-
-def parallel_options(f: F) -> F:
+def parallel_options(f: Callable[P, R]) -> Callable[P, R]:
     """Add parallel execution options.
 
     Injects ``--workers`` (default resolved from profile or 4).
@@ -159,7 +164,7 @@ def parallel_options(f: F) -> F:
         help="Parallel workers (1 = sequential)",
     )
     @wraps(f)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         return f(*args, **kwargs)
 
-    return wrapper  # type: ignore
+    return wrapper

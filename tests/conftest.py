@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 from collections.abc import Callable, Generator, Iterator
 from contextlib import ExitStack, contextmanager
@@ -254,3 +255,28 @@ def disable_rich_colour(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(con, "_force_terminal", False)
         monkeypatch.setattr(con, "_highlight", False, raising=False)
         monkeypatch.setattr(con, "highlighter", _NullHighlighter(), raising=False)
+
+
+@pytest.fixture
+def clean_root() -> Iterator[None]:
+    """Undo what setup_logging and install_log_file change on the logging tree."""
+    root = logging.getLogger()
+    saved_handlers = [(h, h.level, list(h.filters)) for h in root.handlers]
+    saved_level = root.level
+    saved_levels = {name: logging.getLogger(name).level for name in ("httpx", "httpcore")}
+    pydicom_propagates = logging.getLogger("pydicom").propagate
+    try:
+        yield
+    finally:
+        kept = [h for h, _, _ in saved_handlers]
+        for handler in root.handlers:
+            if handler not in kept:
+                handler.close()
+        for handler, level, filters in saved_handlers:
+            handler.setLevel(level)
+            handler.filters = filters
+        root.handlers = kept
+        root.setLevel(saved_level)
+        for name, level in saved_levels.items():
+            logging.getLogger(name).setLevel(level)
+        logging.getLogger("pydicom").propagate = pydicom_propagates

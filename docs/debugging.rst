@@ -155,6 +155,20 @@ anything, tagged ``"event"`` (``command_failed``/``cancelled``/``exit``) so
 you can jump straight to it. It never duplicates the traceback stderr already
 shows under ``-v``; it is the *only* copy when stderr is quiet.
 
+An unexpected failure that xnatctl reports and carries on past -- one item in a
+batch or worker pool, the update notice -- is recorded
+here at ``ERROR`` level with its traceback, and never on stderr. An expected
+one, such as a file that is not a ZIP or DICOM file, is only reported. Where the exception's
+text can quote DICOM values or a session token (a file that ``dicom validate``
+or ``dicom anonymize`` skips, a failed C-STORE send, logout), the record keeps
+the traceback and the exception's type but not its text. A Python program that
+configures its own logging receives those records too. The call's return value
+usually reports the failure as well; a failed logout or update notice has no
+return value to report it in. Each record carries an
+``xnatctl_file_only`` attribute (``xnatctl.core.logging.FILE_ONLY_ATTR``), so
+a logging filter on that attribute drops them. Their tracebacks are the live
+ones, so a handler that captures frame locals sees the values in those frames.
+
 The file is scoped to xnatctl's own log stream (plus httpx/httpcore under the
 wire-trace tier above) -- a dependency's own internal debug logging, if it has
 any, is deliberately excluded, since it is not redacted the way xnatctl's own

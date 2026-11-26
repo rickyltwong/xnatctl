@@ -1,10 +1,8 @@
 """Custom-variable ("xnat-varput") commands for xnatctl.
 
-Registers ``subject vars``/``subject vars set`` onto the ``subject`` group
-defined in :mod:`xnatctl.cli.subject`, and ``session vars``/``session vars
-set`` onto the ``session`` group defined in :mod:`xnatctl.cli.session`,
-mirroring how :mod:`xnatctl.cli.session_query` registers ``list``/``show``
-onto the same ``session`` group.
+Defines ``subject vars``/``subject vars set`` and ``session vars``/``session
+vars set``; ``xnatctl/cli/main.py`` registers them on the ``subject`` and
+``session`` groups.
 
 XNAT stores per-resource, project-defined custom variables (the "field"
 elements a project admin adds under Manage -> custom variables). Every
@@ -35,8 +33,6 @@ from xnatctl.cli.common import (
     require_auth,
     require_project_from_context,
 )
-from xnatctl.cli.session import session
-from xnatctl.cli.subject import subject
 from xnatctl.core.exceptions import ResourceNotFoundError
 from xnatctl.core.output import print_error, print_output, print_success
 from xnatctl.core.validation import validate_project_id, validate_session_id, validate_subject_id
@@ -108,7 +104,7 @@ class _DefaultGroup(click.Group):
             return self.default_cmd_name, cmd, args
 
 
-@subject.group("vars", cls=_DefaultGroup)
+@click.group("vars", cls=_DefaultGroup)
 def subject_vars() -> None:
     """List a subject's custom variables, or set them with `vars set`.
 
@@ -218,7 +214,7 @@ def subject_vars_set(
         raise SystemExit(1)
 
 
-@session.group("vars", invoke_without_command=True)
+@click.group("vars", invoke_without_command=True)
 @click.option(
     "--experiment",
     "-E",

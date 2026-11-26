@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -174,22 +175,15 @@ def test_parallel_401s_trigger_exactly_one_reauth() -> None:
     )
     client.auto_reauth = True
 
-    errors: list[Exception] = []
-
     def worker() -> None:
-        try:
-            with client.stream("GET", "/data/projects") as resp:
-                assert resp.status_code == 200
-        except Exception as e:  # noqa: BLE001 -- pragma: no cover - test scaffolding, capture any thread failure
-            errors.append(e)
+        with client.stream("GET", "/data/projects") as resp:
+            assert resp.status_code == 200
 
-    threads = [threading.Thread(target=worker) for _ in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(worker) for _ in range(2)]
+    for future in futures:
+        future.result()
 
-    assert not errors
     assert auth_posts == 1
 
 
@@ -204,22 +198,15 @@ def test_concurrent_streams_keep_their_own_auth() -> None:
 
     client, _ = _client(handler, session_token="SHARED")
 
-    errors: list[Exception] = []
-
     def worker() -> None:
-        try:
-            for _ in range(10):
-                with client.stream("GET", "/data/projects") as resp:
-                    assert resp.status_code == 200
-        except Exception as e:  # noqa: BLE001 -- pragma: no cover - test scaffolding, capture any thread failure
-            errors.append(e)
+        for _ in range(10):
+            with client.stream("GET", "/data/projects") as resp:
+                assert resp.status_code == 200
 
-    threads = [threading.Thread(target=worker) for _ in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(worker) for _ in range(2)]
+    for future in futures:
+        future.result()
 
-    assert not errors
     assert seen_cookies
     assert all(c == "JSESSIONID=SHARED" for c in seen_cookies)

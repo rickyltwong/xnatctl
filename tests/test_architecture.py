@@ -241,3 +241,151 @@ def test_call_guard_catches_raw_http_forms(source: str) -> None:
 )
 def test_call_guard_ignores_non_client_code(source: str) -> None:
     assert not _raw_http_calls(ast.parse(source))
+
+
+PACKAGE_DIR = CLI_DIR.parent
+# Log calls that put a traceback on the console. Each was there before
+# tracebacks moved to the diagnostics file and is left as it was; any other
+# call that logs a traceback marks it file-only.
+CONSOLE_TRACEBACK_CALLS = sorted(
+    [
+        ("services/transfer/executor_archive.py", "'%s for %s'"),
+        ("services/transfer/executor_archive.py", "'Poll cycle error for %s, retrying next cycle'"),
+        (
+            "services/transfer/orchestrator.py",
+            "'Failed to query dest experiments for reconciliation'",
+        ),
+        ("services/transfer/orchestrator.py", "'Failed to query dest subjects for reconciliation'"),
+        ("services/transfer/poller.py", "'Archive poller crashed'"),
+        ("services/transfer/poller.py", "'Archive wait failed for %s in blocking drain'"),
+        ("services/transfer/poller.py", "'Failed to fetch prearchive snapshot'"),
+        ("services/transfer/poller.py", "'Prearchive archive failed for %s in blocking drain'"),
+        ("services/transfer/poller.py", "'Prearchive archive failed for %s'"),
+        (
+            "services/transfer/poller.py",
+            "'Prearchive resolution failed for %s (attempt %d), will retry'",
+        ),
+        (
+            "services/transfer/poller.py",
+            "'Prearchive resolution failed for %s in blocking drain, falling back to "
+            "wait_for_archive'",
+        ),
+        ("services/transfer/poller.py", "'count_dest_scans failed for %s, will retry'"),
+        ("services/transfer/scan_pipeline_finalize.py", "failed_message"),
+        ("services/upload/shared.py", "'Session refresh failed'"),
+    ]
+)
+
+
+_LOG_METHODS = {
+    "debug",
+    "info",
+    "warning",
+    "warn",
+    "error",
+    "exception",
+    "critical",
+    "fatal",
+    "log",
+}
+
+
+def _logs_a_traceback(call: ast.Call) -> bool:
+    if isinstance(call.func, ast.Attribute) and call.func.attr == "exception":
+        return True
+    exc_info = next((k.value for k in call.keywords if k.arg == "exc_info"), None)
+    if exc_info is None:
+        return False
+    return not (isinstance(exc_info, ast.Constant) and exc_info.value in (False, None))
+
+
+def _marks_file_only(call: ast.Call) -> bool:
+    extra = next((k.value for k in call.keywords if k.arg == "extra"), None)
+    return isinstance(extra, ast.Dict) and any(
+        isinstance(key, ast.Name)
+        and key.id == "FILE_ONLY_ATTR"
+        and isinstance(value, ast.Constant)
+        and value.value is True
+        for key, value in zip(extra.keys, extra.values, strict=True)
+    )
+
+
+def _message(call: ast.Call) -> ast.expr | None:
+    if call.args:
+        return call.args[0]
+    return next((k.value for k in call.keywords if k.arg == "msg"), None)
+
+
+def _traceback_calls_in(tree: ast.AST) -> list[ast.Call]:
+    # Any receiver: logger, logging, logging.getLogger(...) alike. A message
+    # argument tells a log call from Future.exception().
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _LOG_METHODS
+        and _message(node) is not None
+        and _logs_a_traceback(node)
+    ]
+
+
+def _traceback_calls() -> list[tuple[str, ast.Call]]:
+    calls = []
+    for path in sorted(PACKAGE_DIR.rglob("*.py")):
+        rel = path.relative_to(PACKAGE_DIR).as_posix()
+        calls.extend((rel, node) for node in _traceback_calls_in(ast.parse(path.read_text())))
+    return calls
+
+
+def test_logged_tracebacks_go_to_the_diagnostics_file_only() -> None:
+    calls = _traceback_calls()
+    console = sorted(
+        (rel, ast.unparse(message))
+        for rel, call in calls
+        if (message := _message(call)) is not None and not _marks_file_only(call)
+    )
+
+    assert len(calls) > 60
+    assert console == CONSOLE_TRACEBACK_CALLS
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'logger.exception(msg="failed")',
+        'logger.fatal("failed", exc_info=True)',
+        'logger.warn("failed", exc_info=err)',
+        'logging.getLogger(__name__).error("failed", exc_info=True)',
+        'logging.exception("failed")',
+        'logger.exception("failed", extra={FILE_ONLY_ATTR: False})',
+    ],
+)
+def test_traceback_guard_catches_console_forms(source: str) -> None:
+    calls = _traceback_calls_in(ast.parse(source))
+
+    assert len(calls) == 1
+    assert not _marks_file_only(calls[0])
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["future.exception()", 'logger.error("failed")', 'logger.error("failed", exc_info=False)'],
+)
+def test_traceback_guard_ignores_calls_without_a_traceback(source: str) -> None:
+    assert _traceback_calls_in(ast.parse(source)) == []
+
+
+def test_no_module_imports_a_logging_function_by_name() -> None:
+    # The traceback guard matches attribute calls, so a bare exception(...)
+    # after "from logging import exception" would slip past it.
+    offenders = [
+        f"{path.relative_to(PACKAGE_DIR).as_posix()}: {alias.name}"
+        for path in sorted(PACKAGE_DIR.rglob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.ImportFrom) and node.module == "logging"
+        for alias in node.names
+        if alias.name in _LOG_METHODS or alias.name == "*"
+    ]
+
+    assert offenders == []

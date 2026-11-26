@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar
 
 import click
 
@@ -162,7 +162,18 @@ __all__ = [
     "validate_local_path_option_cb",
 ]
 
-F = TypeVar("F", bound=Callable[..., Any])
+P = ParamSpec("P")
+R = TypeVar("R")
+R_co = TypeVar("R_co", covariant=True)
+
+
+class ContextCommand(Protocol[P, R_co]):
+    """A command that takes the :class:`Context` first, by position or as ``ctx=``."""
+
+    def __call__(self, ctx: Context, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
+
+
+logger = logging.getLogger(__name__)
 
 
 class Context:
@@ -227,7 +238,7 @@ class Context:
 pass_context = click.make_pass_decorator(Context, ensure=True)
 
 
-def global_options(f: F) -> F:
+def global_options(f: Callable[Concatenate[Context, ...], R]) -> Callable[..., R]:
     """Add global options to a command.
 
     The shared flags (``--profile``, ``--output``, ``--quiet``,
@@ -301,7 +312,7 @@ def global_options(f: F) -> F:
         log_file: str | None,
         *args: Any,
         **kwargs: Any,
-    ) -> Any:
+    ) -> R:
         click_ctx = click.get_current_context()
 
         def _was_explicit(param_name: str) -> bool:
@@ -363,14 +374,14 @@ def global_options(f: F) -> F:
 
         return f(ctx, *args, **kwargs)
 
-    return wrapper  # type: ignore
+    return wrapper
 
 
-def require_auth(f: F) -> F:
+def require_auth(f: Callable[Concatenate[Context, P], R]) -> ContextCommand[P, R]:
     """Ensure user is authenticated before running command."""
 
     @wraps(f)
-    def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> Any:
+    def wrapper(ctx: Context, *args: P.args, **kwargs: P.kwargs) -> R:
         client = ctx.get_client()
         had_session = client.is_authenticated
         # The name get_client resolved the profile (and its cached session) by.
@@ -421,7 +432,7 @@ def require_auth(f: F) -> F:
 
         return f(ctx, *args, **kwargs)
 
-    return wrapper  # type: ignore
+    return wrapper
 
 
 _AUDIT_SECRET_PARAMS = SECRET_QUERY_KEYS | {"dest_pass", "dest_password", "passphrase"}
@@ -489,11 +500,12 @@ def _record_audit(
             dry_run=dry_run,
             details={**_audit_details(params), "confirmed": confirmed},
         )
-    except Exception as e:  # noqa: BLE001 -- pragma: no cover - audit write must never break the command it records
-        logging.getLogger(__name__).warning("Could not record audit entry: %s", e)
+    except Exception as e:
+        logger.exception("Could not record audit entry", extra={FILE_ONLY_ATTR: True})
+        logger.warning("Could not record audit entry: %s", e)
 
 
-def confirm_destructive(message: str) -> Callable[[F], F]:
+def confirm_destructive(message: str) -> Callable[[Callable[..., R]], Callable[..., R]]:
     """Require confirmation for destructive operations.
 
     Also the audit seam: carrying this decorator is what marks a
@@ -502,11 +514,11 @@ def confirm_destructive(message: str) -> Callable[[F], F]:
     audited by virtue of being declared destructive.
     """
 
-    def decorator(f: F) -> F:
+    def decorator(f: Callable[..., R]) -> Callable[..., R]:
         @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
         @click.option("--dry-run", is_flag=True, help="Preview without making changes")
         @wraps(f)
-        def wrapper(*args: Any, yes: bool, dry_run: bool, **kwargs: Any) -> Any:
+        def wrapper(*args: Any, yes: bool, dry_run: bool, **kwargs: Any) -> R:
             if dry_run:
                 click.echo("[DRY-RUN] Preview mode - no changes will be made", err=True)
                 kwargs["dry_run"] = True
@@ -527,14 +539,14 @@ def confirm_destructive(message: str) -> Callable[[F], F]:
             finally:
                 _record_audit(dry_run=dry_run, confirmed=yes, params=dict(kwargs), error=error)
 
-        return wrapper  # type: ignore
+        return wrapper
 
     return decorator
 
 
 def confirm_destructive_when(
     predicate: Callable[[dict[str, Any]], bool], message: str
-) -> Callable[[F], F]:
+) -> Callable[[Callable[..., R]], Callable[..., R]]:
     """Like :func:`confirm_destructive`, gated on whether this invocation mutates.
 
     Some commands are a plain read in their default form and only become
@@ -553,11 +565,11 @@ def confirm_destructive_when(
         message: Confirmation prompt shown when the predicate is True.
     """
 
-    def decorator(f: F) -> F:
+    def decorator(f: Callable[..., R]) -> Callable[..., R]:
         @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
         @click.option("--dry-run", is_flag=True, help="Preview without making changes")
         @wraps(f)
-        def wrapper(*args: Any, yes: bool, dry_run: bool, **kwargs: Any) -> Any:
+        def wrapper(*args: Any, yes: bool, dry_run: bool, **kwargs: Any) -> R:
             if not predicate(kwargs):
                 kwargs["dry_run"] = False
                 return f(*args, **kwargs)
@@ -582,7 +594,7 @@ def confirm_destructive_when(
             finally:
                 _record_audit(dry_run=dry_run, confirmed=yes, params=dict(kwargs), error=error)
 
-        return wrapper  # type: ignore
+        return wrapper
 
     return decorator
 

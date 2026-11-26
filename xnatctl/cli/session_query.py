@@ -1,8 +1,7 @@
 """Session query commands for xnatctl (list / show).
 
-Registers ``session list`` and ``session show`` onto the ``session`` group
-defined in :mod:`xnatctl.cli.session`, mirroring how
-:mod:`xnatctl.cli.session_upload` registers the upload family.
+``xnatctl/cli/main.py`` registers ``session list`` and ``session show`` on
+the ``session`` group defined in :mod:`xnatctl.cli.session`.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ from xnatctl.cli.common import (
     require_project_from_context,
     resolve_columns,
 )
-from xnatctl.cli.session import session
 from xnatctl.core.exceptions import ResourceNotFoundError, XNATCtlError
 from xnatctl.core.output import OutputFormat, print_error, print_output, print_table
 from xnatctl.core.validation import validate_project_id, validate_session_id
@@ -30,7 +28,7 @@ from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.sessions import SessionService
 
 
-@session.command("list")
+@click.command("list")
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--subject", "-S", help="Filter by subject")
 @click.option(
@@ -91,7 +89,7 @@ def session_list(
     )
 
 
-@session.command("show")
+@click.command("show")
 @click.option(
     "--experiment",
     "-E",

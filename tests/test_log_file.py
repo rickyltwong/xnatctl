@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
 import re
 import stat
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import click
 import httpx
+import pydicom
 import pytest
 from click.testing import CliRunner
 from conftest import config_seam
@@ -22,12 +23,15 @@ from xnatctl.core.config import Config, Profile
 from xnatctl.core.exceptions import ServerUnreachableError
 from xnatctl.core.fsutil import POSIX_PERMISSIONS
 from xnatctl.core.logging import (
+    FILE_ONLY_ATTR,
     LOG_FILE_BACKUP_COUNT,
+    DetailsWithheldError,
     JsonLinesFormatter,
     _JsonLinesFileHandler,
     install_log_file,
     new_correlation_id,
     remove_log_file,
+    withhold_details,
 )
 
 SECRET_URL = "https://xnat.example.org/data?token=s3cret"
@@ -44,21 +48,6 @@ _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 def _strip_timestamps(text: str) -> str:
     return _TIMESTAMP_RE.sub("<TS>", text)
-
-
-@pytest.fixture
-def clean_root() -> Iterator[None]:
-    root = logging.getLogger()
-    saved_handlers = list(root.handlers)
-    saved_level = root.level
-    try:
-        yield
-    finally:
-        for handler in root.handlers:
-            if handler not in saved_handlers:
-                handler.close()
-        root.handlers = saved_handlers
-        root.setLevel(saved_level)
 
 
 def _make_record(
@@ -140,6 +129,44 @@ class TestJsonLinesFormatterTracebackRedaction:
 
         payload = json.loads(JsonLinesFormatter().format(record))
         assert "plain failure, no urls here" in payload["exc"]
+
+    def test_traceback_session_cookie_is_redacted(self) -> None:
+        try:
+            raise ValueError("bad header: Cookie: JSESSIONID=ABCDEF0123456789")
+        except ValueError:
+            record = _make_record("Operation failed", level=logging.ERROR, exc_info=sys.exc_info())
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert "ABCDEF0123456789" not in payload["exc"]
+        assert "JSESSIONID=***" in payload["exc"]
+
+    def test_a_malformed_url_in_the_traceback_does_not_break_formatting(self) -> None:
+        try:
+            raise ValueError("bad url http://[x?token=s3cret")
+        except ValueError:
+            record = _make_record("Operation failed", level=logging.ERROR, exc_info=sys.exc_info())
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert "s3cret" not in payload["exc"]
+
+    def test_a_non_string_field_is_redacted_and_still_serializes(self) -> None:
+        record = _make_record(
+            "request",
+            extra={
+                "event": "http",
+                "method": b"Cookie: JSESSIONID=ABCDEF0123456789",
+                "status": 500,
+            },
+        )
+        record.attempt = {(1, 2): SECRET_URL}
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert "ABCDEF0123456789" not in payload["method"]
+        assert "s3cret" not in payload["attempt"]
+        assert payload["status"] == 500
 
     def test_no_exc_info_means_no_exc_key(self) -> None:
         record = _make_record("Operation failed", level=logging.ERROR)
@@ -909,3 +936,156 @@ class TestStderrParity:
         assert without.exit_code == 0, without.output
         assert with_file.exit_code == 0, with_file.output
         assert _strip_timestamps(without.output) == _strip_timestamps(with_file.output)
+
+
+class _FailingStream:
+    """A stream whose writes raise ``error``, such as a full disk."""
+
+    def __init__(self, error: OSError) -> None:
+        self.error = error
+
+    def write(self, _text: str) -> None:
+        raise self.error
+
+    def flush(self) -> None:
+        pass
+
+    def tell(self) -> int:
+        return 0
+
+    def seek(self, *_args: object) -> int:
+        return 0
+
+    def close(self) -> None:
+        pass
+
+
+def _diagnostics_handler() -> _JsonLinesFileHandler:
+    return next(h for h in logging.getLogger().handlers if isinstance(h, _JsonLinesFileHandler))
+
+
+class TestDiagnosticsFileFailures:
+    def test_a_failed_write_reports_one_redacted_line(
+        self, tmp_path: Path, clean_root: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        install_log_file(tmp_path / "diag.jsonl")
+        _diagnostics_handler().stream = _FailingStream(
+            OSError(28, f"No space left on device at {SECRET_URL} JSESSIONID=ABCDEF0123456789")
+        )
+        try:
+            raise RuntimeError(f"Cookie: JSESSIONID=FEDCBA9876543210 {SECRET_URL}")
+        except RuntimeError:
+            logging.getLogger("xnatctl.test").exception("boom", extra={FILE_ONLY_ATTR: True})
+
+        assert capsys.readouterr().err == (
+            "xnatctl: could not write the diagnostics file: [Errno 28] No space left on device"
+            " at https://xnat.example.org/data?token=*** JSESSIONID=***\n"
+        )
+
+    @pytest.mark.parametrize("stderr_kind", ["broken-pipe", "closed", "none"])
+    def test_a_failed_write_with_an_unusable_stderr_does_not_raise(
+        self,
+        tmp_path: Path,
+        clean_root: None,
+        monkeypatch: pytest.MonkeyPatch,
+        stderr_kind: str,
+    ) -> None:
+        install_log_file(tmp_path / "diag.jsonl")
+        _diagnostics_handler().stream = _FailingStream(OSError(28, "No space left on device"))
+        stderr: object = _FailingStream(BrokenPipeError(32, "Broken pipe"))
+        if stderr_kind == "closed":
+            stderr = io.StringIO()
+            stderr.close()
+        elif stderr_kind == "none":
+            stderr = None
+        monkeypatch.setattr(sys, "stderr", stderr)
+
+        logging.getLogger("xnatctl.test").error("boom", extra={FILE_ONLY_ATTR: True})
+
+    def test_a_failed_write_prints_nothing_when_logging_errors_are_off(
+        self,
+        tmp_path: Path,
+        clean_root: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        install_log_file(tmp_path / "diag.jsonl")
+        _diagnostics_handler().stream = _FailingStream(OSError(28, "No space left on device"))
+        monkeypatch.setattr(logging, "raiseExceptions", False)
+
+        logging.getLogger("xnatctl.test").error("boom", extra={FILE_ONLY_ATTR: True})
+
+        assert "could not write the diagnostics file" not in capsys.readouterr().err
+
+    def test_withheld_details_keep_the_frames_and_type_but_not_the_text(self) -> None:
+        patient_id = "DOE" + "^JANE"
+        try:
+            raise ValueError(f"PatientID {patient_id} has an invalid length")
+        except ValueError as e:
+            withheld = withhold_details(e)
+            record = _make_record(
+                "read failed",
+                level=logging.ERROR,
+                exc_info=(DetailsWithheldError, withheld, withheld.__traceback__),
+            )
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert patient_id not in payload["exc"]
+        assert "DetailsWithheldError: ValueError" in payload["exc"]
+        assert "test_withheld_details_keep_the_frames_and_type_but_not_the_text" in payload["exc"]
+
+    def test_dicom_validate_keeps_dicom_values_out_of_the_file(
+        self, tmp_path: Path, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dicom_file = tmp_path / "scan.dcm"
+        dicom_file.write_bytes(b"not read")
+        log_file = tmp_path / "diag.jsonl"
+
+        patient_id = "DOE" + "^JANE"
+
+        def unreadable(*_args: object, **_kwargs: object) -> None:
+            raise ValueError(f"PatientID {patient_id} has an invalid length")
+
+        monkeypatch.setattr(pydicom, "dcmread", unreadable)
+
+        result = CliRunner().invoke(
+            cli, ["--log-file", str(log_file), "dicom", "validate", str(dicom_file)]
+        )
+
+        assert patient_id in result.output
+        records = [r for r in read_lines(log_file) if r.get("msg", "").startswith("dicom validate")]
+        assert len(records) == 1
+        assert patient_id not in json.dumps(records)
+        assert "DetailsWithheldError: ValueError" in records[0]["exc"]
+
+    def test_dicom_anonymize_keeps_dicom_values_out_of_the_file(
+        self, tmp_path: Path, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dicom_file = tmp_path / "scan.dcm"
+        dicom_file.write_bytes(b"not read")
+        log_file = tmp_path / "diag.jsonl"
+        patient_id = "DOE" + "^JANE"
+
+        def unreadable(*_args: object, **_kwargs: object) -> None:
+            raise ValueError(f"PatientID {patient_id} has an invalid length")
+
+        monkeypatch.setattr(pydicom, "dcmread", unreadable)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--log-file",
+                str(log_file),
+                "dicom",
+                "anonymize",
+                str(dicom_file),
+                str(tmp_path / "out.dcm"),
+            ],
+        )
+
+        assert patient_id in result.output
+        records = [r for r in read_lines(log_file) if "exc" in r]
+        assert records
+        assert patient_id not in json.dumps(records)
+        assert all("DetailsWithheldError: ValueError" in r["exc"] for r in records)

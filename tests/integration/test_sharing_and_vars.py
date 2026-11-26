@@ -10,6 +10,8 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def second_project(xnat_client: Any) -> Any:
+    from xnatctl.core.exceptions import XNATCtlError
+
     project_id = f"xctl{uuid.uuid4().hex[:12]}"
     xnat_client.put(f"/data/projects/{project_id}")
     try:
@@ -17,7 +19,7 @@ def second_project(xnat_client: Any) -> Any:
     finally:
         try:
             xnat_client.delete(f"/data/projects/{project_id}", params={"removeFiles": "true"})
-        except Exception as exc:  # noqa: BLE001  # teardown must not mask a test result
+        except XNATCtlError as exc:
             print(f"\nWARNING: could not delete test project {project_id}: {exc}")
 
 

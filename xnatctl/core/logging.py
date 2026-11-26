@@ -5,6 +5,7 @@ Provides structured logging with audit trail support.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import logging.handlers
@@ -16,7 +17,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from xnatctl.core.fsutil import (
     _private_opener,
@@ -63,14 +64,23 @@ class RedactionFilter(logging.Filter):
 
     Scope boundary: this covers the formatted message only. Exception
     tracebacks are rendered by the Formatter *after* filters run, so a secret
-    inside a traceback is not scrubbed here. The CLI's own traceback path
-    already redacts (``cli/common.py``); a Formatter-level fix belongs with
-    future log-file work.
+    inside a traceback is not scrubbed here. The CLI's own error path redacts
+    separately (``cli/common/errors.py``), and :class:`JsonLinesFormatter`
+    scrubs every field of the diagnostics file, the traceback included.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         """Rewrite ``record`` in place when it contains something to redact."""
-        message = record.getMessage()
+        try:
+            message = record.getMessage()
+        except (TypeError, ValueError, KeyError, OverflowError):
+            # The errors %-formatting raises for arguments that do not fit the
+            # format string. Raising here would escape the logging call itself.
+            # Only the arguments' types are kept: without the format, nothing
+            # marks which of them is a secret.
+            msg = record.msg if isinstance(record.msg, str) else f"<{type(record.msg).__name__}>"
+            message = f"{msg} [arguments not shown: {_type_names(record.args)}]"
+            record.msg, record.args = message, None
         redacted = redact_session_cookies(redact_url_query(message))
         if redacted != message:
             record.msg = redacted
@@ -159,6 +169,47 @@ def install_redaction_filter(logger: logging.Logger | None = None) -> None:
             handler.addFilter(CorrelationFilter())
 
 
+def _type_names(args: object) -> str:
+    # logging passes a tuple, or the one mapping it was given. None of the
+    # mapping's own methods is called: one that raised would escape the call.
+    if type(args) is tuple:
+        return ", ".join(type(value).__name__ for value in args)
+    return type(args).__name__
+
+
+def _report_handler_failure(what: str) -> None:
+    # The default report prints the record and the active exception chain,
+    # unredacted. This prints one redacted line instead.
+    if logging.raiseExceptions and sys.stderr:
+        failure = redact_session_cookies(redact_url_query(str(sys.exc_info()[1])))
+        # Nor may a closed stderr or a broken pipe end the command.
+        with contextlib.suppress(OSError, ValueError):
+            sys.stderr.write(f"xnatctl: {what}: {failure}\n")
+
+
+class _CurrentStderrHandler(logging.StreamHandler[TextIO]):
+    """Write to whatever ``sys.stderr`` is when a record is emitted.
+
+    ``logging.lastResort`` does the same. A handler bound to the stream at setup
+    would keep writing to a replaced one, such as an earlier in-process run's
+    captured stderr.
+    """
+
+    def __init__(self) -> None:
+        logging.Handler.__init__(self)
+
+    @property
+    def stream(self) -> TextIO:
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value: TextIO) -> None:
+        raise AttributeError("this handler always writes to the current sys.stderr")
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        _report_handler_failure("could not write a log message")
+
+
 def setup_logging(
     level: int = logging.INFO,
     *,
@@ -177,6 +228,8 @@ def setup_logging(
       drowns the diagnostics people actually came for.
 
     ``--quiet`` wins over both: an explicit flag beats an ambient env var.
+
+    pydicom's own log stream is never shown, on any tier.
 
     Independent of all three tiers: once :func:`install_log_file` has attached
     a diagnostics file handler (this invocation or a prior call in the same
@@ -199,7 +252,7 @@ def setup_logging(
 
     root = logging.getLogger()
     if not any(not isinstance(h, logging.FileHandler) for h in root.handlers):
-        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler = _CurrentStderrHandler()
         stderr_handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
         root.addHandler(stderr_handler)
 
@@ -226,6 +279,10 @@ def setup_logging(
     logging.getLogger("httpcore").setLevel(
         logging.DEBUG if trace and not quiet else logging.WARNING
     )
+    # pydicom's log text can quote element values, and pydicom prints most of
+    # it as Python warnings anyway. Not by level: importing pydicom, which
+    # happens later, resets its level.
+    logging.getLogger("pydicom").propagate = False
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -240,7 +297,24 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
+class DetailsWithheldError(Exception):
+    """Stands in for a logged exception whose text must not be recorded."""
+
+
+def withhold_details(exc: BaseException) -> DetailsWithheldError:
+    """Return a stand-in for ``exc`` to pass as ``exc_info=``: its frames, its type, no text.
+
+    For a failure whose message can quote DICOM element values or a session
+    token, which no log record may carry. Every handler, a library caller's
+    included, then sees where it failed but not what the exception said.
+    """
+    return DetailsWithheldError(type(exc).__qualname__).with_traceback(exc.__traceback__)
+
+
 class _JsonLinesFileHandler(logging.handlers.RotatingFileHandler):
+    def handleError(self, record: logging.LogRecord) -> None:
+        _report_handler_failure("could not write the diagnostics file")
+
     def _open(self) -> Any:
         path = Path(self.baseFilename)
         ensure_private_dir(path.parent)
@@ -316,10 +390,10 @@ class JsonLinesFormatter(logging.Formatter):
             payload["exc"] = self.formatException(record.exc_info)
 
         for key, value in payload.items():
-            if isinstance(value, str):
-                payload[key] = redact_url_query(value)
+            if not isinstance(value, int | float):
+                payload[key] = redact_session_cookies(redact_url_query(str(value)))
 
-        return json.dumps(payload, default=str)
+        return json.dumps(payload)
 
 
 def install_log_file(path: str | Path) -> None:

@@ -130,3 +130,22 @@ class TestExceptionHierarchy:
 
         path_exc = PathValidationError("/bad/path", "does not exist")
         assert "/bad/path" in str(path_exc)
+
+
+class TestLibraryLogging:
+    def test_records_never_reach_the_last_resort_handler(self) -> None:
+        import subprocess
+        import sys
+
+        code = (
+            "import logging, xnatctl\n"
+            "try:\n"
+            "    raise RuntimeError('boom')\n"
+            "except RuntimeError:\n"
+            "    logging.getLogger('xnatctl.services.example').exception('swallowed')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        )
+
+        assert result.stderr == ""

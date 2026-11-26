@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import ResourceNotFoundError, XNATCtlError
 from xnatctl.services.scp import DicomScpService
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
@@ -28,7 +28,7 @@ def probe_scp(xnat_client: Any) -> Iterator[dict[str, Any]]:
     finally:
         try:
             service.delete_scp(created["id"])
-        except Exception as exc:  # noqa: BLE001 -- teardown must not mask a test result
+        except XNATCtlError as exc:
             print(f"\nWARNING: could not delete probe SCP receiver {created['id']}: {exc}")
 
 

@@ -1,9 +1,8 @@
 """``session normalize-labels`` -- standardize experiment labels for a project.
 
-Split out from ``session.py`` for the same reason as ``session_query.py``/
-``session_upload.py``: importing this module registers the command on the
-``session`` group via decorator side effect; see ``xnatctl/cli/main.py`` for
-the import that triggers it.
+Split out from ``session.py`` like ``session_query.py`` and
+``session_upload.py``; ``xnatctl/cli/main.py`` registers it on the
+``session`` group.
 """
 
 from __future__ import annotations
@@ -18,13 +17,12 @@ from xnatctl.cli.common import (
     require_auth,
     require_project_from_context,
 )
-from xnatctl.cli.session import session
 from xnatctl.core.output import print_success
 from xnatctl.core.validation import validate_project_id
 from xnatctl.services.session_labels import SessionLabelService
 
 
-@session.command("normalize-labels")
+@click.command("normalize-labels")
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option(
     "--subject-pattern",

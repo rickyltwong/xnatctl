@@ -110,3 +110,118 @@ class TestInheritance:
 
         assert result.exit_code == 0, result.stderr
         assert _PROBE_CAPTURE["profile_name"] == "staging"
+
+
+def _run_cli_in_subprocess(tmp_path, *args: str, env: dict[str, str] | None = None):
+    import os
+    import subprocess
+    import sys
+
+    config_dir = tmp_path / "home" / ".config" / "xnatctl"
+    config_dir.mkdir(parents=True)
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "version: 1\ndefault_profile: default\nbogus_key: 1\n"
+        "profiles:\n  default:\n    url: http://127.0.0.1:9\n"
+    )
+    config_file.chmod(0o600)
+    child_env = {k: v for k, v in os.environ.items() if not k.startswith("XNAT")}
+    home = str(tmp_path / "home")
+    # Path.home() reads USERPROFILE on Windows, HOME elsewhere.
+    child_env.update(HOME=home, USERPROFILE=home, XNAT_NO_UPDATE_CHECK="1", **(env or {}))
+    return subprocess.run(
+        [sys.executable, "-m", "xnatctl", *args],
+        capture_output=True,
+        text=True,
+        env=child_env,
+        cwd=tmp_path,
+        timeout=60,
+        check=False,
+    )
+
+
+def _write_dicom_with_an_unknown_charset(path) -> None:
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.2"
+    ds.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID
+    ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
+    ds.SpecificCharacterSet = "ISO_IR 999"
+    ds.PatientName = "Test^Name"
+    ds.Modality = "CT"
+    ds.save_as(path, enforce_file_format=True)
+
+
+class TestCommandsWithoutGlobalOptions:
+    def test_their_log_keeps_warnings_and_drops_info(
+        self, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import logging
+
+        import click
+
+        monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
+
+        messages: list[str] = []
+
+        class Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                messages.append(record.getMessage())
+
+        @click.command("probe-no-globals")
+        def probe() -> None:
+            log = logging.getLogger("xnatctl.test.no_globals")
+            log.info("info line")
+            log.warning("warning line")
+
+        # Python's own default is WARNING; start lower so a missing setup shows.
+        logging.getLogger().setLevel(logging.INFO)
+        logging.getLogger().addHandler(Capture())
+        cli.add_command(probe)
+        try:
+            result = CliRunner().invoke(cli, ["probe-no-globals"])
+        finally:
+            cli.commands.pop("probe-no-globals")
+
+        assert result.exit_code == 0, result.output
+        assert messages == ["warning line"]
+
+    @pytest.mark.parametrize(
+        "root_args", [[], ["--log-file", "diag.jsonl"]], ids=["plain", "log-file"]
+    )
+    def test_config_warnings_reach_stderr(self, tmp_path, root_args: list[str]) -> None:
+        result = _run_cli_in_subprocess(tmp_path, *root_args, "config", "current-context")
+
+        assert result.returncode == 0, result.stderr
+        assert "has unrecognized config keys" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("root_args", "env"),
+        [([], {}), (["-v"], {}), ([], {"XNATCTL_DEBUG": "1"})],
+        ids=["default", "verbose", "wire-trace"],
+    )
+    def test_pydicom_log_lines_are_never_shown(
+        self, tmp_path, root_args: list[str], env: dict[str, str]
+    ) -> None:
+        dicom_file = tmp_path / "charset.dcm"
+        _write_dicom_with_an_unknown_charset(dicom_file)
+
+        result = _run_cli_in_subprocess(
+            tmp_path, *root_args, "dicom", "inspect", str(dicom_file), env=env
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "Unknown encoding 'ISO_IR 999'" in result.stderr
+        assert "pydicom:" not in result.stderr
+
+    def test_a_failure_prints_no_diagnostics_only_record(self, tmp_path) -> None:
+        result = _run_cli_in_subprocess(tmp_path, "config", "remove-profile", "nope", "--dry-run")
+
+        assert result.returncode == 1
+        assert "Profile 'nope' not found" in result.stderr
+        assert "Command exited with code" not in result.stderr

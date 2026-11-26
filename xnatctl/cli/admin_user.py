@@ -7,7 +7,6 @@ from typing import Any
 
 import click
 
-from xnatctl.cli.admin import admin
 from xnatctl.cli.common import (
     Context,
     apply_filter,
@@ -32,7 +31,7 @@ from xnatctl.services.projects import ProjectService
 from xnatctl.services.users import UserService
 
 
-@admin.group()
+@click.group()
 def user() -> None:
     """User management commands."""
     pass

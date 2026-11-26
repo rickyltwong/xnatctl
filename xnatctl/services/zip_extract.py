@@ -47,7 +47,36 @@ def _safe_extract_zip(zip_path: Path, extract_dir: Path) -> list[str]:
     return skipped
 
 
-def _extract_scan_zip(  # noqa: C901  # pre-existing; see pyproject
+def _resource_label_and_relpath(member_path: Path) -> tuple[str | None, Path | None]:
+    parts = member_path.parts
+
+    detected_label: str | None = None
+    rel: Path | None = None
+    if "resources" in parts and "files" in parts:
+        res_idx = parts.index("resources")
+        files_idx = parts.index("files")
+        if files_idx > res_idx + 1:
+            detected_label = parts[res_idx + 1]
+            rel_parts = parts[files_idx + 1 :]
+            if rel_parts:
+                rel = Path(*rel_parts)
+
+    if rel is None:
+        if "files" in parts:
+            idx = parts.index("files")
+            rel_parts = parts[idx + 1 :]
+            if not rel_parts:
+                return detected_label, None
+            rel = Path(*rel_parts)
+        elif len(parts) > 1:
+            rel = Path(*parts[1:])
+        else:
+            rel = member_path
+
+    return detected_label, rel
+
+
+def _extract_scan_zip(
     zip_path: Path,
     scan_base: Path,
     *,
@@ -75,30 +104,9 @@ def _extract_scan_zip(  # noqa: C901  # pre-existing; see pyproject
             if any(part.startswith(".") for part in member_path.parts):
                 continue
 
-            parts = member_path.parts
-
-            detected_label: str | None = None
-            rel: Path | None = None
-            if "resources" in parts and "files" in parts:
-                res_idx = parts.index("resources")
-                files_idx = parts.index("files")
-                if files_idx > res_idx + 1:
-                    detected_label = parts[res_idx + 1]
-                    rel_parts = parts[files_idx + 1 :]
-                    if rel_parts:
-                        rel = Path(*rel_parts)
-
+            detected_label, rel = _resource_label_and_relpath(member_path)
             if rel is None:
-                if "files" in parts:
-                    idx = parts.index("files")
-                    rel_parts = parts[idx + 1 :]
-                    if not rel_parts:
-                        continue
-                    rel = Path(*rel_parts)
-                elif len(parts) > 1:
-                    rel = Path(*parts[1:])
-                else:
-                    rel = member_path
+                continue
 
             if not rel.name or rel.name.startswith("."):
                 continue

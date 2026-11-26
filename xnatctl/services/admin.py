@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from concurrent.futures import as_completed
 from typing import Any, cast
@@ -10,9 +11,12 @@ import httpx
 
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import InputValidationError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import quote_path_segment
 
 from .base import BaseService
+
+logger = logging.getLogger(__name__)
 
 
 def _add_filter_param(params: dict[str, Any], key: str, value: str | None) -> None:
@@ -81,7 +85,8 @@ class AdminService(BaseService):
 
                 self._put(path, params=params)
                 return (exp_id, True, "")
-            except Exception as e:  # noqa: BLE001  # per-item batch isolation: one failure must not abort the batch
+            except Exception as e:
+                logger.exception("Catalog refresh failed", extra={FILE_ONLY_ATTR: True})
                 return (exp_id, False, str(e))
 
         if parallel and total > 1:
@@ -154,7 +159,8 @@ class AdminService(BaseService):
                 )
                 self._put(path)
                 results["added"].append(group)
-            except Exception as e:  # noqa: BLE001  # per-item batch isolation: one failure must not abort the batch
+            except Exception as e:
+                logger.exception("Adding a user to a group failed", extra={FILE_ONLY_ATTR: True})
                 results["failed"].append(group)
                 results["errors"].append({"group": group, "error": str(e)})
 
@@ -201,7 +207,10 @@ class AdminService(BaseService):
                     )
                     self._delete(path)
                     results["removed"].append(group)
-            except Exception as e:  # noqa: BLE001  # per-item batch isolation: one failure must not abort the batch
+            except Exception as e:
+                logger.exception(
+                    "Removing a user from a group failed", extra={FILE_ONLY_ATTR: True}
+                )
                 results["failed"].append(group)
                 results["errors"].append({"group": group, "error": str(e)})
 

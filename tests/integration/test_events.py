@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.exceptions import ResourceNotFoundError, XNATCtlError
 from xnatctl.services.events import EventService
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
@@ -55,7 +55,7 @@ def probe_subscription(xnat_client: Any, event_service_enabled: None) -> Iterato
     finally:
         try:
             service.delete_subscription(subscription_id)
-        except Exception as exc:  # noqa: BLE001 -- teardown must not mask a test result
+        except XNATCtlError as exc:
             print(f"\nWARNING: could not delete probe subscription {subscription_id}: {exc}")
 
 

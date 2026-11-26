@@ -41,6 +41,7 @@ from xnatctl.core.exceptions import (
     SessionExpiredError,
     XNATConnectionError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import quote_path_segment, validate_xnat_label
 
 from .base import BaseService
@@ -470,7 +471,8 @@ class SessionLabelService(BaseService):
                 renamed += 1
             except SessionExpiredError:
                 raise
-            except Exception as exc:  # noqa: BLE001  # per-experiment isolation across a rename batch
+            except Exception as exc:
+                logger.exception("Experiment rename failed", extra={FILE_ONLY_ATTR: True})
                 failed.append(
                     {
                         "id": item["id"],

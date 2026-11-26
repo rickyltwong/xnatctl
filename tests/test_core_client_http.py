@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from urllib.parse import parse_qs, urlparse
 
@@ -16,6 +17,7 @@ from xnatctl.core.exceptions import (
 from xnatctl.core.exceptions import (
     RequestTimeoutError as XNATTimeoutError,
 )
+from xnatctl.core.logging import DetailsWithheldError
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -344,6 +346,35 @@ class TestSessionWiring:
         client.invalidate_session()
 
         assert client.session_token is None
+
+    def test_invalidate_session_survives_any_transport_failure_and_logs_no_token(self) -> None:
+        token = "TOK" + "-SECRET"
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            raise RuntimeError(f"bad cookie JSESSIONID={token}")
+
+        client, _ = make_client(handler)
+        client.session_token = token
+        records: list[logging.LogRecord] = []
+
+        class Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        capture = Capture()
+        client_logger = logging.getLogger("xnatctl.core.client")
+        client_logger.addHandler(capture)
+        try:
+            client.invalidate_session()
+        finally:
+            client_logger.removeHandler(capture)
+
+        assert client.session_token is None
+        (record,) = records
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], DetailsWithheldError)
+        assert str(record.exc_info[1]) == "RuntimeError"
+        assert token not in logging.Formatter().format(record)
 
     def test_invalidate_session_is_a_noop_without_a_token(self) -> None:
         client, calls = make_client(lambda _r: httpx.Response(200, text=""))

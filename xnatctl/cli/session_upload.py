@@ -3,9 +3,8 @@
 Each command family lives in its own sibling module, split by cohesion:
 ``session_upload_rest`` (REST/gradual DICOM archive upload), ``session_upload_exam``
 (exam-root layout upload), and ``session_upload_dicom`` (C-STORE network transfer).
-Importing this module imports all three for their command-registration side
-effects on the ``session`` group; it also re-exports their private upload
-helpers for callers that import them from here.
+This module re-exports the three commands, which ``xnatctl/cli/main.py``
+registers on the ``session`` group, and their private upload helpers.
 """
 
 from __future__ import annotations

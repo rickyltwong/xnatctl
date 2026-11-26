@@ -69,6 +69,17 @@ def _seed_project_list(authenticated_cli: AuthenticatedCLI) -> None:
     ]
 
 
+def test_set_no_color_survives_a_rich_without_color_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    con = Console(force_terminal=True, color_system="truecolor")
+    monkeypatch.delattr(Console, "_detect_color_system")
+
+    output_module._set_color_system(con, no_color=False)
+
+    assert con.color_system == "truecolor"
+
+
 def test_table_command_no_tty_has_no_escapes(authenticated_cli: AuthenticatedCLI) -> None:
     _seed_project_list(authenticated_cli)
     result = authenticated_cli.invoke(["project", "list"])

@@ -25,6 +25,7 @@ import re
 from typing import TYPE_CHECKING
 
 from xnatctl.core.exceptions import UnsupportedServerVersionError, XNATCtlError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
@@ -112,7 +113,8 @@ def probe_server_version(client: XNATClient) -> ServerVersion | None:
     except XNATCtlError as e:
         logger.debug("Could not probe server version: %s", e)
         return None
-    except Exception as e:  # noqa: BLE001 -- version probing must never break a working command
+    except Exception as e:
+        logger.exception("Server version probe failed", extra={FILE_ONLY_ATTR: True})
         logger.debug("Could not probe server version: %s", e)
         return None
 

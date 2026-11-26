@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import quote_path_segment
 
 logger = logging.getLogger(__name__)
@@ -179,7 +180,8 @@ class Verifier:
                     dst_count = self._get_file_count(
                         self._dest, f"{dst_scan_path}/resources/{q_res_label}/files"
                     )
-                except Exception as e:  # noqa: BLE001  # fail-safe verification: unreadable dest file count treated as 0, surfaces as mismatch not false pass
+                except Exception as e:
+                    logger.exception("Dest file count failed", extra={FILE_ONLY_ATTR: True})
                     logger.debug(
                         "Could not fetch dest file count for scan %s/%s: %s",
                         scan_id,

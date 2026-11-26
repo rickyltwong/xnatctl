@@ -42,7 +42,7 @@ def test_session_cookie_value_is_redacted(text: str) -> None:
     redacted = redact_session_cookies(text)
 
     assert TOKEN not in redacted
-    assert "JSESSIONID=***" in redacted.upper()
+    assert "JSESSIONID=***" in redacted.upper().replace('"', "")
 
 
 def test_text_without_a_session_cookie_is_returned_unchanged() -> None:
