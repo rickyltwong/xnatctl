@@ -10,14 +10,14 @@ import os
 import sqlite3
 import stat
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from xnatctl.core.fsutil import PRIVATE_FILE_MODE, restrict_permissions
 
 
-class SyncStatus(str, Enum):
+class SyncStatus(StrEnum):
     """Overall sync run status."""
 
     RUNNING = "running"
@@ -26,7 +26,7 @@ class SyncStatus(str, Enum):
     INTERRUPTED = "interrupted"
 
 
-class EntityStatus(str, Enum):
+class EntityStatus(StrEnum):
     """Per-entity transfer status."""
 
     SYNCED = "synced"
