@@ -232,6 +232,20 @@ def test_a_cookie_jar_repr_is_redacted() -> None:
         assert _TOKEN not in redact_session_cookies(text), text
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("(b'Set-Cookie', b'JSESSIONID=b')", "(b'Set-Cookie', b'JSESSIONID=***')"),
+        (f"Cookie: JSESSIONID=b'{_TOKEN}'", "Cookie: JSESSIONID=b'***'"),
+        (f"{{'JSESSIONID': b'{_TOKEN}'}}", "{'JSESSIONID': b'***'}"),
+        ("{'JSESSIONID': b'', 'user': 'bob'}", "{'JSESSIONID': b'', 'user': 'bob'}"),
+    ],
+    ids=["value-of-b", "formatted-bytes-token", "bytes-value", "empty-bytes-value"],
+)
+def test_a_bytes_prefix_is_told_apart_from_a_value(text: str, expected: str) -> None:
+    assert redact_session_cookies(text) == expected
+
+
 def test_a_quoted_cookie_value_is_redacted_in_json() -> None:
     import httpx
 
