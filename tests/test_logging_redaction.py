@@ -245,6 +245,7 @@ def test_a_cookie_jar_repr_is_redacted() -> None:
             f"<Cookies[<Cookie JSESSIONID=b'\\t{_TOKEN}' for xnat.example.org />]>",
             "<Cookies[<Cookie JSESSIONID=b'\\t***' for xnat.example.org />]>",
         ),
+        (repr({b"JSESSIONID": b"\t\r"}), repr({b"JSESSIONID": b"\t\r"})),
     ],
     ids=[
         "value-of-b",
@@ -254,6 +255,7 @@ def test_a_cookie_jar_repr_is_redacted() -> None:
         "value-of-b-after-a-space",
         "bytes-value-behind-an-escape",
         "httpx-cookie-bytes-value-behind-an-escape",
+        "bytes-value-of-only-escapes",
     ],
 )
 def test_a_bytes_prefix_is_told_apart_from_a_value(text: str, expected: str) -> None:
