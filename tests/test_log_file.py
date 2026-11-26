@@ -982,7 +982,7 @@ class TestDiagnosticsFileFailures:
             " at https://xnat.example.org/data?token=*** JSESSIONID=***\n"
         )
 
-    @pytest.mark.parametrize("stderr_kind", ["broken-pipe", "closed"])
+    @pytest.mark.parametrize("stderr_kind", ["broken-pipe", "closed", "none"])
     def test_a_failed_write_with_an_unusable_stderr_does_not_raise(
         self,
         tmp_path: Path,
@@ -996,6 +996,8 @@ class TestDiagnosticsFileFailures:
         if stderr_kind == "closed":
             stderr = io.StringIO()
             stderr.close()
+        elif stderr_kind == "none":
+            stderr = None
         monkeypatch.setattr(sys, "stderr", stderr)
 
         logging.getLogger("xnatctl.test").error("boom", extra={FILE_ONLY_ATTR: True})

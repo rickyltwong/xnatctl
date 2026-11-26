@@ -166,7 +166,7 @@ _SESSION_COOKIE_RE = re.compile(
       """
     + _SPACE
     + r"""*+
-      (?:b(?=\\*['"]))?
+      (?:b(?=\\*['"]))?+
       (?:\\*+['"])*+
       (?:\\++"""
     + _ESCAPED_SPACE

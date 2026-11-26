@@ -170,6 +170,7 @@ def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: 
         "name='JSESSIONID', value=''",
         'JSESSIONID=\\"\\" ok',
         "GET https://xnat.example.org/'JSESSIONID',value=public/data",
+        "{'JSESSIONID': b'', 'user': 'bob'}",
     ],
     ids=[
         "prose",
@@ -184,6 +185,7 @@ def test_a_session_cookie_is_redacted_however_it_is_quoted(text: str, expected: 
         "empty-cookie-jar-value",
         "escaped-empty-value",
         "url-path-with-the-name",
+        "empty-bytes-value",
     ],
 )
 def test_text_that_only_mentions_the_cookie_is_kept(text: str) -> None:
@@ -346,6 +348,20 @@ def test_a_mapping_argument_is_not_read_when_the_format_does_not_fit(
     logger.warning("%(missing)s", Unreadable(present=1))
 
     assert "%(missing)s [arguments not shown: Unreadable]" in stream.getvalue()
+
+
+def test_a_message_that_cannot_be_rendered_is_named_by_its_type(
+    filtered_logger: tuple[logging.Logger, io.StringIO],
+) -> None:
+    class Odd:
+        def __str__(self) -> str:
+            raise ValueError("not printable")
+
+    logger, stream = filtered_logger
+
+    logger.warning(Odd(), "x")
+
+    assert "<Odd> [arguments not shown: str]" in stream.getvalue()
 
 
 def test_records_without_secrets_are_left_untouched(
