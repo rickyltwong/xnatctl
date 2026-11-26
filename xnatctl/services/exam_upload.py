@@ -12,7 +12,7 @@ from __future__ import annotations
 import tempfile
 import time
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -26,7 +26,7 @@ from .base import BaseService
 from .hierarchy import HierarchyService
 
 
-class ExamOutcome(str, Enum):
+class ExamOutcome(StrEnum):
     """What an exam upload achieved.
 
     ``NO_DICOM`` and ``DICOM_FAILED`` are error outcomes carrying an

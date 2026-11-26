@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+**Fixes**
+
+- In the Python API, `str()` of an exam upload's outcome
+  (`ExamUploadResult.outcome`, returned by `ExamUploadService`) now gives its
+  value, such as `complete`, instead of `ExamOutcome.COMPLETE`. Comparisons,
+  `.value` and JSON output are unchanged.
+
 ## 0.7.1 - 2026-11-26
 
 **Fixes**

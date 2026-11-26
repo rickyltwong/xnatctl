@@ -7,7 +7,7 @@ mirroring XSync's JSON configuration structure.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ def _reject_out_of_scope_keys(data: Any, keys: tuple[str, ...]) -> Any:
     return data
 
 
-class FilterSyncType(str, Enum):
+class FilterSyncType(StrEnum):
     """Sync type for a filter level."""
 
     ALL = "all"

@@ -129,11 +129,13 @@ def _render_exam_upload_result(ctx: Context, result: ExamUploadResult) -> None:
     type=click.IntRange(min=0),
     hidden=True,
     expose_value=False,
-    callback=lambda ctx, param, value: (ctx.params.update({"wait": value}) or value)
-    if value is not None
-    and param.name
-    and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
-    else value,
+    callback=lambda ctx, param, value: (
+        (ctx.params.update({"wait": value}) or value)
+        if value is not None
+        and param.name
+        and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
+        else value
+    ),
 )
 @click.option(
     "--wait-for-archive/--no-wait-for-archive",
@@ -141,12 +143,12 @@ def _render_exam_upload_result(ctx: Context, result: ExamUploadResult) -> None:
     hidden=True,
     expose_value=False,
     callback=lambda ctx, param, value: (
-        ctx.params.update({"wait": DEFAULT_ARCHIVE_WAIT_SECONDS if value else 0}) or value
-    )
-    if value is not None
-    and param.name
-    and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
-    else value,
+        (ctx.params.update({"wait": DEFAULT_ARCHIVE_WAIT_SECONDS if value else 0}) or value)
+        if value is not None
+        and param.name
+        and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
+        else value
+    ),
 )
 @click.option("--dry-run", is_flag=True, help="Preview without uploading")
 @global_options
