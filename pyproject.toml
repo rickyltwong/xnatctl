@@ -190,6 +190,10 @@ pythonpath = ["tests"]
 # fixtures it sets up reach only loopback (pytest-socket): a test that reached
 # a real server would log in to it with the developer's credentials.
 addopts = "-q --tb=short -m 'not integration' --allow-hosts=127.0.0.1,::1"
+# No test has an async fixture. Set to pytest-asyncio's announced future
+# default, which every supported version accepts, so its unset-option warning
+# stays out of the run.
+asyncio_default_fixture_loop_scope = "function"
 # NOTE: use the ini options, not `--strict-markers`/`--strict-config` in
 # addopts. Under pytest 9 those flags are only honoured on the command line and
 # are silently ignored from addopts (verified against pytest 9.0.2).
