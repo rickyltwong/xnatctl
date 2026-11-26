@@ -1076,6 +1076,18 @@ class TestAdminPlugins:
         assert result.exit_code == 0
         assert "container-service" in result.output
 
+    def test_plugins_show_checks_the_login_once(self, runner: CliRunner) -> None:
+        client = _mock_client()
+        client.get_json.return_value = {"id": "container-service", "version": "3.1.0"}
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(cli, ["admin", "plugins", "show", "container-service"])
+
+        assert result.exit_code == 0, result.output
+        client.whoami.assert_called_once_with()
+
 
 class TestAdminVersion:
     def test_version_quiet_bare_string(self, runner: CliRunner) -> None:

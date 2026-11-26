@@ -4,6 +4,7 @@ import os
 import time
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -40,6 +41,16 @@ def _require_ack_for_remote(url: str) -> None:
         f"throwaway server, set {ACK_ENV}=yes.",
         returncode=2,
     )
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    # The rest of the suite reaches only loopback (pytest-socket's --allow-hosts
+    # in pyproject.toml). This tier reaches the server it is pointed at, through
+    # any proxy on the way; server_url's host check decides which server.
+    here = Path(__file__).parent
+    for item in items:
+        if item.path.is_relative_to(here):
+            item.add_marker(pytest.mark.enable_socket)
 
 
 @pytest.fixture(scope="session")

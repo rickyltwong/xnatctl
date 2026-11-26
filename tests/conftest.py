@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from collections.abc import Callable, Generator, Iterator
 from contextlib import ExitStack, contextmanager
@@ -228,15 +229,43 @@ def isolate_session_cache(
     return path
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def no_ambient_credentials(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> Path:
-    path = tmp_path_factory.mktemp("config") / "config.yaml"
+    """Keep every test away from the developer's own config and state.
+
+    Their profiles hold real credentials: a test that reached them would log in
+    to a real server, and one that wrote the transfer state or the update
+    cache would change their files.
+    """
+    config_dir = tmp_path_factory.mktemp("config")
+    path = config_dir / "config.yaml"
+    monkeypatch.setattr("xnatctl.core.config.CONFIG_DIR", config_dir)
     monkeypatch.setattr("xnatctl.core.config.CONFIG_FILE", path)
-    for var in ("XNAT_URL", "XNAT_USER", "XNAT_PASS", "XNAT_TOKEN"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("xnatctl.cli.config_cmd.CONFIG_FILE", path)
+    monkeypatch.setattr("xnatctl.core.update_check.UPDATE_CACHE_FILE", config_dir / ".update-check")
+    # A proxy on loopback would relay past the socket allowlist. A test that
+    # may reach the network (the integration tier) keeps it.
+    keep_proxy = request.node.get_closest_marker("enable_socket") is not None
+    for var in list(os.environ):
+        # xnatctl reads XNAT_* and XNATCTL_* (credentials, the log file, TLS
+        # paths). XNATCTL_TEST_* picks the integration tier's server.
+        ours = var.startswith(("XNAT_", "XNATCTL_")) and not var.startswith("XNATCTL_TEST_")
+        proxy = var.lower() in {"http_proxy", "https_proxy", "all_proxy"}
+        if ours or (proxy and not keep_proxy):
+            monkeypatch.delenv(var)
     return path
+
+
+@pytest.fixture
+def example_profile(monkeypatch: pytest.MonkeyPatch) -> Config:
+    """Configure one profile, for a test that replaces the client but not the config."""
+    config = Config(profiles={"default": Profile(url=DEFAULT_BASE_URL)})
+    monkeypatch.setattr(_CONFIG_LOAD_SEAM, lambda *_args, **_kwargs: config)
+    return config
 
 
 class _NullHighlighter:

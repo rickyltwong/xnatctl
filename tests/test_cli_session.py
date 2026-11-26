@@ -1197,6 +1197,18 @@ class TestSessionVars:
 
 
 class TestSessionVarsSet:
+    def test_set_checks_the_login_once(self, authenticated_cli: AuthenticatedCLI) -> None:
+        authenticated_cli.client.get_json.return_value = _resolved_experiment_document()
+        authenticated_cli.client.put.return_value = MagicMock(status_code=200)
+
+        result = authenticated_cli.invoke(
+            ["session", "vars", "set", "-E", "XNAT_E00001", "studytag=phase1", "--yes"]
+        )
+
+        assert result.exit_code == 0, result.output
+        authenticated_cli.client.put.assert_called_once()
+        authenticated_cli.client.whoami.assert_called_once_with()
+
     def test_set_single_pair(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = _resolved_experiment_document()
         authenticated_cli.client.put.return_value = MagicMock(status_code=200)

@@ -6,6 +6,7 @@ import pytest
 from click.testing import CliRunner
 
 from xnatctl.cli.main import cli
+from xnatctl.core.config import Config
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 
 
@@ -96,7 +97,7 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture
-def auth_client(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
+def auth_client(monkeypatch: pytest.MonkeyPatch, example_profile: Config) -> FakeClient:
     client = FakeClient()
 
     def fake_get_client(self) -> FakeClient:

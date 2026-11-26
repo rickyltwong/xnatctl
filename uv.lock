@@ -1352,6 +1352,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pytest-socket"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ba/ce/4ef7b049852c95a8727b4a7e6496f762df1ac0b47bc0320d10293f5e95ec/pytest_socket-0.8.1.tar.gz", hash = "sha256:2f57787914ad2e1308d09ce141b95c3e55741fbb4fb7b7556593a6b063e0c9c7", size = 17313, upload-time = "2026-08-19T15:16:25.653Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/ef/ab507f117b3d19b54e3c9c632a99c28c3b284562ec6e02e274581d530d92/pytest_socket-0.8.1-py3-none-any.whl", hash = "sha256:f9846bed1dcd96eed459e5e14795bbaf96715cf4e827891fe70773817ecb8ed4", size = 8751, upload-time = "2026-08-19T15:16:24.426Z" },
+]
+
+[[package]]
 name = "pytest-timeout"
 version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1865,6 +1877,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
+    { name = "pytest-socket" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "ruff" },
@@ -1897,6 +1910,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
+    { name = "pytest-socket" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "ruff" },
@@ -1924,6 +1938,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
+    { name = "pytest-socket", marker = "extra == 'dev'", specifier = ">=0.8.1" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
@@ -1953,6 +1968,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "pytest-mock", specifier = ">=3.12.0" },
+    { name = "pytest-socket", specifier = ">=0.8.1" },
     { name = "pytest-timeout", specifier = ">=2.0" },
     { name = "pytest-xdist", specifier = ">=3.0" },
     { name = "ruff", specifier = ">=0.4.0" },
