@@ -142,8 +142,9 @@ def redact_url_query(text: str) -> str:
 # and whitespace escapes, in that order; it ends at the next quote, backslash,
 # whitespace, ";", "," or closing bracket. Only an escape, never literal
 # whitespace, may follow the quotes, so an empty value ("" or '') is never
-# taken for one. A b is a bytes prefix after a space (``: b'...'``) or before
-# a quote and a value (``=b'...'``); otherwise ``=b'`` is a value of b. A space
+# taken for one. A b is a bytes prefix when a quote follows it and then either
+# another quote (``b''``) or a value, behind any whitespace escapes; otherwise
+# it is a value of b, as in ``(b'Set-Cookie', b'JSESSIONID=b')``. A space
 # is whitespace or a backslash run with an optional whitespace escape after
 # it; a whitespace escape is \t, \n or \r, or JSON's four-digit form of tab,
 # newline, return or space, at any escaping depth. Each character before the
@@ -167,7 +168,9 @@ _SESSION_COOKIE_RE = re.compile(
       """
     + _SPACE
     + r"""*+
-      (?:(?<=\s)b(?=\\*['"])|b(?=\\*['"][^\s\\'";,)\]}]))?+
+      (?:b(?=\\*['"](?:\\*['"]|(?:\\++"""
+    + _ESCAPED_SPACE
+    + r""")*[^\s\\'";,)\]}])))?+
       (?:\\*+['"])*+
       (?:\\++"""
     + _ESCAPED_SPACE

@@ -239,8 +239,22 @@ def test_a_cookie_jar_repr_is_redacted() -> None:
         (f"Cookie: JSESSIONID=b'{_TOKEN}'", "Cookie: JSESSIONID=b'***'"),
         (f"{{'JSESSIONID': b'{_TOKEN}'}}", "{'JSESSIONID': b'***'}"),
         ("{'JSESSIONID': b'', 'user': 'bob'}", "{'JSESSIONID': b'', 'user': 'bob'}"),
+        ("(b'Set-Cookie', b'JSESSIONID= b')", "(b'Set-Cookie', b'JSESSIONID= ***')"),
+        (f"{{'JSESSIONID': b'\\t{_TOKEN}'}}", "{'JSESSIONID': b'\\t***'}"),
+        (
+            f"<Cookies[<Cookie JSESSIONID=b'\\t{_TOKEN}' for xnat.example.org />]>",
+            "<Cookies[<Cookie JSESSIONID=b'\\t***' for xnat.example.org />]>",
+        ),
     ],
-    ids=["value-of-b", "formatted-bytes-token", "bytes-value", "empty-bytes-value"],
+    ids=[
+        "value-of-b",
+        "formatted-bytes-token",
+        "bytes-value",
+        "empty-bytes-value",
+        "value-of-b-after-a-space",
+        "bytes-value-behind-an-escape",
+        "httpx-cookie-bytes-value-behind-an-escape",
+    ],
 )
 def test_a_bytes_prefix_is_told_apart_from_a_value(text: str, expected: str) -> None:
     assert redact_session_cookies(text) == expected
