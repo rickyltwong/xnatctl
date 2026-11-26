@@ -156,7 +156,6 @@ def cli(
 
     cli_ctx = ctx.ensure_object(Context)
 
-    cli_ctx.root_profile_name = profile
     cli_ctx.root_output_format = (
         OutputFormat.from_string(output_format) if output_format is not None else None
     )

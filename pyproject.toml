@@ -52,6 +52,8 @@ dev = [
     # asyncio marker, so without this plugin a `pip install -e '.[dev]'`
     # checkout fails collection rather than skipping those tests.
     "pytest-asyncio>=0.24",
+    # Required for the same reason: addopts passes its --allow-hosts flag.
+    "pytest-socket>=0.8.1",
     "ruff>=0.4.0",
     "mypy>=1.8.0",
     "pre-commit>=3.7.0",
@@ -94,6 +96,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.12.0",
+    "pytest-socket>=0.8.1",
     "pytest-timeout>=2.0",
     "pytest-xdist>=3.0",
     "ruff>=0.4.0",
@@ -183,8 +186,10 @@ testpaths = ["tests"]
 # of pytest's import mode (shared test harness).
 pythonpath = ["tests"]
 # -q keeps CI logs readable at 1000+ tests; pass -v per-run when debugging.
-# The integration tier is deselected by default.
-addopts = "-q --tb=short -m 'not integration'"
+# The integration tier is deselected by default. Outside it, a test and the
+# fixtures it sets up reach only loopback (pytest-socket): a test that reached
+# a real server would log in to it with the developer's credentials.
+addopts = "-q --tb=short -m 'not integration' --allow-hosts=127.0.0.1,::1"
 # NOTE: use the ini options, not `--strict-markers`/`--strict-config` in
 # addopts. Under pytest 9 those flags are only honoured on the command line and
 # are silently ignored from addopts (verified against pytest 9.0.2).

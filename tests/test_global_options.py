@@ -4,7 +4,7 @@ import pytest
 from click.testing import CliRunner
 from conftest import config_seam, core_config_seam
 
-from xnatctl.cli.common import Context, global_options, handle_errors
+from xnatctl.cli.common import Context, global_options, handle_errors, require_auth
 from xnatctl.cli.main import cli
 from xnatctl.core.config import Config, Profile
 from xnatctl.core.output import OutputFormat
@@ -21,6 +21,22 @@ def _probe_global(ctx: Context) -> None:
     _PROBE_CAPTURE["output_format"] = ctx.output_format
     _PROBE_CAPTURE["quiet"] = ctx.quiet
     _PROBE_CAPTURE["verbose"] = ctx.verbose
+
+
+@cli.group("__probe_group__", hidden=True, invoke_without_command=True)
+@global_options
+@handle_errors
+@require_auth
+def _probe_group(ctx: Context) -> None:
+    """Hidden group that also runs on its own, like `session vars`."""
+
+
+@_probe_group.command("sub")
+@global_options
+@handle_errors
+def _probe_group_sub(ctx: Context) -> None:
+    """Hidden subcommand of the probe group."""
+    _PROBE_CAPTURE["profile_name"] = ctx.profile_name
 
 
 @pytest.fixture
@@ -110,6 +126,35 @@ class TestInheritance:
 
         assert result.exit_code == 0, result.stderr
         assert _PROBE_CAPTURE["profile_name"] == "staging"
+
+    @pytest.mark.parametrize(
+        ("args", "env", "expected"),
+        [
+            (["--profile", "staging", "__probe_global__"], {"XNAT_PROFILE": "prod"}, "staging"),
+            (["__probe_global__"], {"XNAT_PROFILE": "prod"}, "prod"),
+            (["-p", "prod", "__probe_global__", "-p", "staging"], {}, "staging"),
+            (["__probe_group__", "-p", "staging", "sub"], {}, "staging"),
+            (["__probe_group__", "-p", "staging", "sub"], {"XNAT_PROFILE": "prod"}, "staging"),
+            (["-p", "prod", "__probe_group__", "sub", "-p", "staging"], {}, "staging"),
+        ],
+        ids=[
+            "root-beats-environment",
+            "environment-alone",
+            "subcommand-beats-root",
+            "group-reaches-subcommand",
+            "group-beats-environment",
+            "subcommand-beats-root-through-group",
+        ],
+    )
+    def test_the_nearest_typed_profile_wins(
+        self, runner: CliRunner, args: list[str], env: dict[str, str], expected: str
+    ) -> None:
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                result = runner.invoke(cli, args, env=env)
+
+        assert result.exit_code == 0, result.stderr
+        assert _PROBE_CAPTURE["profile_name"] == expected
 
 
 def _run_cli_in_subprocess(tmp_path, *args: str, env: dict[str, str] | None = None):

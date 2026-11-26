@@ -17,6 +17,7 @@ from click.testing import CliRunner
 from xnatctl.cli.common import Context
 from xnatctl.cli.main import cli
 from xnatctl.core.client import XNATClient
+from xnatctl.core.config import Config
 
 SCANS = ("1", "2")
 EXPERIMENT = "XNAT_E00001"
@@ -316,7 +317,7 @@ def _download_sequential(url: str, out: Path, *extra: str) -> Any:
 
 
 class TestVerifySequentialUnextractedZip:
-    def test_clean_exits_zero(self, tmp_path: Path) -> None:
+    def test_clean_exits_zero(self, tmp_path: Path, example_profile: Config) -> None:
         for url in _serve(bad_digest_scan=None):
             result = _download_sequential(url, tmp_path)
 
@@ -324,7 +325,7 @@ class TestVerifySequentialUnextractedZip:
         assert "Verified 2 files" in result.stderr
         assert (tmp_path / EXPERIMENT / "scans.zip").exists()
 
-    def test_mismatch_fails(self, tmp_path: Path) -> None:
+    def test_mismatch_fails(self, tmp_path: Path, example_profile: Config) -> None:
         for url in _serve(bad_digest_scan="1"):
             result = _download_sequential(url, tmp_path)
 

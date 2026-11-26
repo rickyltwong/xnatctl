@@ -36,6 +36,17 @@ def test_no_rendered_help_line_carries_two_invocations(runner) -> None:
     assert not offenders, "Example blocks missing a \\b no-rewrap marker:\n" + "\n".join(offenders)
 
 
+def test_every_command_answers_help_without_a_profile(runner) -> None:
+    # No profile is configured and no network is reachable: --help needs neither.
+    failures = [
+        f"{' '.join(path)}: {result.output.strip()}"
+        for path, _command in _all_commands()
+        if (result := runner.invoke(cli, [*path[1:], "--help"])).exit_code != 0
+    ]
+
+    assert not failures, "\n".join(failures)
+
+
 @pytest.mark.parametrize(
     "args",
     [

@@ -74,6 +74,18 @@ All notable changes to this project will be documented in this file.
 - The CLI no longer shows pydicom's own log lines, whose text can quote a
   DICOM element's value. `session upload-dicom` printed them; most repeat a
   Python warning that pydicom still prints.
+- `session vars set` and `admin plugins show` now use a `--profile` typed
+  after the subcommand. Before, the group above them had already connected
+  with the profile in effect for the group, so `session vars set -E ID k=v
+  --yes -p staging` wrote to the default profile's server, not staging's.
+- `admin plugins show --help` and `session vars set --help` no longer log in
+  to the server before showing the help, and no longer fail when no profile
+  is configured. On a real run, these two commands now check the login once
+  instead of twice.
+- A `--profile` typed on the command line now wins over `XNAT_PROFILE`
+  wherever it is typed. Before, `XNAT_PROFILE=prod xnatctl -p staging session
+  show ...` ran against `prod`, because the subcommand read the variable
+  again. The subcommand now keeps a profile typed before it.
 
 ## 0.7.0 - 2026-11-24
 

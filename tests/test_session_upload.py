@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 from xnatctl.cli.main import cli
 from xnatctl.core.cancellation import CancellationToken
+from xnatctl.core.config import Config
 from xnatctl.core.exceptions import PermissionDeniedError, SessionExpiredError, UploadError
 from xnatctl.core.exceptions import RequestTimeoutError as XNATTimeoutError
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
@@ -269,7 +270,7 @@ def test_archive_destination_params_prearchive() -> None:
 
 
 def test_session_upload_mode_gradual_forwards_prearchive_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, example_profile: Config
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -335,7 +336,7 @@ def test_session_upload_mode_gradual_forwards_prearchive_flag(
 
 
 def test_session_upload_mode_gradual_default_is_direct_archive(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, example_profile: Config
 ) -> None:
     captured: dict[str, object] = {}
 

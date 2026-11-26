@@ -187,7 +187,6 @@ class Context:
         self.quiet: bool = False
         self.verbose: bool = False
         self.auth_manager: AuthManager = AuthManager()
-        self.root_profile_name: str | None = None
         self.root_output_format: OutputFormat | None = None
         self.root_quiet: bool = False
         self.root_verbose: bool = False
@@ -319,10 +318,14 @@ def global_options(f: Callable[Concatenate[Context, ...], R]) -> Callable[..., R
             source = click_ctx.get_parameter_source(param_name)
             return source is not None and source != click.core.ParameterSource.DEFAULT
 
-        if _was_explicit("profile"):
+        # A --profile typed for this command wins. Otherwise the profile the
+        # command above chose holds: the root's, or a group's (`session vars -p
+        # NAME set`). Each of those already applied XNAT_PROFILE, so the
+        # variable never overrides a profile typed further up the line.
+        if click_ctx.get_parameter_source("profile") == click.core.ParameterSource.COMMANDLINE:
             effective_profile = profile
-        elif ctx.root_profile_name is not None:
-            effective_profile = ctx.root_profile_name
+        elif ctx.profile_name is not None:
+            effective_profile = ctx.profile_name
         else:
             effective_profile = profile
 
@@ -382,6 +385,12 @@ def require_auth(f: Callable[Concatenate[Context, P], R]) -> ContextCommand[P, R
 
     @wraps(f)
     def wrapper(ctx: Context, *args: P.args, **kwargs: P.kwargs) -> R:
+        click_ctx = click.get_current_context(silent=True)
+        if click_ctx is not None and click_ctx.invoked_subcommand is not None:
+            # A group that also runs on its own (`admin plugins`) is only
+            # handing over to a subcommand here. The subcommand authenticates
+            # when it runs, which is after it has answered --help.
+            return f(ctx, *args, **kwargs)
         client = ctx.get_client()
         had_session = client.is_authenticated
         # The name get_client resolved the profile (and its cached session) by.
