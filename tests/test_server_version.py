@@ -1,12 +1,3 @@
-"""Tests for XNAT server-version detection and feature-floor gating.
-
-Covers ``xnatctl.core.server_version`` (parsing, the gate function) and
-``XNATClient.server_version`` (probing/caching, including a failed probe).
-The direct-archive call sites are exercised for the actionable-error shape
-through the gate function directly plus one call-site test per transport, so
-a regression in wiring shows up here rather than only in slower upload tests.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -30,12 +21,10 @@ Handler = Callable[[httpx.Request], httpx.Response]
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Never actually sleep: a 500 probe response triggers real retry backoff."""
     monkeypatch.setattr("xnatctl.core.transport.time.sleep", lambda _s: None)
 
 
 def make_client(handler: Handler, **kwargs: object) -> tuple[XNATClient, list[httpx.Request]]:
-    """Build an XNATClient wired to ``handler`` via the public transport seam."""
     calls: list[httpx.Request] = []
 
     def recording(request: httpx.Request) -> httpx.Response:
@@ -45,14 +34,9 @@ def make_client(handler: Handler, **kwargs: object) -> tuple[XNATClient, list[ht
     client = XNATClient(
         base_url="https://xnat.example.org",
         transport=httpx.MockTransport(recording),
-        **kwargs,  # type: ignore[arg-type]
+        **kwargs,
     )
     return client, calls
-
-
-# =============================================================================
-# parse_server_version
-# =============================================================================
 
 
 class TestParseServerVersion:
@@ -60,8 +44,8 @@ class TestParseServerVersion:
         ("raw", "expected"),
         [
             ("1.8.3", (1, 8, 3)),
-            ("1.9.2.1", (1, 9, 2)),  # trailing build number dropped
-            ("1.9", (1, 9, 0)),  # missing patch defaults to 0
+            ("1.9.2.1", (1, 9, 2)),
+            ("1.9", (1, 9, 0)),
             ("1.7.6", (1, 7, 6)),
         ],
     )
@@ -90,11 +74,6 @@ class TestParseServerVersion:
             "not a version",
             "v",
             "  ",
-            # A misbehaving proxy/WAF in front of buildInfo returning a raw
-            # HTTP status line: an unanchored regex would find "1.1"
-            # inside this and parse it as XNAT "1.1.0", wrongly blocking a
-            # legitimate upload against a server whose version was never
-            # actually determined.
             "HTTP/1.1 404 Not Found",
             "HTTP/1.0 500 Internal Server Error",
         ],
@@ -106,21 +85,10 @@ class TestParseServerVersion:
         assert parse_server_version(None) is None
 
     def test_oversized_numeric_component_returns_none_not_raise(self) -> None:
-        """A garbage/adversarial digit run must never reach `int()` and raise.
-
-        Python's int-from-str conversion has its own limit and raises
-        ValueError past it; parsing must be total regardless of what a
-        broken or hostile buildInfo endpoint returns.
-        """
         huge = "9" * 5000
         assert parse_server_version(f"{huge}.8.3") is None
         assert parse_server_version(f"1.{huge}.3") is None
         assert parse_server_version(f"1.8.{huge}") is None
-
-
-# =============================================================================
-# XNATClient.server_version -- probing and caching
-# =============================================================================
 
 
 class TestServerVersionProperty:
@@ -139,9 +107,6 @@ class TestServerVersionProperty:
         assert len(calls) == 1
 
     def test_failed_probe_caches_none_and_does_not_reprobe(self) -> None:
-        # 500 is a retryable status, but the probe opts out of the retry
-        # ladder, so a failed probe is exactly one round trip -- and a second
-        # property access adds none.
         client, calls = make_client(lambda _r: httpx.Response(500, text="boom"))
 
         assert client.server_version is None
@@ -155,14 +120,6 @@ class TestServerVersionProperty:
     def test_probe_does_not_retry_or_sleep_on_a_throttled_endpoint(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A throttled buildInfo endpoint must not stall the caller.
-
-        The retry ladder honours Retry-After up to 300s per attempt. A short
-        per-request timeout does not bound that, so without an explicit
-        single-shot budget a 503-ing version probe could hold up an upload
-        for many minutes before failing open -- for a check whose entire
-        contract is to be cheap and skippable.
-        """
         slept: list[float] = []
         monkeypatch.setattr("xnatctl.core.transport.time.sleep", slept.append)
 
@@ -190,18 +147,9 @@ class TestServerVersionProperty:
 
         assert client.server_version is None
         assert client.server_version is None
-        # Single-shot: the probe overrides the client's retry budget, so even
-        # a connect failure is one attempt, and repeat access re-probes never.
         assert len(calls) == 1
 
     def test_oversized_numeric_response_caches_none_and_does_not_reprobe(self) -> None:
-        """A response body parse_server_version cannot raise on must still cache.
-
-        Before the fix, `parse_server_version`'s ValueError on an oversized
-        digit run happened outside `probe_server_version`'s try block, and
-        propagated past `_server_version_probed = True` too -- so every
-        subsequent access re-probed *and* re-raised.
-        """
         huge = "9" * 5000
         client, calls = make_client(lambda _r: httpx.Response(200, text=f"{huge}.8.3"))
 
@@ -213,9 +161,6 @@ class TestServerVersionProperty:
     def test_probe_uses_its_own_short_timeout_not_the_clients(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A stalled buildInfo endpoint must fail in seconds, not inherit the
-        client's own (often multi-hour) transfer timeout.
-        """
         client, _ = make_client(lambda _r: httpx.Response(200, text="1.9.2"), timeout=21600)
         assert client.timeout == 21600
 
@@ -224,7 +169,7 @@ class TestServerVersionProperty:
 
         def spy_get(path: str, **kwargs: object) -> httpx.Response:
             captured.update(kwargs)
-            return real_get(path, **kwargs)  # type: ignore[arg-type]
+            return real_get(path, **kwargs)
 
         monkeypatch.setattr(client, "get", spy_get)
 
@@ -233,13 +178,8 @@ class TestServerVersionProperty:
         assert client.timeout > PROBE_TIMEOUT_SECONDS
 
     def test_concurrent_access_probes_at_most_once(self) -> None:
-        """Two threads racing the first access must not both issue a GET.
-
-        The second thread blocks on the property's lock until the first
-        probe (held mid-flight here) finishes and caches its result, then
-        reads the cache instead of probing again.
-        """
         import threading
+        from concurrent.futures import ThreadPoolExecutor
 
         call_started = threading.Event()
         release = threading.Event()
@@ -250,33 +190,22 @@ class TestServerVersionProperty:
             return httpx.Response(200, text="1.9.2")
 
         client, calls = make_client(handler)
-        results: list[tuple[int, int, int] | None] = []
-        errors: list[BaseException] = []
 
-        def access() -> None:
-            try:
-                results.append(client.server_version)
-            except BaseException as e:  # noqa: BLE001 -- surfaced via `errors` below
-                errors.append(e)
+        def access() -> tuple[int, int, int] | None:
+            return client.server_version
 
-        first = threading.Thread(target=access)
-        second = threading.Thread(target=access)
+        pool = ThreadPoolExecutor(max_workers=2)
+        try:
+            first = pool.submit(access)
+            assert call_started.wait(timeout=5), "first thread never reached the probe"
+            second = pool.submit(access)
+            release.set()
+            results = [first.result(timeout=5), second.result(timeout=5)]
+        finally:
+            pool.shutdown(wait=False)
 
-        first.start()
-        assert call_started.wait(timeout=5), "first thread never reached the probe"
-        second.start()
-        release.set()
-        first.join(timeout=5)
-        second.join(timeout=5)
-
-        assert not errors, errors
         assert results == [(1, 9, 2), (1, 9, 2)]
         assert len(calls) == 1
-
-
-# =============================================================================
-# require_server_version
-# =============================================================================
 
 
 class TestRequireServerVersion:
@@ -293,44 +222,30 @@ class TestRequireServerVersion:
     def test_passes_at_floor(self) -> None:
         client, _ = make_client(lambda _r: httpx.Response(200, text="1.8.3"))
 
-        require_server_version(client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")  # no raise
+        require_server_version(client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")
 
     def test_passes_above_floor(self) -> None:
         client, _ = make_client(lambda _r: httpx.Response(200, text="1.9.2.1"))
 
-        require_server_version(client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")  # no raise
+        require_server_version(client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")
 
     def test_passes_when_version_unknown(self) -> None:
         client, _ = make_client(lambda _r: httpx.Response(500, text="boom"))
 
-        require_server_version(client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")  # no raise
+        require_server_version(client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")
 
     def test_passes_when_buildinfo_returns_an_unrelated_http_status_line(self) -> None:
-        """A misbehaving proxy's own status line must not be read as a version."""
         client, _ = make_client(lambda _r: httpx.Response(200, text="HTTP/1.1 404 Not Found"))
 
-        require_server_version(client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")  # no raise
-
-
-# =============================================================================
-# Direct-archive call-site wiring
-# =============================================================================
+        require_server_version(client, MIN_VERSION_DIRECT_ARCHIVE, "direct-archive")
 
 
 class TestDirectArchiveGating:
-    """The upload transports invoke the gate before doing any network work.
-
-    Each assertion checks the exception is the actionable
-    ``UnsupportedServerVersionError`` (not a raw 4xx/5xx from the import
-    service) and that gating happens before any archive/import POST --
-    only the version probe itself should have hit the transport.
-    """
-
     def test_upload_archive_or_raise_gates_direct_archive(self, tmp_path: Path) -> None:
         from xnatctl.services.upload.rest_archive import upload_archive_or_raise
 
         archive = tmp_path / "batch.zip"
-        archive.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # minimal empty-zip EOCD
+        archive.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
 
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/xapi/siteConfig/buildInfo/version":
@@ -347,12 +262,12 @@ class TestDirectArchiveGating:
                 "SUBJ",
                 "SESS",
                 "none",
-                True,  # direct_archive
+                True,
                 True,
                 False,
             )
 
-        assert len(calls) == 1  # only the version probe, no import POST
+        assert len(calls) == 1
 
     def test_upload_archive_or_raise_skips_gate_for_prearchive(self, tmp_path: Path) -> None:
         from xnatctl.core.exceptions import UploadError
@@ -376,7 +291,7 @@ class TestDirectArchiveGating:
                 "SUBJ",
                 "SESS",
                 "none",
-                False,  # direct_archive
+                False,
                 True,
                 False,
             )
@@ -459,20 +374,12 @@ class TestDirectArchiveGating:
         assert len(calls) == 1
 
 
-# =============================================================================
-# Canonical public-boundary gating: `upload_single_archive` and
-# `GradualUploadRun` are exported for direct library use, bypassing every
-# wrapper above -- both must gate themselves rather than relying solely on a
-# higher wrapper to do it for them.
-# =============================================================================
-
-
 class TestPublicBoundaryGating:
     def test_upload_single_archive_direct_call_gates_direct_archive(self, tmp_path: Path) -> None:
         from xnatctl.services.upload.rest_archive import upload_single_archive
 
         archive = tmp_path / "batch.zip"
-        archive.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # minimal empty-zip EOCD
+        archive.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
 
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/xapi/siteConfig/buildInfo/version":
@@ -499,7 +406,7 @@ class TestPublicBoundaryGating:
                 direct_archive=True,
             )
 
-        assert len(calls) == 1  # only the version probe, no import POST
+        assert len(calls) == 1
 
     def test_gradual_upload_run_direct_construction_gates_direct_archive(
         self, tmp_path: Path
@@ -532,16 +439,7 @@ class TestPublicBoundaryGating:
         with pytest.raises(UnsupportedServerVersionError):
             run.run([dicom_file], workers=1)
 
-        assert len(calls) == 1  # only the version probe, no per-file upload
-
-
-# =============================================================================
-# Local validation must precede the gate: an empty file list, a missing
-# source, or an empty directory is a caller mistake unrelated to the
-# server's version, and must produce its ordinary local-validation result
-# rather than an UnsupportedServerVersionError -- and must not even probe
-# the version to get there.
-# =============================================================================
+        assert len(calls) == 1
 
 
 class TestLocalValidationPrecedesGate:

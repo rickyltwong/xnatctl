@@ -23,7 +23,7 @@ is not actually leaking a secret.
 from __future__ import annotations
 
 import re
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import unquote
 
 SECRET_QUERY_KEYS: frozenset[str] = frozenset(
     {
@@ -39,23 +39,13 @@ SECRET_QUERY_KEYS: frozenset[str] = frozenset(
     }
 )
 
-_URL_RE = re.compile(r"https?://[^\s<>\"'`]+")
+_URL_RE = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
 _TRAILING_PUNCT = ".,);]"
 
-# Matches the whole `user:pass@` authority prefix after `//`. The inner class
-# excludes `/` but not `@`, so it runs greedily to the last `@` of the
-# authority -- which is what a password containing `@` requires.
 _USERINFO_RE = re.compile(r"(//)([^/\s]*@)")
 
 
 def _scrub_userinfo(netloc: str) -> tuple[str, bool]:
-    """Replace the password in a ``user:pass@host`` netloc with ``***``.
-
-    Returns the (possibly rewritten) netloc and whether anything changed. A
-    bare ``user@host`` is left alone: it carries no password, and usernames are
-    not treated as secrets here -- the query-string pass deliberately preserves
-    ``username=`` for the same reason.
-    """
     if "@" not in netloc:
         return netloc, False
     userinfo, _, host = netloc.rpartition("@")
@@ -84,6 +74,31 @@ def redact_url_userinfo(url: str) -> str:
     return _USERINFO_RE.sub(_mask, url)
 
 
+def _split_url(url: str) -> tuple[str, str, str, str, str]:
+    # Not urlsplit: it raises on text that still looks like a URL, such as an
+    # unbalanced "[" host, and redaction runs inside logging calls.
+    scheme, _, rest = url.partition("://")
+    authority_end = min((i for i in map(rest.find, "/?#") if i != -1), default=len(rest))
+    netloc, rest = rest[:authority_end], rest[authority_end:]
+    rest, hash_mark, fragment = rest.partition("#")
+    path, question_mark, query = rest.partition("?")
+    return f"{scheme}://", netloc, path + question_mark, query, hash_mark + fragment
+
+
+def _scrub_query(query: str) -> tuple[str, bool]:
+    changed = False
+    new_parts: list[str] = []
+    for raw_pair in query.split("&"):
+        if "=" in raw_pair:
+            raw_key, raw_value = raw_pair.split("=", 1)
+            if unquote(raw_key).lower() in SECRET_QUERY_KEYS and raw_value:
+                new_parts.append(f"{raw_key}=***")
+                changed = True
+                continue
+        new_parts.append(raw_pair)
+    return "&".join(new_parts), changed
+
+
 def redact_url_query(text: str) -> str:
     """Return ``text`` with secret-shaped URL values rewritten to ``***``.
 
@@ -101,51 +116,72 @@ def redact_url_query(text: str) -> str:
         The input string with secret-shaped query values redacted. If no
         redaction is needed, the input is returned unchanged.
     """
-    # A userinfo URL needs rewriting even with no query string at all, so the
-    # cheap bail-out has to admit `@` as well as `?`.
-    if "http" not in text or ("?" not in text and "@" not in text):
+    if "http" not in text.lower() or ("?" not in text and "@" not in text):
         return text
 
     def _scrub(match: re.Match[str]) -> str:
-        """Rewrite a single URL match with redacted secrets."""
-        url = match.group(0)
-        trailing = ""
-        while url and url[-1] in _TRAILING_PUNCT:
-            trailing = url[-1] + trailing
-            url = url[:-1]
+        full = match.group(0)
+        url = full.rstrip(_TRAILING_PUNCT)
+        trailing = full[len(url) :]
 
-        scheme, netloc, path, query, fragment = urlsplit(url)
-
-        netloc, changed = _scrub_userinfo(netloc)
-
-        # Walk the query string manually so non-secret values keep their
-        # original encoding byte-for-byte. We only compare the decoded key
-        # name (case-insensitively) against the allowlist.
-        new_parts: list[str] = []
-        for raw_pair in query.split("&"):
-            if "=" in raw_pair:
-                raw_key, raw_value = raw_pair.split("=", 1)
-                decoded_key = unquote(raw_key)
-                if decoded_key.lower() in SECRET_QUERY_KEYS and raw_value:
-                    new_parts.append(f"{raw_key}=***")
-                    changed = True
-                else:
-                    new_parts.append(raw_pair)
-            else:
-                new_parts.append(raw_pair)
-
-        if not changed:
+        head, netloc, path, query, fragment = _split_url(url)
+        netloc, netloc_changed = _scrub_userinfo(netloc)
+        query, query_changed = _scrub_query(query)
+        if not (netloc_changed or query_changed):
             return url + trailing
-
-        return urlunsplit((scheme, netloc, path, "&".join(new_parts), fragment)) + trailing
+        return f"{head}{netloc}{path}{query}{fragment}{trailing}"
 
     return _URL_RE.sub(_scrub, text)
 
 
-# A session cookie's value is either a double-quoted string (RFC 6265 allows
-# it) or runs to the next attribute separator, whitespace, quote (the closing
-# quote of httpcore's bytes repr), or comma.
-_SESSION_COOKIE_RE = re.compile(r"(JSESSIONID=)(?:\"[^\"]*\"|[^;\s'\",]+)", re.IGNORECASE)
+# A JSESSIONID value is the server's hex session id. Wherever it appears -- a
+# Cookie or Set-Cookie header, a mapping's repr, JSON, a cookie jar's
+# ``name='JSESSIONID', value='...'``, or any of those escaped inside another
+# repr -- it follows the name and a "=", or a ":" or ", value=" after a name
+# between matching quotes. Then come spaces, a bytes prefix, the opening quotes
+# and whitespace escapes, in that order; it ends at the next quote, backslash,
+# whitespace, ";", "," or closing bracket. Only an escape, never literal
+# whitespace, may follow the quotes, so an empty value ("" or '') is never
+# taken for one. A b is a bytes prefix when a quote follows it and then, behind
+# any whitespace escapes, either the same quote at the same depth (``b''``) or
+# a value; otherwise it is a value of b, as in
+# ``(b'Set-Cookie', b'JSESSIONID=b')``. A space is whitespace or a backslash
+# run with an optional whitespace escape after it; a whitespace escape is \t,
+# \n or \r, or JSON's four-digit form of tab, newline, return or space, at any
+# escaping depth. Each character before the value has one way to match, so the
+# scan stays linear.
+_ESCAPED_SPACE = r"(?:[tnr]|u00(?:0[9ad]|20))"
+_SPACE = r"(?:\\++" + _ESCAPED_SPACE + r"?|\s)"
+_SESSION_COOKIE_RE = re.compile(
+    r"""
+    (
+      JSESSIONID
+      (?:
+        (?:"""
+    + _SPACE
+    + r"""|['"])*+=
+      | (?<=(?P<quote>['"])JSESSIONID)(?=\\*(?P=quote))
+        (?:"""
+    + _SPACE
+    + r"""|['"])*+(?::|,[ ]value=)
+      )
+      """
+    + _SPACE
+    + r"""*+
+      (?:b(?=(?P<bs>\\*)(?P<bq>['"])(?:\\++"""
+    + _ESCAPED_SPACE
+    + r""")*+(?:(?P=bs)(?P=bq)|(?:\\*+['"])*+(?:\\++"""
+    + _ESCAPED_SPACE
+    + r""")*+[^\s\\'";,)\]}])))?+
+      (?:\\*+['"])*+
+      (?:\\++"""
+    + _ESCAPED_SPACE
+    + r""")*+
+    )
+    [^\s\\'";,)\]}]+
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 
 def redact_session_cookies(text: str) -> str:
@@ -155,6 +191,6 @@ def redact_session_cookies(text: str) -> str:
     ``Set-Cookie: JSESSIONID=...`` included, and that value is a live session.
     Text without a session cookie is returned unchanged.
     """
-    if "jsessionid=" not in text.lower():
+    if "jsessionid" not in text.lower():
         return text
     return _SESSION_COOKIE_RE.sub(r"\1***", text)

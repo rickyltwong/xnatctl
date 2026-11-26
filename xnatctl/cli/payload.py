@@ -23,11 +23,10 @@ from typing import Any, TypeVar
 
 import click
 
-F = TypeVar("F", bound=Callable[..., Any])
+R = TypeVar("R")
 
 
 def _parse_json_object(text: str, source: str) -> dict[str, Any]:
-    """Parse ``text`` as a JSON object, raising a usage error otherwise."""
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
@@ -39,7 +38,7 @@ def _parse_json_object(text: str, source: str) -> dict[str, Any]:
     return data
 
 
-def read_payload_argument(f: F) -> F:
+def read_payload_argument(f: Callable[..., R]) -> Callable[..., R]:
     """Add a ``FILE`` positional argument, read and parsed as a JSON object.
 
     ``FILE`` is a path to a JSON document, or ``-`` for stdin -- the
@@ -68,8 +67,7 @@ def read_payload_argument(f: F) -> F:
 
     @click.argument("file", type=click.Path(exists=True, dir_okay=False, allow_dash=True))
     @wraps(f)
-    def wrapper(*args: Any, file: str, **kwargs: Any) -> Any:
-        """Read FILE (or stdin) and inject the parsed payload into kwargs."""
+    def wrapper(*args: Any, file: str, **kwargs: Any) -> R:
         if file == "-":
             if sys.stdin.isatty():
                 raise click.UsageError(
@@ -89,7 +87,7 @@ def read_payload_argument(f: F) -> F:
         kwargs["payload_source"] = file
         return f(*args, **kwargs)
 
-    return wrapper  # type: ignore
+    return wrapper
 
 
 def json_diff(before: dict[str, Any], after: dict[str, Any], *, label: str) -> str:

@@ -1,5 +1,3 @@
-"""Tests for xnatctl dicom modify command."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,17 +11,10 @@ from xnatctl.cli.main import cli
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _write_fake_dicom(path: Path, patient_id: str = "ORIG") -> None:
-    """Create a minimal valid DICOM file using pydicom.
-
-    Args:
-        path: Target file path.
-        patient_id: PatientID value to set.
-    """
     import pydicom
     from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
@@ -34,7 +25,7 @@ def _write_fake_dicom(path: Path, patient_id: str = "ORIG") -> None:
     ds.StudyInstanceUID = generate_uid()
     ds.SeriesInstanceUID = generate_uid()
     ds.SOPInstanceUID = generate_uid()
-    ds.SOPClassUID = "1.2.840.10008.5.1.4.1.1.4"  # MR Image Storage
+    ds.SOPClassUID = "1.2.840.10008.5.1.4.1.1.4"
 
     ds.is_little_endian = True
     ds.is_implicit_VR = False
@@ -50,16 +41,8 @@ def _write_fake_dicom(path: Path, patient_id: str = "ORIG") -> None:
     ds.save_as(str(path))
 
 
-# =========================================================================
-# Argument validation
-# =========================================================================
-
-
 class TestModifyValidation:
-    """Tests for tag pair parsing and keyword validation."""
-
     def test_missing_tag_option(self, runner: CliRunner, tmp_path: Path) -> None:
-        """--tag is required."""
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
         result = runner.invoke(cli, ["dicom", "modify", str(dcm)])
@@ -67,7 +50,6 @@ class TestModifyValidation:
         assert "Missing option" in result.output or "required" in result.output.lower()
 
     def test_invalid_keyword_value_format(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Tag without '=' is rejected."""
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
         result = runner.invoke(cli, ["dicom", "modify", str(dcm), "-t", "PatientID"])
@@ -75,7 +57,6 @@ class TestModifyValidation:
         assert "KEYWORD=VALUE" in result.output
 
     def test_unknown_keyword_rejected(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Unrecognised DICOM keyword is rejected."""
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
         result = runner.invoke(cli, ["dicom", "modify", str(dcm), "-t", "FakeTag=abc"])
@@ -83,7 +64,6 @@ class TestModifyValidation:
         assert "Unknown DICOM keyword" in result.output
 
     def test_empty_keyword_rejected(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Empty keyword (=VALUE) is rejected."""
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
         result = runner.invoke(cli, ["dicom", "modify", str(dcm), "-t", "=foo"])
@@ -91,16 +71,8 @@ class TestModifyValidation:
         assert "Empty keyword" in result.output
 
 
-# =========================================================================
-# Single-file modification
-# =========================================================================
-
-
 class TestModifySingleFile:
-    """Tests for modifying a single DICOM file."""
-
     def test_modify_single_tag(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Modify one tag on a single file."""
         import pydicom
 
         dcm = tmp_path / "test.dcm"
@@ -114,7 +86,6 @@ class TestModifySingleFile:
         assert ds.PatientID == "NEW001"
 
     def test_modify_multiple_tags(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Modify multiple tags at once."""
         import pydicom
 
         dcm = tmp_path / "test.dcm"
@@ -139,7 +110,6 @@ class TestModifySingleFile:
         assert ds.StudyDescription == "Demo"
 
     def test_value_with_equals_sign(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Values containing '=' are preserved."""
         import pydicom
 
         dcm = tmp_path / "test.dcm"
@@ -152,16 +122,8 @@ class TestModifySingleFile:
         assert ds.StudyDescription == "a=b=c"
 
 
-# =========================================================================
-# Dry-run
-# =========================================================================
-
-
 class TestModifyDryRun:
-    """Tests for --dry-run behaviour."""
-
     def test_dry_run_no_write(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Dry run reports changes but leaves file untouched."""
         import pydicom
 
         dcm = tmp_path / "test.dcm"
@@ -177,16 +139,8 @@ class TestModifyDryRun:
         assert ds.PatientID == "ORIG"
 
 
-# =========================================================================
-# Backup
-# =========================================================================
-
-
 class TestModifyBackup:
-    """Tests for --backup flag."""
-
     def test_backup_created(self, runner: CliRunner, tmp_path: Path) -> None:
-        """A .bak file is created when --backup is used."""
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm, patient_id="ORIG")
 
@@ -197,7 +151,6 @@ class TestModifyBackup:
         assert (tmp_path / "test.dcm.bak").exists()
 
     def test_no_backup_without_flag(self, runner: CliRunner, tmp_path: Path) -> None:
-        """No .bak created without --backup."""
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -205,16 +158,8 @@ class TestModifyBackup:
         assert not (tmp_path / "test.dcm.bak").exists()
 
 
-# =========================================================================
-# Directory / recursive
-# =========================================================================
-
-
 class TestModifyDirectory:
-    """Tests for directory and recursive processing."""
-
     def test_directory_non_recursive(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Modify files in a flat directory."""
         import pydicom
 
         for i in range(3):
@@ -229,7 +174,6 @@ class TestModifyDirectory:
             assert ds.PatientID == "BATCH"
 
     def test_recursive_flag(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Recurse into subdirectories with -r."""
         import pydicom
 
         _write_fake_dicom(tmp_path / "a.dcm")
@@ -244,7 +188,6 @@ class TestModifyDirectory:
             assert ds.PatientID == "REC"
 
     def test_non_dicom_skipped(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Non-DICOM files are skipped, not errored."""
         _write_fake_dicom(tmp_path / "good.dcm")
         (tmp_path / "readme.txt").write_text("not dicom")
 
@@ -253,16 +196,8 @@ class TestModifyDirectory:
         assert "skipped 1" in result.output.lower()
 
 
-# =========================================================================
-# JSON output
-# =========================================================================
-
-
 class TestModifyJsonOutput:
-    """Tests for --output json mode."""
-
     def test_json_output(self, runner: CliRunner, tmp_path: Path) -> None:
-        """JSON output contains expected structure."""
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -281,16 +216,8 @@ class TestModifyJsonOutput:
         assert data["files"][0]["status"] == "modified"
 
 
-# =========================================================================
-# No pydicom fallback
-# =========================================================================
-
-
 class TestModifyFailedFiles:
-    """Tests for write-error handling (failed counter and exit code)."""
-
     def test_write_error_reports_failed(self, runner: CliRunner, tmp_path: Path) -> None:
-        """A write error during save is reported as 'failed' with non-zero exit."""
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -300,7 +227,6 @@ class TestModifyFailedFiles:
         assert "failed 1" in result.output.lower()
 
     def test_write_error_json(self, runner: CliRunner, tmp_path: Path) -> None:
-        """JSON output includes failed count on write error."""
         dcm = tmp_path / "test.dcm"
         _write_fake_dicom(dcm)
 
@@ -316,8 +242,3 @@ class TestModifyFailedFiles:
         data = json.loads(result.output)
         assert data["failed"] == 1
         assert data["files"][0]["status"] == "failed"
-
-
-# =========================================================================
-# No pydicom fallback
-# =========================================================================

@@ -35,20 +35,6 @@ _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9
 
 
 def _expand_env(raw: str) -> str:
-    """Expand ``$VAR`` and ``${VAR}`` references in ``raw``.
-
-    Any referenced variable name that is not set in ``os.environ`` is
-    surfaced via :func:`print_warning` so silent empty-string substitution
-    is observable. Uses :func:`os.path.expandvars`, which leaves unset
-    references as their literal ``$VAR`` text on POSIX. The warning is
-    sufficient to flag the leak; we do not raise.
-
-    Args:
-        raw: The unexpanded string from ``-d``.
-
-    Returns:
-        The expanded string (same text if no references were present).
-    """
     referenced: set[str] = set()
     for braced, bare in _ENV_VAR_RE.findall(raw):
         name = braced or bare
@@ -149,8 +135,6 @@ def _read_body(
     return None, None, None, None
 
 
-# Mapping of lowercased file extensions to MIME types used by
-# ``_detect_content_type``.  Kept module-level so the table is allocated once.
 _EXTENSION_CONTENT_TYPES: dict[str, str] = {
     ".json": "application/json",
     ".txt": "text/plain",
@@ -159,18 +143,6 @@ _EXTENSION_CONTENT_TYPES: dict[str, str] = {
 
 
 def _split_param(param: str) -> tuple[str, str] | None:
-    """Split a ``key=value`` param at the first ``=`` outside brackets.
-
-    XNAT field paths may contain ``=`` inside bracket expressions
-    (e.g. ``field[name=session_type]/field=Research``).  A naive
-    ``split("=", 1)`` would split on the wrong ``=``.
-
-    Args:
-        param: A ``key=value`` string.
-
-    Returns:
-        ``(key, value)`` tuple, or ``None`` if no valid split found.
-    """
     depth = 0
     for i, ch in enumerate(param):
         if ch == "[":
@@ -183,14 +155,6 @@ def _split_param(param: str) -> tuple[str, str] | None:
 
 
 def _is_text_content_type(content_type: str) -> bool:
-    """Check if a Content-Type header indicates text content.
-
-    Args:
-        content_type: The Content-Type header value.
-
-    Returns:
-        True if the content type is text-based.
-    """
     ct = content_type.lower().split(";")[0].strip()
     if ct.startswith("text/"):
         return True
@@ -223,7 +187,7 @@ def _detect_content_type(
         A MIME type string when detection succeeds, or ``None`` when the
         caller should fall back to the existing behavior.
     """
-    del raw_bytes  # accepted for parity with the contract; not used yet
+    del raw_bytes
     if file_path is None:
         return None
     if decoded_text is None:
@@ -235,42 +199,20 @@ def _detect_content_type(
 
 
 def _build_query_string(params: tuple[str, ...]) -> str:
-    """Build a raw query string preserving special chars in keys.
-
-    httpx URL-encodes query parameter keys (e.g. ``xnat:mrSessionData``
-    becomes ``xnat%3AmrSessionData``), which XNAT rejects.  This helper
-    builds a pre-encoded query string where colons, slashes, and other
-    characters in keys are preserved verbatim.
-
-    Args:
-        params: Tuple of ``key=value`` strings from Click ``--params`` options.
-
-    Returns:
-        A ``key=value&...`` query string (empty string if no params).
-    """
     parts: list[str] = []
     for param in params:
         result = _split_param(param)
         if result is not None:
             key, value = result
-            # Preserve key verbatim (XNAT XSI paths contain :, /, [], =)
-            # Only percent-encode the value for safety (spaces, etc.)
             encoded_value = quote(value, safe=":/[]@!$&'()*+,;=-._~")
             parts.append(f"{key}={encoded_value}")
     return "&".join(parts)
 
 
-# Matches a write to a *named* file under a resource, e.g.
-# ``/data/projects/P/resources/BIDS/files/params.json``. XNAT rejects a
-# raw-body write to this endpoint with 400/500 unless ``?inbody=true`` is
-# set (or the body is sent as multipart, which ``api`` never does). The
-# bare collection endpoint (``.../files`` with no trailing name) is used
-# for zip/bulk uploads and is intentionally not matched here.
 _RESOURCE_FILE_RE = re.compile(r"/resources/[^/?]+/files/[^/?]+")
 
 
 def _param_value(params: tuple[str, ...], key: str) -> str | None:
-    """Return the value of ``key`` in ``params`` (case-insensitive), or None."""
     for param in params:
         result = _split_param(param)
         if result is not None and result[0].lower() == key.lower():
@@ -279,37 +221,10 @@ def _param_value(params: tuple[str, ...], key: str) -> str | None:
 
 
 def _is_resource_file_path(path: str) -> bool:
-    """True if ``path`` targets a named file under a resource.
-
-    Such writes require ``?inbody=true`` for a raw request body. Only the
-    path portion (before any literal ``?``) is inspected.
-    """
     return _RESOURCE_FILE_RE.search(path.split("?", 1)[0]) is not None
 
 
 def _maybe_add_inbody(path: str, params: tuple[str, ...], *, has_body: bool) -> tuple[str, ...]:
-    """Add ``inbody=true`` for resource-file writes that need it.
-
-    XNAT's ``/resources/<label>/files/<name>`` endpoint drops a raw request
-    body unless ``inbody=true`` is present, failing with an opaque 400/500.
-    When the target is such an endpoint and a body was supplied, inject the
-    parameter (unless the caller already set ``inbody``) and emit a note so
-    the rewrite of this escape-hatch request stays observable.
-
-    Also guards the inverse footgun: an explicit ``inbody=true`` with no
-    body silently PUTs nothing, so raise an actionable error instead.
-
-    Args:
-        path: The request path (query string, if any, is ignored).
-        params: The ``--params`` tuple as given by the user.
-        has_body: Whether a request body was resolved from ``-d``/``--file``.
-
-    Returns:
-        The (possibly extended) params tuple.
-
-    Raises:
-        click.UsageError: If ``inbody=true`` is set but no body was supplied.
-    """
     inbody_value = _param_value(params, "inbody")
 
     if inbody_value is not None and inbody_value.lower() == "true" and not has_body:
@@ -383,10 +298,6 @@ def api_get(
     try:
         data = resp.json()
     except (json_module.JSONDecodeError, UnicodeDecodeError):
-        # Non-JSON body. Under ``-o json`` we warn once on stderr and
-        # passthrough the raw body to stdout (text-decoded when possible,
-        # raw bytes otherwise). Exit code stays 0 because the HTTP call
-        # itself succeeded (non-2xx responses raise before we get here).
         if ctx.output_format == OutputFormat.JSON:
             print_warning(
                 f"Response from {path} is not JSON; emitting raw body. "
@@ -403,7 +314,6 @@ def api_get(
         print_json(data)
         return
 
-    # Table format: try to extract ResultSet.Result for tabular display.
     if isinstance(data, dict) and "ResultSet" in data:
         results = data.get("ResultSet", {}).get("Result", [])
         if results and isinstance(results, list):
@@ -502,18 +412,12 @@ def api_post(
     effective_type = content_type or _detect_content_type(detect_file, raw_bytes, decoded_text)
     headers: dict[str, str] | None = None
 
-    # Route body via data= when an explicit/non-JSON content type is in
-    # effect; httpx would otherwise force application/json on json=.
     if content_type is not None:
         if json_body is not None and body is None:
-            # User passed -t with text input that JSON-parsed; send the
-            # original text verbatim instead of re-serializing.
             body = decoded_text
             json_body = None
         headers = {"Content-Type": content_type}
     elif effective_type is not None and effective_type != "application/json":
-        # Auto-detected non-JSON file (.txt, .xml, octet-stream).  Drop
-        # any speculative json_body and send the original bytes/text.
         if json_body is not None and body is None:
             body = decoded_text
             json_body = None
@@ -617,9 +521,6 @@ def api_put(
     body, json_body, raw_bytes, decoded_text = _read_body(data, file_path)
     has_body = body is not None or json_body is not None
 
-    # Resource file writes (/resources/<label>/files/<name>) need
-    # ?inbody=true for a raw body; XNAT otherwise fails with an opaque
-    # 400/500. Inject it (observably) so the obvious command works.
     params = _maybe_add_inbody(path, params, has_body=has_body)
 
     qs = _build_query_string(params)
@@ -629,8 +530,6 @@ def api_put(
     effective_type = content_type or _detect_content_type(detect_file, raw_bytes, decoded_text)
     headers: dict[str, str] | None = None
 
-    # Route body via data= when an explicit/non-JSON content type is in
-    # effect; httpx would otherwise force application/json on json=.
     if content_type is not None:
         if json_body is not None and body is None:
             body = decoded_text

@@ -48,12 +48,10 @@ from .test_cli_container import SAMPLE_CONTAINER, _stream_body_ctx
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with a default profile."""
     return Config(
         default_profile="default",
         profiles={
@@ -68,17 +66,11 @@ def _mock_config() -> Config:
 
 
 def _mock_client() -> MagicMock:
-    """Build a mock XNATClient."""
     client = MagicMock()
     client.is_authenticated = True
     client.base_url = "https://xnat.example.org"
     client.whoami.return_value = {"username": "testuser"}
     return client
-
-
-# =============================================================================
-# -e -> -E (--experiment)
-# =============================================================================
 
 
 class TestExperimentShortFlag:
@@ -147,11 +139,6 @@ class TestExperimentShortFlag:
         assert "Refreshed" in result.output
 
 
-# =============================================================================
-# resource download --file -> --output-file
-# =============================================================================
-
-
 class TestResourceOutputFile:
     """``--output-file`` (``-f`` unchanged); ``--file`` was removed in 0.7.0."""
 
@@ -174,7 +161,6 @@ class TestResourceOutputFile:
     def test_short_flag_f_still_maps_to_output_file_without_warning(
         self, runner: CliRunner, tmp_path
     ) -> None:
-        """``-f`` is not deprecated here -- it is the short form of the new spelling."""
         client = _mock_client()
         out = tmp_path / "out.zip"
 
@@ -198,12 +184,6 @@ class TestResourceOutputFile:
 
         assert result.exit_code == 2
         assert "--output-file" in result.output
-
-
-# =============================================================================
-# -f retires on `api post`/`api put` (meant --file) and `container logs`
-# (meant --follow) -- the same letter, two different meanings, so both lose it.
-# =============================================================================
 
 
 class TestApiFileShortFlag:
@@ -230,7 +210,7 @@ class TestContainerFollowShortFlag:
     """``--follow`` on ``container logs``; ``-f`` was removed in 0.7.0."""
 
     def test_follow_new_spelling(self, authenticated_cli: AuthenticatedCLI) -> None:
-        authenticated_cli.client.get_json.return_value = SAMPLE_CONTAINER  # status: Complete
+        authenticated_cli.client.get_json.return_value = SAMPLE_CONTAINER
         authenticated_cli.client.stream.return_value = _stream_body_ctx(b"hello")
 
         result = authenticated_cli.invoke(
@@ -240,12 +220,6 @@ class TestContainerFollowShortFlag:
         assert result.exit_code == 0
         assert "deprecated" not in result.stderr
         assert result.stdout == "hello"
-
-
-# =============================================================================
-# -s retires on `scan delete`/`scan download` (collided with -S/--subject on
-# the same command line); --scans also becomes repeatable (additive).
-# =============================================================================
 
 
 class TestScanShortFlag:
@@ -290,7 +264,6 @@ class TestScanShortFlag:
     def test_scan_download_repeatable_scans_matches_comma_list(
         self, runner: CliRunner, tmp_path
     ) -> None:
-        """``--scans 1 --scans 2`` (repeatable) is equivalent to ``--scans 1,2``."""
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -374,7 +347,7 @@ class TestRemovedSpellings:
         result = runner.invoke(cli, args)
 
         assert result.exit_code == 2, result.output
-        # Click 8.1 prints "No such option: -e", later releases "No such option '-e'."
+        # Click 8.3.0 prints "No such option: -e", 8.4.2 "No such option '-e'."
         assert re.search(rf"No such option(: | '){re.escape(flag)}\b", result.output), result.output
 
 
@@ -445,20 +418,6 @@ def registered_e_alias(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.usefixtures("registered_e_alias")
 class TestBothSpellingsOnOneCommandLine:
-    """Mixing a deprecated alias with its modern spelling must not lose values.
-
-    The forwarding alias writes straight into ``ctx.params``, which bypasses
-    Click's ``handle_parse_result``. That leaves the target's slot holding a
-    value with no recorded parameter source, and when the target option is
-    processed it finds an occupied slot it cannot out-rank -- so it discards
-    its own value. ``admin refresh-catalogs -E NEW1 -E NEW2 -e OLD1`` reached
-    the command as ``('OLD1',)``: both ``-E`` values silently dropped, exit 0,
-    and those experiments simply never refreshed.
-
-    Every option a forwarding alias targets is now ``is_eager=True`` so the
-    target is processed first and the alias callback can merge into it.
-    """
-
     @staticmethod
     def _multi_cmd() -> click.Command:
         @click.command()
@@ -506,11 +465,9 @@ class TestBothSpellingsOnOneCommandLine:
         ids=["modern-first", "deprecated-first"],
     )
     def test_repeatable_option_merges_both_spellings(self, args: list[str]) -> None:
-        """Order must not decide which spelling survives -- both do."""
         assert self._result(self._multi_cmd(), args) == "RESULT=('NEW1', 'OLD1')"
 
     def test_repeatable_option_keeps_every_value(self) -> None:
-        """The exact `admin refresh-catalogs` case: nothing silently dropped."""
         result = self._result(
             self._multi_cmd(), ["-E", "NEW1", "-E", "NEW2", "-e", "OLD1", "-e", "OLD2"]
         )
@@ -526,18 +483,9 @@ class TestBothSpellingsOnOneCommandLine:
         ids=["modern-first", "deprecated-first"],
     )
     def test_single_valued_option_lets_the_alias_win_either_way(self, args: list[str]) -> None:
-        """Only one value can survive, so the alias keeps overwriting -- but
-        it must do so consistently, not depending on typing order.
-
-        Making these targets eager too would let the modern spelling win, but
-        eagerness reorders processing against `--help` and other eager
-        callbacks, which costs more than it buys where there is nothing to
-        merge. See _make_forwarding_alias_cb.
-        """
         assert self._result(self._scalar_cmd(), args) == "RESULT='OLD1'"
 
     def test_alias_alone_still_forwards(self) -> None:
-        """The whole point of the alias -- a pre-rename script -- keeps working."""
         assert self._result(self._multi_cmd(), ["-e", "OLD1"]) == "RESULT=('OLD1',)"
         assert self._result(self._scalar_cmd(), ["-e", "OLD1"]) == "RESULT='OLD1'"
 

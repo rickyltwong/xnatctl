@@ -20,14 +20,13 @@ from pathlib import Path
 import httpx
 
 from xnatctl.core.client import XNATClient
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.timeouts import build_httpx_timeout
 
 logger = logging.getLogger(__name__)
 
 DICOM_EXTENSIONS = {".dcm", ".ima", ".img", ".dicom"}
 
-# Shared across transports: the parallel REST batch and gradual-DICOM
-# transports both default to 4 workers when the caller does not specify one.
 DEFAULT_UPLOAD_WORKERS = 4
 
 
@@ -107,14 +106,12 @@ class SessionRefresher:
             self._owner.session_token = token
 
         try:
-            # Imported here rather than at module scope: this is the only place
-            # the upload service touches the credential cache, and a top-level
-            # import would tie every upload to the auth module's import cost.
             from xnatctl.core.auth import AuthManager
 
             if stale_token:
                 AuthManager().replace_token(stale_token, token)
-        except Exception as e:  # noqa: BLE001  # best-effort cache write (see docstring): failing the upload over an uncached token would be absurd
+        except Exception as e:
+            logger.exception("Session cache update failed", extra={FILE_ONLY_ATTR: True})
             logger.debug("Could not update the session cache after refresh: %s", e)
 
     @property
@@ -148,7 +145,7 @@ class SessionRefresher:
                 with httpx.Client(
                     base_url=self._base_url,
                     verify=self._verify_ssl,
-                    timeout=build_httpx_timeout(30.0),  # connect fails fast
+                    timeout=build_httpx_timeout(30.0),
                 ) as client:
                     resp = client.post(
                         "/data/JSESSION",
@@ -162,7 +159,7 @@ class SessionRefresher:
                         logger.info("Session refreshed successfully")
                     else:
                         logger.error("Session refresh failed: HTTP %d", resp.status_code)
-            except Exception:  # noqa: BLE001  # best-effort reauth: failed refresh leaves token unchanged; per-item 401 handling takes over
+            except Exception:
                 logger.exception("Session refresh failed")
 
             return self._token
@@ -219,7 +216,6 @@ def _has_dicom_magic(path: Path) -> bool:
 
 
 def _is_dicom_like_path(path: Path, *, include_extensionless: bool = True) -> bool:
-    """Return True when a path looks like a DICOM file we should ingest."""
     if path.name.startswith("."):
         return False
 
@@ -294,33 +290,10 @@ def split_into_n_batches(
 
 
 def _error_signature(error: str) -> str:
-    """Collapse an error message to something comparable across files.
-
-    Two rejections of the same *kind* differ in the file name and any UID the
-    server echoes back, so comparing raw strings would never find them equal.
-    The leading prefix is stable enough to group by and short enough not to
-    reach the variable tail.
-    """
     return error.strip()[:200]
 
 
 def _stage_source_files(source_path: Path) -> tuple[str | None, list[Path]]:
-    """Resolve an upload source into DICOM-like files, extracting ZIPs first.
-
-    ZIP sources are extracted into a fresh temp directory that the caller must
-    remove after the upload; on a mid-extraction failure the directory is
-    removed here before the error propagates, so the caller never has to
-    clean up a half-staged tree it was never told about.
-
-    Args:
-        source_path: Existing directory or ZIP file.
-
-    Returns:
-        Tuple of (temp extraction dir or None, DICOM-like files found).
-
-    Raises:
-        ValueError: If source_path is neither a directory nor a ZIP file.
-    """
     if source_path.is_file() and source_path.suffix.lower() == ".zip":
         temp_dir = tempfile.mkdtemp(prefix="xnatctl_gradual_")
         try:
@@ -345,15 +318,6 @@ def _stage_source_files(source_path: Path) -> tuple[str | None, list[Path]]:
 
 
 def _validate_files_exist(file_list: list[Path]) -> None:
-    """Reject a file list containing missing paths or non-files.
-
-    Args:
-        file_list: Caller-provided paths.
-
-    Raises:
-        FileNotFoundError: If any path does not exist.
-        ValueError: If any path is not a file.
-    """
     for p in file_list:
         if not p.exists():
             raise FileNotFoundError(f"File not found: {p}")
@@ -362,14 +326,6 @@ def _validate_files_exist(file_list: list[Path]) -> None:
 
 
 def _reject_duplicate_resolved_paths(dicom_file_list: list[Path]) -> None:
-    """Reject distinct input paths that resolve to the same file on disk.
-
-    Args:
-        dicom_file_list: DICOM-like files selected for upload.
-
-    Raises:
-        ValueError: If two paths resolve to the same file.
-    """
     resolved_to_original: dict[Path, Path] = {}
     duplicate_resolved: set[Path] = set()
     for p in dicom_file_list:
@@ -385,15 +341,6 @@ def _reject_duplicate_resolved_paths(dicom_file_list: list[Path]) -> None:
 
 
 def _compute_display_root(dicom_file_list: list[Path]) -> Path:
-    """Pick a stable common root for relative display paths.
-
-    Args:
-        dicom_file_list: DICOM-like files selected for upload.
-
-    Returns:
-        The deepest common directory, falling back to the first file's
-        parent when no common path exists.
-    """
     try:
         common = Path(os.path.commonpath([str(p.resolve()) for p in dicom_file_list]))
         return common if common.is_dir() else common.parent

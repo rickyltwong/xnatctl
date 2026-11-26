@@ -1,16 +1,3 @@
-"""What XNAT actually does, checked against a real server.
-
-The unit suite proves xnatctl sends what we think it sends. It cannot prove
-XNAT answers the way we think it answers -- so every mocked response in this
-repo encodes a belief that was never tested. These tests are where those
-beliefs get checked: that an import lands where the flags say it should, that
-a scan ZIP has the layout the extractor assumes, that a downloaded file still
-matches the bytes that went up.
-
-The round trip in :class:`TestRoundTrip` is the tier's reason to exist. The
-rest are cheap checks worth having once a server is already running.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -22,32 +9,13 @@ from typing import Any
 
 import pytest
 
-# The suite-wide pytest-timeout of 120s is a hang backstop sized for mocked
-# tests. A real import is asynchronous -- the POST returns long before the
-# session is queryable -- so these need their own budget or they fail on XNAT
-# being XNAT.
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(900)]
 
 SCAN_IDS = ("1", "2")
 SLICES_PER_SCAN = 3
 
 
-# =============================================================================
-# Synthetic DICOM
-# =============================================================================
-
-
 def _make_session(root: Path, subject: str, session: str) -> dict[str, str]:
-    """Write a two-scan DICOM session. Returns {SOPInstanceUID: sha256 of pixels}.
-
-    Real pydicom datasets rather than files carrying the DICM magic: XNAT
-    parses these on import, and a file it cannot read never reaches the
-    archive at all.
-
-    Keyed by SOP instance UID and hashed over the pixel data alone, because
-    the file bytes do not survive the round trip -- see
-    :meth:`TestRoundTrip.test_the_image_data_survives_the_round_trip`.
-    """
     import pydicom
     from pydicom.dataset import Dataset, FileMetaDataset
     from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
@@ -80,8 +48,6 @@ def _make_session(root: Path, subject: str, session: str) -> dict[str, str]:
             ds.SeriesDescription = f"scan{scan_id}"
             ds.AccessionNumber = session
 
-            # A tiny real image: 4x4 16-bit, so the pixel data is well-formed
-            # rather than a blob XNAT might reject.
             ds.Rows = 4
             ds.Columns = 4
             ds.BitsAllocated = 16
@@ -101,7 +67,6 @@ def _make_session(root: Path, subject: str, session: str) -> dict[str, str]:
 
 
 def _poll(predicate: Any, timeout: float, interval: float = 3.0, what: str = "condition") -> Any:
-    """Wait for XNAT to catch up. Returns the truthy value, or fails."""
     deadline = time.time() + timeout
     last: Any = None
     while time.time() < deadline:
@@ -110,11 +75,6 @@ def _poll(predicate: Any, timeout: float, interval: float = 3.0, what: str = "co
             return last
         time.sleep(interval)
     pytest.fail(f"timed out after {timeout}s waiting for {what} (last value: {last!r})")
-
-
-# =============================================================================
-# Tests
-# =============================================================================
 
 
 class TestAuth:
@@ -127,7 +87,6 @@ class TestAuth:
         assert xnat_client.get("/xapi/users/username").text.strip() == credentials[0]
 
     def test_an_invalid_token_is_rejected(self, xnat_server: str) -> None:
-        """Proves the server actually enforces the cookie we rely on."""
         from xnatctl.core.client import XNATClient
         from xnatctl.core.exceptions import AuthenticationError, SessionExpiredError
 
@@ -161,12 +120,6 @@ class TestProjectLifecycle:
 
 
 class TestRoundTrip:
-    """Upload, archive, download, compare. The tier exists for this test.
-
-    Session-scoped because the upload is slow and everything after it is an
-    assertion about the same archived session.
-    """
-
     @pytest.fixture(scope="class")
     def uploaded(
         self, xnat_client: Any, integration_project: str, tmp_path_factory: Any
@@ -193,13 +146,6 @@ class TestRoundTrip:
 
     @pytest.fixture(scope="class")
     def archived(self, xnat_client: Any, integration_project: str, uploaded: dict[str, Any]) -> str:
-        """The experiment ID, once XNAT has finished archiving it.
-
-        Import is asynchronous even with direct-archive on: the POST returns
-        before the session is queryable. Every consumer of this tier has to
-        poll, which is itself worth having proven.
-        """
-
         def find() -> str | None:
             data = xnat_client.get_json(
                 f"/data/projects/{integration_project}/experiments",
@@ -210,9 +156,6 @@ class TestRoundTrip:
                     return str(row["ID"])
             return None
 
-        # 600s, not 300: a server this fixture did not initialize keeps XNAT's
-        # default five-minute quiet window before it builds the session, and
-        # the tier is meant to work against those too.
         return str(_poll(find, timeout=600, what="the session to appear in the archive"))
 
     def test_the_session_archives_with_both_scans(self, xnat_client: Any, archived: str) -> None:
@@ -225,11 +168,6 @@ class TestRoundTrip:
     def test_the_scan_zip_has_the_layout_the_extractor_assumes(
         self, xnat_client: Any, archived: str
     ) -> None:
-        """``_extract_scan_zip`` infers the resource label from this shape.
-
-        If XNAT ever changes it, every download silently lands under UNKNOWN
-        instead of DICOM, and no mocked test would notice.
-        """
         resp = xnat_client.get(
             f"/data/experiments/{archived}/scans/ALL/files", params={"format": "zip"}
         )
@@ -249,19 +187,8 @@ class TestRoundTrip:
         uploaded: dict[str, Any],
         tmp_path: Path,
     ) -> None:
-        """The one assertion that covers the whole pipeline at once.
-
-        Not a byte-for-byte comparison, and that is the finding: XNAT ships
-        with its site-wide anonymization script enabled, so every file is
-        rewritten on archive and not one of the six came back with the same
-        sha256 it went up with. A tier that asserted file hashes would fail
-        for a reason that is correct behaviour.
-
-        What must survive is the image: each SOP instance still present, and
-        its pixel data unchanged. Anonymization is allowed to rewrite
-        identifiers; silently altering pixels would be data loss.
-        """
         import pydicom
+        from pydicom.errors import InvalidDicomError
 
         from xnatctl.services.downloads import DownloadService
 
@@ -280,7 +207,7 @@ class TestRoundTrip:
                 continue
             try:
                 ds = pydicom.dcmread(path)
-            except Exception:  # noqa: BLE001  # non-DICOM sidecars are not the subject
+            except InvalidDicomError:
                 continue
             got[str(ds.SOPInstanceUID)] = hashlib.sha256(ds.PixelData).hexdigest()
 
@@ -300,7 +227,6 @@ class TestRoundTrip:
         uploaded: dict[str, Any],
         tmp_path: Path,
     ) -> None:
-        """scans/{id}/resources/{label}/files/ -- what the docs promise users."""
         from xnatctl.services.downloads import DownloadService
 
         out = tmp_path / "layout"
@@ -319,27 +245,9 @@ class TestRoundTrip:
 
 
 class TestPrearchive:
-    """Direct-archive off means the session waits in the prearchive.
-
-    The flag is the difference between data appearing immediately and data
-    sitting in a queue an operator has to notice, so it is worth proving it
-    still does what the help text says.
-    """
-
     def test_an_import_without_direct_archive_stops_in_the_prearchive(
         self, xnat_client: Any, integration_project: str, tmp_path: Path
     ) -> None:
-        """Confirms the caveat ``archive_destination_params`` documents.
-
-        That docstring warns that neither destination flag can override a
-        project configured to auto-archive. It is right, and this is the
-        evidence: XNAT creates projects with prearchive_code 4 (auto-archive),
-        so a ``dest=/prearchive/...`` upload passes straight through the
-        prearchive and into the archive, and an earlier version of this test
-        waited the full ten minutes for a session that was never going to
-        stay. Setting the project to 0 (manual) is the only thing that holds
-        it -- which is exactly what the docstring says to do.
-        """
         from xnatctl.services.prearchive import PrearchiveService
         from xnatctl.services.upload import UploadService
 
@@ -362,9 +270,6 @@ class TestPrearchive:
         assert summary.success, f"upload failed: {summary.errors}"
 
         def find() -> Any:
-            # PrearchiveService.list returns dicts, not models -- getattr on a
-            # dict quietly yields None, so an attribute lookup here looks like
-            # "the session never arrived" no matter what the server said.
             entries = PrearchiveService(xnat_client).list(project=integration_project)
             return [e for e in entries if e.get("name") == session] or None
 
@@ -372,29 +277,6 @@ class TestPrearchive:
 
 
 class TestContainerServicePlugin:
-    """Proves the Container Service plugin actually loaded, not just that its
-    jar landed on disk.
-
-    ``docker/integration/Dockerfile`` downloads a pinned Container Service
-    release into ``${XNAT_HOME}/plugins`` at build time and fails the build if
-    that download is missing or truncated -- but a jar sitting in the plugins
-    directory is not the same thing as XNAT having loaded it: a version
-    mismatch or a bad manifest fails silently at plugin-scan time, not at
-    build time. ``GET /xapi/plugins`` (``AdminService.list_plugins``, the same
-    call behind ``xnatctl admin plugins``) is what XNAT itself reports having
-    loaded, so it is the only honest check that the plugin is actually live in
-    the running server rather than merely present on disk.
-
-    Scope stops there deliberately. Actually launching a container needs a
-    reachable Docker daemon, and this compose file does not mount the host
-    Docker socket into xnat-web -- doing that would hand a test container
-    control of the host's Docker daemon, which is a privilege-escalation risk
-    out of proportion to what this tier needs. So this only proves "the
-    plugin is installed and its REST surface answers", not "containers can
-    actually run"; exercising real container launches needs a differently
-    configured (and more carefully secured) environment than this one.
-    """
-
     def test_the_container_service_plugin_is_installed(self, xnat_client: Any) -> None:
         from xnatctl.services.admin import AdminService
 

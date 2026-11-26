@@ -1,8 +1,7 @@
 """Session query commands for xnatctl (list / show).
 
-Registers ``session list`` and ``session show`` onto the ``session`` group
-defined in :mod:`xnatctl.cli.session`, mirroring how
-:mod:`xnatctl.cli.session_upload` registers the upload family.
+``xnatctl/cli/main.py`` registers ``session list`` and ``session show`` on
+the ``session`` group defined in :mod:`xnatctl.cli.session`.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ from xnatctl.cli.common import (
     require_project_from_context,
     resolve_columns,
 )
-from xnatctl.cli.session import session
 from xnatctl.core.exceptions import ResourceNotFoundError, XNATCtlError
 from xnatctl.core.output import OutputFormat, print_error, print_output, print_table
 from xnatctl.core.validation import validate_project_id, validate_session_id
@@ -30,7 +28,7 @@ from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.sessions import SessionService
 
 
-@session.command("list")
+@click.command("list")
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--subject", "-S", help="Filter by subject")
 @click.option(
@@ -91,7 +89,7 @@ def session_list(
     )
 
 
-@session.command("show")
+@click.command("show")
 @click.option(
     "--experiment",
     "-E",
@@ -132,27 +130,18 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
         print_error(f"Session not found: {session_id}")
         raise SystemExit(1) from None
 
-    # Keep project scope (and subject scope if known) so nested calls respect
-    # project ACLs and match pre-refactor URLs.
     nested_ref = ExperimentRef(
         experiment=resolved.experiment_id,
         project_id=resolved.project_id or project,
         subject=resolved.subject_id or resolved.subject_label,
     )
 
-    # Get scans — resolve xsiType so non-imaging sessions return results
     try:
-        scan_params: dict[str, str] = {}
-        scan_xsi = hierarchy.resolve_scan_xsi_type(resolved.xsi_type)
-        if scan_xsi:
-            scan_params["xsiType"] = scan_xsi
-        scans_resp = hierarchy.get_experiment_json(nested_ref, "scans", params=scan_params)
-        scans = HierarchyService.extract_rows(scans_resp)
+        scans = hierarchy.list_scan_rows(nested_ref, resolved.xsi_type)
     except (XNATCtlError, ValueError) as exc:
         click.echo(f"Warning: could not list scans: {exc}", err=True)
         scans = []
 
-    # Get resources
     try:
         res_resp = hierarchy.get_experiment_json(nested_ref, "resources")
         resources = HierarchyService.extract_rows(res_resp)
@@ -214,13 +203,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     ]
 
     if ctx.output_format == OutputFormat.TSV:
-        # Three TSV blocks (session info, scans, resources) rather than the
-        # decorative "[Session: ...]"/"[Scans (N)]" headers the table branch
-        # below prints -- those are not data and would corrupt a
-        # tab-separated stream. A blank line separates non-empty blocks;
-        # each block's own header row (distinct field names, or none under
-        # --no-headers) is what tells them apart. Routed through
-        # print_output like every other TSV render in the CLI.
         session_row = {
             "id": resolved.experiment_id,
             "label": resolved.experiment_label or "",
@@ -253,7 +235,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             )
         return
 
-    # Print session info
     click.echo(f"\n[Session: {resolved.experiment_label or session_id}]")
     click.echo(f"  ID:      {resolved.experiment_id}")
     click.echo(f"  Subject: {resolved.subject_label or resolved.subject_id or ''}")
@@ -261,7 +242,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
     click.echo(f"  Date:    {resolved.session_date or ''}")
     click.echo(f"  Type:    {resolved.xsi_type or ''}")
 
-    # Print scans table
     if scan_rows:
         click.echo(f"\n[Scans ({len(scan_rows)})]")
         print_table(
@@ -276,7 +256,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             },
         )
 
-    # Print resources table
     if res_rows:
         click.echo(f"\n[Resources ({len(res_rows)})]")
         print_table(
@@ -290,7 +269,6 @@ def session_show(ctx: Context, session_id: str, project: str | None) -> None:
             },
         )
 
-    # Print shared-projects table
     if share_display_rows:
         click.echo(f"\n[Shared into ({len(share_display_rows)})]")
         print_table(

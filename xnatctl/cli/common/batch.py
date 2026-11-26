@@ -10,23 +10,10 @@ from typing import Any, TypeVar
 
 import click
 
-F = TypeVar("F", bound=Callable[..., Any])
+R = TypeVar("R")
 
 
 def _parse_batch_text(text: str) -> list[str]:
-    """Parse batch IDs from one-per-line text or a JSON array of strings.
-
-    Blank lines (one-per-line form) are skipped. A leading ``[`` or ``{``
-    selects the JSON form; anything else is treated as one-per-line.
-
-    Returns:
-        The parsed IDs, in order. Empty input yields an empty list.
-
-    Raises:
-        click.UsageError: The text looks like JSON (starts with ``[`` or
-            ``{``) but is not valid JSON, is valid JSON but not an array, or
-            the array contains a non-string element.
-    """
     stripped = text.strip()
     if not stripped:
         return []
@@ -46,7 +33,7 @@ def _parse_batch_text(text: str) -> list[str]:
     return [item.strip() for item in parsed if item.strip()]
 
 
-def batch_option(f: F) -> F:
+def batch_option(f: Callable[..., R]) -> Callable[..., R]:
     """Add a ``--batch`` option for bulk operations.
 
     Reads a file of IDs (one per line, or a JSON array of strings) and
@@ -74,16 +61,10 @@ def batch_option(f: F) -> F:
         help="File with IDs (one per line) or JSON array; use '-' for stdin",
     )
     @wraps(f)
-    def wrapper(*args: Any, batch: str | None, **kwargs: Any) -> Any:
-        """Load batch IDs from file/stdin and inject into kwargs."""
+    def wrapper(*args: Any, batch: str | None, **kwargs: Any) -> R:
         batch_ids: list[str] | None = None
         if batch is not None:
             if batch == "-":
-                # Checked before any flag/prompt logic and before the read
-                # itself: on an interactive terminal, sys.stdin.read() blocks
-                # waiting for EOF (Ctrl-D) that never comes, hanging the
-                # command even with --yes given. A file redirect or pipe is
-                # not a tty, so this never fires for the intended usage.
                 if sys.stdin.isatty():
                     raise click.UsageError(
                         "--batch - reads IDs from stdin, but stdin is an "
@@ -100,14 +81,9 @@ def batch_option(f: F) -> F:
                 with open(batch) as file:
                     text = file.read()
             batch_ids = _parse_batch_text(text)
-            # --batch was explicitly given -- an empty/whitespace-only file or
-            # stdin is its own clear error, not silent "no --batch given"
-            # behavior. Command bodies rely on this: they distinguish "batch
-            # given" from "batch absent" by `batch_ids is not None`, which
-            # only holds if a given-but-empty batch never reaches them as [].
             if not batch_ids:
                 raise click.UsageError("--batch produced no IDs")
         kwargs["batch_ids"] = batch_ids
         return f(*args, **kwargs)
 
-    return wrapper  # type: ignore
+    return wrapper

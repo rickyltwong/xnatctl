@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from concurrent.futures import as_completed
+from typing import Any
 
 import click
 
@@ -24,6 +26,7 @@ from xnatctl.cli.common import (
 )
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import XNATCtlError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.output import (
     OutputFormat,
     create_progress,
@@ -35,6 +38,8 @@ from xnatctl.core.output import (
 from xnatctl.core.validation import validate_project_id
 from xnatctl.services.admin import AdminService
 from xnatctl.services.docker_admin import DockerAdminService
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -63,7 +68,7 @@ def admin() -> None:
 @global_options
 @handle_errors
 @require_auth
-def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
+def admin_refresh_catalogs(
     ctx: Context,
     project: str,
     option: tuple[str, ...],
@@ -91,30 +96,16 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
     options = list(option) if option else None
     experiment_ids = list(experiment) if experiment else None
 
-    # Get experiments
-    results = service.list_experiments_for_refresh(project)
-
-    experiments = []
-    for entry in results:
-        exp_id = entry.get("ID", "").strip()
-        subject_id = entry.get("subject_ID", "").strip()
-
-        if exp_id and subject_id:
-            experiments.append((subject_id, exp_id))
+    experiments = _refreshable_experiments(service.list_experiments_for_refresh(project))
 
     if not experiments:
         click.echo(f"No experiments found for project {project}", err=True)
         return
 
-    # Filter by specific IDs
     if experiment_ids:
         targets = set(experiment_ids)
         experiments = [exp for exp in experiments if exp[1] in targets]
 
-    # Apply limit. `is not None`, not truthy: `--limit 0` must mean "process
-    # zero experiments", not "no limit" -- the CLI does its own PUT-per-
-    # experiment fan-out here (see the comment on AdminService above), so
-    # this check is separate from the service layer's own limit handling.
     if limit is not None:
         experiments = experiments[:limit]
 
@@ -124,20 +115,19 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
 
     workers = resolve_workers_from_context(ctx, workers)
 
-    # Prepare options parameter
     options_param = ",".join(options) if options else None
 
     refreshed = []
     failed = []
 
     def refresh_one(exp: tuple[str, str]) -> tuple[str, bool, str]:
-        """Refresh a single experiment catalog and return status."""
         subject_id, exp_id = exp
         resource_path = f"/archive/projects/{project}/subjects/{subject_id}/experiments/{exp_id}"
         try:
             resp = service.refresh_catalog(resource_path, options_param)
             return exp_id, resp.status_code == 200, ""
-        except Exception as e:  # noqa: BLE001 -- per-experiment isolation in catalog-refresh batch
+        except Exception as e:
+            logger.exception("refresh-catalogs failed for %s", exp_id, extra={FILE_ONLY_ATTR: True})
             return exp_id, False, str(e)
 
     with create_progress() as progress:
@@ -162,6 +152,26 @@ def admin_refresh_catalogs(  # noqa: C901  # pre-existing; see pyproject
                     failed.append((exp_id, error))
                 progress.advance(task)
 
+    _print_refresh_results(ctx, project, refreshed, failed)
+
+
+def _refreshable_experiments(results: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    experiments = []
+    for entry in results:
+        exp_id = entry.get("ID", "").strip()
+        subject_id = entry.get("subject_ID", "").strip()
+
+        if exp_id and subject_id:
+            experiments.append((subject_id, exp_id))
+    return experiments
+
+
+def _print_refresh_results(
+    ctx: Context,
+    project: str,
+    refreshed: list[str],
+    failed: list[tuple[str, str]],
+) -> None:
     if ctx.output_format == OutputFormat.JSON:
         print_output(
             {
@@ -216,23 +226,14 @@ def admin_audit(
     """
     service = AdminService(ctx.get_client())
 
-    # A client-side --filter/--sort-by must see the full result set it is
-    # filtering/sorting over, not just whatever fits in the server's
-    # small default --limit window (50) -- fetching that window FIRST and
-    # filtering/sorting second would silently drop matches outside it. Only
-    # the network round-trip below is allowed to fail as "audit log not
-    # available"; option validation (bad --filter/--sort-by/--columns) must
-    # raise its own error, not be swallowed by that except clause.
     client_side_controls = bool(filter_expr or sort_by)
     fetch_limit = None if client_side_controls else limit
 
     try:
-        # Try the audit API endpoint
         resp = service.get_xapi_audit(
             fetch_limit, project=project, username=username, action=action
         )
     except (XNATCtlError, json.JSONDecodeError) as e:
-        # Audit API may not be available
         print_error(f"Audit log not available: {e}")
         click.echo("Note: Audit logging may not be enabled on this XNAT server", err=True)
         raise SystemExit(1) from e
@@ -267,12 +268,6 @@ _SECRET_KEY_PATTERN = re.compile(r"password|secret|token|key|private|captcha", r
 
 
 def _looks_like_secret_key(key: str) -> bool:
-    """Whether a site-config KEY name looks secret-shaped.
-
-    Site-config keys are free-form and server-specific (``emailSmtpPassword``,
-    ``oauthClientSecret``, ...) -- there is no fixed allowlist to check
-    against, so this is a best-effort substring match on the key name itself.
-    """
     return bool(_SECRET_KEY_PATTERN.search(key))
 
 
@@ -438,8 +433,6 @@ def docker_images(ctx: Context) -> None:
     service = DockerAdminService(ctx.get_client())
     rows = service.images()
 
-    # image-id and tags are the verified DockerImage @JsonProperty names
-    # (see DockerAdminService.images).
     print_output(
         rows,
         format=ctx.output_format,
@@ -533,19 +526,10 @@ def docker_server(ctx: Context, set_host: str | None, dry_run: bool) -> None:
 
     if set_host is None:
         data = service.get_server()
-        # No explicit `columns`: this shows every key the server returned,
-        # rather than a fixed subset -- so `ping` (present on
-        # DockerServerWithPing, the shape a live daemon connection returns)
-        # surfaces automatically. A dead daemon is the common real-world
-        # state here, and `ping` is the one field that tells the reader
-        # that at a glance.
         print_output(data, format=ctx.output_format, quiet=ctx.quiet, id_field="host")
         return
 
     if dry_run:
-        # Runs the same read-and-merge preflight `set_server` does (an
-        # unreadable or malformed current configuration must refuse here
-        # too, not just on real execution) without sending the POST.
         service.build_set_server_body(set_host)
         click.echo(f"[DRY-RUN] Would set the Docker daemon host to {set_host}", err=True)
         return

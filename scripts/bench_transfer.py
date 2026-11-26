@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Throughput and peak-RSS baseline for the parallel transfer paths.
 
 Nobody had ever measured this. The upload path streams from an open file
@@ -62,14 +61,7 @@ DOWNLOAD_WORKERS = (1, 4, 8, 16)
 UPLOAD_WORKERS = (1, 4, 8)
 
 
-# =============================================================================
-# Fake XNAT
-# =============================================================================
-
-
 class _Payloads:
-    """Response bodies built once, so the server is never what is measured."""
-
     def __init__(
         self, scans: int, files_per_scan: int, file_bytes: int, latency_ms: int = 0
     ) -> None:
@@ -89,12 +81,6 @@ class _Payloads:
 
 
 def _build_scan_zip(files_per_scan: int, file_bytes: int) -> bytes:
-    """Build a ZIP shaped like XNAT's scan export.
-
-    Stored, not deflated: compressing incompressible DICOM is not what a real
-    server does, and a compressible payload would make the extraction step
-    look faster than it is.
-    """
     blob = os.urandom(file_bytes)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as zf:
@@ -105,8 +91,6 @@ def _build_scan_zip(files_per_scan: int, file_bytes: int) -> bytes:
 
 
 def _make_handler(payloads: _Payloads) -> type[BaseHTTPRequestHandler]:
-    """Build a request handler closed over the prepared payloads."""
-
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"  # keep-alive, so pooling is observable
         # Without this the per-file upload path measured 23 files/s instead of
@@ -120,10 +104,6 @@ def _make_handler(payloads: _Payloads) -> type[BaseHTTPRequestHandler]:
             """Stay quiet; the benchmark output is the only output."""
 
         def _send(self, body: bytes, content_type: str) -> None:
-            # Stand-in for server think time and network RTT. Without it every
-            # request completes in microseconds, extra workers only contend for
-            # the GIL, and the run says nothing about the case parallelism
-            # exists for.
             if payloads.latency_s:
                 time.sleep(payloads.latency_s)
             self.send_response(200)
@@ -132,7 +112,7 @@ def _make_handler(payloads: _Payloads) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:  # noqa: N802  # BaseHTTPRequestHandler's spelling
+        def do_GET(self) -> None:
             path = urlparse(self.path).path
             if path.endswith("/scans"):
                 self._send(payloads.scan_listing, "application/json")
@@ -141,9 +121,7 @@ def _make_handler(payloads: _Payloads) -> type[BaseHTTPRequestHandler]:
             else:
                 self.send_error(404)
 
-        def do_POST(self) -> None:  # noqa: N802  # BaseHTTPRequestHandler's spelling
-            # The archive must actually be read off the socket, or the upload
-            # would be timed against a server that never accepted the bytes.
+        def do_POST(self) -> None:
             remaining = int(self.headers.get("Content-Length") or 0)
             while remaining > 0:
                 remaining -= len(self.rfile.read(min(remaining, 1024 * 1024)))
@@ -173,11 +151,6 @@ def _start_server(payloads: _Payloads) -> _Server:
     return _Server(url=f"http://{host}:{port}", _httpd=httpd, _thread=thread)
 
 
-# =============================================================================
-# Measurement
-# =============================================================================
-
-
 def _peak_rss_mib() -> float:
     """Peak resident set size so far, in MiB.
 
@@ -205,17 +178,11 @@ class Result:
 
 
 def _make_client(base_url: str) -> Any:
-    """An XNATClient pointed at the fake server, pre-tokened to skip login."""
     from xnatctl.core.client import XNATClient
 
     client = XNATClient(base_url=base_url, username="bench", password="bench", timeout=60)
     client.session_token = "BENCHSESSION"
     return client
-
-
-# =============================================================================
-# Scenarios
-# =============================================================================
 
 
 def run_download(
@@ -360,28 +327,15 @@ def run_upload(
 
 
 def _write_synthetic_dicom(root: Path, count: int, file_bytes: int) -> None:
-    """Write files the collector accepts: 128-byte preamble, then ``DICM``.
-
-    Real pixel data is not needed: the parallel REST path tars or zips the
-    files and POSTs them without parsing them.
-    """
     body = os.urandom(max(0, file_bytes - 132))
     header = b"\0" * 128 + b"DICM"
     for i in range(count):
-        # Spread across directories: one flat directory of 4000 entries is a
-        # filesystem benchmark, not a transfer one.
         sub = root / f"series{i // 256:03d}"
         sub.mkdir(parents=True, exist_ok=True)
         (sub / f"{i:06d}.dcm").write_bytes(header + body)
 
 
-# =============================================================================
-# Driver
-# =============================================================================
-
-
 def _run_one(args: argparse.Namespace) -> Result:
-    """Run the single scenario this (sub)process was started for."""
     if args.scenario == "download":
         files_per_scan = max(1, args.files // args.scans)
         return run_download(
@@ -401,7 +355,6 @@ def _run_one(args: argparse.Namespace) -> Result:
 
 
 def _spawn(scenario: str, workers: int, args: argparse.Namespace) -> Result:
-    """Run one scenario in a fresh process and read its result back."""
     completed = subprocess.run(
         [
             sys.executable,
@@ -461,7 +414,7 @@ def main() -> int:
     )
     parser.add_argument("--quick", action="store_true", help="one worker count per scenario")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a table")
-    parser.add_argument("--scenario", help=argparse.SUPPRESS)  # subprocess entry point
+    parser.add_argument("--scenario", help=argparse.SUPPRESS)
     parser.add_argument("--workers", type=int, default=4, help=argparse.SUPPRESS)
     args = parser.parse_args()
 

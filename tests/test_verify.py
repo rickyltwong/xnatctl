@@ -1,5 +1,3 @@
-"""Tests for xnatctl.services.verify: per-source path-keying and manifest comparison."""
-
 from __future__ import annotations
 
 import hashlib
@@ -20,30 +18,15 @@ def _md5(data: bytes) -> str:
 
 
 class TestScanSourceKey:
-    """scan_source_key: an extracted scan tree or a scan ZIP's members.
-
-    `wrapped` is always passed explicitly, matching what a real call site
-    always knows about its own source -- never probed by trying both and
-    keeping whichever parses (that dual-probe is what let a session wrapper
-    literally named "scans" parse under both anchors and silently pick the
-    wrong one).
-    """
-
     def test_unwrapped_anchored_at_position_zero(self) -> None:
-        """A session download's own extracted tree: session_dir is the root."""
         parts = ("scans", "2", "resources", "DICOM", "files", "1.dcm")
         assert scan_source_key(parts, wrapped=False) == "scans/2/resources/DICOM/1.dcm"
 
     def test_wrapped_skips_one_leading_segment(self) -> None:
-        """A raw combined-scan ZIP carries one session-label wrapper segment."""
         parts = ("XNAT_E00001", "scans", "2", "resources", "DICOM", "files", "1.dcm")
         assert scan_source_key(parts, wrapped=True) == "scans/2/resources/DICOM/1.dcm"
 
     def test_wrapped_with_a_wrapper_literally_named_scans(self) -> None:
-        """The dual-probe this replaced could parse both anchors here and
-        silently pick the wrong one; declaring wrapped=True removes the
-        ambiguity entirely -- only the True-anchor shape is ever tried.
-        """
         parts = ("scans", "scans", "2", "resources", "DICOM", "files", "1.dcm")
         assert scan_source_key(parts, wrapped=True) == "scans/2/resources/DICOM/1.dcm"
 
@@ -52,7 +35,6 @@ class TestScanSourceKey:
         assert scan_source_key(parts, wrapped=False) == "scans/2/resources/NII/sub/brain.nii.gz"
 
     def test_same_basename_in_different_scans_yields_different_keys(self) -> None:
-        """The regression the old basename-keyed verifier missed."""
         a = scan_source_key(("scans", "1", "resources", "DICOM", "files", "1.dcm"), wrapped=False)
         b = scan_source_key(("scans", "2", "resources", "DICOM", "files", "1.dcm"), wrapped=False)
         assert a != b
@@ -61,15 +43,10 @@ class TestScanSourceKey:
         assert scan_source_key(("some", "random", "path", "data.dat"), wrapped=False) is None
 
     def test_a_resource_labeled_scans_does_not_confuse_the_marker(self) -> None:
-        """A label literally 'scans' sits at the fixed label position (index
-        3) -- never compared against the literal "scans" marker check, which
-        only ever looks at position 0 (or 1, when wrapped).
-        """
         parts = ("scans", "2", "resources", "scans", "files", "report.txt")
         assert scan_source_key(parts, wrapped=False) == "scans/2/resources/scans/report.txt"
 
     def test_prescoped_zip_uses_supplied_resource_label_fallback(self) -> None:
-        """A single-resource download's ZIP entries can omit resources/{label}."""
         parts = ("EXP", "scans", "2", "files", "1.dcm")
         assert (
             scan_source_key(parts, wrapped=True, resource_label="DICOM")
@@ -81,7 +58,6 @@ class TestScanSourceKey:
         assert scan_source_key(parts, wrapped=True) is None
 
     def test_prescoped_shape_with_intervening_label_segment(self) -> None:
-        """The live pre-scoped layout is unconfirmed -- accept both shapes."""
         parts = ("EXP", "scans", "2", "DICOM", "files", "1.dcm")
         assert (
             scan_source_key(parts, wrapped=True, resource_label="DICOM")
@@ -97,11 +73,6 @@ class TestScanSourceKey:
 
 
 class TestScanSourceKeyAdversarial:
-    """A filtered single-resource ZIP's payload path can itself contain
-    text that looks like a marker -- never revisited once the fixed
-    positions have been read.
-    """
-
     def test_nested_marker_in_payload_path(self) -> None:
         parts = ("EXP", "scans", "1", "files", "nested", "resources", "QC", "files", "report.txt")
         assert (
@@ -128,16 +99,11 @@ class TestScanSourceKeyAdversarial:
         assert scan_source_key(parts, wrapped=True) is None
 
     def test_payload_containing_a_scans_segment_does_not_misfire(self) -> None:
-        """A payload path containing its own "scans" segment, deep inside the
-        opaque name, is preserved as-is -- never re-anchored on.
-        """
         parts = ("scans", "1", "resources", "DICOM", "files", "scans", "2", "report.txt")
         assert scan_source_key(parts, wrapped=False) == "scans/1/resources/DICOM/scans/2/report.txt"
 
 
 class TestKeyFromUri:
-    """key_from_uri: positional parsing of the server's canonical XNAT URI form."""
-
     def test_scan_level_uri_flat(self) -> None:
         parts = ("data", "experiments", "E1", "scans", "2", "resources", "DICOM", "files", "1.dcm")
         assert key_from_uri(parts) == "scans/2/resources/DICOM/1.dcm"
@@ -182,10 +148,6 @@ class TestKeyFromUri:
         assert key_from_uri(parts) == "resources/QC/notes.txt"
 
     def test_a_resource_labeled_scans_is_not_mistaken_for_the_scan_marker(self) -> None:
-        """The label sits at a fixed position read only after the marker
-        itself was already matched positionally -- never mistaken for a
-        second "scans" marker.
-        """
         parts = ("data", "experiments", "E1", "resources", "scans", "files", "report.txt")
         assert key_from_uri(parts) == "resources/scans/report.txt"
 
@@ -197,21 +159,7 @@ class TestKeyFromUri:
 
 
 class TestSessionResourceZipMemberKeys:
-    """session_resource_zip_member_keys: candidate keys in priority order.
-    The label is known in advance (from the ZIP's own filename), never
-    guessed -- only located, or used to strip a wrapper. Real XNAT resource
-    ZIPs are documented (see
-    services/transfer/executor_resources.py::_strip_xnat_prefix) to carry the full
-    hierarchy; the exact shape a given server actually emits isn't
-    guaranteed, so all three are accepted. Genuine ambiguity between shapes
-    is resolved against the manifest -- see TestVerifyManifestSessionResourceZip.
-    """
-
     def test_full_hierarchy_shape_is_the_top_candidate(self) -> None:
-        """{session_label}/resources/{label}/files/{name} -- the documented,
-        real XNAT resource-ZIP shape. Position-anchored: the marker is
-        accepted only immediately after one leading segment.
-        """
         candidates = session_resource_zip_member_keys(
             ("XNAT_E00001", "resources", "QC", "files", "notes.txt"), label="QC"
         )
@@ -228,7 +176,6 @@ class TestSessionResourceZipMemberKeys:
         assert candidates[0] == "resources/QC/notes.txt"
 
     def test_flat_shape_with_no_wrapper_at_all(self) -> None:
-        """No other shape applies -- exactly one candidate."""
         candidates = session_resource_zip_member_keys(("notes.txt",), label="QC")
         assert candidates == ("resources/QC/notes.txt",)
 
@@ -243,34 +190,18 @@ class TestSessionResourceZipMemberKeys:
         assert candidates[0] == "resources/scans/notes.txt"
 
     def test_payload_containing_scans_and_a_different_labels_marker(self) -> None:
-        """A session-resource payload path containing its own "scans" or
-        "resources/{other_label}/files" text (a DIFFERENT label than the
-        known one) is never mistaken for the marker -- the label comparison
-        in the position-1 check means a mismatched label can never match.
-        """
         candidates = session_resource_zip_member_keys(
             ("QC", "scans", "resources", "X", "files", "report.txt"), label="QC"
         )
         assert candidates[0] == "resources/QC/scans/resources/X/files/report.txt"
 
     def test_marker_deeper_than_position_one_is_never_matched_as_structure(self) -> None:
-        """A marker appearing at position 2+ (more than one leading segment)
-        is payload content, never structure -- position-anchoring stops it
-        from being matched as the full-hierarchy shape at all.
-        """
         candidates = session_resource_zip_member_keys(
             ("EXP", "extra", "resources", "QC", "files", "report.txt"), label="QC"
         )
-        # No full-hierarchy candidate: "resources" sits at position 2, not 1.
         assert "resources/QC/report.txt" not in candidates
 
     def test_codex_case_flat_member_with_embedded_own_label_marker(self) -> None:
-        """A genuinely flat member (no wrapper) whose own name happens to
-        start with "resources/{label}/files/" positionally coincides with
-        the full-hierarchy shape -- both interpretations are offered as
-        candidates; only the manifest can say which is correct (see
-        TestVerifyManifestSessionResourceZip).
-        """
         candidates = session_resource_zip_member_keys(
             ("nested", "resources", "QC", "files", "report.txt"), label="QC"
         )
@@ -280,11 +211,6 @@ class TestSessionResourceZipMemberKeys:
         )
 
     def test_label_wrapped_member_with_embedded_marker_in_the_remainder(self) -> None:
-        """The bare label-prefixed shape, whose remainder (after stripping)
-        itself contains an embedded own-label marker -- the marker is never
-        re-examined once the wrapper is stripped; "stripped" and "flat" are
-        the only two candidates.
-        """
         candidates = session_resource_zip_member_keys(
             ("QC", "nested", "resources", "QC", "files", "report.txt"), label="QC"
         )
@@ -295,8 +221,6 @@ class TestSessionResourceZipMemberKeys:
 
 
 class TestVerifyManifestExtractedTree:
-    """verify_manifest against an extracted local directory tree."""
-
     def _write(self, root: Path, scan: str, label: str, name: str, data: bytes) -> None:
         target = root / "scans" / scan / "resources" / label / "files" / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -362,8 +286,6 @@ class TestVerifyManifestExtractedTree:
 
 
 class TestVerifyManifestZip:
-    """verify_manifest against an unextracted scan-level ZIP archive."""
-
     def test_verifies_members_without_extracting(self, tmp_path: Path) -> None:
         zip_path = tmp_path / "scans.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -406,8 +328,6 @@ class TestVerifyManifestZip:
 
 
 class TestVerifyManifestSessionResourceZip:
-    """verify_manifest against a (path, label) session-resource ZIP."""
-
     def test_verifies_the_labeled_zip_bare_shape(self, tmp_path: Path) -> None:
         zip_path = tmp_path / "resources_QC.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -421,9 +341,6 @@ class TestVerifyManifestSessionResourceZip:
         assert report.success is True
 
     def test_verifies_the_labeled_zip_full_hierarchy_shape(self, tmp_path: Path) -> None:
-        """The documented, real XNAT resource-ZIP shape: a session-label
-        wrapper around the full resources/{label}/files/{name} path.
-        """
         zip_path = tmp_path / "resources_QC.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("XNAT_E00001/resources/QC/files/notes.txt", b"note-data")
@@ -436,7 +353,6 @@ class TestVerifyManifestSessionResourceZip:
         assert report.success is True
 
     def test_verifies_the_labeled_zip_flat_shape(self, tmp_path: Path) -> None:
-        """No wrapper at all -- just the filename."""
         zip_path = tmp_path / "resources_QC.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("notes.txt", b"note-data")
@@ -461,9 +377,6 @@ class TestVerifyManifestSessionResourceZip:
         assert report.success is True
 
     def test_missing_session_resource_zip_fails(self, tmp_path: Path) -> None:
-        """No zip captured for a resource at all (e.g. its download failed) --
-        the manifest still knows about it, so it must be reported missing.
-        """
         manifest = {"resources/QC/notes.txt": _md5(b"note-data")}
 
         report = verify_manifest(manifest, zip_paths=[])
@@ -473,18 +386,9 @@ class TestVerifyManifestSessionResourceZip:
 
 
 class TestVerifyManifestSessionResourceZipAmbiguity:
-    """Members whose shape genuinely can't be told apart positionally are
-    resolved against the server manifest -- ground truth for which name the
-    file actually has.
-    """
-
     def test_codex_case_resolved_as_full_hierarchy_when_manifest_confirms_it(
         self, tmp_path: Path
     ) -> None:
-        """nested/resources/QC/files/report.txt for resource QC: when the
-        manifest has the short (full-hierarchy) key, that's the correct
-        reading -- "nested" really was a wrapper.
-        """
         zip_path = tmp_path / "resources_QC.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("nested/resources/QC/files/report.txt", b"report-data")
@@ -497,10 +401,6 @@ class TestVerifyManifestSessionResourceZipAmbiguity:
         assert report.success is True
 
     def test_codex_case_resolved_as_flat_when_manifest_confirms_it(self, tmp_path: Path) -> None:
-        """The same member, but the manifest's own key proves "nested" was
-        genuine payload content, not a wrapper: the flat interpretation
-        wins instead, even though it is the lower-priority candidate.
-        """
         zip_path = tmp_path / "resources_QC.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("nested/resources/QC/files/report.txt", b"report-data")
@@ -528,11 +428,6 @@ class TestVerifyManifestSessionResourceZipAmbiguity:
     def test_flat_payload_whose_first_dir_equals_the_label_resolved_via_manifest(
         self, tmp_path: Path
     ) -> None:
-        """A genuinely flat member whose own first directory happens to be
-        named exactly like the resource label -- the "stripped" reading
-        would wrongly collapse it; the manifest's own (unstripped) key
-        proves the flat reading is correct.
-        """
         zip_path = tmp_path / "resources_QC.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("QC/subdir/report.txt", b"report-data")
@@ -546,12 +441,6 @@ class TestVerifyManifestSessionResourceZipAmbiguity:
     def test_both_candidates_matching_different_manifest_keys_is_ambiguous(
         self, tmp_path: Path
     ) -> None:
-        """The manifest has BOTH candidate keys -- as two genuinely
-        different real files. This member's true identity can't be
-        determined from either the shape or the manifest, so it must not
-        be silently assigned to one of them; both are reported as
-        collisions and verification fails.
-        """
         zip_path = tmp_path / "resources_QC.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("nested/resources/QC/files/report.txt", b"report-data")
@@ -570,11 +459,6 @@ class TestVerifyManifestSessionResourceZipAmbiguity:
 
 
 class TestVerifyManifestCombinedSources:
-    """local_root and zip_paths are not mutually exclusive: a session
-    download can have its scans extracted while session-level resources
-    remain as separate un-extracted ZIPs.
-    """
-
     def test_scan_tree_and_session_resource_zip_verified_together(self, tmp_path: Path) -> None:
         scan_file = tmp_path / "scans" / "1" / "resources" / "DICOM" / "files" / "1.dcm"
         scan_file.parent.mkdir(parents=True)
@@ -600,15 +484,7 @@ class TestVerifyManifestCombinedSources:
 
 
 class TestVerifyManifestCollisions:
-    """Two unrelated files mapping to the same key must not silently
-    last-write-wins -- they are pulled out and reported.
-    """
-
     def test_two_different_local_files_on_the_same_key_are_reported(self, tmp_path: Path) -> None:
-        """A genuine resources/{label}/files/ tree and a pre-scoped
-        scans/{id}/files/ tree (resource_label supplied) both landing on
-        scans/1/resources/DICOM/a/b.dcm despite different content.
-        """
         genuine = tmp_path / "scans" / "1" / "resources" / "DICOM" / "files" / "a" / "b.dcm"
         genuine.parent.mkdir(parents=True)
         genuine.write_bytes(b"first")
@@ -638,9 +514,6 @@ class TestVerifyManifestCollisions:
         assert report.success is False
 
     def test_collision_across_two_different_zips(self, tmp_path: Path) -> None:
-        """Two different ZIPs both claiming the same key must not silently
-        update()-overwrite one another.
-        """
         zip_a = tmp_path / "a.zip"
         zip_b = tmp_path / "b.zip"
         with zipfile.ZipFile(zip_a, "w") as zf:
@@ -671,11 +544,6 @@ class TestVerifyManifestCollisions:
 
 
 class TestVerifyManifestDupRename:
-    """`_extract_scan_zip`'s __dupN rename must not hide the fresh download
-    behind a stale original -- but must also never clobber a genuine
-    server-reported `X__dupN`-named file.
-    """
-
     def _target_dir(self, root: Path) -> Path:
         target_dir = root / "scans" / "1" / "resources" / "DICOM" / "files"
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -719,10 +587,6 @@ class TestVerifyManifestDupRename:
         assert report.success is True
 
     def test_real_server_dup_named_file_alongside_real_base_file(self, tmp_path: Path) -> None:
-        """The server genuinely has both series.dcm and series__dup1.dcm as
-        two distinct files -- both must verify independently, with no
-        folding at all (the manifest knows both literal keys).
-        """
         target_dir = self._target_dir(tmp_path)
         (target_dir / "series.dcm").write_bytes(b"base-content")
         (target_dir / "series__dup1.dcm").write_bytes(b"dup-content")
@@ -738,9 +602,6 @@ class TestVerifyManifestDupRename:
         assert report.success is True
 
     def test_server_only_dup_named_file_with_no_base_file(self, tmp_path: Path) -> None:
-        """The server has only series__dup1.dcm (no series.dcm at all) --
-        still a real, literal server filename, not a local rename artifact.
-        """
         target_dir = self._target_dir(tmp_path)
         (target_dir / "series__dup1.dcm").write_bytes(b"dup-content")
 
@@ -806,7 +667,6 @@ class TestVerificationReport:
         assert VerificationReport().success is True
 
     def test_empty_manifest_with_local_files_fails(self) -> None:
-        """An empty server manifest must not turn into 'Verified 0 files', exit 0."""
         report = VerificationReport(missing_remote=["scans/1/resources/DICOM/1.dcm"])
         assert report.success is False
 

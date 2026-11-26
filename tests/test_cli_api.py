@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI api commands."""
-
 from __future__ import annotations
 
 import json
@@ -16,12 +14,10 @@ from xnatctl.core.config import Config, Profile
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with a default profile."""
     return Config(
         default_profile="default",
         profiles={
@@ -36,7 +32,6 @@ def _mock_config() -> Config:
 
 
 def _mock_client() -> MagicMock:
-    """Build a mock XNATClient."""
     client = MagicMock()
     client.is_authenticated = True
     client.base_url = "https://xnat.example.org"
@@ -45,8 +40,6 @@ def _mock_client() -> MagicMock:
 
 
 class TestBuildQueryString:
-    """Tests for _build_query_string helper."""
-
     def test_empty_params(self) -> None:
         from xnatctl.cli.api import _build_query_string
 
@@ -77,12 +70,10 @@ class TestBuildQueryString:
 
         result = _build_query_string(("xnat:mrSessionData/fields/field[name=type]/field=Research",))
         assert "[name=type]" in result
-        # Value should be "Research", not "type]/field=Research"
         assert result.endswith("=Research")
         assert "field[name=type]/field" in result
 
     def test_split_param_bracket_edge_case(self) -> None:
-        """Split on first = outside brackets, not inside."""
         from xnatctl.cli.api import _split_param
 
         result = _split_param("xnat:mrSessionData/fields/field[name=session_type]/field=Research")
@@ -104,8 +95,6 @@ class TestBuildQueryString:
 
 
 class TestIsTextContentType:
-    """Tests for _is_text_content_type helper."""
-
     def test_text_plain(self) -> None:
         from xnatctl.cli.api import _is_text_content_type
 
@@ -143,8 +132,6 @@ class TestIsTextContentType:
 
 
 class TestApiGet:
-    """Tests for api get command."""
-
     def test_api_get_json_response(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_resp = MagicMock()
@@ -222,10 +209,8 @@ class TestApiGet:
         assert "plain text response" in result.output
 
     def test_api_get_binary_response_preserved(self, runner: CliRunner) -> None:
-        """Binary responses are written as raw bytes without text decoding."""
         client = _mock_client()
         mock_resp = MagicMock()
-        # Bytes 0x80-0xFF are invalid in UTF-8 and would be corrupted by text decoding
         binary_data = bytes(range(256))
         mock_resp.json.side_effect = json.JSONDecodeError("Not JSON", "plain text response", 0)
         mock_resp.content = binary_data
@@ -243,12 +228,6 @@ class TestApiGet:
     def test_api_get_json_format_non_json_falls_back_to_passthrough(
         self, runner: CliRunner
     ) -> None:
-        """Requesting -o json when response is not JSON warns and passes the body through.
-
-        Issue #13: the previous hard-error branch was user-hostile (it
-        discarded the body); the CLI now emits a one-line stderr warning
-        and writes the raw body to stdout, exiting 0.
-        """
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.json.side_effect = json.JSONDecodeError("Not JSON", "plain text response", 0)
@@ -266,7 +245,6 @@ class TestApiGet:
         assert "not JSON" in result.output
 
     def test_api_get_xsi_typed_params_not_encoded(self, runner: CliRunner) -> None:
-        """XSI-typed param keys like xnat:mrSessionData preserve colons."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"ResultSet": {"Result": []}}
@@ -290,14 +268,11 @@ class TestApiGet:
 
         assert result.exit_code == 0
         url = client.get.call_args[0][0]
-        # Colons must NOT be percent-encoded
         assert "xsiType=xnat:mrSessionData" in url
-        assert "%3A" not in url.split("?")[1]  # no encoded colons
+        assert "%3A" not in url.split("?")[1]
 
 
 class TestApiPost:
-    """Tests for api post command."""
-
     def test_api_post_with_data(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_resp = MagicMock()
@@ -321,7 +296,6 @@ class TestApiPost:
         assert result.exit_code == 0
         call_args = client.post.call_args
         assert call_args[1]["json"] == {"ID": "NEWPROJ"}
-        # URL should be the path directly (no query string)
         assert call_args[0][0] == "/data/projects"
 
     def test_api_post_with_file(self, runner: CliRunner, tmp_path) -> None:
@@ -375,7 +349,6 @@ class TestApiPost:
         assert call_kwargs["json"] is None
 
     def test_api_post_shows_status_code(self, runner: CliRunner) -> None:
-        """POST response shows HTTP status code on stderr."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -398,11 +371,9 @@ class TestApiPost:
                     )
 
         assert result.exit_code == 0
-        # Status line goes to stderr (captured in output by CliRunner)
         assert "[200]" in result.output
 
     def test_api_post_xsi_params_preserved(self, runner: CliRunner) -> None:
-        """POST with XSI-typed params preserves colons and slashes."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -429,8 +400,6 @@ class TestApiPost:
 
 
 class TestApiPut:
-    """Tests for api put command."""
-
     def test_api_put_with_data(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_resp = MagicMock()
@@ -454,7 +423,6 @@ class TestApiPut:
         assert result.exit_code == 0
 
     def test_api_put_shows_status_code(self, runner: CliRunner) -> None:
-        """PUT response shows HTTP status code on stderr."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -478,13 +446,11 @@ class TestApiPut:
 
         assert result.exit_code == 0
         assert "[200]" in result.output
-        # XSI-typed key preserved
         url = client.put.call_args[0][0]
         assert "xnat:mrSessionData" in url
         assert "%3A" not in url.split("?")[1]
 
     def test_api_put_resource_file_auto_inbody(self, runner: CliRunner, tmp_path) -> None:
-        """PUT of a file to a resource endpoint auto-adds inbody=true (issue #18)."""
         payload = tmp_path / "params.json"
         payload.write_text('{"k": "v"}')
 
@@ -514,7 +480,6 @@ class TestApiPut:
         assert "note: added inbody=true" in result.output
 
     def test_api_put_resource_file_inbody_not_overridden(self, runner: CliRunner, tmp_path) -> None:
-        """An explicit inbody param is preserved; nothing auto-injected."""
         payload = tmp_path / "params.json"
         payload.write_text('{"k": "v"}')
 
@@ -547,7 +512,6 @@ class TestApiPut:
         assert "note: added inbody=true" not in result.output
 
     def test_api_put_non_file_path_no_inbody(self, runner: CliRunner) -> None:
-        """A non-resource-file PUT is left untouched (no over-eager injection)."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -573,7 +537,6 @@ class TestApiPut:
         assert "inbody" not in url
 
     def test_api_put_inbody_without_body_errors(self, runner: CliRunner) -> None:
-        """inbody=true with no body is an actionable error, not a silent empty PUT."""
         client = _mock_client()
 
         with core_config_seam(_mock_config()):
@@ -596,8 +559,6 @@ class TestApiPut:
 
 
 class TestInbodyHelpers:
-    """Unit tests for the resource-file inbody helpers."""
-
     def test_named_file_matches(self) -> None:
         from xnatctl.cli.api import _is_resource_file_path
 
@@ -607,7 +568,6 @@ class TestInbodyHelpers:
     def test_collection_endpoint_not_matched(self) -> None:
         from xnatctl.cli.api import _is_resource_file_path
 
-        # Bare .../files collection (zip/bulk upload) must not match.
         assert not _is_resource_file_path("/data/projects/P/resources/BIDS/files")
 
     def test_non_resource_path_not_matched(self) -> None:
@@ -649,17 +609,13 @@ class TestInbodyHelpers:
 
 
 class TestApiBinaryFileBody:
-    """Tests for binary-safe ``--file/-f`` bodies in api put/post."""
-
     def test_api_put_binary_file(self, runner: CliRunner, tmp_path) -> None:
-        """A non-UTF-8 file (DICOM-like) is sent as raw bytes via ``data=``."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"status": "ok"}
         client.put.return_value = mock_resp
 
-        # 0xBE is the byte that triggered UnicodeDecodeError in the wild.
         binary_path = tmp_path / "blob.dcm"
         binary_path.write_bytes(b"\xbe\x00\x01\x02fake-dicom\xff")
 
@@ -684,7 +640,6 @@ class TestApiBinaryFileBody:
         assert isinstance(call_kwargs["data"], bytes)
 
     def test_api_post_binary_file(self, runner: CliRunner, tmp_path) -> None:
-        """A non-UTF-8 file is sent via POST as raw bytes via ``data=``."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -715,7 +670,6 @@ class TestApiBinaryFileBody:
         assert isinstance(call_kwargs["data"], bytes)
 
     def test_api_put_json_file_still_uses_json_kwarg(self, runner: CliRunner, tmp_path) -> None:
-        """JSON-decodable UTF-8 files preserve the existing ``json=`` ergonomics."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -745,7 +699,6 @@ class TestApiBinaryFileBody:
         assert call_kwargs["data"] is None
 
     def test_api_put_text_non_json_file_uses_data_kwarg(self, runner: CliRunner, tmp_path) -> None:
-        """Plain UTF-8 text that is not JSON is sent as a string via ``data=``."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -777,10 +730,7 @@ class TestApiBinaryFileBody:
 
 
 class TestApiContentType:
-    """Tests for the ``--content-type/-t`` flag on api post and api put."""
-
     def test_explicit_content_type_with_inline_data(self, runner: CliRunner) -> None:
-        """``-d 'user:pass' -t text/plain`` -> data=user:pass, header set."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -810,16 +760,12 @@ class TestApiContentType:
         assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
 
     def test_explicit_content_type_overrides_extension(self, runner: CliRunner, tmp_path) -> None:
-        """``-f payload.json -t text/plain`` -> explicit flag wins, body verbatim."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = "ok"
         client.post.return_value = mock_resp
 
-        # Write a JSON file with no whitespace inside the object; the
-        # explicit-content-type path must send these bytes verbatim, not
-        # re-serialize through json.dumps (which would inject a space).
         payload = tmp_path / "payload.json"
         payload.write_text('{"k":"v"}')
 
@@ -843,21 +789,17 @@ class TestApiContentType:
         call_kwargs = client.post.call_args[1]
         assert call_kwargs["json"] is None
         assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
-        # Body sent byte-for-byte verbatim, not normalized JSON.
         assert call_kwargs["data"] == '{"k":"v"}'
 
     def test_explicit_text_plain_preserves_json_file_bytes_verbatim(
         self, runner: CliRunner, tmp_path
     ) -> None:
-        """``-f creds.json -t text/plain`` with whitespace-sensitive contents."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = "ok"
         client.post.return_value = mock_resp
 
-        # Compact, ordering-sensitive JSON literal. If the body is round-
-        # tripped through json.loads / json.dumps the wire bytes will differ.
         original = '{"k":"v","n":1}'
         payload = tmp_path / "creds.json"
         payload.write_text(original)
@@ -921,7 +863,6 @@ class TestApiContentType:
         assert call_kwargs["data"] == original
 
     def test_auto_detect_json_extension(self, runner: CliRunner, tmp_path) -> None:
-        """``-f payload.json`` without -t keeps the json= path."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -949,11 +890,9 @@ class TestApiContentType:
         call_kwargs = client.post.call_args[1]
         assert call_kwargs["json"] == {"k": "v"}
         assert call_kwargs["data"] is None
-        # httpx sets application/json automatically, so we leave headers unset.
         assert call_kwargs.get("headers") is None
 
     def test_auto_detect_txt_extension(self, runner: CliRunner, tmp_path) -> None:
-        """``-f notes.txt`` -> data=<text>, Content-Type: text/plain."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -978,7 +917,6 @@ class TestApiContentType:
         assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
 
     def test_auto_detect_xml_extension(self, runner: CliRunner, tmp_path) -> None:
-        """``-f project.xml`` -> data=<text>, Content-Type: application/xml."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1005,7 +943,6 @@ class TestApiContentType:
     def test_unknown_extension_falls_back_to_octet_stream(
         self, runner: CliRunner, tmp_path
     ) -> None:
-        """``-f payload.bin`` (valid UTF-8 inside) -> octet-stream."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1030,7 +967,6 @@ class TestApiContentType:
         assert call_kwargs["headers"] == {"Content-Type": "application/octet-stream"}
 
     def test_binary_file_forces_octet_stream(self, runner: CliRunner, tmp_path) -> None:
-        """A non-UTF-8 .dcm file -> octet-stream, body sent as raw bytes."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1061,14 +997,12 @@ class TestApiContentType:
         assert call_kwargs["headers"] == {"Content-Type": "application/octet-stream"}
 
     def test_non_utf8_json_extension_still_octet_stream(self, runner: CliRunner, tmp_path) -> None:
-        """Decode failure wins over .json extension."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = "ok"
         client.post.return_value = mock_resp
 
-        # Misleading extension but invalid UTF-8 content.
         bad = tmp_path / "weird.json"
         bad.write_bytes(b"\xbe\xbf\xc0")
 
@@ -1087,7 +1021,6 @@ class TestApiContentType:
         assert call_kwargs["headers"] == {"Content-Type": "application/octet-stream"}
 
     def test_default_inline_data_still_json(self, runner: CliRunner) -> None:
-        """Regression: ``-d '{"k":"v"}'`` without -t still uses json=."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1106,11 +1039,9 @@ class TestApiContentType:
         call_kwargs = client.post.call_args[1]
         assert call_kwargs["json"] == {"k": "v"}
         assert call_kwargs["data"] is None
-        # No explicit Content-Type header; httpx sets application/json itself.
         assert call_kwargs.get("headers") is None
 
     def test_put_explicit_content_type(self, runner: CliRunner) -> None:
-        """``api put -d 'user:pass' -t text/plain`` -> parity with POST."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1140,7 +1071,6 @@ class TestApiContentType:
         assert call_kwargs["headers"] == {"Content-Type": "text/plain"}
 
     def test_help_lists_content_type_flag(self, runner: CliRunner) -> None:
-        """Help text for both verbs exposes -t/--content-type."""
         result_post = runner.invoke(cli, ["api", "post", "--help"])
         assert result_post.exit_code == 0
         assert "--content-type" in result_post.output
@@ -1153,8 +1083,6 @@ class TestApiContentType:
 
 
 class TestDetectContentType:
-    """Direct unit tests for the ``_detect_content_type`` helper."""
-
     def test_none_file_path_returns_none(self) -> None:
         from xnatctl.cli.api import _detect_content_type
 
@@ -1163,7 +1091,6 @@ class TestDetectContentType:
     def test_decode_failure_always_octet_stream(self) -> None:
         from xnatctl.cli.api import _detect_content_type
 
-        # decoded_text=None signals UTF-8 decode failure; overrides .json ext.
         assert (
             _detect_content_type("foo.json", raw_bytes=b"\xbe\xbf", decoded_text=None)
             == "application/octet-stream"
@@ -1215,7 +1142,6 @@ class TestDetectContentType:
         )
 
     def test_pathlib_path_accepted(self) -> None:
-        """The helper accepts ``pathlib.Path`` as well as ``str``."""
         from pathlib import Path
 
         from xnatctl.cli.api import _detect_content_type
@@ -1227,8 +1153,6 @@ class TestDetectContentType:
 
 
 class TestApiDelete:
-    """Tests for api delete command."""
-
     def test_api_delete_with_yes(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_resp = MagicMock()
@@ -1293,21 +1217,12 @@ class TestApiDelete:
         assert "removeFiles=true" in url
 
 
-# =============================================================================
-# B01 — secret-leak fixes (D1, D2, D3, D4)
-# =============================================================================
-
-
-# Click wraps help text; assert on tokens that survive line-wrapping.
 _PARAMS_WARNING_TOKENS = ("Do not use for", "JSON body")
 
 
 class TestApiParamsHelpWarning:
-    """D1 — ``--params`` help text warns about secret leakage on all 4 cmds."""
-
     @pytest.mark.parametrize("verb", ["get", "post", "put", "delete"])
     def test_api_params_help_warns_on_secrets(self, runner: CliRunner, verb: str) -> None:
-        """Every ``api {verb} --help`` documents the secret-leak warning."""
         result = runner.invoke(cli, ["api", verb, "--help"])
         assert result.exit_code == 0
         # Collapse whitespace before matching: Click wraps help prose to the
@@ -1318,7 +1233,6 @@ class TestApiParamsHelpWarning:
         rendered = " ".join(result.output.split())
         for token in _PARAMS_WARNING_TOKENS:
             assert token in rendered, f"missing warning token {token!r} in --help for {verb}"
-        # Points users at the safer body-passing options.
         assert "-d" in result.output
         assert "--file" in result.output
 
@@ -1327,7 +1241,6 @@ class TestApiStdinBody:
     """D2 — ``-d -`` and ``--file -`` read the body once from stdin."""
 
     def test_api_post_reads_body_from_stdin(self, runner: CliRunner) -> None:
-        """``api post -d -`` reads JSON body from stdin and POSTs it."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1349,7 +1262,6 @@ class TestApiStdinBody:
         assert call_kwargs["data"] is None
 
     def test_api_put_reads_body_from_stdin(self, runner: CliRunner) -> None:
-        """``api put -d -`` reads JSON body from stdin and PUTs it."""
         client = _mock_client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1411,12 +1323,9 @@ class TestApiStdinBody:
 
 
 class TestApiEnvVarExpansion:
-    """D3 — ``${VAR}`` / ``$VAR`` expansion inside the ``-d`` value."""
-
     def test_api_post_expands_env_vars_in_data(
         self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Set env vars are substituted before JSON parse."""
         monkeypatch.setenv("CNMDP_PASS", "hunter2")
         client = _mock_client()
         mock_resp = MagicMock()
@@ -1445,7 +1354,6 @@ class TestApiEnvVarExpansion:
     def test_api_post_warns_on_unset_env_var(
         self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Unset ``${VAR}`` references produce a warning listing the names."""
         monkeypatch.delenv("XNATCTL_NOPE", raising=False)
         client = _mock_client()
         mock_resp = MagicMock()
@@ -1467,15 +1375,12 @@ class TestApiEnvVarExpansion:
                         ],
                     )
 
-        # Warning + non-zero JSON parse failure are both acceptable; the
-        # warning is the load-bearing assertion here.
         assert "XNATCTL_NOPE" in result.output
         assert "not set" in result.output
 
     def test_api_post_envvar_inside_json_string_value(
         self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``${VAR}`` inside a JSON string value is substituted in place."""
         monkeypatch.setenv("XNATCTL_TOKEN", "abc123")
         client = _mock_client()
         mock_resp = MagicMock()
@@ -1503,10 +1408,7 @@ class TestApiEnvVarExpansion:
 
 
 class TestHandleErrorsRedaction:
-    """D4 — ``handle_errors`` strips secrets from URLs before printing."""
-
     def test_handle_errors_redacts_url_password(self, runner: CliRunner) -> None:
-        """An exception whose str includes ``?password=hunter2`` is scrubbed."""
         import re as _re
 
         from xnatctl.cli.common import handle_errors
@@ -1522,11 +1424,8 @@ class TestHandleErrorsRedaction:
 
         result = runner.invoke(boom, [])
         assert result.exit_code == 1
-        # Strip ANSI escapes and Rich's soft line wrapping before asserting,
-        # since the err_console formatter colors and wraps URLs.
         plain = _re.sub(r"\x1b\[[0-9;]*m", "", result.output)
         plain = plain.replace("\n", "")
         assert "hunter2" not in plain
         assert "password=***" in plain
-        # Non-secret keys are kept for debuggability.
         assert "username=admin" in plain

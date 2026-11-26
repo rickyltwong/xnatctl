@@ -1,14 +1,3 @@
-"""GradualClientPool: per-operation client pooling, isolated and testable.
-
-Module-global state for the gradual transport's thread-local httpx client,
-registry, and scope refcount would make two concurrent gradual operations
-share teardown: whichever one finished first would close clients the other
-was still using. Keeping the mechanism on a ``GradualClientPool`` instance
--- created per operation and passed down -- makes that failure mode
-structurally impossible, and testable: two pool instances below never
-observe each other.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -48,7 +37,6 @@ class TestOneClientPerThread:
         assert c1 is c2
 
     def test_a_different_base_url_gets_a_new_client(self) -> None:
-        """The client is keyed on (base_url, verify_ssl), not just the thread."""
         pool = GradualClientPool()
 
         c1 = pool.get_client(base_url="https://x", verify_ssl=True)
@@ -68,9 +56,6 @@ class TestTeardownAtRefcountZero:
         assert client.is_closed
 
     def test_nested_scopes_only_close_when_the_outermost_exits(self) -> None:
-        """Refcounted: an inner scope exiting must not tear down a client an
-        outer, still-active scope is relying on.
-        """
         pool = GradualClientPool()
 
         with pool.scope():
@@ -97,9 +82,6 @@ class TestTeardownAtRefcountZero:
 
 class TestPoolsAreIndependent:
     def test_closing_one_pool_does_not_touch_another(self) -> None:
-        """The bug the module globals had: two concurrent gradual uploads
-        would close each other's HTTP clients out from under them.
-        """
         pool_a = GradualClientPool()
         pool_b = GradualClientPool()
 
@@ -109,8 +91,6 @@ class TestPoolsAreIndependent:
             with pool_b.scope():
                 client_b = pool_b.get_client(base_url="https://x", verify_ssl=True)
 
-            # pool_b's scope exited and closed pool_b's client; pool_a's must
-            # be untouched.
             assert client_b.is_closed
             assert not client_a.is_closed
 
@@ -127,21 +107,12 @@ class TestPoolsAreIndependent:
 
 
 class TestDirectRunEntersItsOwnScope:
-    """GradualUploadRun.run() is public and reachable without going through
-    UploadService, which always supplies an outer ``pool.scope()``. Without a
-    scope of its own, a directly-constructed run would leave its pool's real
-    HTTP clients open after ``run()`` returns.
-    """
-
     def test_run_without_an_outer_scope_still_closes_the_pool(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import xnatctl.services.upload.gradual_client as gradual_client_mod
         from xnatctl.services.upload.gradual import GradualUploadRun
 
-        # Real _upload_single_file_gradual runs (so it really calls
-        # pool.get_client), but the HTTP retry ladder is faked so no network
-        # call happens.
         monkeypatch.setattr(
             gradual_client_mod,
             "upload_with_retry",
@@ -157,13 +128,14 @@ class TestDirectRunEntersItsOwnScope:
         client.username = "u"
         client.password = "p"
         client.server_version = None
+        client.httpx_verify.return_value = True
 
         pool = GradualClientPool()
         created_clients: list[object] = []
         real_get_client = pool.get_client
 
         def spy_get_client(**kwargs: object) -> object:
-            c = real_get_client(**kwargs)  # type: ignore[arg-type]
+            c = real_get_client(**kwargs)
             created_clients.append(c)
             return c
 

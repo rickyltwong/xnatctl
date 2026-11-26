@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.state import EntityStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.discovery import DiscoveredEntity
@@ -133,7 +134,6 @@ class ArchivePoller:
         return self._thread is not None and self._thread.is_alive()
 
     def _poll_loop(self) -> None:
-        """Main poll loop with top-level exception guard."""
         try:
             while not self._stop_event.is_set():
                 with self._lock:
@@ -164,21 +164,13 @@ class ArchivePoller:
                         self._poll_scan_count(item)
 
                 self._stop_event.wait(timeout=self._poll_interval)
-        except Exception:  # noqa: BLE001  # top-level guard for the background poll thread (see docstring)
+        except Exception:
             logger.error("Archive poller crashed", exc_info=True)
 
     def _fetch_prearchive_snapshot(
         self,
         items: list[DeferredExperiment],
     ) -> dict[tuple[str, str], dict[str, Any]] | None:
-        """Fetch prearchive entries for all unique destination projects.
-
-        Args:
-            items: Current snapshot of pending items.
-
-        Returns:
-            Dict keyed by (project, name/folderName) to entry dict, or None on error.
-        """
         projects = {item.dest_project for item in items if not item.prearchive_cleared}
         if not projects:
             return {}
@@ -194,7 +186,7 @@ class ArchivePoller:
                         result[(project, name)] = entry
                     if folder_name:
                         result[(project, folder_name)] = entry
-        except Exception:  # noqa: BLE001  # per-cycle isolation: prearchive snapshot fetch failure returns None
+        except Exception:
             logger.error("Failed to fetch prearchive snapshot", exc_info=True)
             return None
 
@@ -205,12 +197,6 @@ class ArchivePoller:
         item: DeferredExperiment,
         snapshot: dict[tuple[str, str], dict[str, Any]] | None,
     ) -> None:
-        """Check prearchive status for a single item.
-
-        Args:
-            item: DeferredExperiment to check.
-            snapshot: Prearchive snapshot, or None if fetch failed.
-        """
         if snapshot is None:
             return
 
@@ -224,18 +210,14 @@ class ArchivePoller:
             item.needs_archive_action.set()
 
     def _poll_scan_count(self, item: DeferredExperiment) -> None:
-        """Check archived scan count for a single item.
-
-        Args:
-            item: DeferredExperiment to check.
-        """
         try:
             count = self._executor.count_dest_scans(
                 item.dest_project,
                 item.subject.local_label,
                 item.exp.local_label,
             )
-        except Exception:  # noqa: BLE001  # per-cycle isolation: scan-count query failure retried next poll cycle
+        except Exception:
+            logger.exception("Scan count poll failed", extra={FILE_ONLY_ATTR: True})
             logger.debug(
                 "count_dest_scans failed for %s, will retry",
                 item.exp.local_label,
@@ -278,7 +260,8 @@ def service_prearchive_actions(
 
         try:
             entry = executor.find_prearchive_entry(ctx.dest_project, ctx.exp.local_label)
-        except Exception:  # noqa: BLE001  # per-item isolation: one experiment's prearchive resolution failure must not block others
+        except Exception:
+            logger.exception("Prearchive lookup failed", extra={FILE_ONLY_ATTR: True})
             ctx.archive_retries += 1
             logger.warning(
                 "Prearchive resolution failed for %s (attempt %d), will retry",
@@ -307,7 +290,7 @@ def service_prearchive_actions(
                         experiment_label=ctx.exp.local_label,
                         overwrite=overwrite,
                     )
-                except Exception as exc:  # noqa: BLE001  # per-item isolation: archive failure recorded on ctx.archive_error, not swallowed
+                except Exception as exc:
                     ctx.archive_error = (
                         f"Prearchive archive failed for {ctx.exp.local_label}: {exc}"
                     )
@@ -331,14 +314,6 @@ def _record_experiment_failure(
     result: TransferResult,
     message: str,
 ) -> None:
-    """Record a failed experiment on both the result and the state store.
-
-    Args:
-        state_store: Transfer state store.
-        ctx: Deferred experiment that failed.
-        result: Mutable result to update.
-        message: Failure message.
-    """
     result.experiments_failed += 1
     result.success = False
     result.errors.append(f"Experiment {ctx.exp.local_label}: {message}")
@@ -396,7 +371,8 @@ def drain_ready(
             continue
         try:
             finalize(ctx, result, progress_callback)
-        except Exception as e:  # noqa: BLE001  # per-experiment isolation: finalize() failure recorded via _record_experiment_failure, drain continues
+        except Exception as e:
+            logger.exception("Experiment finalize failed", extra={FILE_ONLY_ATTR: True})
             _record_experiment_failure(state_store, ctx, result, str(e))
         drained = True
     return drained
@@ -406,16 +382,6 @@ def _resolve_deferred_prearchive_blocking(
     executor: TransferExecutor,
     ctx: DeferredExperiment,
 ) -> None:
-    """Resolve one item's pending READY/CONFLICT prearchive action, synchronously.
-
-    Mutates ``ctx.prearchive_cleared``/``ctx.archive_error`` in place; any
-    failure to even look up the prearchive entry is logged and left for the
-    ``wait_for_archive`` fallback in the caller.
-
-    Args:
-        executor: TransferExecutor used for prearchive/archive HTTP calls.
-        ctx: Deferred experiment with ``needs_archive_action`` set.
-    """
     try:
         entry = executor.find_prearchive_entry(ctx.dest_project, ctx.exp.local_label)
         if entry is None:
@@ -433,14 +399,17 @@ def _resolve_deferred_prearchive_blocking(
                     overwrite=overwrite,
                 )
                 ctx.prearchive_cleared = True
-            except Exception as exc:  # noqa: BLE001  # per-item isolation, blocking-drain fallback: archive failure recorded on ctx.archive_error
+            except Exception as exc:
                 ctx.archive_error = f"Prearchive archive failed for {ctx.exp.local_label}: {exc}"
                 logger.error(
                     "Prearchive archive failed for %s in blocking drain",
                     ctx.exp.local_label,
                     exc_info=True,
                 )
-    except Exception:  # noqa: BLE001  # documented fallback: prearchive lookup failure logged, left for wait_for_archive fallback
+    except Exception:
+        logger.exception(
+            "Prearchive resolution failed in blocking drain", extra={FILE_ONLY_ATTR: True}
+        )
         logger.warning(
             "Prearchive resolution failed for %s in blocking drain, "
             "falling back to wait_for_archive",
@@ -476,12 +445,10 @@ def drain_all_blocking(
         config: Transfer configuration (archive wait timeout/interval).
         progress_callback: Optional progress callback.
     """
-    # First drain anything already ready
     drain_ready(state_store, finalize, deferred, result, progress_callback)
 
     while deferred:
         ctx = deferred.popleft()
-        # Service prearchive action if needed
         if ctx.needs_archive_action.is_set():
             _resolve_deferred_prearchive_blocking(executor, ctx)
 
@@ -490,7 +457,6 @@ def drain_all_blocking(
             ctx.work_dir_handle.cleanup()
             continue
 
-        # Block until ready or use wait_for_archive as fallback
         if not ctx.archive_ready.is_set():
             if progress_callback:
                 progress_callback(f"    Blocking wait for {ctx.exp.local_label}...")
@@ -503,7 +469,7 @@ def drain_all_blocking(
                     timeout=config.archive_wait_timeout,
                     interval=config.archive_poll_interval,
                 )
-            except Exception as exc:  # noqa: BLE001  # per-item isolation: wait_for_archive failure recorded on ctx.archive_error
+            except Exception as exc:
                 ctx.archive_error = f"Archive wait failed for {ctx.exp.local_label}: {exc}"
                 logger.error(
                     "Archive wait failed for %s in blocking drain",
@@ -518,5 +484,8 @@ def drain_all_blocking(
 
         try:
             finalize(ctx, result, progress_callback)
-        except Exception as e:  # noqa: BLE001  # per-experiment isolation: finalize() failure recorded via _record_experiment_failure
+        except Exception as e:
+            logger.exception(
+                "Experiment finalize failed in blocking drain", extra={FILE_ONLY_ATTR: True}
+            )
             _record_experiment_failure(state_store, ctx, result, str(e))

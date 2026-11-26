@@ -1,14 +1,3 @@
-"""Server-side ``limit`` forwarding for the typed ``list()`` service methods.
-
-``ProjectService.list()``, ``SubjectService.list()``, and
-``SessionService.list()`` forward ``limit`` to the server as a request
-parameter -- fetching the full result set and slicing it in Python would
-pull every row of a site-wide listing just to return ``limit``. The
-client-side slice stays as belt-and-braces for endpoints that ignore it.
-``limit=0`` must still mean "zero results", not "no limit" -- these tests
-pin both ends of that contract for each service.
-"""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -27,11 +16,6 @@ SAMPLE_SESSION_ROWS = [{"ID": f"EXP{i:02d}", "label": f"EXP{i:02d}"} for i in ra
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """A bare mock client.
-
-    Not ``fake_client``'s XNATClient spec -- these services only call
-    ``.get()``, and a plain mock keeps ``call_args`` simple.
-    """
     client = MagicMock()
     client.base_url = "https://xnat.example.org"
     return client

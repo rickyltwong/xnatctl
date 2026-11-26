@@ -59,14 +59,10 @@ def classify_exam_root(root: Path) -> ExamRootClassification:
     dicom_files: list[Path] = []
     misc_files: list[Path] = []
 
-    # Only consider top-level directories (non-hidden). Start with all such
-    # directories as "resource dirs", then remove any that contain DICOM-like
-    # files.
     dirs_without_dicom: set[Path] = set()
 
     root_str = os.fspath(root_path)
     for dirpath, dirs, files in os.walk(root_str, topdown=True):
-        # Prune hidden directories in-place to avoid traversing them.
         dirs[:] = [d for d in dirs if not d.startswith(".")]
 
         current_dir = Path(dirpath)

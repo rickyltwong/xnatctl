@@ -59,8 +59,20 @@ if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
 
 
+_TERMINAL_STATUS_PREFIXES = ("Complete", "Failed", "Killed")
+
+
+def is_terminal_status(status: str) -> bool:
+    """Tell whether a container status is final, by Container Service's own rule.
+
+    ``ContainerUtils.statusIsTerminal`` is a prefix match, so ``Failed (Upload)``
+    and ``Failed (Rejected)`` are final, while a Swarm interim status such as
+    ``Waiting (Failed (Rejected))`` is not.
+    """
+    return status.startswith(_TERMINAL_STATUS_PREFIXES)
+
+
 def _expect_list(data: Any, path: str) -> builtins.list[dict[str, Any]]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``[]``. See ``commands.py``."""
     if not isinstance(data, list):
         raise XNATCtlError(
             f"Unexpected response from GET {path}: expected a JSON array, "
@@ -70,7 +82,6 @@ def _expect_list(data: Any, path: str) -> builtins.list[dict[str, Any]]:
 
 
 def _expect_dict(data: Any, path: str) -> dict[str, Any]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``{}``. See ``commands.py``."""
     if not isinstance(data, dict):
         raise XNATCtlError(
             f"Unexpected response from GET {path}: expected a JSON object, "
@@ -80,31 +91,6 @@ def _expect_dict(data: Any, path: str) -> dict[str, Any]:
 
 
 def _session_input_name(wrapper: dict[str, Any]) -> str:
-    """Find the name of a wrapper's single ``Session``-typed external input.
-
-    A wrapper's root/target object is declared in its ``external-inputs``
-    list (verified embedded key set -- see
-    :meth:`~xnatctl.services.commands.CommandService.list_wrappers`), each
-    carrying its own ``type`` (e.g. ``"Session"``, ``"Subject"``,
-    ``"Scan"``) and ``name`` -- the exact key the launch route's JSON body
-    must use for that value. Verified live: ``POST .../launch`` echoes
-    back whatever keys it was given, unchanged, under ``"params"``;
-    nothing in the route itself resolves ``-E``/``--experiment`` to the
-    right key on its own -- each wrapper defines its own input names, so
-    this is the client-side lookup that makes ``-E`` possible at all.
-
-    Args:
-        wrapper: A wrapper dict, as returned by
-            :meth:`ContainerService.resolve_wrapper`.
-
-    Returns:
-        The matching external input's ``name``.
-
-    Raises:
-        InputValidationError: If no external input has type ``"Session"``,
-            or more than one does -- either way, ``-E``/``--experiment``
-            cannot be mapped onto a single launch parameter.
-    """
     external_inputs = wrapper.get("external-inputs") or []
     session_inputs = [
         i for i in external_inputs if isinstance(i, dict) and i.get("type") == "Session"
@@ -181,14 +167,6 @@ class ContainerService(BaseService):
     """
 
     def __init__(self, client: XNATClient, command_service: CommandService | None = None) -> None:
-        """Initialize with an XNAT client and an optional CommandService.
-
-        Args:
-            client: Authenticated XNATClient instance.
-            command_service: Reused for wrapper-ref resolution by the
-                container-launch verb (a later slice). Defaults to a fresh
-                ``CommandService(client)`` when not supplied.
-        """
         super().__init__(client)
         self._commands = command_service or CommandService(client)
 

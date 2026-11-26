@@ -58,6 +58,7 @@ import xnatctl
 from xnatctl.cli.common import Context, ExitCode, global_options, handle_errors
 from xnatctl.core import update_check
 from xnatctl.core.exceptions import UpgradeError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.output import print_error, print_hint, print_success
 
 logger = logging.getLogger(__name__)
@@ -67,19 +68,10 @@ GITHUB_RELEASE_DOWNLOAD_BASE = f"https://github.com/{GITHUB_REPO}/releases/downl
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GHCR_IMAGE = f"ghcr.io/{GITHUB_REPO}:latest"
 
-#: Longer than the passive per-command cache refresh's 1s ceiling -- this is
-#: an explicit, user-requested check, so waiting a bit longer for a real
-#: answer is the right tradeoff (see ``update_check.fetch_latest_version``).
 CHECK_FETCH_TIMEOUT_SECONDS = 10.0
 DOWNLOAD_TIMEOUT_SECONDS = 30.0
 
-#: Seam so tests never touch the real filesystem root.
 DOCKERENV_PATH = Path("/.dockerenv")
-
-
-# =============================================================================
-# Install-method detection
-# =============================================================================
 
 
 @dataclass(frozen=True)
@@ -104,15 +96,6 @@ class UpgradeMethod:
 
 
 def _pipx_candidate_venv_dirs(env: Mapping[str, str], home: Path) -> list[Path]:
-    """Every plausible pipx venvs root, in priority order.
-
-    ``PIPX_HOME`` (if set) always wins -- it's the explicit override pipx
-    itself honors. Otherwise both known defaults are checked: pipx used
-    ``~/.local/pipx`` through around 1.0, then moved to the XDG data dir
-    (``~/.local/share/pipx`` on Linux) as its default -- a host running
-    either pipx generation, or one upgraded across the switch without ever
-    setting ``PIPX_HOME``, must still be detected.
-    """
     candidates: list[Path] = []
     pipx_home = env.get("PIPX_HOME")
     if pipx_home:
@@ -123,14 +106,6 @@ def _pipx_candidate_venv_dirs(env: Mapping[str, str], home: Path) -> list[Path]:
 
 
 def _looks_pipx_managed(install_path: Path, env: Mapping[str, str], home: Path) -> bool:
-    """Whether *install_path* sits under a pipx-managed venv.
-
-    Checked against every known pipx venvs root (see
-    :func:`_pipx_candidate_venv_dirs`), then falls back to a bare
-    ``/pipx/venvs/`` marker anywhere in the resolved path -- covers a
-    relocated or distro-patched pipx whose venvs root matches neither known
-    default.
-    """
     for venvs_dir in _pipx_candidate_venv_dirs(env, home):
         try:
             resolved_venvs = venvs_dir.resolve()
@@ -142,18 +117,10 @@ def _looks_pipx_managed(install_path: Path, env: Mapping[str, str], home: Path) 
 
 
 def _package_install_path() -> Path:
-    """Resolved path to the installed ``xnatctl`` package's ``__init__.py``."""
     return Path(xnatctl.__file__).resolve()
 
 
 def _is_uv_managed(install_path: Path, *, max_levels: int = 8) -> bool:
-    """Cheap check: does the venv's ``pyvenv.cfg`` (if any) name uv as its creator?
-
-    Walks up from the package's directory looking for ``pyvenv.cfg`` --
-    typically a few levels up from ``site-packages`` -- and reads it directly
-    rather than invoking anything, so this never shells out just to detect
-    the install.
-    """
     current = install_path.parent
     for _ in range(max_levels):
         cfg = current / "pyvenv.cfg"
@@ -223,13 +190,7 @@ def detect_upgrade_method(
     )
 
 
-# =============================================================================
-# Frozen-binary self-replace
-# =============================================================================
-
-
 def _detect_os() -> str:
-    """Mirror ``install.sh``'s ``detect_os()``."""
     plat = sys.platform
     if plat.startswith("linux"):
         return "linux"
@@ -241,7 +202,6 @@ def _detect_os() -> str:
 
 
 def _detect_arch() -> str:
-    """Mirror ``install.sh``'s ``detect_arch()``."""
     machine = platform.machine().lower()
     if machine in ("x86_64", "amd64"):
         return "amd64"
@@ -251,7 +211,6 @@ def _detect_arch() -> str:
 
 
 def _release_asset_name(os_name: str, arch: str) -> str:
-    """Mirror ``install.sh``'s ``ASSET`` naming: matches the ``binary`` CI job."""
     ext = "zip" if os_name == "windows" else "tar.gz"
     return f"xnatctl-{os_name}-{arch}.{ext}"
 
@@ -269,20 +228,20 @@ def fetch_latest_release_tag(timeout: float = CHECK_FETCH_TIMEOUT_SECONDS) -> st
             GITHUB_LATEST_RELEASE_API,
             headers={"Accept": "application/vnd.github+json"},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
         tag = payload["tag_name"]
-    except Exception as e:  # noqa: BLE001 -- same silence contract as update_check
+    except Exception as e:
+        logger.exception("Release tag fetch failed", extra={FILE_ONLY_ATTR: True})
         logger.debug("Could not fetch the latest release tag: %s", e)
         return None
     return tag if isinstance(tag, str) else None
 
 
 def _download_to(url: str, dest: Path, *, timeout: float = DOWNLOAD_TIMEOUT_SECONDS) -> None:
-    """Download *url* to *dest*. Raises :class:`UpgradeError` on any failure."""
     try:
         with (
-            urllib.request.urlopen(url, timeout=timeout) as response,  # noqa: S310
+            urllib.request.urlopen(url, timeout=timeout) as response,
             open(dest, "wb") as handle,
         ):
             shutil.copyfileobj(response, handle)
@@ -291,13 +250,6 @@ def _download_to(url: str, dest: Path, *, timeout: float = DOWNLOAD_TIMEOUT_SECO
 
 
 def _parse_sha256_sidecar(text: str) -> str:
-    """Extract the hex digest from a ``sha256sum``-format sidecar file.
-
-    The release job writes these with plain ``sha256sum`` on Linux/macOS and
-    an equivalent ``<hash>  <filename>`` line on Windows (see ``ci.yml``'s
-    ``binary`` job and ``install.sh``, which parses the same shape) -- so
-    just the first whitespace-separated token is the digest.
-    """
     stripped = text.strip()
     first_line = stripped.splitlines()[0] if stripped else ""
     tokens = first_line.split()
@@ -316,7 +268,6 @@ def _sha256_of(path: Path) -> str:
 
 
 def _extract_binary(archive: Path, os_name: str, dest_dir: Path) -> Path:
-    """Extract the ``xnatctl`` executable from the downloaded archive."""
     binary_name = "xnatctl.exe" if os_name == "windows" else "xnatctl"
     if os_name == "windows":
         with zipfile.ZipFile(archive) as zf:
@@ -360,7 +311,7 @@ def _verify_binary(path: Path, *, timeout: float = 10.0) -> None:
     tells the child's bootloader to drop them and start fresh.
     """
     try:
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(
             [str(path), "--version"],
             capture_output=True,
             timeout=timeout,
@@ -377,14 +328,6 @@ def _verify_binary(path: Path, *, timeout: float = 10.0) -> None:
 
 
 def _restore_from_backup(target: Path, backup: Path, os_name: str) -> None:
-    """Roll back to the pre-upgrade binary after a failed post-install verify.
-
-    On Windows the failed install is a fresh file nobody has open, so it can
-    simply be removed before the backup is renamed back into place. On POSIX
-    ``backup`` is a standalone copy (see :func:`replace_frozen_binary`), so
-    ``os.replace`` atomically restores it and consumes the backup in one step
-    -- the same guarantee the forward install used.
-    """
     if os_name == "windows":
         if target.exists():
             target.unlink()
@@ -455,14 +398,10 @@ def replace_frozen_binary(
         if os_name != "windows":
             os.chmod(new_binary, 0o755)
 
-        # Proof the candidate actually runs, BEFORE target is touched at all.
         verify(new_binary)
 
         backup = target.with_name(target.name + ".bak")
         if backup.exists():
-            # A previous run's backup that was never cleaned up (interrupted,
-            # or -- on Windows -- deliberately deferred; see
-            # cleanup_stale_backup) must not block this one.
             backup.unlink()
 
         if os_name == "windows":
@@ -497,8 +436,6 @@ def replace_frozen_binary(
 
         if os_name != "windows":
             backup.unlink(missing_ok=True)
-        # else: left in place -- cleanup_stale_backup() removes it on a later
-        # launch, once nothing has the old binary open any more.
 
     return tag
 
@@ -525,7 +462,6 @@ def cleanup_stale_backup(target: Path | None = None) -> None:
 
 
 def _run_frozen_upgrade(*, execute: bool) -> None:
-    """Implement the frozen-binary branch of `xnatctl upgrade`."""
     target = Path(sys.executable).resolve()
 
     if not execute:
@@ -546,20 +482,7 @@ def _run_frozen_upgrade(*, execute: bool) -> None:
     print_success(f"Upgraded {target} to {tag}.")
 
 
-# =============================================================================
-# --check
-# =============================================================================
-
-
 def _run_check() -> None:
-    """Implement `xnatctl upgrade --check`.
-
-    Unlike the passive per-command notice (``check_for_update``, which only
-    ever reads the local cache), this does a real synchronous fetch -- that's
-    the point of asking explicitly. ``refresh_cache_now`` is the same
-    fetch-then-persist helper the detached background refresh is built on,
-    just called inline and with a longer timeout.
-    """
     latest_raw = update_check.refresh_cache_now(timeout=CHECK_FETCH_TIMEOUT_SECONDS)
     if latest_raw is None:
         print_error("Could not reach PyPI to check for updates.")
@@ -579,11 +502,6 @@ def _run_check() -> None:
         click.echo("Run 'xnatctl upgrade' to update.")
     else:
         print_success(f"xnatctl is up to date ({xnatctl.__version__}).")
-
-
-# =============================================================================
-# Command
-# =============================================================================
 
 
 @click.command("upgrade")
@@ -615,7 +533,7 @@ def upgrade(ctx: Context, check: bool, yes: bool) -> None:
     interface: 0 for both up-to-date and a newer version being available,
     nonzero when PyPI could not be reached.
     """
-    del ctx  # No client/auth needed -- detection and execution are both local.
+    del ctx
 
     if check:
         _run_check()
@@ -640,7 +558,7 @@ def upgrade(ctx: Context, check: bool, yes: bool) -> None:
 
     command = method.command
     assert command is not None
-    result = subprocess.run(list(command), check=False)  # noqa: S603
+    result = subprocess.run(list(command), check=False)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
     print_success("Upgrade command completed.")

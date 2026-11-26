@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import quote_prearchive_segment as _quote_path_segment
 from xnatctl.services.transfer.executor_base import _ExecutorAttrs
 
@@ -22,21 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class _ArchiveMixin(_ExecutorAttrs):
-    """Prearchive listing/resolution and archive-wait polling."""
-
     def list_prearchive_entries(self, dest_project: str) -> list[dict[str, Any]]:
-        """List all prearchive entries for a project on the destination.
-
-        Returns the full prearchive listing for a project. Used by
-        ArchivePoller to fetch a single snapshot per poll cycle instead
-        of N individual find_prearchive_entry() calls.
-
-        Args:
-            dest_project: Destination project ID.
-
-        Returns:
-            List of prearchive entry dicts with name, folderName, status, timestamp, etc.
-        """
         encoded_project = _quote_path_segment(dest_project)
         resp = self.dest.get(
             f"/data/prearchive/projects/{encoded_project}",
@@ -47,15 +34,6 @@ class _ArchiveMixin(_ExecutorAttrs):
         return results
 
     def find_prearchive_entry(self, dest_project: str, session_label: str) -> dict[str, Any] | None:
-        """Find a prearchive entry matching a session label on the destination.
-
-        Args:
-            dest_project: Destination project ID.
-            session_label: Session label to search for.
-
-        Returns:
-            Prearchive entry dict with timestamp, status, name, etc., or None.
-        """
         encoded_project = _quote_path_segment(dest_project)
         resp = self.dest.get(
             f"/data/prearchive/projects/{encoded_project}",
@@ -77,17 +55,6 @@ class _ArchiveMixin(_ExecutorAttrs):
         experiment_label: str,
         overwrite: str | None = None,
     ) -> None:
-        """Manually archive a prearchive entry on the destination.
-
-        Args:
-            dest_project: Destination project ID.
-            timestamp: Prearchive entry timestamp.
-            session_name: Session folder name in prearchive.
-            subject_label: Subject label for archiving.
-            experiment_label: Experiment label for archiving.
-            overwrite: Overwrite mode (``"append"`` or ``"delete"``).
-                Used to resolve prearchive CONFLICT entries.
-        """
         encoded_project = _quote_path_segment(dest_project)
         encoded_timestamp = _quote_path_segment(timestamp)
         encoded_session_name = _quote_path_segment(session_name)
@@ -115,20 +82,10 @@ class _ArchiveMixin(_ExecutorAttrs):
         experiment_label: str,
         context: str,
     ) -> int:
-        """Count dest scans, returning 0 on failure.
-
-        Args:
-            dest_project: Destination project ID.
-            subject_label: Subject label.
-            experiment_label: Experiment label.
-            context: Log context on failure.
-
-        Returns:
-            Scan count, or 0 if the query fails.
-        """
         try:
             return self.count_dest_scans(dest_project, subject_label, experiment_label)
-        except Exception as exc:  # noqa: BLE001  # best-effort poll helper: returns 0 on failure, retried next cycle (see docstring)
+        except Exception as exc:
+            logger.exception("Dest scan count failed", extra={FILE_ONLY_ATTR: True})
             logger.debug(
                 "count_dest_scans failed for %s (%s): %s",
                 experiment_label,
@@ -146,22 +103,6 @@ class _ArchiveMixin(_ExecutorAttrs):
         timeout: float = 300.0,
         interval: float = 5.0,
     ) -> int:
-        """Wait for experiment scans to appear in archive after DICOM import.
-
-        Polls the prearchive and archive until the expected number of scans
-        are available, manually archiving READY entries found in prearchive.
-
-        Args:
-            dest_project: Destination project ID.
-            subject_label: Subject label.
-            experiment_label: Experiment label.
-            expected_scans: Number of scans expected in archive.
-            timeout: Maximum seconds to wait.
-            interval: Seconds between poll attempts.
-
-        Returns:
-            Actual scan count found in archive when done.
-        """
         deadline = time.monotonic() + timeout
         prearchive_cleared = False
 
@@ -205,22 +146,10 @@ class _ArchiveMixin(_ExecutorAttrs):
         subject_label: str,
         experiment_label: str,
     ) -> bool:
-        """Fetch the prearchive entry once and resolve READY/CONFLICT status.
-
-        Args:
-            dest_project: Destination project ID.
-            subject_label: Subject label.
-            experiment_label: Experiment label.
-
-        Returns:
-            True if the experiment has left the prearchive (no entry found).
-
-        Raises:
-            httpx.HTTPStatusError: If archiving a READY/CONFLICT entry fails.
-        """
         try:
             entry = self.find_prearchive_entry(dest_project, experiment_label)
-        except Exception:  # noqa: BLE001  # per-poll-cycle isolation: prearchive lookup failure retried next cycle
+        except Exception:
+            logger.exception("Prearchive poll failed", extra={FILE_ONLY_ATTR: True})
             logger.debug(
                 "Poll cycle error for %s, retrying next cycle",
                 experiment_label,
@@ -254,22 +183,6 @@ class _ArchiveMixin(_ExecutorAttrs):
         subject_label: str,
         experiment_label: str,
     ) -> None:
-        """Archive a READY prearchive entry, or resolve a CONFLICT one.
-
-        A CONFLICT is resolved the same way as READY, just with
-        ``overwrite="append"``. A missing timestamp skips the entry (with a
-        warning for READY, silently for CONFLICT).
-
-        Args:
-            status: ``"READY"`` or ``"CONFLICT"``.
-            entry: Prearchive entry dict.
-            dest_project: Destination project ID.
-            subject_label: Subject label.
-            experiment_label: Experiment label.
-
-        Raises:
-            httpx.HTTPStatusError: If the archive POST fails.
-        """
         timestamp = entry.get("timestamp", "")
         if not timestamp:
             if status == "READY":
@@ -307,7 +220,7 @@ class _ArchiveMixin(_ExecutorAttrs):
                 body or "(no response body)",
             )
             raise
-        except Exception:  # noqa: BLE001  # log-and-reraise: logs any archive-failure type with exc_info before propagating
+        except Exception:
             logger.error(
                 "%s for %s",
                 error_prefix,

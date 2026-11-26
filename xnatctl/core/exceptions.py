@@ -40,11 +40,6 @@ class XNATCtlError(Exception):
         return self.message
 
 
-# =============================================================================
-# Configuration Errors
-# =============================================================================
-
-
 class ConfigurationError(XNATCtlError):
     """Error in configuration (missing, invalid, or malformed)."""
 
@@ -87,11 +82,6 @@ class ProfileNotFoundError(ConfigurationError):
     def __init__(self, profile: str):
         super().__init__(f"Profile not found: {profile}", field="profile", value=profile)
         self.profile = profile
-
-
-# =============================================================================
-# Validation Errors
-# =============================================================================
 
 
 class InputValidationError(XNATCtlError):
@@ -180,11 +170,6 @@ class ValidationError(InputValidationError):
             stacklevel=2,
         )
         super().__init__(message, field=field, value=value)
-
-
-# =============================================================================
-# Connection Errors
-# =============================================================================
 
 
 class XNATConnectionError(XNATCtlError):
@@ -285,11 +270,6 @@ class TimeoutError(RequestTimeoutError):
         super().__init__(url, timeout, message)
 
 
-# =============================================================================
-# HTTP Status Errors
-# =============================================================================
-
-
 class HTTPResponseError(XNATCtlError):
     """Base for an HTTP error status with no more specific typed handler.
 
@@ -328,11 +308,6 @@ class ServerError(HTTPResponseError):
     """A 5xx response (500, 502, 503, 504)."""
 
 
-# =============================================================================
-# Authentication Errors
-# =============================================================================
-
-
 class AuthenticationError(XNATCtlError):
     """Authentication failed."""
 
@@ -368,11 +343,6 @@ class PermissionDeniedError(AuthenticationError):
         super().__init__(url, reason=f"Permission denied to {operation} {resource}")
         self.resource = resource
         self.operation = operation
-
-
-# =============================================================================
-# Resource Errors
-# =============================================================================
 
 
 class ResourceError(XNATCtlError):
@@ -418,11 +388,6 @@ class ResourceExistsError(ResourceError):
             resource_type,
             resource_id,
         )
-
-
-# =============================================================================
-# Operation Errors
-# =============================================================================
 
 
 class OperationError(XNATCtlError):
@@ -512,11 +477,6 @@ class BatchOperationError(OperationError):
         self.errors = errors
 
 
-# =============================================================================
-# Compatibility Errors
-# =============================================================================
-
-
 class UnsupportedServerVersionError(XNATCtlError):
     """A feature requires a newer XNAT server than the one reporting in.
 
@@ -541,11 +501,6 @@ class UnsupportedServerVersionError(XNATCtlError):
         self.feature_name = feature_name
         self.minimum = minimum
         self.actual = actual
-
-
-# =============================================================================
-# DICOM Errors
-# =============================================================================
 
 
 class DicomError(XNATCtlError):
@@ -579,11 +534,6 @@ class DicomStoreError(DicomError):
             self.details["host"] = host
         if port:
             self.details["port"] = port
-
-
-# =============================================================================
-# Transfer Errors
-# =============================================================================
 
 
 class TransferError(OperationError):

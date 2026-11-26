@@ -1,5 +1,3 @@
-"""Tests for CLI common helpers."""
-
 from __future__ import annotations
 
 from typing import Any, cast
@@ -69,6 +67,23 @@ def test_require_auth_reauthenticates_on_stale_session():
         username="user",
     )
     assert mock_client.session_token == "new-token"
+
+
+def test_require_auth_accepts_the_context_as_a_keyword():
+    ctx = Context()
+
+    class SignedInClient:
+        base_url = "https://example.org"
+        session_token = "token"
+        is_authenticated = True
+
+        def whoami(self) -> dict[str, str]:
+            return {"username": "user"}
+
+    ctx.client = cast(Any, SignedInClient())
+    ctx.auth_manager = MagicMock()
+
+    assert require_auth(_protected_command)(ctx=ctx) == "ok"
 
 
 def test_require_auth_raises_when_session_expired_and_no_creds(monkeypatch):
@@ -168,7 +183,6 @@ def test_get_client_uses_cached_session_username_as_hint():
 
 
 def test_get_client_enables_auto_reauth():
-    """The client re-authenticates on a mid-command 401 (issue #20)."""
     ctx = Context()
     ctx.config = Config(
         default_profile="default",
@@ -184,10 +198,6 @@ def test_get_client_enables_auto_reauth():
     assert mock_client_cls.call_args.kwargs["auto_reauth"] is True
 
 
-# =============================================================================
-# apply_filter / apply_sort_limit / resolve_columns
-# =============================================================================
-
 _ROWS = [
     {"id": "A", "label": "SUB001"},
     {"id": "B", "label": "CTL001"},
@@ -196,8 +206,6 @@ _ROWS = [
 
 
 class TestApplyFilter:
-    """Tests for the shared --filter helper."""
-
     def test_no_expr_returns_rows_unchanged(self) -> None:
         assert apply_filter(_ROWS, None) is _ROWS
 
@@ -221,30 +229,19 @@ class TestApplyFilter:
             apply_filter(_ROWS, ":SUB*")
 
     def test_unknown_field_raises_usage_error(self) -> None:
-        """A typo'd field must fail loudly, not silently match every row
-        by comparing against an empty string.
-        """
         with pytest.raises(click.UsageError, match="Unknown filter field 'lable'.*id.*label"):
             apply_filter(_ROWS, "lable:SUB*")
 
     def test_unknown_field_against_empty_rows_does_not_raise(self) -> None:
-        """No rows means no known field set to validate against -- filtering
-        nothing trivially yields nothing rather than erroring.
-        """
         assert apply_filter([], "missing:*") == []
 
     def test_field_present_on_some_but_not_all_rows_is_known(self) -> None:
-        """The available-field set is the union across every row, not just
-        the first (rows are not required to be uniform).
-        """
         rows = [{"id": "A", "extra": "x"}, {"id": "B"}]
         result = apply_filter(rows, "extra:x")
         assert [r["id"] for r in result] == ["A"]
 
 
 class TestApplySortLimit:
-    """Tests for the shared --sort-by/--limit helper."""
-
     def test_no_sort_no_limit_returns_rows_unchanged(self) -> None:
         assert apply_sort_limit(_ROWS, None, None) == _ROWS
 
@@ -284,7 +281,6 @@ class TestApplySortLimit:
         assert [r["id"] for r in result] == ["C", "A", "B"]
 
     def test_missing_field_sorts_last_descending(self) -> None:
-        """Missing values stay at the bottom under :desc too, not flip to the top."""
         rows = [{"id": "A", "n": 2}, {"id": "B"}, {"id": "C", "n": 1}]
         result = apply_sort_limit(rows, "n:desc", None)
         assert [r["id"] for r in result] == ["A", "C", "B"]
@@ -300,15 +296,12 @@ class TestApplySortLimit:
         assert [r["id"] for r in result] == ["A", "B", "C"]
 
     def test_non_numeric_column_falls_back_to_string_sort(self) -> None:
-        """A column that isn't uniformly numeric-coercible sorts as text."""
         rows = [{"id": "A", "n": "10"}, {"id": "B", "n": "abc"}, {"id": "C", "n": "2"}]
         result = apply_sort_limit(rows, "n", None)
         assert [r["id"] for r in result] == ["A", "C", "B"]
 
 
 class TestResolveColumns:
-    """Tests for the shared --columns validator."""
-
     def test_none_returns_default_columns(self) -> None:
         assert resolve_columns(["id", "label"], None) == ["id", "label"]
 
@@ -320,17 +313,10 @@ class TestResolveColumns:
             resolve_columns(["id", "label"], "id,bogus")
 
     def test_comma_only_raises_usage_error(self) -> None:
-        """`--columns ","` must not silently resolve to an empty list --
-        print_output treats an empty `columns` as falsy and falls through
-        to JSON regardless of the requested table/quiet format.
-        """
         with pytest.raises(click.UsageError, match="no column names found"):
             resolve_columns(["id", "label"], ",")
 
     def test_explicit_empty_string_raises_usage_error(self) -> None:
-        """`--columns ''` is a caller mistake, not "use the defaults" --
-        only omitting the flag entirely (None) means that.
-        """
         with pytest.raises(click.UsageError, match="no column names found"):
             resolve_columns(["id", "label"], "")
 
@@ -340,8 +326,6 @@ class TestResolveColumns:
 
 
 class TestParseBatchText:
-    """Tests for the _parse_batch_text parsing helper."""
-
     def test_empty_text_yields_empty_list(self) -> None:
         assert _parse_batch_text("") == []
         assert _parse_batch_text("   \n  \n") == []
@@ -381,8 +365,6 @@ def _batch_probe(yes: bool, dry_run: bool, batch_ids: list[str] | None) -> None:
 
 
 class TestBatchOption:
-    """Tests for the @batch_option decorator."""
-
     def test_no_batch_flag_injects_none(self) -> None:
         result = CliRunner().invoke(_batch_probe, [])
         assert result.exit_code == 0
@@ -424,13 +406,6 @@ class TestBatchOption:
         assert "requires --yes or --dry-run" in result.output
 
     def test_dash_rejects_interactive_terminal(self) -> None:
-        """--batch - must refuse to read on a tty rather than block forever
-        waiting for an EOF that never comes, even with --yes given.
-
-        CliRunner's captured stdin always reports isatty()=False, so this
-        goes around it and calls .main() directly with a mocked sys.stdin,
-        rather than through CliRunner.invoke().
-        """
         with patch("xnatctl.cli.common.batch.sys.stdin") as mock_stdin:
             mock_stdin.isatty.return_value = True
             with pytest.raises(click.UsageError, match="interactive terminal"):
@@ -438,9 +413,6 @@ class TestBatchOption:
             mock_stdin.read.assert_not_called()
 
     def test_empty_batch_text_is_a_usage_error(self, tmp_path: Any) -> None:
-        """A --batch file that is present but parses to no IDs must be its
-        own clear error, not silently read as "--batch was not given".
-        """
         path = tmp_path / "empty.txt"
         path.write_text("")
         result = CliRunner().invoke(_batch_probe, ["--batch", str(path)])

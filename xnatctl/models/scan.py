@@ -24,7 +24,6 @@ class Scan(XNATResource):
     file_count: int | None = Field(None, alias="file_count", description="Number of files")
     file_size: int | None = Field(None, alias="file_size", description="Total file size in bytes")
 
-    # Parent references
     session_id: str | None = Field(None, description="Parent session ID")
     project: str | None = Field(None, description="Parent project ID")
 

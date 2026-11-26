@@ -20,12 +20,6 @@ from .base import BaseService
 
 
 def _expect_list(data: Any, path: str) -> list[dict[str, Any]]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``[]``.
-
-    See ``xnatctl.services.commands._expect_list`` for the same reasoning:
-    a server that answers 200 with something other than a JSON array is a
-    shape xnatctl does not understand, not "no results".
-    """
     if not isinstance(data, list):
         raise XNATCtlError(
             f"Unexpected response from GET {path}: expected a JSON array, "
@@ -35,7 +29,6 @@ def _expect_list(data: Any, path: str) -> list[dict[str, Any]]:
 
 
 def _expect_dict(data: Any, path: str) -> dict[str, Any]:
-    """Raise instead of silently coercing an unexpected 2xx shape to ``{}``. See :func:`_expect_list`."""
     if not isinstance(data, dict):
         raise XNATCtlError(
             f"Unexpected response from {path}: expected a JSON object, got {type(data).__name__}."

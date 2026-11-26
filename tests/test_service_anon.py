@@ -1,11 +1,3 @@
-"""Unit tests for AnonymizeService.
-
-Fixture shapes and status codes are the real ones observed live against
-XNAT 1.9.2.1 -- 204 on an unset project script, a raw 500 (not 404) for a
-project-scoped route when the project does not exist, and the ``enable``
-query-parameter/JSON-body contract on the ``.../enabled`` routes.
-"""
-
 from __future__ import annotations
 
 import pytest
@@ -17,8 +9,6 @@ PROJECT_EXISTS_RESPONSE = {"ResultSet": {"Result": [{"ID": "PROJ01"}]}}
 
 
 class TestGetSiteScript:
-    """Tests for AnonymizeService.get_site_script/set_site_script."""
-
     def test_get_site_script(self, fake_client, response_factory) -> None:
         fake_client.get.return_value = response_factory(
             text='version "6.1"\n(0010,0010) := subject', content_type="text/plain"
@@ -44,8 +34,6 @@ class TestGetSiteScript:
 
 
 class TestGetDefaultScript:
-    """Tests for AnonymizeService.get_default_script -- the read-only built-in template."""
-
     def test_get_default_script(self, fake_client, response_factory) -> None:
         fake_client.get.return_value = response_factory(
             text="// Default XNAT anonymization script", content_type="text/plain"
@@ -59,8 +47,6 @@ class TestGetDefaultScript:
 
 
 class TestSiteEnabled:
-    """Tests for AnonymizeService.site_enabled/set_site_enabled."""
-
     def test_site_enabled_reads_bare_boolean(self, fake_client) -> None:
         fake_client.get_json.return_value = True
         service = AnonymizeService(fake_client)
@@ -71,10 +57,6 @@ class TestSiteEnabled:
     def test_set_site_enabled_sends_query_param_and_json_body(
         self, fake_client, response_factory
     ) -> None:
-        """The ``enable`` query parameter carries the real value -- the JSON body's
-        content is never read by the server, but a JSON Content-Type is required
-        or the route answers 415 (verified live).
-        """
         fake_client.put.return_value = response_factory(text="", content_type="application/json")
         service = AnonymizeService(fake_client)
 
@@ -89,8 +71,6 @@ class TestSiteEnabled:
 
 
 class TestGetProjectScript:
-    """Tests for AnonymizeService.get_project_script."""
-
     def test_get_project_script_present(self, fake_client, response_factory) -> None:
         fake_client.get.side_effect = [
             response_factory(PROJECT_EXISTS_RESPONSE),
@@ -105,7 +85,6 @@ class TestGetProjectScript:
     def test_get_project_script_unset_returns_none_on_204(
         self, fake_client, response_factory
     ) -> None:
-        """204 (empty body) means "no override" -- not an error, not "" mistaken for content."""
         fake_client.get.side_effect = [
             response_factory(PROJECT_EXISTS_RESPONSE),
             response_factory(text="", content_type="text/plain", status_code=204),
@@ -115,9 +94,6 @@ class TestGetProjectScript:
         assert service.get_project_script("PROJ01") is None
 
     def test_get_project_script_unknown_project_raises(self, fake_client) -> None:
-        """The route itself answers a raw 500 for an unknown project (verified live);
-        the project-existence preflight must turn that into a clean 404 first.
-        """
         fake_client.get.side_effect = ResourceNotFoundError("project", "NOSUCH")
         service = AnonymizeService(fake_client)
 
@@ -126,8 +102,6 @@ class TestGetProjectScript:
 
 
 class TestSetProjectScript:
-    """Tests for AnonymizeService.set_project_script."""
-
     def test_set_project_script(self, fake_client, response_factory) -> None:
         fake_client.get.return_value = response_factory(PROJECT_EXISTS_RESPONSE)
         fake_client.put.return_value = response_factory(text="", content_type="text/plain")
@@ -143,12 +117,9 @@ class TestSetProjectScript:
 
 
 class TestProjectEnabled:
-    """Tests for AnonymizeService.project_enabled."""
-
     def test_project_enabled_false_when_no_script_ever_set(
         self, fake_client, response_factory
     ) -> None:
-        """This route does not require a script to exist -- unlike the PUT form."""
         fake_client.get.return_value = response_factory(PROJECT_EXISTS_RESPONSE)
         fake_client.get_json.return_value = False
         service = AnonymizeService(fake_client)
@@ -158,8 +129,6 @@ class TestProjectEnabled:
 
 
 class TestProjectHasScript:
-    """Tests for AnonymizeService.project_has_script -- distinguishes unset from disabled."""
-
     def test_true_when_config_history_exists(self, fake_client, response_factory) -> None:
         fake_client.get.return_value = response_factory(
             {"ResultSet": {"Result": [{"status": "disabled"}]}}
@@ -177,21 +146,19 @@ class TestProjectHasScript:
 
 
 class TestCheckProjectEnableScope:
-    """Tests for AnonymizeService.check_project_enable_scope -- the enable/disable preflight."""
-
     def test_passes_when_script_configured(self, fake_client, response_factory) -> None:
         fake_client.get.side_effect = [
-            response_factory(PROJECT_EXISTS_RESPONSE),  # project exists
-            response_factory({"ResultSet": {"Result": [{"status": "enabled"}]}}),  # has script
+            response_factory(PROJECT_EXISTS_RESPONSE),
+            response_factory({"ResultSet": {"Result": [{"status": "enabled"}]}}),
         ]
         service = AnonymizeService(fake_client)
 
-        service.check_project_enable_scope("PROJ01")  # must not raise
+        service.check_project_enable_scope("PROJ01")
 
     def test_raises_when_no_script_ever_set(self, fake_client, response_factory) -> None:
         fake_client.get.side_effect = [
-            response_factory(PROJECT_EXISTS_RESPONSE),  # project exists
-            ResourceNotFoundError("resource", "path"),  # no config row at all
+            response_factory(PROJECT_EXISTS_RESPONSE),
+            ResourceNotFoundError("resource", "path"),
         ]
         service = AnonymizeService(fake_client)
 
@@ -199,22 +166,16 @@ class TestCheckProjectEnableScope:
             service.check_project_enable_scope("PROJ01")
 
     def test_passes_when_script_disabled_but_present(self, fake_client, response_factory) -> None:
-        """Regression: a DISABLED project script must NOT be mistaken for "never set" --
-        GET /xapi/anonymize/projects/{p} answers 204 in both cases, so this preflight
-        must consult the config-history route instead, which reports disabled entries.
-        """
         fake_client.get.side_effect = [
             response_factory(PROJECT_EXISTS_RESPONSE),
             response_factory({"ResultSet": {"Result": [{"status": "disabled"}]}}),
         ]
         service = AnonymizeService(fake_client)
 
-        service.check_project_enable_scope("PROJ01")  # must not raise
+        service.check_project_enable_scope("PROJ01")
 
 
 class TestSetProjectEnabled:
-    """Tests for AnonymizeService.set_project_enabled."""
-
     def test_set_project_enabled_sends_query_param(self, fake_client, response_factory) -> None:
         fake_client.get.side_effect = [
             response_factory(PROJECT_EXISTS_RESPONSE),

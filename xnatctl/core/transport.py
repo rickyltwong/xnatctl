@@ -34,6 +34,7 @@ from xnatctl.core.exceptions import (
 from xnatctl.core.exceptions import (
     RequestTimeoutError as XNATTimeoutError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.redact import redact_url_query
 from xnatctl.core.retry import (
     _AMBIGUOUS_RETRY_CODES,
@@ -94,29 +95,21 @@ def drop_cookies_off_server(server_url: str) -> Callable[[httpx.Request], None]:
 
 
 def _body_snippet(resp: httpx.Response) -> str:
-    """Return a short, redacted snippet of a response body for error details."""
     try:
         return redact_url_query(resp.text[:_BODY_SNIPPET_CHARS])
-    except Exception:  # noqa: BLE001  # best-effort response-body read for an error-message snippet
+    except Exception:
+        logger.exception("could not build the error body snippet", extra={FILE_ONLY_ATTR: True})
         return ""
 
 
 def _read_stream_body(resp: httpx.Response) -> None:
-    """Buffer a streaming response's body so ``.text`` is available for errors.
-
-    httpx will not expose ``.text`` on a streamed response until it is read.
-    Guarded because a truncated error body must not eclipse the status it
-    describes.
-    """
     try:
         resp.read()
-    except Exception:  # noqa: BLE001  # a truncated error body must not eclipse the status it describes
-        pass
+    except Exception:
+        logger.exception("could not read the error response body", extra={FILE_ONLY_ATTR: True})
 
 
-# Transport failures worth translating when opening a stream: the same set
-# ``request`` handles, so no raw httpx exception escapes either path.
-_STREAM_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
+_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
     httpx.ConnectTimeout,
     httpx.ConnectError,
     httpx.TimeoutException,
@@ -126,16 +119,6 @@ _STREAM_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (
 
 
 def _raise_for_xnat_status(base_url: str, resp: httpx.Response, method: str, path: str) -> None:
-    """Raise the typed exception a terminal error status maps to.
-
-    The single home for XNAT's status->exception mapping, shared by the
-    ``request`` ladder and ``stream``. Returns without raising for 2xx and
-    for retryable statuses, whose retry/reauth control flow stays with each
-    caller -- this helper only owns the raising. A 401 maps straight to
-    :class:`SessionExpiredError`; the decision to reauth first belongs to
-    the caller. For 4xx/5xx bodies used in the message, the response must
-    already be readable (a streaming response needs ``read()`` first).
-    """
     code = resp.status_code
     if code == 401:
         expired_err = SessionExpiredError(base_url)
@@ -161,7 +144,7 @@ def _raise_for_xnat_status(base_url: str, resp: httpx.Response, method: str, pat
         raise ServerError(code, method, path, _body_snippet(resp))
 
 
-def _stream_transport_error(
+def _transport_error(
     base_url: str,
     exc: Exception,
     *,
@@ -170,13 +153,6 @@ def _stream_transport_error(
     read_timeout: int,
     may_retry_after_send: bool,
 ) -> Exception:
-    """Translate a stream-open transport failure, mirroring ``request``.
-
-    Returns a retryable ``last_error`` for failures that may be retried, or
-    raises the terminal typed error for the fail-fast cases (connect
-    timeout, permanent transport errors, and send-phase failures on a
-    non-idempotent method).
-    """
     if isinstance(exc, httpx.ConnectTimeout):
         raise XNATTimeoutError(base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from exc
     if isinstance(exc, httpx.ConnectError):
@@ -193,7 +169,6 @@ def _stream_transport_error(
                 "automatically - check server state before repeating it.",
             ) from exc
         return NetworkError(base_url, f"Timeout after {read_timeout}s")
-    # RETRYABLE_TRANSPORT_ERRORS: send-phase hazard, same idempotency rule.
     if not may_retry_after_send:
         raise NetworkError(
             base_url,
@@ -245,12 +220,6 @@ def stream(
 
     attempt = 0
     while attempt <= client.max_retries:
-        # Send the session cookie explicitly per call rather than mutating
-        # the shared ``client.cookies`` jar (the httpx-0.28 workaround
-        # ``request`` uses): stream() runs on parallel worker threads over
-        # one shared httpx.Client, and mutating the shared jar there races.
-        # The token is read once so the reauth path below can tell whether
-        # another thread already refreshed it while this call was in flight.
         token_at_send = client.session_token
         call_headers = dict(headers) if headers else {}
         if token_at_send:
@@ -268,8 +237,8 @@ def stream(
                 timeout=request_timeout,
             )
             response = http_client.send(request, auth=auth, stream=True)
-        except _STREAM_TRANSPORT_ERRORS as e:
-            last_error = _stream_transport_error(
+        except _TRANSPORT_ERRORS as e:
+            last_error = _transport_error(
                 client.base_url,
                 e,
                 method_upper=method_upper,
@@ -300,9 +269,6 @@ def stream(
             if code == 401 and can_reauth:
                 response.close()
                 with client._reauth_lock:
-                    # A parallel stream may have refreshed the session
-                    # while this request was in flight; reuse its token
-                    # instead of opening yet another server session.
                     if client.session_token == token_at_send:
                         client.authenticate()
                 did_reauth = True
@@ -327,8 +293,6 @@ def stream(
                     retry_after = _retry_after_seconds(response)
                     delay = retry_after if retry_after is not None else _backoff_delay(attempt)
                     response.close()
-                    # WARNING for the same reason ``request`` warns: a silent
-                    # retry storm reads as "the download is hanging".
                     logger.warning(
                         "HTTP %d on %s %s; retrying in %.1fs%s (attempt %d/%d)",
                         code,
@@ -346,8 +310,6 @@ def stream(
                 raise RetryExhaustedError("request", client.max_retries + 1, last_error)
 
             if code >= 400:
-                # Terminal error: read the body so the typed exception can
-                # quote it, then map and raise through the shared helper.
                 _read_stream_body(response)
                 try:
                     _raise_for_xnat_status(client.base_url, response, method, path)
@@ -357,8 +319,6 @@ def stream(
             try:
                 yield response
             except httpx.TimeoutException as e:
-                # Mid-body failures are translated but never retried: a
-                # partially consumed stream cannot be resumed.
                 raise XNATTimeoutError(
                     client.base_url,
                     read_timeout,
@@ -374,7 +334,6 @@ def stream(
                 response.close()
             return
 
-        # Transport failure left a retryable ``last_error``; back off.
         if attempt < client.max_retries:
             delay = _backoff_delay(attempt)
             logger.warning(
@@ -392,7 +351,7 @@ def stream(
     raise RetryExhaustedError("request", client.max_retries + 1, last_error)
 
 
-def request(  # noqa: C901  # pre-existing; see pyproject
+def request(
     client: XNATClient,
     method: str,
     path: str,
@@ -450,9 +409,6 @@ def request(  # noqa: C901  # pre-existing; see pyproject
     http_client = client._get_client()
     retry_budget = client.max_retries if max_retries is None else max_retries
 
-    # Read/write ceiling for this call (int, also used in error messages).
-    # Wrapped in a structured httpx.Timeout so a per-request override cannot
-    # re-flatten connect back to the multi-hour scalar.
     read_timeout = timeout or client.timeout
     request_timeout = build_httpx_timeout(read_timeout)
     last_error: Exception | None = None
@@ -485,13 +441,6 @@ def request(  # noqa: C901  # pre-existing; see pyproject
                 timeout=request_timeout,
             )
 
-            # One line per attempt is the backbone of `-v` diagnostics: it
-            # is what tells a user whether a slow command is stuck on one
-            # request or grinding through retries. The full URL
-            # goes through redaction -- query strings carry tokens.
-            # Rounded once, then reused for both the message and the typed
-            # field -- %d on the raw float would TRUNCATE (1.6ms -> "1ms")
-            # while the field rounded (-> 2), so the two disagreed.
             duration_ms = round((time.monotonic() - started) * 1000)
             logger.debug(
                 "%s %s -> %d in %dms (attempt %d/%d)",
@@ -510,7 +459,6 @@ def request(  # noqa: C901  # pre-existing; see pyproject
                 },
             )
 
-            # Handle auth errors
             if resp.status_code == 401:
                 if client.auto_reauth and not did_reauth and client.username and client.password:
                     logger.debug("401 on %s %s; re-authenticating and retrying once", method, path)
@@ -533,20 +481,11 @@ def request(  # noqa: C901  # pre-existing; see pyproject
             if resp.status_code in (403, 404):
                 _raise_for_xnat_status(client.base_url, resp, method, path)
 
-            # Retry on retryable statuses; on exhaustion raise a typed
-            # RetryExhaustedError rather than leaking httpx.HTTPStatusError.
             if resp.status_code in RETRYABLE_STATUS_CODES:
                 last_error = ServerError(resp.status_code, method, path, _body_snippet(resp))
 
-                # 429/503 retry on any method; 500/502/504 only where a
-                # repeat is safe, because the request may already have run.
                 if resp.status_code in _AMBIGUOUS_RETRY_CODES and not may_retry_after_send:
                     ambiguous = ServerError(resp.status_code, method, path, _body_snippet(resp))
-                    # The reason goes in the hint, not the message: the
-                    # message is the one line the CLI always prints, and
-                    # the hint is where it puts the next step. Without it
-                    # operator sees "HTTP 504" and reasonably assumes the
-                    # request did nothing.
                     ambiguous.hint = (
                         f"The server sent {resp.status_code} after receiving the "
                         f"{method.upper()}, so it may have partially executed. It was "
@@ -556,13 +495,8 @@ def request(  # noqa: C901  # pre-existing; see pyproject
                     raise ambiguous
 
                 if attempt < retry_budget:
-                    # An explicit Retry-After is an instruction, so it is used
-                    # verbatim; only our own backoff gets jitter.
                     retry_after = _retry_after_seconds(resp)
                     delay = retry_after if retry_after is not None else _backoff_delay(attempt)
-                    # WARNING, not DEBUG: a retry storm is the single most
-                    # common cause of "xnatctl is hanging", and the user
-                    # needs to see it happening.
                     logger.warning(
                         "HTTP %d on %s %s; retrying in %.1fs%s (attempt %d/%d)",
                         resp.status_code,
@@ -578,57 +512,23 @@ def request(  # noqa: C901  # pre-existing; see pyproject
                     continue
                 raise RetryExhaustedError("request", retry_budget + 1, last_error)
 
-            # Non-retryable error status: surface a typed error, never a raw
-            # httpx.HTTPStatusError (401/403/404 are already handled above).
             if resp.status_code >= 400:
                 _raise_for_xnat_status(client.base_url, resp, method, path)
 
             return resp
 
-        except httpx.ConnectTimeout as e:
-            # Fail fast: the connect phase timed out (host blackholed /
-            # firewall-DROPped). A typed RequestTimeoutError instead of the generic
-            # NetworkError bucket, and NOT retried -- an unreachable host will
-            # not recover within the backoff window, and the whole point of
-            # the split timeout is failing in seconds, not hours. (A future
-            # revision may add
-            # idempotency-aware connect retries.)
-            raise XNATTimeoutError(client.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
-        except httpx.ConnectError:
-            # Connect phase: the request never reached the server, so a retry
-            # cannot duplicate a side effect regardless of method.
-            last_error = ServerUnreachableError(client.base_url)
-        except httpx.TimeoutException as e:
-            # Read/write/pool phase: the server HAS seen the request. Retrying
-            # a non-idempotent method here risks executing it twice.
-            if not may_retry_after_send:
-                raise XNATTimeoutError(
-                    client.base_url,
-                    read_timeout,
-                    f"{method.upper()} {path} timed out after the request was sent; "
-                    "it may have partially executed on the server. Not retried "
-                    "automatically - check server state before repeating it.",
-                ) from e
-            last_error = NetworkError(client.base_url, f"Timeout after {read_timeout}s")
-        except PERMANENT_TRANSPORT_ERRORS as e:
-            # Wrong scheme, malformed URL, undecodable body: retrying cannot
-            # help, so fail now with a typed error rather than after backoff.
-            raise NetworkError(client.base_url, f"{type(e).__name__}: {e}") from e
-        except RETRYABLE_TRANSPORT_ERRORS as e:
-            # Socket died mid-exchange / proxy hiccup. Same send-phase hazard
-            # as a read timeout, so it obeys the same idempotency rule.
-            if not may_retry_after_send:
-                raise NetworkError(
-                    client.base_url,
-                    f"{type(e).__name__} on {method.upper()} {path} after the request "
-                    "was sent; it may have partially executed on the server. "
-                    "Not retried automatically.",
-                ) from e
-            last_error = NetworkError(client.base_url, f"{type(e).__name__}: {e}")
+        except _TRANSPORT_ERRORS as e:
+            last_error = _transport_error(
+                client.base_url,
+                e,
+                method_upper=method.upper(),
+                path=path,
+                read_timeout=read_timeout,
+                may_retry_after_send=may_retry_after_send,
+            )
         except (AuthenticationError, ResourceNotFoundError):
             raise
 
-        # Retry with full-jitter backoff.
         if attempt < retry_budget:
             delay = _backoff_delay(attempt)
             logger.warning(

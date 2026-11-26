@@ -14,13 +14,14 @@ module re-exports the client, config, service classes, resource/progress
 models, and the full exception hierarchy as the supported public surface.
 """
 
+import logging
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING
 
 try:
     __version__ = version("xnatctl")
-except PackageNotFoundError:  # source checkout without an installed distribution
+except PackageNotFoundError:
     __version__ = "0.0.0.dev0"
 
 __author__ = "Ricky Wong"
@@ -69,12 +70,6 @@ from xnatctl.core.exceptions import (
     XNATCtlError,
 )
 
-# The client, config, service classes, and resource/progress models are
-# exported lazily (PEP 562): importing them eagerly nearly doubled cold
-# `import xnatctl` -- a cost every CLI invocation pays -- and pulls in
-# httpx/Rich/Click (via XNATClient) for names most programs never touch.
-# `from xnatctl import ProjectService` still works; it just imports the
-# submodule on first use.
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
     from xnatctl.core.config import Config, Profile
@@ -110,6 +105,10 @@ if TYPE_CHECKING:
     from xnatctl.services.sessions import SessionService
     from xnatctl.services.subjects import SubjectService
     from xnatctl.services.upload import UploadService
+
+# The library convention: records reach only the handlers an application
+# configures, never logging.lastResort on stderr.
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 _LAZY_EXPORTS = {
     "XNATClient": "xnatctl.core.client",
@@ -151,7 +150,6 @@ _LAZY_EXPORTS = {
 
 
 def __getattr__(name: str) -> object:
-    """Resolve the lazily-exported service and model names (PEP 562)."""
     module_path = _LAZY_EXPORTS.get(name)
     if module_path is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -161,7 +159,6 @@ def __getattr__(name: str) -> object:
 
 
 def __dir__() -> list[str]:
-    """Include the lazy exports so ``dir(xnatctl)`` shows the full surface."""
     return sorted(set(globals()) | set(_LAZY_EXPORTS))
 
 

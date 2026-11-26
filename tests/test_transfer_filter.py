@@ -1,5 +1,3 @@
-"""Tests for transfer filter engine."""
-
 from __future__ import annotations
 
 import pytest
@@ -93,8 +91,6 @@ class TestFilterSessionResources:
         assert engine.should_include_session_resource("xnat:mrSessionData", "QC") is True
 
     def test_excludes_when_not_in_include_list(self, engine: FilterEngine) -> None:
-        # The fixture config has resources with default ALL
-        # but the xsi_type filter is set; for a non-matching xsi_type it returns False
         assert engine.should_include_session_resource("xnat:petSessionData", "QC") is False
 
     def test_includes_matching_resource(self) -> None:

@@ -1,20 +1,3 @@
-"""Coverage for the gradual-DICOM upload scheduler.
-
-The gradual transport sends one HTTP request per file, and the order it picks
-is deliberate rather than incidental:
-
-* a small sequential *warm-up* runs before going wide, because XNAT returns
-  transient 400s while a session/scan is still being created in the
-  prearchive, and several workers hitting that cold start at once turns one
-  retry into many;
-* the remaining files are then interleaved *round-robin across scans*, so XNAT
-  builds every scan concurrently instead of finishing scan 1 before scan 2
-  starts.
-
-Both were untested. These drive the real scheduler with the per-file uploader
-faked out, so the assertions are about ordering and accounting.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -41,7 +24,6 @@ def service() -> UploadService:
 
 
 def session_tree(root: Path, scans: dict[str, int]) -> Path:
-    """Build the standard `scans/<id>/resources/DICOM/files/` session layout."""
     for scan_id, count in scans.items():
         files_dir = root / "scans" / scan_id / "resources" / "DICOM" / "files"
         files_dir.mkdir(parents=True)
@@ -55,7 +37,6 @@ def record_uploads(
     *,
     fail: Callable[[Path], bool] = lambda _p: False,
 ) -> list[Path]:
-    """Fake the per-file uploader, recording call order."""
     order: list[Path] = []
 
     def fake_upload_one(**kwargs: object) -> tuple[str, bool, str]:
@@ -72,22 +53,13 @@ def record_uploads(
 
 
 def scan_of(path: Path) -> str:
-    """Recover the scan id from a session-layout path."""
     parts = path.parts
     return parts[parts.index("scans") + 1]
-
-
-# =============================================================================
-# Round-robin interleaving
-# =============================================================================
 
 
 def test_files_are_interleaved_across_scans(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Uploading scan 1 to completion before starting scan 2 would leave XNAT
-    building one scan at a time.
-    """
     root = session_tree(tmp_path / "sess", {"1": 4, "2": 4, "3": 4})
     order = record_uploads(monkeypatch)
 
@@ -98,8 +70,6 @@ def test_files_are_interleaved_across_scans(
     assert summary.success is True
     assert len(order) == 12
 
-    # After the warm-up (one file per scan), the tail must alternate rather
-    # than run in blocks.
     tail = [scan_of(p) for p in order[3:]]
     assert tail == ["1", "2", "3", "1", "2", "3", "1", "2", "3"]
 
@@ -107,9 +77,6 @@ def test_files_are_interleaved_across_scans(
 def test_warmup_takes_one_file_from_each_scan_first(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The warm-up exists to create each scan once, quietly, before the wide
-    phase can pile onto a cold prearchive.
-    """
     root = session_tree(tmp_path / "sess", {"1": 5, "2": 5})
     order = record_uploads(monkeypatch)
 
@@ -123,9 +90,6 @@ def test_warmup_takes_one_file_from_each_scan_first(
 def test_uneven_scans_drain_without_dropping_files(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A short scan empties early; the round-robin must drop that queue and
-    keep cycling the rest rather than stalling or repeating.
-    """
     root = session_tree(tmp_path / "sess", {"1": 1, "2": 5, "3": 2})
     order = record_uploads(monkeypatch)
 
@@ -143,9 +107,6 @@ def test_uneven_scans_drain_without_dropping_files(
 def test_files_outside_the_scan_layout_are_still_uploaded(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Loose files have no scan id; they go in an `_other` queue rather than
-    being silently skipped.
-    """
     root = session_tree(tmp_path / "sess", {"1": 2})
     (root / "loose_a.dcm").write_bytes(b"\x00" * 128 + b"DICM")
     (root / "loose_b.dcm").write_bytes(b"\x00" * 128 + b"DICM")
@@ -164,7 +125,6 @@ def test_files_outside_the_scan_layout_are_still_uploaded(
 def test_numeric_scan_ids_sort_numerically_not_lexically(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Lexical ordering would put scan 10 before scan 2."""
     root = session_tree(tmp_path / "sess", {"2": 1, "10": 1, "1": 1})
     order = record_uploads(monkeypatch)
 
@@ -175,17 +135,9 @@ def test_numeric_scan_ids_sort_numerically_not_lexically(
     assert [scan_of(p) for p in order] == ["1", "2", "10"]
 
 
-# =============================================================================
-# Accounting
-# =============================================================================
-
-
 def test_per_file_failures_are_tallied_not_raised(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One bad file must not abort an upload of thousands -- that is the whole
-    reason to prefer gradual over a single batch archive.
-    """
     root = session_tree(tmp_path / "sess", {"1": 4})
     order = record_uploads(monkeypatch, fail=lambda p: p.name.endswith("_002.dcm"))
 
@@ -197,18 +149,12 @@ def test_per_file_failures_are_tallied_not_raised(
     assert summary.failed == 1
     assert summary.succeeded == 3
     assert any("_002.dcm" in e for e in summary.errors)
-    # The healthy files are attempted exactly once.
     assert sum(1 for p in order if not p.name.endswith("_002.dcm")) == 3
 
 
 def test_a_persistently_failing_file_is_retried_twice_then_given_up_on(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Failures get two further passes -- one at reduced concurrency, then a
-    sequential one -- because the usual cause is XNAT contention rather than a
-    bad file. Three attempts total, and then it is reported, not retried
-    forever.
-    """
     root = session_tree(tmp_path / "sess", {"1": 2})
     order = record_uploads(monkeypatch, fail=lambda p: p.name.endswith("_001.dcm"))
 
@@ -224,9 +170,6 @@ def test_a_persistently_failing_file_is_retried_twice_then_given_up_on(
 def test_a_file_that_recovers_on_retry_counts_as_succeeded(
     service: UploadService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The retry passes exist to absorb transient prearchive 400s; a file that
-    works the second time must not be reported as a failure.
-    """
     root = session_tree(tmp_path / "sess", {"1": 3})
     seen: dict[str, int] = {}
 
@@ -319,24 +262,9 @@ def test_empty_directory_reports_failure_without_uploading(
     assert order == []
 
 
-# =============================================================================
-# Instance reuse (GradualUploadRun.run() must not leak state between calls)
-# =============================================================================
-
-
 def test_reusing_a_run_instance_does_not_leak_state_between_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A second ``run()`` on the same ``GradualUploadRun`` must start clean.
-
-    ``UploadService`` always builds a fresh ``GradualUploadRun`` per call, so
-    this never happens through the CLI or the service layer -- but the class
-    is directly importable, and nothing about its constructor signals that an
-    instance is single-use. Without a reset, a second run would retry the
-    first run's failures, add the first run's ``completed`` count on top of
-    the second run's (impossible progress like "5/2"), and report failures
-    for files that were never part of the second run at all.
-    """
     from xnatctl.services.upload.gradual import GradualUploadRun
     from xnatctl.services.upload.gradual_client import GradualClientPool
 
@@ -395,15 +323,7 @@ def test_reusing_a_run_instance_does_not_leak_state_between_runs(
     assert summary2.succeeded == 2, "first run's completed count leaked into the second"
     assert summary2.failed == 0, "first run's failure (bad.dcm) leaked into the second"
     assert summary2.errors == [], "first run's error leaked into the second run's summary"
-    # start_time was constructed as 0.0 (epoch); if run() failed to re-stamp
-    # it for this second call, duration would be ~time.time() (billions of
-    # seconds), not a fraction of a second.
     assert summary2.duration < 5, "the first run's start_time leaked into the second"
-
-
-# =============================================================================
-# Display-path fallbacks (paths outside display_root raise ValueError)
-# =============================================================================
 
 
 def _bare_run(tmp_path: Path) -> uploads.GradualUploadRun:
@@ -431,7 +351,6 @@ def _bare_run(tmp_path: Path) -> uploads.GradualUploadRun:
 
 
 def test_display_falls_back_to_name_for_paths_outside_the_root(tmp_path: Path) -> None:
-    """`relative_to` raises ValueError for a path outside display_root."""
     run = _bare_run(tmp_path)
     outside = tmp_path / "elsewhere" / "file.dcm"
     assert run.display(outside) == "file.dcm"

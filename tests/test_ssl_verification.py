@@ -1,5 +1,3 @@
-"""TLS verification must warn loudly, parse strictly, and support ca_bundle."""
-
 from __future__ import annotations
 
 import logging
@@ -21,7 +19,6 @@ def test_disabled_tls_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
 
 
 def test_ca_bundle_suppresses_warning(caplog: pytest.LogCaptureFixture) -> None:
-    """A ca_bundle is a secure path -- no scary warning even with verify_ssl False."""
     client = XNATClient(
         base_url="https://xnat.example.org", verify_ssl=False, ca_bundle=certifi.where()
     )
@@ -50,7 +47,7 @@ def test_ca_bundle_flows_to_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
         ("TRUE", True),
         ("1", True),
         ("yes", True),
-        ("True ", True),  # surrounding whitespace is stripped, not rejected
+        ("True ", True),
         ("false", False),
         ("0", False),
         ("no", False),

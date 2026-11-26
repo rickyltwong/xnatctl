@@ -31,12 +31,6 @@ class StreamedFile(NamedTuple):
 
 
 def _declared_content_length(response: httpx.Response) -> int | None:
-    """The Content-Length usable for byte-count verification, or None.
-
-    None when the header is absent, malformed, or negative -- and when a
-    non-identity Content-Encoding means httpx's decoded byte count would not
-    match the wire length anyway.
-    """
     if response.headers.get("content-encoding", "identity").lower() not in ("", "identity"):
         return None
     raw_length = response.headers.get("content-length")
@@ -81,9 +75,6 @@ def stream_to_file(
     Raises:
         DownloadError: On a Content-Length mismatch.
     """
-    # Unique per process and thread, so parallel workers (or two commands)
-    # aiming at the same destination cannot truncate or unlink each other's
-    # in-flight temporary.
     part = dest.with_name(f"{dest.name}.{os.getpid()}-{threading.get_ident()}.part")
     bytes_written = 0
     content_length: int | None = None

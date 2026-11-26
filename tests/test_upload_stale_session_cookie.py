@@ -1,17 +1,3 @@
-"""A refreshed session token has to reach XNAT, not the dead session XNAT set.
-
-XNAT answers a request on an expired session with 401 and a Set-Cookie for a
-new anonymous JSESSIONID under its own path (``/xnat``). An httpx client keeps
-that cookie, and from then on sends it ahead of any ``cookies=`` value; XNAT
-reads the first one. So the retry after a session refresh still went out as the
-dead session: an 85,140-file ``upload-exam`` whose file scan outlived XNAT's
-15-minute session timeout got 401 on every warmup file after six successful
-re-logins, and the circuit breaker aborted the whole upload.
-
-The fake server below copies what XNAT did on prod: 401 plus Set-Cookie for
-any request whose first JSESSIONID is not the live token.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -44,7 +30,6 @@ def _xnat(request: httpx.Request) -> httpx.Response:
 
 @contextmanager
 def _fake_xnat(module: str) -> Iterator[list[httpx.Request]]:
-    """Route every httpx.Client the module builds through the fake server."""
     seen: list[httpx.Request] = []
     real_client = httpx.Client
 
@@ -54,7 +39,7 @@ def _fake_xnat(module: str) -> Iterator[list[httpx.Request]]:
 
     def factory(**kwargs: object) -> httpx.Client:
         kwargs["transport"] = httpx.MockTransport(recording)
-        return real_client(**kwargs)  # type: ignore[arg-type]
+        return real_client(**kwargs)
 
     with patch(f"{module}.httpx.Client", factory):
         yield seen

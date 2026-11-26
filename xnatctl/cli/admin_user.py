@@ -7,7 +7,6 @@ from typing import Any
 
 import click
 
-from xnatctl.cli.admin import admin
 from xnatctl.cli.common import (
     Context,
     apply_filter,
@@ -32,7 +31,7 @@ from xnatctl.services.projects import ProjectService
 from xnatctl.services.users import UserService
 
 
-@admin.group()
+@click.group()
 def user() -> None:
     """User management commands."""
     pass
@@ -65,7 +64,6 @@ def user_add(
     service = AdminService(ctx.get_client())
     group_list = list(groups)
 
-    # Generate groups from projects if specified
     if projects:
         for proj in projects.split(","):
             proj = proj.strip()
@@ -76,7 +74,6 @@ def user_add(
         print_error("No groups specified")
         raise SystemExit(1)
 
-    # Add user to groups
     resp = service.put_user_groups(username, group_list)
 
     if resp.status_code == 200:
@@ -84,7 +81,6 @@ def user_add(
         for g in group_list:
             click.echo(f"  - {g}")
     elif resp.status_code == 202:
-        # Partial success
         try:
             failed = resp.json() if resp.content else group_list
         except json.JSONDecodeError:
@@ -236,12 +232,6 @@ def user_disable(ctx: Context, username: str, dry_run: bool) -> None:
 
 
 def _user_roles_mutating(kwargs: dict[str, Any]) -> bool:
-    """`confirm_destructive_when` predicate for `admin user roles`.
-
-    Raises the mutual-exclusion error here, ahead of the confirmation
-    prompt/audit write, rather than in the command body where it would only
-    run after the (unwarranted, for an invalid combination) prompt.
-    """
     grant_role = kwargs.get("grant_role")
     revoke_role = kwargs.get("revoke_role")
     if grant_role and revoke_role:

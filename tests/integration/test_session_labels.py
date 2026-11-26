@@ -1,17 +1,3 @@
-"""Live-server proof for ``session normalize-labels``.
-
-Creates two MR experiments on different dates for one subject in a project
-of its OWN, runs the label-normalization plan/apply cycle against the real
-XNAT, and asserts both the computed plan and the labels XNAT actually
-stores afterward.
-
-The dedicated project is load-bearing, not tidiness: normalization plans
-over an ENTIRE project, and the shared ``label_project`` fixture is
-also written to by the golden-path, sharing, anon, prearchive and container
-suites. Asserting a whole-project rename count against it passes alone and
-fails in a full run, because somebody else's experiment is in the plan too.
-"""
-
 from __future__ import annotations
 
 import uuid
@@ -25,11 +11,8 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def label_project(xnat_client: Any) -> Iterator[str]:
-    """A project used by this file alone, deleted afterward.
+    from xnatctl.core.exceptions import XNATCtlError
 
-    See the module docstring: this test asserts on a whole-project plan, so
-    it cannot share a project with anything else that creates experiments.
-    """
     project_id = f"xctl{uuid.uuid4().hex[:12]}"
     xnat_client.put(f"/data/projects/{project_id}")
     try:
@@ -37,7 +20,7 @@ def label_project(xnat_client: Any) -> Iterator[str]:
     finally:
         try:
             xnat_client.delete(f"/data/projects/{project_id}", params={"removeFiles": "true"})
-        except Exception as exc:  # noqa: BLE001  # teardown must not mask a test result
+        except XNATCtlError as exc:
             print(f"\nWARNING: could not delete test project {project_id}: {exc}")
 
 
@@ -79,6 +62,5 @@ class TestSessionNormalizeLabels:
         assert labels[exp1] == f"{subject}_01_SE01_MR"
         assert labels[exp2] == f"{subject}_02_SE01_MR"
 
-        # Re-planning against the now-normalized labels finds nothing left to do.
         replan = service.plan_label_normalization(label_project)
         assert replan["renames"] == []

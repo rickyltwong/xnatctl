@@ -1,30 +1,17 @@
-"""Diagnostics log file: ``--log-file`` / ``XNATCTL_LOG_FILE`` / config ``log_file:``.
-
-Covers the JSON-lines handler/formatter machinery in ``core/logging.py``
-directly, then the CLI wiring (flag/env/config precedence, the stderr-tier
-split, append-across-invocations, and a failing command still producing an
-artifact) through the real ``cli`` root group -- following the hidden-probe
-pattern already used by ``tests/test_global_options.py``.
-
-What this module deliberately does NOT re-test: retry/backoff numerics
-(``test_core_client_retry.py``), redaction of a plain log *message*
-(``test_logging_redaction.py``) -- only the traceback-redaction gap this
-feature closes is new here.
-"""
-
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
 import re
 import stat
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import click
 import httpx
+import pydicom
 import pytest
 from click.testing import CliRunner
 from conftest import config_seam
@@ -36,19 +23,21 @@ from xnatctl.core.config import Config, Profile
 from xnatctl.core.exceptions import ServerUnreachableError
 from xnatctl.core.fsutil import POSIX_PERMISSIONS
 from xnatctl.core.logging import (
+    FILE_ONLY_ATTR,
     LOG_FILE_BACKUP_COUNT,
+    DetailsWithheldError,
     JsonLinesFormatter,
     _JsonLinesFileHandler,
     install_log_file,
     new_correlation_id,
     remove_log_file,
+    withhold_details,
 )
 
 SECRET_URL = "https://xnat.example.org/data?token=s3cret"
 
 
 def read_lines(path: Path) -> list[dict]:
-    """Parse a JSON-lines diagnostics file into a list of records."""
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -58,34 +47,7 @@ _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 
 def _strip_timestamps(text: str) -> str:
-    """Normalize stderr's ``LOG_DATE_FORMAT`` timestamps before comparing.
-
-    Two invocations a moment apart can straddle a wall-clock second, which
-    would otherwise make an equality check on raw output flaky for no reason
-    related to what is actually being tested.
-    """
     return _TIMESTAMP_RE.sub("<TS>", text)
-
-
-@pytest.fixture
-def clean_root() -> Iterator[None]:
-    """Snapshot and restore the root logger, closing any handler this test added."""
-    root = logging.getLogger()
-    saved_handlers = list(root.handlers)
-    saved_level = root.level
-    try:
-        yield
-    finally:
-        for handler in root.handlers:
-            if handler not in saved_handlers:
-                handler.close()
-        root.handlers = saved_handlers
-        root.setLevel(saved_level)
-
-
-# =============================================================================
-# JsonLinesFormatter -- shape and redaction, in isolation
-# =============================================================================
 
 
 def _make_record(
@@ -97,7 +59,7 @@ def _make_record(
     extra: dict | None = None,
 ) -> logging.LogRecord:
     record = logging.LogRecord("xnatctl.core.transport", level, __file__, 1, msg, (), exc_info)
-    record.corr = corr  # type: ignore[attr-defined]
+    record.corr = corr
     for key, value in (extra or {}).items():
         setattr(record, key, value)
     return record
@@ -141,7 +103,6 @@ class TestJsonLinesFormatterShape:
         assert payload["duration_ms"] == 12
 
     def test_no_event_means_no_typed_fields(self) -> None:
-        """A plain message-only record (no extra=) must stay a bare envelope."""
         record = _make_record("plain line")
         payload = json.loads(JsonLinesFormatter().format(record))
         assert "method" not in payload
@@ -149,8 +110,6 @@ class TestJsonLinesFormatterShape:
 
 
 class TestJsonLinesFormatterTracebackRedaction:
-    """The gap RedactionFilter's own docstring flags as deferred: tracebacks."""
-
     def test_traceback_secret_is_redacted(self) -> None:
         try:
             raise RuntimeError(f"fetch failed: {SECRET_URL}")
@@ -171,6 +130,44 @@ class TestJsonLinesFormatterTracebackRedaction:
         payload = json.loads(JsonLinesFormatter().format(record))
         assert "plain failure, no urls here" in payload["exc"]
 
+    def test_traceback_session_cookie_is_redacted(self) -> None:
+        try:
+            raise ValueError("bad header: Cookie: JSESSIONID=ABCDEF0123456789")
+        except ValueError:
+            record = _make_record("Operation failed", level=logging.ERROR, exc_info=sys.exc_info())
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert "ABCDEF0123456789" not in payload["exc"]
+        assert "JSESSIONID=***" in payload["exc"]
+
+    def test_a_malformed_url_in_the_traceback_does_not_break_formatting(self) -> None:
+        try:
+            raise ValueError("bad url http://[x?token=s3cret")
+        except ValueError:
+            record = _make_record("Operation failed", level=logging.ERROR, exc_info=sys.exc_info())
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert "s3cret" not in payload["exc"]
+
+    def test_a_non_string_field_is_redacted_and_still_serializes(self) -> None:
+        record = _make_record(
+            "request",
+            extra={
+                "event": "http",
+                "method": b"Cookie: JSESSIONID=ABCDEF0123456789",
+                "status": 500,
+            },
+        )
+        record.attempt = {(1, 2): SECRET_URL}
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert "ABCDEF0123456789" not in payload["method"]
+        assert "s3cret" not in payload["attempt"]
+        assert payload["status"] == 500
+
     def test_no_exc_info_means_no_exc_key(self) -> None:
         record = _make_record("Operation failed", level=logging.ERROR)
         payload = json.loads(JsonLinesFormatter().format(record))
@@ -178,14 +175,6 @@ class TestJsonLinesFormatterTracebackRedaction:
 
 
 class TestJsonLinesFormatterExtraFieldRedaction:
-    """RedactionFilter only ever rewrites record.msg -- a string a call site
-    hands to the formatter through ``extra=`` (an ``event`` name, or a typed
-    field someone passes as a string) never goes through that filter at all.
-    The formatter has to enforce the "nothing secret-shaped reaches the
-    file" invariant itself, for every string-valued field, not rely on the
-    upstream filter alone.
-    """
-
     def test_a_secret_bearing_event_string_is_redacted(self) -> None:
         record = _make_record("plain message", extra={"event": SECRET_URL})
         payload = json.loads(JsonLinesFormatter().format(record))
@@ -217,14 +206,6 @@ class TestJsonLinesFormatterExtraFieldRedaction:
 
 @pytest.mark.usefixtures("clean_root")
 class TestCliCommonLoggerNamePinned:
-    """xnatctl/cli/common/errors.py's diagnostics logger must stay named
-    ``xnatctl.cli.common``, regardless of which submodule under the
-    ``cli/common/`` package the call happens to live in. A bare
-    ``logging.getLogger(__name__)`` there would silently rename it to
-    ``xnatctl.cli.common.errors``, an observable change to the JSON-lines
-    diagnostics artifact's ``logger`` field from a pure file-layout detail.
-    """
-
     def test_log_file_only_uses_the_pinned_logger_name(self, tmp_path: Path) -> None:
         from xnatctl.cli.common.errors import _log_file_only
 
@@ -237,11 +218,6 @@ class TestCliCommonLoggerNamePinned:
 
         (entry,) = read_lines(path)
         assert entry["logger"] == "xnatctl.cli.common"
-
-
-# =============================================================================
-# install_log_file -- handler wiring, permissions, rotation, level split
-# =============================================================================
 
 
 @pytest.mark.usefixtures("clean_root")
@@ -262,7 +238,7 @@ class TestInstallLogFile:
         path = tmp_path / "diag.log"
         install_log_file(path)
         install_log_file(path)
-        install_log_file(str(path))  # same path, different spelling
+        install_log_file(str(path))
 
         logging.getLogger("xnatctl.test.log_file").debug("once")
 
@@ -271,15 +247,10 @@ class TestInstallLogFile:
     def test_relative_path_spelling_resolves_to_the_same_handler(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Idempotency has to survive a genuinely different STRING, not just
-        ``Path`` vs. ``str`` of the identical absolute value -- a relative
-        path only resolves to the same file once ``Path.resolve()`` runs,
-        which is the exact mechanism this pins.
-        """
         path = tmp_path / "diag.log"
         monkeypatch.chdir(tmp_path)
-        install_log_file(path)  # absolute
-        install_log_file("diag.log")  # relative, same cwd -- same file
+        install_log_file(path)
+        install_log_file("diag.log")
 
         logging.getLogger("xnatctl.test.log_file").debug("once")
 
@@ -325,11 +296,6 @@ class TestInstallLogFile:
         assert backup.exists()
 
         if POSIX_PERMISSIONS:
-            # The rotated-away file inherits whatever mode it already had
-            # (0600, from _open()'s own opener) via the rename -- and the
-            # freshly reopened base file goes through that same opener
-            # again. Both must stay 0600, not just the one that happens to
-            # get checked elsewhere.
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
             assert stat.S_IMODE(backup.stat().st_mode) == 0o600
 
@@ -338,7 +304,7 @@ class TestInstallLogFile:
     ) -> None:
         from xnatctl.core.logging import setup_logging
 
-        setup_logging(quiet=True)  # stderr handler pinned to ERROR
+        setup_logging(quiet=True)
         stderr_handlers_before = [
             h for h in logging.getLogger().handlers if not isinstance(h, logging.FileHandler)
         ]
@@ -347,14 +313,11 @@ class TestInstallLogFile:
         install_log_file(tmp_path / "diag.log")
 
         assert logging.getLogger().level == logging.DEBUG
-        # The stderr handler's own level is untouched by activating the file.
         stderr_handlers_after = [
             h for h in logging.getLogger().handlers if not isinstance(h, logging.FileHandler)
         ]
         assert all(h.level == logging.ERROR for h in stderr_handlers_after)
 
-        # A later setup_logging() call (e.g. the subcommand's @global_options,
-        # running after root-level activation) must not undo the DEBUG drop.
         setup_logging(quiet=True)
         assert logging.getLogger().level == logging.DEBUG
         assert all(h.level == logging.ERROR for h in stderr_handlers_after)
@@ -369,13 +332,6 @@ class TestInstallLogFile:
 
 @pytest.mark.usefixtures("clean_root")
 class TestFileScopeFilter:
-    """Root has to sit at DEBUG for the file handler to see anything, which
-    would otherwise hand every OTHER at-DEBUG logger -- not just xnatctl's
-    own, PHI-vetted stream -- a free pass into a persisted file. Simulates a
-    third-party dependency (pynetdicom) directly, since it is not a project
-    dependency of the test env.
-    """
-
     def test_third_party_logger_is_excluded_from_the_file(self, tmp_path: Path) -> None:
         path = tmp_path / "diag.log"
         install_log_file(path)
@@ -390,7 +346,6 @@ class TestFileScopeFilter:
         assert entries[0]["logger"] == "xnatctl.test.log_file"
 
     def test_xnatctl_root_logger_itself_is_admitted(self, tmp_path: Path) -> None:
-        """The bare ``"xnatctl"`` logger name (not just ``xnatctl.*``) counts too."""
         path = tmp_path / "diag.log"
         install_log_file(path)
         try:
@@ -409,13 +364,6 @@ class TestFileScopeFilter:
         path = tmp_path / "diag.log"
         install_log_file(path)
 
-        # This test targets _FileScopeFilter's OWN gating, isolated from
-        # setup_logging()'s httpx/httpcore LOGGER-level tiering, which an
-        # earlier test in the session may have left at WARNING (Logger
-        # objects are process-wide singletons keyed by name, unaffected by
-        # clean_root, which only resets root's handlers/level). Both loggers
-        # are forced open here so a debug() call is guaranteed to reach the
-        # filter under test either way.
         httpx_logger = logging.getLogger("httpx")
         httpcore_logger = logging.getLogger("httpcore")
         saved_levels = (httpx_logger.level, httpcore_logger.level)
@@ -474,17 +422,8 @@ class TestRemoveLogFile:
             remove_log_file(path_b)
 
 
-# =============================================================================
-# Correlation id
-# =============================================================================
-
-
 class TestCorrelationId:
     def test_id_is_constant_across_records_until_regenerated(self) -> None:
-        """Every record stamped between two ``new_correlation_id()`` calls
-        carries the same id -- this is what "one id per invocation" means in
-        practice, since a single invocation's log lines span many calls.
-        """
         import io
 
         from xnatctl.core.logging import install_redaction_filter
@@ -514,13 +453,6 @@ class TestCorrelationId:
         assert first != second
 
     def test_visible_from_a_threadpoolexecutor_worker(self) -> None:
-        """The whole reason _correlation_id is a plain module global and not
-        a contextvars.ContextVar (see its docstring): most of the DEBUG
-        stream a diagnostics file exists to capture -- HTTP calls from
-        parallel uploads/downloads -- runs on ThreadPoolExecutor worker
-        threads, which do NOT inherit a ContextVar from the thread that set
-        it. This is the test that would have caught that mistake.
-        """
         import io
         from concurrent.futures import ThreadPoolExecutor
 
@@ -549,15 +481,8 @@ class TestCorrelationId:
         assert stream.getvalue().strip() == expected
 
 
-# =============================================================================
-# Real HTTP trace -- the two enriched transport.py DEBUG call sites
-# =============================================================================
-
-
 @pytest.mark.usefixtures("clean_root")
 class TestTransportHttpTraceReachesTheFile:
-    """core/transport.py's per-attempt DEBUG line, end to end into the file."""
-
     def test_real_request_produces_a_typed_redacted_json_line(self, tmp_path: Path) -> None:
         from xnatctl.core.logging import setup_logging
 
@@ -578,12 +503,7 @@ class TestTransportHttpTraceReachesTheFile:
         assert isinstance(entry["duration_ms"], int)
         assert "s3cret" not in entry["msg"]
         assert "token=***" in entry["msg"]
-        assert "format=json" in entry["msg"]  # non-secret params stay readable
-
-
-# =============================================================================
-# core.config.Config -- the additive `log_file` field
-# =============================================================================
+        assert "format=json" in entry["msg"]
 
 
 class TestConfigField:
@@ -602,20 +522,10 @@ class TestConfigField:
         assert Config.load(path).log_file == target
 
     def test_old_config_without_the_key_loads_with_none(self, tmp_path: Path) -> None:
-        """Additive under version 1: no migration, no forced default path."""
         path = tmp_path / "config.yaml"
         path.write_text("version: 1\ndefault_profile: default\nprofiles: {}\n")
         assert Config.load(path).log_file is None
 
-
-# =============================================================================
-# CLI wiring: --log-file / XNATCTL_LOG_FILE / config `log_file:`
-# =============================================================================
-#
-# Hidden probe commands registered on the real `cli` root group, following
-# the pattern tests/test_global_options.py already established for exercising
-# @global_options through the real inheritance/precedence machinery instead
-# of a hand-rolled standalone command.
 
 _PROBE_LOGGER = logging.getLogger("xnatctl.test.log_file_probe")
 
@@ -766,19 +676,6 @@ class TestCliActivation:
     def test_flag_wins_over_env_and_config(
         self, tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The flag is given at the SUBCOMMAND level here. Click parses a
-        subcommand's own arguments only AFTER the root callback has already
-        run to completion, so the root callback -- which has to resolve
-        something for undecorated commands -- necessarily resolves and
-        activates the env tier first, not yet knowing an override is coming;
-        install_log_file() then replaces it with the subcommand's flag before
-        anything is logged. The content precedence is exactly right (nothing
-        ever reaches env_path); an empty env_path may transiently exist as
-        that resolution's side effect, which is why this asserts on content
-        (read_lines), not existence. test_root_flag_beats_env_for_a_decorated_
-        command below covers the stronger, side-effect-free case: a root-level
-        flag never even causes the env path to be looked at.
-        """
         flag_path = tmp_path / "flag.log"
         env_path = tmp_path / "env.log"
         config_path = tmp_path / "config.log"
@@ -794,14 +691,6 @@ class TestCliActivation:
     def test_root_flag_beats_env_for_a_decorated_command(
         self, tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The precedence-inversion regression: a ROOT-level --log-file must
-        win over XNATCTL_LOG_FILE outright -- Click itself already prefers a
-        COMMANDLINE-sourced option value over its envvar for that SAME
-        option, so the root callback never even resolves env_path here (this
-        is the side-effect-free case; contrast with test_flag_wins_over_env_
-        and_config above, where the flag is given at the subcommand level
-        instead).
-        """
         flag_path = tmp_path / "flag.log"
         env_path = tmp_path / "env.log"
         monkeypatch.setenv("XNATCTL_LOG_FILE", str(env_path))
@@ -847,8 +736,6 @@ class TestCliBehavior:
             result = runner.invoke(cli, ["--quiet", "__probe_log_file__", "--log-file", str(path)])
 
         assert result.exit_code == 0, result.output
-        # CliRunner mixes stdout/stderr by default; the probe's DEBUG line's
-        # request line must not have reached stderr under --quiet.
         assert "GET " not in result.output
         assert "probe done" in result.output
 
@@ -873,11 +760,6 @@ class TestCliBehavior:
     def test_failing_command_still_writes_the_artifact(
         self, tmp_path: Path, runner: CliRunner
     ) -> None:
-        """The probe raises without logging anything itself -- the whole
-        entry below has to come from handle_errors/render_cli_error's own
-        automatic logging, or this fails. Also covers "an early raise
-        produces a non-empty file": the probe's only statement is the raise.
-        """
         path = tmp_path / "diag.log"
         with config_seam(Config()):
             result = runner.invoke(cli, ["__probe_log_file_fail__", "--log-file", str(path)])
@@ -891,8 +773,6 @@ class TestCliBehavior:
         assert "exc" in entry
         assert "s3cret" not in json.dumps(entry)
         assert "token=***" in entry["exc"]
-        # Pinned regardless of which submodule under cli/common/ the record
-        # was logged from -- see xnatctl/cli/common/errors.py's _LOGGER_NAME.
         assert entry["logger"] == "xnatctl.cli.common"
 
     def test_xnatctl_error_is_captured_without_any_self_logging(
@@ -913,10 +793,6 @@ class TestCliBehavior:
     def test_system_exit_with_a_nonzero_code_is_captured(
         self, tmp_path: Path, runner: CliRunner
     ) -> None:
-        """Mirrors whoami's early ``raise SystemExit(ExitCode.AUTH_ERROR)`` --
-        a path that never reaches ``except Exception``/``render_cli_error`` at
-        all, so it needs its own coverage.
-        """
         path = tmp_path / "diag.log"
         with config_seam(Config()):
             result = runner.invoke(cli, ["__probe_log_file_system_exit__", "--log-file", str(path)])
@@ -955,25 +831,13 @@ class TestCliBehavior:
     def test_verbose_mode_does_not_duplicate_the_traceback_on_stderr(
         self, tmp_path: Path, runner: CliRunner
     ) -> None:
-        """The file-only command-outcome record must never ALSO print to
-        stderr, even under -v where its DEBUG/ERROR level would otherwise
-        clear the stderr handler's threshold -- render_cli_error's own
-        click.echo(traceback...) is already the one and only stderr copy.
-        """
         path = tmp_path / "diag.log"
         with config_seam(Config()):
             result = runner.invoke(cli, ["-v", "__probe_log_file_fail__", "--log-file", str(path)])
 
         assert result.exit_code != 0
         assert result.output.count("Traceback (most recent call last):") == 1
-        assert read_lines(path)  # the file still got its own copy
-
-
-# =============================================================================
-# Commands with no @global_options at all (config init/use-context/...,
-# every dicom subcommand, every completion subcommand, project
-# transfer-init, local extract)
-# =============================================================================
+        assert read_lines(path)
 
 
 @pytest.mark.usefixtures("clean_root")
@@ -993,24 +857,11 @@ class TestUndecoratedCommands:
     def test_a_real_undecorated_command_activates_the_file(
         self, tmp_path: Path, runner: CliRunner
     ) -> None:
-        """`completion bash` carries no @global_options/@handle_errors at
-        all -- this is the literal repro from the review finding
-        ("xnatctl --log-file diag.log completion bash succeeds and creates
-        nothing"), on a real command rather than a probe.
-        """
         path = tmp_path / "diag.log"
         result = runner.invoke(cli, ["--log-file", str(path), "completion", "bash"])
 
         assert result.exit_code == 0, result.output
         assert path.exists()
-
-
-# =============================================================================
-# Handler lifecycle across more than one invocation in the same process
-# (library callers driving the CLI programmatically, or repeated
-# CliRunner.invoke() -- production is one process per invocation, so this
-# only matters there, but "only matters there" still means it matters)
-# =============================================================================
 
 
 @pytest.mark.usefixtures("clean_root")
@@ -1034,20 +885,11 @@ class TestHandlerLifecycleAcrossInvocations:
         path_a = tmp_path / "a.log"
         with config_seam(Config()):
             first = runner.invoke(cli, ["__probe_log_file__", "--log-file", str(path_a)])
-            second = runner.invoke(cli, ["__probe_log_file__"])  # no source at all
+            second = runner.invoke(cli, ["__probe_log_file__"])
 
         assert first.exit_code == 0, first.output
         assert second.exit_code == 0, second.output
-        # Invocation 2's own DEBUG line went nowhere -- a.log holds only
-        # invocation 1's single line, not two.
         assert len(read_lines(path_a)) == 1
-
-
-# =============================================================================
-# Stderr parity: --log-file must never change a single byte of what stderr
-# already shows, at any verbosity tier -- it only adds a second, independent
-# destination.
-# =============================================================================
 
 
 @pytest.mark.usefixtures("clean_root")
@@ -1094,3 +936,156 @@ class TestStderrParity:
         assert without.exit_code == 0, without.output
         assert with_file.exit_code == 0, with_file.output
         assert _strip_timestamps(without.output) == _strip_timestamps(with_file.output)
+
+
+class _FailingStream:
+    """A stream whose writes raise ``error``, such as a full disk."""
+
+    def __init__(self, error: OSError) -> None:
+        self.error = error
+
+    def write(self, _text: str) -> None:
+        raise self.error
+
+    def flush(self) -> None:
+        pass
+
+    def tell(self) -> int:
+        return 0
+
+    def seek(self, *_args: object) -> int:
+        return 0
+
+    def close(self) -> None:
+        pass
+
+
+def _diagnostics_handler() -> _JsonLinesFileHandler:
+    return next(h for h in logging.getLogger().handlers if isinstance(h, _JsonLinesFileHandler))
+
+
+class TestDiagnosticsFileFailures:
+    def test_a_failed_write_reports_one_redacted_line(
+        self, tmp_path: Path, clean_root: None, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        install_log_file(tmp_path / "diag.jsonl")
+        _diagnostics_handler().stream = _FailingStream(
+            OSError(28, f"No space left on device at {SECRET_URL} JSESSIONID=ABCDEF0123456789")
+        )
+        try:
+            raise RuntimeError(f"Cookie: JSESSIONID=FEDCBA9876543210 {SECRET_URL}")
+        except RuntimeError:
+            logging.getLogger("xnatctl.test").exception("boom", extra={FILE_ONLY_ATTR: True})
+
+        assert capsys.readouterr().err == (
+            "xnatctl: could not write the diagnostics file: [Errno 28] No space left on device"
+            " at https://xnat.example.org/data?token=*** JSESSIONID=***\n"
+        )
+
+    @pytest.mark.parametrize("stderr_kind", ["broken-pipe", "closed", "none"])
+    def test_a_failed_write_with_an_unusable_stderr_does_not_raise(
+        self,
+        tmp_path: Path,
+        clean_root: None,
+        monkeypatch: pytest.MonkeyPatch,
+        stderr_kind: str,
+    ) -> None:
+        install_log_file(tmp_path / "diag.jsonl")
+        _diagnostics_handler().stream = _FailingStream(OSError(28, "No space left on device"))
+        stderr: object = _FailingStream(BrokenPipeError(32, "Broken pipe"))
+        if stderr_kind == "closed":
+            stderr = io.StringIO()
+            stderr.close()
+        elif stderr_kind == "none":
+            stderr = None
+        monkeypatch.setattr(sys, "stderr", stderr)
+
+        logging.getLogger("xnatctl.test").error("boom", extra={FILE_ONLY_ATTR: True})
+
+    def test_a_failed_write_prints_nothing_when_logging_errors_are_off(
+        self,
+        tmp_path: Path,
+        clean_root: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        install_log_file(tmp_path / "diag.jsonl")
+        _diagnostics_handler().stream = _FailingStream(OSError(28, "No space left on device"))
+        monkeypatch.setattr(logging, "raiseExceptions", False)
+
+        logging.getLogger("xnatctl.test").error("boom", extra={FILE_ONLY_ATTR: True})
+
+        assert "could not write the diagnostics file" not in capsys.readouterr().err
+
+    def test_withheld_details_keep_the_frames_and_type_but_not_the_text(self) -> None:
+        patient_id = "DOE" + "^JANE"
+        try:
+            raise ValueError(f"PatientID {patient_id} has an invalid length")
+        except ValueError as e:
+            withheld = withhold_details(e)
+            record = _make_record(
+                "read failed",
+                level=logging.ERROR,
+                exc_info=(DetailsWithheldError, withheld, withheld.__traceback__),
+            )
+
+        payload = json.loads(JsonLinesFormatter().format(record))
+
+        assert patient_id not in payload["exc"]
+        assert "DetailsWithheldError: ValueError" in payload["exc"]
+        assert "test_withheld_details_keep_the_frames_and_type_but_not_the_text" in payload["exc"]
+
+    def test_dicom_validate_keeps_dicom_values_out_of_the_file(
+        self, tmp_path: Path, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dicom_file = tmp_path / "scan.dcm"
+        dicom_file.write_bytes(b"not read")
+        log_file = tmp_path / "diag.jsonl"
+
+        patient_id = "DOE" + "^JANE"
+
+        def unreadable(*_args: object, **_kwargs: object) -> None:
+            raise ValueError(f"PatientID {patient_id} has an invalid length")
+
+        monkeypatch.setattr(pydicom, "dcmread", unreadable)
+
+        result = CliRunner().invoke(
+            cli, ["--log-file", str(log_file), "dicom", "validate", str(dicom_file)]
+        )
+
+        assert patient_id in result.output
+        records = [r for r in read_lines(log_file) if r.get("msg", "").startswith("dicom validate")]
+        assert len(records) == 1
+        assert patient_id not in json.dumps(records)
+        assert "DetailsWithheldError: ValueError" in records[0]["exc"]
+
+    def test_dicom_anonymize_keeps_dicom_values_out_of_the_file(
+        self, tmp_path: Path, clean_root: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dicom_file = tmp_path / "scan.dcm"
+        dicom_file.write_bytes(b"not read")
+        log_file = tmp_path / "diag.jsonl"
+        patient_id = "DOE" + "^JANE"
+
+        def unreadable(*_args: object, **_kwargs: object) -> None:
+            raise ValueError(f"PatientID {patient_id} has an invalid length")
+
+        monkeypatch.setattr(pydicom, "dcmread", unreadable)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--log-file",
+                str(log_file),
+                "dicom",
+                "anonymize",
+                str(dicom_file),
+                str(tmp_path / "out.dcm"),
+            ],
+        )
+
+        assert patient_id in result.output
+        records = [r for r in read_lines(log_file) if "exc" in r]
+        assert records
+        assert patient_id not in json.dumps(records)
+        assert all("DetailsWithheldError: ValueError" in r["exc"] for r in records)

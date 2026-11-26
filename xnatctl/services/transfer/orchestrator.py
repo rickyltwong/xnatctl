@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.state import EntityStatus, SyncStatus, TransferStateStore
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.transfer.conflicts import ConflictChecker
@@ -105,14 +106,6 @@ class TransferOrchestrator:
         )
 
     def _should_abort(self, consecutive_failures: int) -> bool:
-        """Check if the circuit breaker should trip.
-
-        Args:
-            consecutive_failures: Number of consecutive subject failures.
-
-        Returns:
-            True if we should abort.
-        """
         return consecutive_failures >= self.config.max_failures
 
     def _reconcile_with_dest(
@@ -122,20 +115,6 @@ class TransferOrchestrator:
         dst_proj: str,
         progress_callback: Callable[[str], None] | None = None,
     ) -> list[DiscoveredEntity]:
-        """Find previously-synced subjects that no longer exist on the destination.
-
-        Compares id_mapping entries against actual destination subjects. Any
-        mapped subject missing from the destination is returned for re-sync.
-
-        Args:
-            incremental_subjects: Subjects from incremental discovery.
-            src_proj: Source project ID.
-            dst_proj: Destination project ID.
-            progress_callback: Optional progress callback.
-
-        Returns:
-            List of subjects to re-sync (ChangeType.RETRY).
-        """
         src_url = str(self.source_client.base_url)
         dst_url = str(self.dest_client.base_url)
 
@@ -149,10 +128,12 @@ class TransferOrchestrator:
         if not stale_candidates:
             return []
 
-        # Single batch query: all subject IDs on dest
         try:
             dest_subject_ids = self.executor.list_dest_subjects(dst_proj)
-        except Exception:  # noqa: BLE001  # best-effort reconciliation: failed dest-subject query skips reconciliation, doesn't block sync
+        except Exception:
+            logger.exception(
+                "Dest subject query for reconciliation failed", extra={FILE_ONLY_ATTR: True}
+            )
             logger.warning("Failed to query dest subjects for reconciliation", exc_info=True)
             return []
 
@@ -162,7 +143,6 @@ class TransferOrchestrator:
         if not missing_local_ids:
             return []
 
-        # Re-discover missing subjects from source (full discovery, no cutoff)
         all_source = self.discovery.discover_subjects(src_proj, last_sync_time=None)
         source_by_id = {s.local_id: s for s in all_source}
 
@@ -193,21 +173,6 @@ class TransferOrchestrator:
         dst_proj: str,
         progress_callback: Callable[[str], None] | None = None,
     ) -> list[DiscoveredEntity]:
-        """Find subjects whose experiments were deleted from dest.
-
-        Checks experiment ID mappings against dest, finds missing experiments,
-        looks up their parent subjects, and returns parents not already in the
-        transfer list so they get re-processed.
-
-        Args:
-            current_subjects: Subjects already queued for transfer.
-            src_proj: Source project ID.
-            dst_proj: Destination project ID.
-            progress_callback: Optional progress callback.
-
-        Returns:
-            List of parent subjects to re-sync (ChangeType.RETRY).
-        """
         src_url = str(self.source_client.base_url)
         dst_url = str(self.dest_client.base_url)
 
@@ -218,7 +183,10 @@ class TransferOrchestrator:
 
         try:
             dest_exp_ids = self.executor.list_dest_experiments(dst_proj)
-        except Exception:  # noqa: BLE001  # best-effort reconciliation: failed dest-experiment query skips reconciliation, doesn't block sync
+        except Exception:
+            logger.exception(
+                "Dest experiment query for reconciliation failed", extra={FILE_ONLY_ATTR: True}
+            )
             logger.warning("Failed to query dest experiments for reconciliation", exc_info=True)
             return []
 
@@ -269,14 +237,6 @@ class TransferOrchestrator:
         dst_proj: str,
         progress_callback: Callable[[str], None] | None,
     ) -> None:
-        """Extend *subjects* in place with any subjects reconciled from the destination.
-
-        Args:
-            subjects: Subjects from incremental discovery; extended in place.
-            src_proj: Source project ID.
-            dst_proj: Destination project ID.
-            progress_callback: Optional progress callback.
-        """
         reconciled = self._reconcile_with_dest(subjects, src_proj, dst_proj, progress_callback)
         if reconciled:
             if progress_callback:
@@ -302,24 +262,13 @@ class TransferOrchestrator:
         result: TransferResult,
         progress_callback: Callable[[str], None] | None,
     ) -> bool:
-        """Transfer one subject via the scan pipeline, recording failure state.
-
-        Args:
-            subject: Discovered subject entity.
-            sync_id: Current sync run ID.
-            dst_proj: Destination project ID.
-            result: Mutable result to update.
-            progress_callback: Optional progress callback.
-
-        Returns:
-            True on success, False if the subject failed.
-        """
         try:
             self.scan_pipeline.transfer_subject(
                 subject, sync_id, dst_proj, result, progress_callback
             )
             result.subjects_synced += 1
-        except Exception as e:  # noqa: BLE001  # per-subject transfer isolation: one subject's failure must not abort the sync run
+        except Exception as e:
+            logger.exception("Subject transfer failed", extra={FILE_ONLY_ATTR: True})
             result.subjects_failed += 1
             result.success = False
             result.errors.append(f"Subject {subject.local_label}: {e}")
@@ -356,7 +305,6 @@ class TransferOrchestrator:
 
         last_sync = self.state_store.get_last_sync_time(src_url, src_proj, dst_url, dst_proj)
 
-        # Dry-run: discover only, never mutate state store
         if dry_run:
             if progress_callback:
                 progress_callback("Discovering subjects...")
@@ -374,7 +322,6 @@ class TransferOrchestrator:
 
             subjects = self.discovery.discover_subjects(src_proj, last_sync_time=last_sync)
 
-            # Reconcile: re-include previously-synced subjects deleted from dest
             if last_sync:
                 self._run_reconciliation(subjects, src_proj, dst_proj, progress_callback)
 
@@ -403,7 +350,8 @@ class TransferOrchestrator:
                 subjects_skipped=result.subjects_skipped,
             )
 
-        except Exception as e:  # noqa: BLE001  # top-level pipeline boundary: guarantees state_store.end_sync() runs even on unexpected failure
+        except Exception as e:
+            logger.exception("Transfer run failed", extra={FILE_ONLY_ATTR: True})
             result.success = False
             result.errors.append(str(e))
             self.state_store.end_sync(sync_id, SyncStatus.FAILED)

@@ -1,15 +1,3 @@
-"""Audit-trail tests.
-
-`AuditLogger` existed but was dead: the only references in the package were two
-re-exports, and no command ever called `log_operation`. It also logged to
-stderr rather than anywhere persistent, and did not redact its `details` dict.
-Destructive commands therefore left no local trace at all.
-
-The trail is written from `confirm_destructive`, so carrying that decorator is
-what marks a command as auditable -- coverage is automatic rather than
-per-command.
-"""
-
 from __future__ import annotations
 
 import json
@@ -28,7 +16,6 @@ from xnatctl.core.logging import AUDIT_LOG_MAX_BYTES, AuditLogger
 
 
 def records(path: Path) -> list[dict]:
-    """Parse the JSON-lines audit log."""
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -36,13 +23,7 @@ def records(path: Path) -> list[dict]:
 
 @pytest.fixture
 def audit_log(isolate_audit_log: Path) -> Path:
-    """The redirected audit-log path (see the autouse fixture in conftest)."""
     return isolate_audit_log
-
-
-# =============================================================================
-# AuditLogger itself
-# =============================================================================
 
 
 def test_record_is_one_json_line_with_the_expected_fields(audit_log: Path) -> None:
@@ -77,9 +58,6 @@ def test_records_append_rather_than_overwrite(audit_log: Path) -> None:
     not POSIX_PERMISSIONS, reason="POSIX permission bits are not meaningful on this platform"
 )
 def test_log_file_is_owner_only(audit_log: Path) -> None:
-    """It records which subjects were deleted from which server; same class of
-    secret as the session cache.
-    """
     AuditLogger().log_operation("subject.delete", subject="SUB001")
 
     assert stat.S_IMODE(audit_log.stat().st_mode) == 0o600
@@ -104,10 +82,6 @@ def test_existing_world_readable_log_is_tightened(audit_log: Path) -> None:
 def test_rotated_generation_is_tightened_too(
     audit_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Rotation renames the old file, mode and all -- a legacy 0644 log must
-    not become a permanently world-readable audit.log.1 that nothing ever
-    revisits.
-    """
     audit_log.parent.mkdir(parents=True, exist_ok=True)
     audit_log.write_text("x" * 32)
     os.chmod(audit_log, 0o644)
@@ -157,7 +131,6 @@ def test_url_credentials_are_redacted(audit_log: Path) -> None:
 def test_write_failure_warns_but_does_not_raise(
     audit_log: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Bookkeeping must never be the reason a delete fails."""
     logger = AuditLogger(log_file=audit_log)
 
     with patch("xnatctl.core.logging.open_private_append", side_effect=OSError("read-only fs")):
@@ -185,11 +158,6 @@ def test_small_log_is_not_rotated(audit_log: Path) -> None:
     assert len(records(audit_log)) == 2
 
 
-# =============================================================================
-# Wiring: destructive commands are audited automatically
-# =============================================================================
-
-
 def test_destructive_command_writes_exactly_one_record(audit_log: Path) -> None:
     harness = make_authenticated_cli(default_project="PROJ")
     harness.client.delete.return_value = MagicMock(status_code=200)
@@ -205,9 +173,6 @@ def test_destructive_command_writes_exactly_one_record(audit_log: Path) -> None:
 
 
 def test_record_names_the_profile_even_when_it_was_not_passed(audit_log: Path) -> None:
-    """profile_name is None whenever the default profile was used -- which is
-    the common case -- so the field falls back to the config's default.
-    """
     harness = make_authenticated_cli(default_project="PROJ")
     harness.client.delete.return_value = MagicMock(status_code=200)
 
@@ -227,15 +192,10 @@ def test_dry_run_command_is_audited_as_a_preview(audit_log: Path) -> None:
     (entry,) = records(audit_log)
     assert entry["dry_run"] is True
     assert entry["success"] is True
-    # A dry run never builds a client, so the server has to come from the
-    # profile -- "which server was this aimed at" is the point of the record.
     assert entry["server"] == "https://xnat.example.org"
 
 
 def test_failed_command_records_the_real_error_class(audit_log: Path) -> None:
-    """handle_errors collapses failures to SystemExit; the record must still
-    name what actually went wrong.
-    """
     from xnatctl.core.exceptions import PermissionDeniedError
 
     harness = make_authenticated_cli(default_project="PROJ")
@@ -252,14 +212,6 @@ def test_failed_command_records_the_real_error_class(audit_log: Path) -> None:
 
 
 def test_single_scan_delete_records_the_real_error_class(audit_log: Path) -> None:
-    """The per-item isolation a multi-scan delete needs must not cost a
-    single-scan delete its typed error.
-
-    `scan delete` collects per-scan failures so one bad scan cannot abandon
-    the rest of the list. Applied to a list of one, that swallows the typed
-    exception before @handle_errors ever sees it -- and the audit record
-    then names SystemExit, which says nothing about what went wrong.
-    """
     from xnatctl.core.exceptions import PermissionDeniedError
 
     harness = make_authenticated_cli(default_project="PROJ")
@@ -278,7 +230,6 @@ def test_single_scan_delete_records_the_real_error_class(audit_log: Path) -> Non
 
 
 def test_declined_confirmation_is_not_audited(audit_log: Path) -> None:
-    """Nothing was attempted, so recording it would bury real changes."""
     harness = make_authenticated_cli(default_project="PROJ")
 
     result = harness.invoke(["subject", "delete", "SUB001", "-P", "PROJ"], input="n\n")
@@ -296,9 +247,6 @@ def test_read_only_command_is_not_audited(audit_log: Path) -> None:
 
 
 def test_secret_flags_never_reach_the_record(audit_log: Path) -> None:
-    """The denylist is keyed on parameter name, so a credential flag on a
-    destructive command cannot be recorded even by accident.
-    """
     from xnatctl.cli.common import _audit_details
 
     details = _audit_details(
@@ -325,6 +273,5 @@ def test_audit_failure_does_not_break_the_command(audit_log: Path) -> None:
 
 
 def test_runner_is_importable() -> None:
-    """Guard the harness import so a conftest rename fails loudly here."""
     assert isinstance(CliRunner(), CliRunner)
     assert cli is not None

@@ -24,21 +24,6 @@ from .hierarchy import HierarchyService
 
 
 class _SubjectSharingMixin(BaseService):
-    """Share/unshare subjects across projects (see the notes below)."""
-
-    # -------------------------------------------------------------------------
-    # Cross-project sharing
-    #
-    # Verified live against XNAT 1.9.2.1: PUT/DELETE
-    # /data/subjects/{id}/projects/{target_project} shares/unshares a subject
-    # without moving it (its primary project is untouched). The subject *ID*
-    # here must be the canonical accession ID, not a label -- a bare label
-    # (even inside its own project) answered 403 "Sharing is not allowed" in
-    # testing, while the resolved accession ID worked with no project scoping
-    # needed at all. Callers resolve the label first (see
-    # ``cli/sharing.py``, which uses ``HierarchyService.resolve_subject``).
-    # -------------------------------------------------------------------------
-
     def share(
         self, subject_id: str, target_project: str, *, label: str | None = None
     ) -> httpx.Response:
@@ -47,9 +32,9 @@ class _SubjectSharingMixin(BaseService):
         Args:
             subject_id: Canonical (accession ID) subject identifier.
             target_project: Project to share the subject into.
-            label: Label the subject should carry in ``target_project``. XNAT
+            label: Label the subject should carry in ``target_project``. If
                 omitted, XNAT defaults it to the subject's accession ID
-                (verified live) -- NOT the label it carries in its primary
+                (verified live), not the label it carries in its primary
                 project.
 
         Returns:
@@ -81,28 +66,17 @@ class _SubjectSharingMixin(BaseService):
         """Remove a subject's share into another project.
 
         ``primary_project`` is required, and aiming this at it is refused,
-        because XNAT does NOT treat that as a no-op: verified live against
-        1.9.2.1, ``DELETE /data/subjects/{id}/projects/{primary}`` answers
-        200 and **deletes the subject outright** -- afterwards the subject
-        is 404. There is no separate confirmation and nothing in the
-        response distinguishes it from removing an ordinary share, so a
-        caller who mistypes the target project loses the subject and every
-        experiment under it while being told a share was removed. The guard
-        lives here rather than only in the CLI so a library caller gets it
-        too; deleting a subject has its own verb.
+        because XNAT does not treat that as a no-op. Verified live against
+        1.9.2.1: ``DELETE /data/subjects/{id}/projects/{primary}`` answers 200
+        and deletes the subject outright, with nothing in the response to tell
+        it apart from removing a share. The guard lives here rather than only
+        in the CLI so a library caller gets it too. Project IDs are compared
+        case-insensitively, which refuses slightly more than it must.
 
-        Project IDs are compared case-insensitively. XNAT's own IDs are
-        case-sensitive, so this refuses a little more than it strictly must
-        -- the right trade when the cost of a false negative is deleting a
-        subject.
-
-        Verified live: a subject that was never shared into
-        ``target_project`` answers HTTP 403 ("Subject is not assigned to
-        specified project ..."), which the client surfaces as
-        :class:`~xnatctl.core.exceptions.PermissionDeniedError` -- misleading
-        wording from the server, not actually a permission problem, but not
-        translated here since the message is server-version-specific text,
-        not a stable status code to key off of.
+        A subject that was never shared into ``target_project`` answers HTTP
+        403, which surfaces as
+        :class:`~xnatctl.core.exceptions.PermissionDeniedError` even though it
+        is not a permission problem.
 
         Args:
             subject_id: Canonical (accession ID) subject identifier.
@@ -114,8 +88,8 @@ class _SubjectSharingMixin(BaseService):
             The raw DELETE response.
 
         Raises:
-            InputValidationError: If ``target_project`` is the subject's
-                primary project.
+            InputValidationError: If ``primary_project`` is empty, or
+                ``target_project`` is the subject's primary project.
         """
         if not primary_project or not primary_project.strip():
             raise InputValidationError(
@@ -141,17 +115,16 @@ class _SubjectSharingMixin(BaseService):
         return self.client.delete(path)
 
     def list_shares(self, subject_id: str) -> builtins.list[dict[str, Any]]:
-        """List every project a subject is assigned to (primary + shared).
+        """List every project a subject is assigned to (primary and shared).
 
         Args:
             subject_id: Canonical (accession ID) subject identifier.
 
         Returns:
             One row per project, each carrying ``ID`` (the project id),
-            ``label`` (the subject's label in that project),
-            ``Secondary_ID`` and ``Name`` -- exactly what
-            ``GET /data/subjects/{id}/projects`` returns, including the
-            subject's own primary project as one of the rows.
+            ``label`` (the subject's label in that project), ``Secondary_ID``
+            and ``Name``, as ``GET /data/subjects/{id}/projects`` returns them,
+            including the subject's own primary project.
         """
         data = self.client.get_json(f"/data/subjects/{quote_path_segment(subject_id)}/projects")
         return HierarchyService.extract_rows(data)

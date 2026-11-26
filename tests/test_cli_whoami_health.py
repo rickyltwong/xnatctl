@@ -1,11 +1,3 @@
-"""Behavior tests for `whoami` and `health ping`.
-
-These pin the two root-level commands onto the standard decorator stack: they
-must honor the global ``--profile``/``-o``/``-q`` flags (wrong-server identity is
-dangerous for a multi-instance admin tool) and route errors through
-``@handle_errors`` instead of hand-rolled ``except Exception`` blocks.
-"""
-
 from __future__ import annotations
 
 import json
@@ -27,7 +19,6 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def two_profile_config(monkeypatch) -> Config:
-    """A config with a default and a prod profile, each with distinct URLs."""
     monkeypatch.delenv("XNAT_TOKEN", raising=False)
     monkeypatch.delenv("XNAT_USER", raising=False)
     monkeypatch.delenv("XNAT_PASS", raising=False)
@@ -52,17 +43,14 @@ def two_profile_config(monkeypatch) -> Config:
 
 
 def _whoami_result() -> UserInfo:
-    """Exactly what ``XNATClient.whoami()`` returns for a resolved user."""
     return UserInfo(username="serveruser", enabled=True)
 
 
 def _ping_result(url: str) -> ServerInfo:
-    """Exactly what ``XNATClient.ping()`` returns for a healthy server."""
     return ServerInfo(url=url, status="ok", version="1.8.0", latency_ms=5)
 
 
 def _mock_client():
-    """A patch context for XNATClient plus a configured instance."""
     ctx = patch("xnatctl.cli.common.XNATClient")
     mock_cls = ctx.__enter__()
     inst = mock_cls.return_value
@@ -73,13 +61,7 @@ def _mock_client():
     return ctx, mock_cls, inst
 
 
-# ---------------------------------------------------------------------------
-# whoami
-# ---------------------------------------------------------------------------
-
-
 def test_whoami_honors_profile(runner, two_profile_config) -> None:
-    """`-p prod whoami` must target prod's server, not the default profile."""
     with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         try:
@@ -88,12 +70,10 @@ def test_whoami_honors_profile(runner, two_profile_config) -> None:
             cm.__exit__(None, None, None)
 
     assert result.exit_code == 0
-    # The client was constructed for prod's URL, proving the profile was honored.
     assert mock_cls.call_args.kwargs["base_url"] == "https://prod.example.org"
 
 
 def test_whoami_honors_output_json(runner, two_profile_config) -> None:
-    """`-o json whoami` must emit parseable JSON (not hardcoded table)."""
     with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         inst.base_url = "https://prod.example.org"
@@ -122,7 +102,6 @@ def test_whoami_quiet_prints_only_username(runner, two_profile_config) -> None:
 
 
 def test_whoami_not_authenticated_exits_auth_error(runner, monkeypatch) -> None:
-    """No credentials at all -> AUTH_ERROR (3), a clean line, no traceback."""
     monkeypatch.delenv("XNAT_TOKEN", raising=False)
     monkeypatch.delenv("XNAT_USER", raising=False)
     monkeypatch.delenv("XNAT_PASS", raising=False)
@@ -146,13 +125,7 @@ def test_whoami_not_authenticated_exits_auth_error(runner, monkeypatch) -> None:
     assert "Not authenticated" in result.output
 
 
-# ---------------------------------------------------------------------------
-# health ping
-# ---------------------------------------------------------------------------
-
-
 def test_health_ping_honors_profile(runner, two_profile_config) -> None:
-    """`-p prod health ping` pings prod's server."""
     with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         try:
@@ -181,7 +154,6 @@ def test_health_ping_honors_output_json(runner, two_profile_config) -> None:
 
 
 def test_health_ping_honors_output_tsv(runner, two_profile_config) -> None:
-    """`-o tsv health ping` emits real tab-separated output, not a Rich table."""
     with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         inst.base_url = "https://prod.example.org"
@@ -200,7 +172,6 @@ def test_health_ping_honors_output_tsv(runner, two_profile_config) -> None:
 
 
 def test_health_ping_quiet_prints_only_url(runner, two_profile_config) -> None:
-    """`-q health ping` suppresses the banner/table, prints just the URL."""
     with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         inst.ping.return_value = _ping_result("https://prod.example.org")
@@ -214,18 +185,7 @@ def test_health_ping_quiet_prints_only_url(runner, two_profile_config) -> None:
     assert "Server reachable" not in result.output
 
 
-# ---------------------------------------------------------------------------
-# JSON-shape pins
-#
-# The exact `-o json` bytes for whoami and health ping. Written against the
-# dict-returning client and kept unchanged across the typed ServerInfo/UserInfo
-# migration: the CLI converts model -> dict at the call site, so these outputs
-# must never move.
-# ---------------------------------------------------------------------------
-
-
 def test_whoami_json_shape_is_pinned(runner, two_profile_config) -> None:
-    """`-o json whoami` output is byte-identical to the pre-typed-model shape."""
     with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         inst.base_url = "https://prod.example.org"
@@ -246,7 +206,6 @@ def test_whoami_json_shape_is_pinned(runner, two_profile_config) -> None:
 
 
 def test_health_ping_json_shape_is_pinned(runner, two_profile_config) -> None:
-    """`-o json health ping` output is byte-identical to the pre-typed-model shape."""
     with config_seam(two_profile_config):
         cm, mock_cls, inst = _mock_client()
         inst.ping.return_value = _ping_result("https://prod.example.org")

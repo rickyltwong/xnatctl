@@ -1,14 +1,3 @@
-"""Coverage for the parallel batched-archive REST upload transport.
-
-`upload_dicom_parallel` is the default `session upload` path for a directory,
-and it had no test at all: batch splitting, the import parameters actually put
-on the wire, the per-thread authentication dance, partial-failure aggregation,
-and archive cleanup were all unverified.
-
-Requests run through `httpx.MockTransport`, so assertions are about real
-`httpx.Request` objects -- the params below are what XNAT would receive.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -35,13 +24,6 @@ Handler = Callable[[httpx.Request], httpx.Response]
 
 @contextmanager
 def mock_uploads_http(handler: Handler) -> Iterator[list[httpx.Request]]:
-    """Route the transport's own httpx.Client through a MockTransport.
-
-    `upload_single_archive` constructs its client inside the worker thread
-    (that is the thread-safety design), so there is no injection point on the
-    service. Wrapping the constructor is the least invasive seam that still
-    exercises real request building.
-    """
     seen: list[httpx.Request] = []
     real_client = httpx.Client
 
@@ -51,14 +33,13 @@ def mock_uploads_http(handler: Handler) -> Iterator[list[httpx.Request]]:
 
     def factory(**kwargs: object) -> httpx.Client:
         kwargs["transport"] = httpx.MockTransport(recording)
-        return real_client(**kwargs)  # type: ignore[arg-type]
+        return real_client(**kwargs)
 
     with patch("xnatctl.services.upload.rest_archive.httpx.Client", factory):
         yield seen
 
 
 def ok(request: httpx.Request) -> httpx.Response:
-    """Accept every request: JSESSION login and import alike."""
     if request.url.path == "/data/JSESSION":
         return httpx.Response(200, text="TOKEN-FROM-LOGIN")
     return httpx.Response(200, text="OK")
@@ -74,12 +55,6 @@ def params_of(request: httpx.Request) -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The upload retry ladder sleeps 2+4+8+16+32s per failing batch.
-
-    The wait is ``CancellationToken.sleep`` rather than ``time.sleep`` so an
-    interrupt does not have to be waited out; patch it at that seam, or the
-    backoff is real and this file takes a minute per failing batch.
-    """
     monkeypatch.setattr(
         "xnatctl.core.cancellation.CancellationToken.sleep", lambda _self, _s: False
     )
@@ -99,7 +74,6 @@ def service() -> UploadService:
 
 @pytest.fixture
 def dicom_tree(tmp_path: Path) -> Path:
-    """Eight DICOM-like files across two scan directories."""
     root = tmp_path / "dicoms"
     for scan in ("scan1", "scan2"):
         d = root / scan
@@ -107,11 +81,6 @@ def dicom_tree(tmp_path: Path) -> Path:
         for i in range(4):
             (d / f"{scan}_{i:03d}.dcm").write_bytes(b"\x00" * 128 + b"DICM" + bytes([i]))
     return root
-
-
-# =============================================================================
-# Batch splitting
-# =============================================================================
 
 
 def test_files_are_split_across_the_requested_workers(
@@ -129,7 +98,6 @@ def test_files_are_split_across_the_requested_workers(
 
 
 def test_batch_count_never_exceeds_the_file_count(service: UploadService, tmp_path: Path) -> None:
-    """Two files with eight workers must not produce six empty archives."""
     root = tmp_path / "small"
     root.mkdir()
     for i in range(2):
@@ -145,7 +113,6 @@ def test_batch_count_never_exceeds_the_file_count(service: UploadService, tmp_pa
 def test_every_collected_file_lands_in_exactly_one_archive(
     service: UploadService, dicom_tree: Path
 ) -> None:
-    """The split must partition the file set -- no duplicates, no drops."""
     members: list[str] = []
 
     def capture(request: httpx.Request) -> httpx.Response:
@@ -159,11 +126,6 @@ def test_every_collected_file_lands_in_exactly_one_archive(
 
     assert len(members) == 8
     assert len(set(members)) == 8, "a file was archived twice"
-
-
-# =============================================================================
-# Import parameters -- what XNAT actually receives
-# =============================================================================
 
 
 def test_import_params_carry_the_target_identifiers(
@@ -181,9 +143,6 @@ def test_import_params_carry_the_target_identifiers(
 
 
 def test_overwrite_mode_is_forwarded_verbatim(service: UploadService, dicom_tree: Path) -> None:
-    """`--overwrite append` is the additive mode; it must reach the server
-    unchanged rather than being normalised away.
-    """
     with mock_uploads_http(ok) as seen:
         service.upload_dicom_parallel(
             dicom_tree, "PROJ", "SUB001", "SESS01", upload_workers=1, overwrite="append"
@@ -229,11 +188,6 @@ def test_tar_is_the_default_archive_format(service: UploadService, dicom_tree: P
     assert imports(seen)[0].headers["content-type"] == "application/x-tar"
 
 
-# =============================================================================
-# Authentication
-# =============================================================================
-
-
 def test_cached_session_token_is_reused_without_logging_in(
     service: UploadService, dicom_tree: Path
 ) -> None:
@@ -247,9 +201,6 @@ def test_cached_session_token_is_reused_without_logging_in(
 def test_without_a_token_each_worker_logs_in_and_logs_out(
     service: UploadService, dicom_tree: Path
 ) -> None:
-    """Per-thread sessions are the thread-safety design; the important part is
-    that a worker-created session is released rather than leaked.
-    """
     service.client.session_token = None
 
     with mock_uploads_http(ok) as seen:
@@ -281,11 +232,6 @@ def test_missing_credentials_fail_the_batch_without_uploading(
     assert any("missing credentials" in e for e in summary.errors)
 
 
-# =============================================================================
-# Failure aggregation
-# =============================================================================
-
-
 def test_one_failing_batch_is_reported_without_failing_the_rest(
     service: UploadService, dicom_tree: Path
 ) -> None:
@@ -293,12 +239,6 @@ def test_one_failing_batch_is_reported_without_failing_the_rest(
     lock = threading.Lock()
 
     def one_bad(request: httpx.Request) -> httpx.Response:
-        """Fail one specific archive, identified by its bytes.
-
-        Keyed on the body rather than a call counter so the doomed batch keeps
-        failing across the retry ladder -- a counter would let attempt 2
-        succeed and the test would assert nothing.
-        """
         if request.url.path != "/data/services/import":
             return ok(request)
         key = hashlib.sha1(request.read()).hexdigest()
@@ -342,11 +282,6 @@ def test_empty_directory_fails_cleanly(service: UploadService, tmp_path: Path) -
     assert summary.total == 0
     assert summary.errors == ["No DICOM files found"]
     assert seen == [], "nothing should reach the network"
-
-
-# =============================================================================
-# Progress reporting
-# =============================================================================
 
 
 def test_progress_reports_preparing_then_uploading_then_complete(
@@ -403,22 +338,14 @@ def test_progress_counts_every_completed_batch(service: UploadService, dicom_tre
     assert [p.current for p in uploading] == [1, 2, 3, 4]
 
 
-# =============================================================================
-# Temp-archive lifecycle
-# =============================================================================
-
-
 def test_archives_are_cleaned_up_on_success(
     service: UploadService, dicom_tree: Path, tmp_path: Path
 ) -> None:
-    """Archives are a copy of the whole dataset; leaving them behind would
-    double the disk footprint of every upload.
-    """
     made: list[Path] = []
     real_mkdtemp = tempfile.mkdtemp
 
     def tracking(*args: object, **kwargs: object) -> str:
-        path = real_mkdtemp(*args, **kwargs)  # type: ignore[arg-type]
+        path = real_mkdtemp(*args, **kwargs)
         made.append(Path(path))
         return path
 
@@ -438,7 +365,7 @@ def test_archives_are_cleaned_up_after_a_failure(service: UploadService, dicom_t
     real_mkdtemp = tempfile.mkdtemp
 
     def tracking(*args: object, **kwargs: object) -> str:
-        path = real_mkdtemp(*args, **kwargs)  # type: ignore[arg-type]
+        path = real_mkdtemp(*args, **kwargs)
         made.append(Path(path))
         return path
 
@@ -455,7 +382,6 @@ def test_archives_are_cleaned_up_after_a_failure(service: UploadService, dicom_t
 def test_unscannable_source_dir_reports_failure_without_uploading(
     service: UploadService, tmp_path: Path
 ) -> None:
-    """collect_dicom_files raises ValueError for a non-directory source."""
     with mock_uploads_http(ok) as seen:
         summary = service.upload_dicom_parallel(
             tmp_path / "does-not-exist", "PROJ", "SUB001", "SESS01", upload_workers=2

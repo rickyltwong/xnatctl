@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import builtins
+import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -12,27 +13,19 @@ from xnatctl.core.exceptions import (
     InputValidationError,
     ResourceNotFoundError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import quote_path_segment
 from xnatctl.models.subject import Subject
 
 from .hierarchy import HierarchyService
 from .subjects_sharing import _SubjectSharingMixin
 
-#: Custom-variable names are embedded literally inside an XNAT xpath-style
-#: query key (``xnat:subjectData/fields/field[name=X]/field``). httpx encodes
-#: whatever characters we put in *transport-safe*, but a name containing `]`,
-#: `=`, or `/` would still change the *meaning* the server parses back out of
-#: it once decoded -- e.g. a value ending `]/field=evil` could close the
-#: bracket expression early and append a second one. Restricted to a plain
-#: identifier shape rather than relying on the server to reject the rest.
-# Matched with `fullmatch`, not `match`: Python's `$` also matches just
-# BEFORE a final newline, so a `^...$` + `.match()` pair accepts
-# "field\n" and embeds the newline in the XNAT query key.
+logger = logging.getLogger(__name__)
+
 _FIELD_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]+")
 
 
 def _validate_field_name(name: str) -> str:
-    """Reject a custom-variable name that could break the field[] expression."""
     if not name or not _FIELD_NAME_RE.fullmatch(name):
         raise InputValidationError(
             "custom variable name must be a non-empty string of letters, digits, '.', '_' or '-'",
@@ -61,8 +54,6 @@ class SubjectService(_SubjectSharingMixin):
         Returns:
             List of Subject objects
         """
-        # `is not None`, not truthy: `project=""` is a caller mistake, not
-        # "no filter" -- it must not silently widen to the site-wide listing.
         if project is not None:
             path = f"/data/projects/{quote_path_segment(project)}/subjects"
         else:
@@ -71,13 +62,13 @@ class SubjectService(_SubjectSharingMixin):
         params: dict[str, Any] = {"format": "json"}
         if columns:
             params["columns"] = ",".join(columns)
-        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+        if limit is not None:
             params["limit"] = str(limit)
 
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit is not None:  # belt-and-braces: some XNAT endpoints ignore `limit`
+        if limit is not None:
             results = results[:limit]
 
         return [Subject(**r) for r in results]
@@ -99,7 +90,7 @@ class SubjectService(_SubjectSharingMixin):
         Raises:
             ResourceNotFoundError: If subject not found
         """
-        if project is not None:  # not truthy -- "" must raise, not fall to the flat subjects path
+        if project is not None:
             path = (
                 f"/data/projects/{quote_path_segment(project)}"
                 f"/subjects/{quote_path_segment(subject_id)}"
@@ -189,9 +180,6 @@ class SubjectService(_SubjectSharingMixin):
             try:
                 sessions = self.get_sessions(subject_id, project=project)
             except ResourceNotFoundError:
-                # Subject/project genuinely gone -- no sessions is a valid
-                # inference. Any other failure (network, auth, ...) must
-                # propagate: this check fails closed, not open.
                 sessions = []
             if sessions:
                 raise RuntimeError(
@@ -202,7 +190,7 @@ class SubjectService(_SubjectSharingMixin):
                     "to cascade-delete them."
                 )
 
-        if project is not None:  # not truthy -- see get() above
+        if project is not None:
             path = (
                 f"/data/projects/{quote_path_segment(project)}"
                 f"/subjects/{quote_path_segment(subject_id)}"
@@ -232,7 +220,7 @@ class SubjectService(_SubjectSharingMixin):
         Returns:
             Updated Subject object
         """
-        if project is not None:  # not truthy -- see get() above
+        if project is not None:
             path = (
                 f"/data/projects/{quote_path_segment(project)}"
                 f"/subjects/{quote_path_segment(subject_id)}"
@@ -271,7 +259,6 @@ class SubjectService(_SubjectSharingMixin):
         for old_label, new_label in mapping.items():
             try:
                 if dry_run:
-                    # Verify subject exists
                     self.get(old_label, project=project)
                     results["renamed"].append(
                         {
@@ -294,7 +281,10 @@ class SubjectService(_SubjectSharingMixin):
                         "reason": "not found",
                     }
                 )
-            except Exception as e:  # noqa: BLE001  # per-item batch isolation in rename_batch/rename_pattern
+            except Exception as e:
+                logger.exception(
+                    "subject rename failed for %s", old_label, extra={FILE_ONLY_ATTR: True}
+                )
                 results["errors"].append(
                     {
                         "label": old_label,
@@ -304,7 +294,7 @@ class SubjectService(_SubjectSharingMixin):
 
         return results
 
-    def rename_pattern(  # noqa: C901  # pre-existing; see pyproject
+    def rename_pattern(
         self,
         project: str,
         match_pattern: str,
@@ -338,29 +328,24 @@ class SubjectService(_SubjectSharingMixin):
             "dry_run": dry_run,
         }
 
-        # Build mapping from pattern
         mapping: dict[str, str] = {}
         for subject in subjects:
             label = subject.label or subject.id
             match = pattern.match(label)
             if match:
-                # Build new label from template
                 new_label = to_template
                 for i, group in enumerate(match.groups(), 1):
                     new_label = new_label.replace(f"{{{i}}}", group or "")
                 mapping[label] = new_label
 
-        # Check for duplicates (merges)
         target_labels: dict[str, builtins.list[str]] = {}
         for old_label, new_label in mapping.items():
             if new_label not in target_labels:
                 target_labels[new_label] = []
             target_labels[new_label].append(old_label)
 
-        # Process renames
         for new_label, old_labels in target_labels.items():
             if len(old_labels) > 1:
-                # Multiple subjects mapping to same target
                 if merge:
                     for old_label in old_labels:
                         if dry_run:
@@ -371,21 +356,7 @@ class SubjectService(_SubjectSharingMixin):
                                 }
                             )
                         else:
-                            try:
-                                self.rename(old_label, new_label, project=project)
-                                results["merged"].append(
-                                    {
-                                        "from": old_label,
-                                        "to": new_label,
-                                    }
-                                )
-                            except Exception as e:  # noqa: BLE001  # per-item batch isolation in rename_batch/rename_pattern
-                                results["errors"].append(
-                                    {
-                                        "label": old_label,
-                                        "error": str(e),
-                                    }
-                                )
+                            self._rename_into(results, "merged", old_label, new_label, project)
                 else:
                     for old_label in old_labels:
                         results["skipped"].append(
@@ -411,23 +382,36 @@ class SubjectService(_SubjectSharingMixin):
                         }
                     )
                 else:
-                    try:
-                        self.rename(old_label, new_label, project=project)
-                        results["renamed"].append(
-                            {
-                                "from": old_label,
-                                "to": new_label,
-                            }
-                        )
-                    except Exception as e:  # noqa: BLE001  # per-item batch isolation in rename_batch/rename_pattern
-                        results["errors"].append(
-                            {
-                                "label": old_label,
-                                "error": str(e),
-                            }
-                        )
+                    self._rename_into(results, "renamed", old_label, new_label, project)
 
         return results
+
+    def _rename_into(
+        self,
+        results: dict[str, Any],
+        bucket: Literal["renamed", "merged"],
+        old_label: str,
+        new_label: str,
+        project: str,
+    ) -> None:
+        try:
+            self.rename(old_label, new_label, project=project)
+            results[bucket].append(
+                {
+                    "from": old_label,
+                    "to": new_label,
+                }
+            )
+        except Exception as e:
+            logger.exception(
+                "subject rename failed for %s", old_label, extra={FILE_ONLY_ATTR: True}
+            )
+            results["errors"].append(
+                {
+                    "label": old_label,
+                    "error": str(e),
+                }
+            )
 
     def get_sessions(
         self,
@@ -443,7 +427,7 @@ class SubjectService(_SubjectSharingMixin):
         Returns:
             List of session data dicts
         """
-        if project is not None:  # not truthy -- see get() above
+        if project is not None:
             path = (
                 f"/data/projects/{quote_path_segment(project)}"
                 f"/subjects/{quote_path_segment(subject_id)}/experiments"
@@ -485,11 +469,9 @@ class SubjectService(_SubjectSharingMixin):
         Raises:
             ResourceNotFoundError: If source or target not found
         """
-        # Verify both subjects exist
         self.get(source_label, project=project)
         target = self.get(target_label, project=project)
 
-        # Get experiments from source
         experiments = self.get_sessions(source_label, project=project)
 
         result: dict[str, Any] = {
@@ -507,18 +489,6 @@ class SubjectService(_SubjectSharingMixin):
             result["source_deleted"] = True
             return result
 
-        # Move each experiment to target using the same scoped PUT shape that
-        # the XNAT web UI issues for "Change parent subject":
-        #
-        #   PUT /data/projects/{p}/subjects/{TARGET_SUBJECT_ID}/experiments/{EXP_ID}
-        #
-        # The target subject is encoded in the URL *path* (internal XNAT ID),
-        # not in an XML-path-shortcut querystring. A prior implementation
-        # used PUT /data/experiments/{EXP_ID}?xnat:experimentData/subject_ID=...
-        # which was silently destructive on this XNAT version — it neither
-        # moved the experiment to the target nor left it on the source, and
-        # the subsequent source DELETE had nothing to cascade. Do not
-        # reintroduce that pattern. Verified on the dev XNAT on 2026-04-23.
         target_id = target.id
         if not target_id:
             raise InputValidationError(
@@ -544,10 +514,6 @@ class SubjectService(_SubjectSharingMixin):
                 },
             )
 
-            # Verify the reassignment before proceeding. GET the experiment
-            # and confirm its subject_ID is now the target. If the PUT failed
-            # silently or destructively, this guard aborts before we touch
-            # the source subject.
             verify = self._get(
                 f"/data/experiments/{quote_path_segment(exp_id)}", params={"format": "json"}
             )
@@ -569,11 +535,6 @@ class SubjectService(_SubjectSharingMixin):
             result["experiments"].append(exp_id)
             result["experiments_moved"] += 1
 
-        # Fail-safe: re-list source experiments before delete. With the
-        # per-experiment verify loop above this should always be empty, but
-        # the check stays as defence in depth — the subsequent DELETE is
-        # cascade-capable, so any residual experiment here would be
-        # destroyed.
         remaining = self.get_sessions(source_label, project=project)
         if remaining:
             raise RuntimeError(
@@ -583,20 +544,10 @@ class SubjectService(_SubjectSharingMixin):
                 "Refusing to delete source subject to prevent data loss."
             )
 
-        # Delete the now-empty source subject
         self.delete(source_label, project=project)
         result["source_deleted"] = True
 
         return result
-
-    # -------------------------------------------------------------------------
-    # Raw-row / raw-response accessors
-    #
-    # The typed ``list``/``rename``/``delete`` above return models or run extra
-    # safety round-trips. These issue exactly the request the CLI has always
-    # sent and hand back the untyped rows (or the raw response, for mutations
-    # whose status code the CLI branches on).
-    # -------------------------------------------------------------------------
 
     def list_rows(
         self, project: str | None, columns: str | None = None
@@ -634,19 +585,6 @@ class SubjectService(_SubjectSharingMixin):
             params={"label": new_label},
         )
 
-    # -------------------------------------------------------------------------
-    # Custom variables (the "xnat-varput" surface)
-    #
-    # Verified live: a subject's custom fields are read from the
-    # ``fields/field`` children of its ``format=json`` document, and written
-    # via PUT query keys shaped
-    # ``xnat:subjectData/fields/field[name=X]/field=value`` -- multiple keys
-    # in one PUT set multiple variables atomically. These are open-ended,
-    # project-defined fields (no fixed schema XNAT reports), so both methods
-    # here work in plain dicts rather than a typed model, per the data-flow
-    # rule in AGENTS.md.
-    # -------------------------------------------------------------------------
-
     def list_vars(
         self, subject_id: str, project: str | None = None
     ) -> builtins.list[dict[str, str]]:
@@ -659,7 +597,7 @@ class SubjectService(_SubjectSharingMixin):
         Returns:
             One dict per variable, each shaped ``{"name": ..., "value": ...}``.
         """
-        if project is not None:  # not truthy -- see get() above
+        if project is not None:
             path = (
                 f"/data/projects/{quote_path_segment(project)}"
                 f"/subjects/{quote_path_segment(subject_id)}"
@@ -706,7 +644,7 @@ class SubjectService(_SubjectSharingMixin):
                 allowed identifier shape.
             ResourceNotFoundError: ``subject_id`` does not exist.
         """
-        if project is not None:  # not truthy -- see get() above
+        if project is not None:
             path = (
                 f"/data/projects/{quote_path_segment(project)}"
                 f"/subjects/{quote_path_segment(subject_id)}"
@@ -719,20 +657,12 @@ class SubjectService(_SubjectSharingMixin):
             for name, value in fields.items()
         }
 
-        # Existence preflight. This PUT is the same create-or-update route
-        # `create()` uses (a subject-scoped PUT with no body), and verified
-        # live against XNAT 1.9.2.1, a nonexistent subject_id answers 201,
-        # not 404 -- the PUT silently creates an empty subject instead of
-        # failing. `get()` already 404s cleanly, so call it first to reject
-        # a typo'd subject_id before any write is attempted.
-        #
-        # This narrows the window rather than closing it: a subject deleted
-        # between this GET and the PUT below is still recreated empty, and
-        # no client-side check can prevent that, because the write itself
-        # carries no "must exist" semantics for the server to enforce. The
-        # `except ResourceNotFoundError` below is NOT a guard against that
-        # race -- the race ends in a 201, not a 404. It stays for the
-        # project-scoped path, where a missing *project* does 404.
+        # Existence preflight. Verified live against XNAT 1.9.2.1, this PUT for
+        # a nonexistent subject_id answers 201 and creates an empty subject, so
+        # reject a typo with get()'s clean 404 before any write. It narrows the
+        # window rather than closing it: a subject deleted between this GET and
+        # the PUT is still recreated empty. The except below does not guard that
+        # race (it ends in a 201); it handles a missing project, which does 404.
         self.get(subject_id, project=project)
 
         try:

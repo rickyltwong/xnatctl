@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, NamedTuple, TypeVar
+from typing import Any, NamedTuple, ParamSpec, TypeVar
 
 import click
 
-F = TypeVar("F", bound=Callable[..., Any])
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class DeprecatedFlag(NamedTuple):
@@ -61,7 +62,6 @@ def deprecation_message(old_flag: str) -> str:
 
 
 def _flag_given(ctx: click.Context, param: click.Parameter) -> bool:
-    """Report whether the user actually typed this option."""
     return bool(
         param.name
         and ctx.get_parameter_source(param.name) == click.core.ParameterSource.COMMANDLINE
@@ -73,18 +73,6 @@ def _make_alias_cb(
     target_param: str,
     target_value: Any,
 ) -> Callable[[click.Context, click.Parameter, Any], Any]:
-    """Create a Click callback that warns on a deprecated flag and sets a fixed value.
-
-    Args:
-        old_flag: The deprecated flag name (e.g., "-e"). Must be registered
-            in DEPRECATED_FLAGS; the lookup happens here, at import time, so an
-            unregistered flag breaks the test suite instead of a user's command.
-        target_param: The Click parameter name to set on ctx.params.
-        target_value: The fixed value to set (NOT the raw flag value).
-
-    Returns:
-        A Click callback function.
-    """
     message = deprecation_message(old_flag)
 
     def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
@@ -134,35 +122,34 @@ def _make_forwarding_alias_cb(
     Returns:
         A Click callback function.
     """
-    message = deprecation_message(old_flag)
+    return _ForwardingAliasCallback(deprecation_message(old_flag), target_param)
 
-    def callback(ctx: click.Context, param: click.Parameter, value: Any) -> Any:
+
+class _ForwardingAliasCallback:
+    def __init__(self, message: str, target_param: str) -> None:
+        self._message = message
+        self._forwarding_alias_target = target_param
+
+    def __call__(self, ctx: click.Context, param: click.Parameter, value: Any) -> Any:
         if value is None or not _flag_given(ctx, param):
             return value
-        click.echo(message, err=True)
+        click.echo(self._message, err=True)
 
+        target_param = self._forwarding_alias_target
         target = next((p for p in ctx.command.params if p.name == target_param), None)
         target_given = (
             ctx.get_parameter_source(target_param) == click.core.ParameterSource.COMMANDLINE
         )
 
         if target is not None and getattr(target, "multiple", False):
-            # Repeatable option: union both spellings, modern values first,
-            # preserving the order each was typed in.
             existing = tuple(ctx.params.get(target_param) or ()) if target_given else ()
             ctx.params[target_param] = existing + tuple(v for v in value if v not in existing)
         else:
             ctx.params[target_param] = value
         return value
 
-    # Lets a test assert the is_eager invariant across the whole CLI, so a
-    # future alias whose target is not eager fails loudly instead of
-    # silently dropping the modern spelling's values again.
-    callback._forwarding_alias_target = target_param  # type: ignore[attr-defined]
-    return callback
 
-
-def parallel_options(f: F) -> F:
+def parallel_options(f: Callable[P, R]) -> Callable[P, R]:
     """Add parallel execution options.
 
     Injects ``--workers`` (default resolved from profile or 4).
@@ -177,8 +164,7 @@ def parallel_options(f: F) -> F:
         help="Parallel workers (1 = sequential)",
     )
     @wraps(f)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        """Pass through parallel options to the command."""
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         return f(*args, **kwargs)
 
-    return wrapper  # type: ignore
+    return wrapper

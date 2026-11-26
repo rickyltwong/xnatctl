@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI commands."""
-
 from __future__ import annotations
 
 import pytest
@@ -10,18 +8,10 @@ from xnatctl.cli.main import cli
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
-# =============================================================================
-# Basic CLI Tests
-# =============================================================================
-
-
 class TestCLIBasics:
-    """Tests for basic CLI functionality."""
-
     def test_cli_help(self, runner: CliRunner):
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
@@ -122,21 +112,13 @@ class TestCLIBasics:
         assert "ping" in result.output
 
 
-# =============================================================================
-# Config Command Tests
-# =============================================================================
-
-
 class TestConfigCommands:
-    """Tests for config commands."""
-
     def test_config_init(self, runner: CliRunner, temp_dir):
         result = runner.invoke(
             cli,
             ["config", "init", "--url", "https://test.example.org"],
             env={"HOME": str(temp_dir)},
         )
-        # May fail due to missing config dir, but should not crash
         assert result.exit_code in (0, 1)
 
     def test_config_show_no_config(self, runner: CliRunner, temp_dir):
@@ -145,18 +127,10 @@ class TestConfigCommands:
             ["config", "show"],
             env={"HOME": str(temp_dir)},
         )
-        # Should handle missing config gracefully
         assert result.exit_code in (0, 1)
 
 
-# =============================================================================
-# Completion Command Tests
-# =============================================================================
-
-
 class TestCompletionCommands:
-    """Tests for shell completion generation."""
-
     def test_completion_bash(self, runner: CliRunner):
         result = runner.invoke(cli, ["completion", "bash"])
         assert result.exit_code == 0

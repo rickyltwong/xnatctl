@@ -1,20 +1,3 @@
-"""A session download that loses scans must not report success.
-
-If ``DownloadService.download_session_fast`` merely collected per-scan
-failures, echoed a warning, and returned nothing, ``session_download`` would
-print "Downloaded session to: ..." and exit 0 regardless -- and with the
-warning suppressed under ``--quiet``, the scripting mode would say nothing
-at all: ``xnatctl session download -q ... && process_data`` would proceed on
-an incomplete dataset with no signal that anything was missing. Unlike
-uploads and ``scan download``, this path has no summary object, so nothing
-else guards it.
-
-These tests drive a real local HTTP server rather than mocking the transport,
-so they exercise the streaming, retry, and typed-error path that
-``download_session_fast`` actually runs -- a mocked transport would prove
-nothing about it.
-"""
-
 from __future__ import annotations
 
 import io
@@ -40,29 +23,17 @@ EXPERIMENT = "XNAT_E00001"
 
 
 def _scan_zip(scan_id: str, hostile: bool = False) -> bytes:
-    """Build a scan ZIP whose internal ``scans/{id}`` path matches *scan_id*.
-
-    Faithful per scan (not a single fixed "scans/1" reused for every scan
-    ID): a real XNAT scan ZIP always names the scan it came from, and the
-    extraction guard is exercised concurrently across all three scans in
-    the hostile-entries test, so each scan's fixture should look like the
-    ZIP that scan would actually produce.
-    """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         zf.writestr(f"{EXPERIMENT}/scans/{scan_id}/resources/DICOM/files/0001.dcm", b"x" * 64)
         if hostile:
-            # A symlink-typed member: its content is a target path, not real
-            # file content -- skipped by the extraction guard rather than
-            # written, and counted/logged as an unsafe entry.
             info = zipfile.ZipInfo(f"{EXPERIMENT}/scans/{scan_id}/resources/DICOM/files/link.dcm")
-            info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+            info.external_attr = 0o120777 << 16
             zf.writestr(info, "../../../etc/passwd")
     return buffer.getvalue()
 
 
 def _serve(failing_scan: str | None, status: int = 500, hostile: bool = False) -> Iterator[str]:
-    """Run a fake XNAT where one scan's file request fails."""
     zip_bytes_by_scan = {sid: _scan_zip(sid, hostile=hostile) for sid in SCANS}
     listing = json.dumps({"ResultSet": {"Result": [{"ID": s} for s in SCANS]}}).encode()
     experiment = json.dumps(
@@ -95,7 +66,7 @@ def _serve(failing_scan: str | None, status: int = 500, hostile: bool = False) -
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:  # noqa: N802  # BaseHTTPRequestHandler's spelling
+        def do_GET(self) -> None:
             path = urlparse(self.path).path
             if failing_scan and f"/scans/{failing_scan}/" in path:
                 self._send(b"upstream exploded", "text/plain", status)
@@ -151,7 +122,6 @@ class TestAFailedScanFailsTheCommand:
         assert result.exit_code != 0, "a download that lost a scan reported success"
 
     def test_quiet_mode_still_reports_the_failure(self, tmp_path: Path) -> None:
-        """--quiet is the scripting mode; silence there is the dangerous case."""
         for url in _serve(failing_scan="2"):
             result = _download(url, tmp_path, "-q")
 
@@ -159,7 +129,6 @@ class TestAFailedScanFailsTheCommand:
         assert "failed" in result.stderr.lower()
 
     def test_the_failing_scan_is_named(self, tmp_path: Path) -> None:
-        """So the operator can retry exactly what is missing."""
         for url in _serve(failing_scan="2"):
             result = _download(url, tmp_path)
 
@@ -181,7 +150,6 @@ class TestASuccessfulDownloadIsUnaffected:
         assert result.exit_code == 0
 
     def test_it_reports_what_arrived_not_just_where(self, tmp_path: Path) -> None:
-        """Reporting only the path let an empty tree read as a complete download."""
         for url in _serve(failing_scan=None):
             result = _download(url, tmp_path)
 
@@ -191,19 +159,12 @@ class TestASuccessfulDownloadIsUnaffected:
 
 class TestAnEmptyScanIsNotAFailure:
     def test_a_404_does_not_fail_the_command(self, tmp_path: Path) -> None:
-        """Under -r, a scan with no files of that type is normal."""
         for url in _serve(failing_scan="2", status=404):
             result = _download(url, tmp_path)
 
         assert result.exit_code == 0
 
     def test_but_it_is_counted_as_zero_files(self, tmp_path: Path) -> None:
-        """An all-404 session must not read as a complete download.
-
-        A mis-routed XNAT URL fails silently as an empty 200 or a 404, so
-        this count is what would expose a future URL regression instead of
-        handing back an empty tree marked success.
-        """
         for url in _serve(failing_scan="2", status=404):
             result = _download(url, tmp_path)
 
@@ -211,8 +172,6 @@ class TestAnEmptyScanIsNotAFailure:
 
 
 class TestOutcomeShape:
-    """The return value exists so the caller can decide the exit code."""
-
     def test_it_reports_counts_and_failures(self, tmp_path: Path) -> None:
         from xnatctl.services.downloads import DownloadService
 

@@ -1,10 +1,8 @@
 """Cross-project sharing commands for xnatctl (subject share/unshare, session share/unshare).
 
-Registers ``subject share``/``subject unshare`` onto the ``subject`` group
-defined in :mod:`xnatctl.cli.subject`, and ``session share``/``session
-unshare`` onto the ``session`` group defined in :mod:`xnatctl.cli.session`,
-mirroring how :mod:`xnatctl.cli.session_query` registers ``list``/``show``
-onto the same ``session`` group.
+Defines ``subject share``/``subject unshare`` and ``session share``/``session
+unshare``; ``xnatctl/cli/main.py`` registers them on the ``subject`` and
+``session`` groups.
 
 XNAT lets a subject or experiment be shared into a second project without
 moving it -- the resource keeps one primary project and gains visibility in
@@ -27,8 +25,6 @@ from xnatctl.cli.common import (
     require_auth,
     require_project_from_context,
 )
-from xnatctl.cli.session import session
-from xnatctl.cli.subject import subject
 from xnatctl.core.exceptions import InputValidationError, ResourceNotFoundError
 from xnatctl.core.output import print_error, print_success
 from xnatctl.core.validation import (
@@ -42,12 +38,8 @@ from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.sessions import SessionService
 from xnatctl.services.subjects import SubjectService
 
-# =============================================================================
-# subject share / unshare
-# =============================================================================
 
-
-@subject.command("share")
+@click.command("share")
 @click.argument("subject_id")
 @click.option("--into", "target_project", required=True, help="Project to share the subject into")
 @click.option("--project", "-P", help="Source project ID (defaults to profile default_project)")
@@ -110,7 +102,7 @@ def subject_share(
     )
 
 
-@subject.command("unshare")
+@click.command("unshare")
 @click.argument("subject_id")
 @click.option("--from", "target_project", required=True, help="Project to remove the share from")
 @click.option("--project", "-P", help="Source project ID (defaults to profile default_project)")
@@ -152,14 +144,6 @@ def subject_unshare(
 
     primary_project = resolved.project_id or project
 
-    # Same primary-project refusal `SubjectService.unshare` enforces --
-    # checked here too, before the dry-run branch, so `--dry-run` reports
-    # the same refusal execution would rather than returning early and
-    # reporting success for a call the service would reject. Stripped AND
-    # casefolded on both sides so the CLI and the service cannot disagree
-    # about what counts as a match -- padded input (e.g. a trailing space
-    # from a copy-paste) must not slip past this into the service's own
-    # check, which compares the same way.
     if target_project.strip().casefold() == primary_project.strip().casefold():
         raise InputValidationError(
             f"refusing to unshare subject {resolved.subject_id} from {target_project}: that is "
@@ -185,12 +169,7 @@ def subject_unshare(
     )
 
 
-# =============================================================================
-# session share / unshare
-# =============================================================================
-
-
-@session.command("share")
+@click.command("share")
 @click.option(
     "--experiment",
     "-E",
@@ -271,7 +250,7 @@ def session_share(
     )
 
 
-@session.command("unshare")
+@click.command("unshare")
 @click.option(
     "--experiment",
     "-E",
@@ -327,11 +306,6 @@ def session_unshare(
         print_error(f"Session not found: {session_id}")
         raise SystemExit(1) from None
 
-    # Knowing the primary project is a precondition, not a nicety: unsharing
-    # a session FROM its primary project makes XNAT delete it outright (200,
-    # then 404), so the guard in SessionService.unshare needs a real value to
-    # compare against. Refuse rather than guess -- an unguarded unshare is
-    # the one failure mode here that destroys data.
     primary_project = resolved.project_id or project
     if not primary_project:
         print_error(
@@ -341,14 +315,6 @@ def session_unshare(
         )
         raise SystemExit(1)
 
-    # Same primary-project refusal `SessionService.unshare` enforces --
-    # checked here too, before the dry-run branch, so `--dry-run` reports
-    # the same refusal execution would rather than returning early and
-    # reporting success for a call the service would reject. Stripped AND
-    # casefolded on both sides so the CLI and the service cannot disagree
-    # about what counts as a match -- padded input (e.g. a trailing space
-    # from a copy-paste) must not slip past this into the service's own
-    # check, which compares the same way.
     if target_project.strip().casefold() == primary_project.strip().casefold():
         raise InputValidationError(
             f"refusing to unshare session {resolved.experiment_id} from {target_project}: that "

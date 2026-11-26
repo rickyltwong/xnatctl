@@ -1,20 +1,6 @@
-"""Transport-level tests for XNATClient convenience methods and the public
-``transport=`` seam.
-
-Retry/backoff numerics and status->exception mapping live in
-``tests/test_core_client_retry.py``; this module deliberately does not
-duplicate them. What it owns:
-
-* the ``transport=`` constructor seam itself,
-* ``get_json`` / ``ping`` / ``whoami`` request shapes,
-* connect/timeout failure mapping through a real httpx request cycle.
-
-Everything runs through ``httpx.MockTransport``, so requests are real
-``httpx.Request`` objects and assertions are about what would go on the wire.
-"""
-
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from urllib.parse import parse_qs, urlparse
 
@@ -31,13 +17,13 @@ from xnatctl.core.exceptions import (
 from xnatctl.core.exceptions import (
     RequestTimeoutError as XNATTimeoutError,
 )
+from xnatctl.core.logging import DetailsWithheldError
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Never actually sleep: retry backoff must not cost wall-clock here."""
     monkeypatch.setattr("xnatctl.core.client.time.sleep", lambda _s: None)
 
 
@@ -47,10 +33,6 @@ def make_client(
     max_retries: int = 3,
     **kwargs: object,
 ) -> tuple[XNATClient, list[httpx.Request]]:
-    """Build an XNATClient wired to ``handler`` via the public transport seam.
-
-    Returns the client plus a list recording every request the transport saw.
-    """
     calls: list[httpx.Request] = []
 
     def recording(request: httpx.Request) -> httpx.Response:
@@ -61,24 +43,17 @@ def make_client(
         base_url="https://xnat.example.org",
         max_retries=max_retries,
         transport=httpx.MockTransport(recording),
-        **kwargs,  # type: ignore[arg-type]
+        **kwargs,
     )
     return client, calls
 
 
 def query_of(request: httpx.Request) -> dict[str, list[str]]:
-    """Parse a recorded request's query string."""
     return parse_qs(urlparse(str(request.url)).query)
-
-
-# =============================================================================
-# The transport seam itself
-# =============================================================================
 
 
 class TestTransportSeam:
     def test_transport_kwarg_is_used_for_requests(self) -> None:
-        """A transport passed to the constructor serves the request."""
         client, calls = make_client(lambda _r: httpx.Response(200, json={"ok": True}))
 
         resp = client.get("/data/projects")
@@ -89,7 +64,6 @@ class TestTransportSeam:
         assert calls[0].url.path == "/data/projects"
 
     def test_transport_defaults_to_none(self) -> None:
-        """Omitting transport leaves httpx to build its default."""
         client = XNATClient(base_url="https://xnat.example.org")
         assert client.transport is None
 
@@ -99,11 +73,6 @@ class TestTransportSeam:
         client.get("/data/projects")
 
         assert str(calls[0].url).startswith("https://xnat.example.org/data/projects")
-
-
-# =============================================================================
-# Convenience methods
-# =============================================================================
 
 
 class TestGetJson:
@@ -163,8 +132,6 @@ class TestWhoami:
         assert info.email == "jdoe@example.org"
 
     def test_html_response_is_not_treated_as_a_username(self) -> None:
-        """A login page must not become the reported identity."""
-
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/xapi/users/username":
                 return httpx.Response(200, text="<html><body>Login</body></html>")
@@ -183,15 +150,8 @@ class TestWhoami:
         assert info.enabled is False
 
 
-# =============================================================================
-# Transport failure mapping (through a real request cycle)
-# =============================================================================
-
-
 class TestTransportFailureMapping:
     def test_connect_error_retries_then_raises_retry_exhausted(self) -> None:
-        """No raw httpx error escapes the client."""
-
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("refused", request=request)
 
@@ -214,8 +174,6 @@ class TestTransportFailureMapping:
         assert len(calls) == 1
 
     def test_connect_timeout_fails_fast_without_retrying(self) -> None:
-        """A blackholed host must fail in seconds, not after backoff."""
-
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectTimeout("connect timed out", request=request)
 
@@ -227,8 +185,6 @@ class TestTransportFailureMapping:
         assert len(calls) == 1, "connect timeout must not be retried"
 
     def test_connect_timeout_is_not_swallowed_by_the_timeout_branch(self) -> None:
-        """ConnectTimeout subclasses TimeoutException; ordering must favour it."""
-
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectTimeout("connect timed out", request=request)
 
@@ -263,11 +219,6 @@ class TestTransportFailureMapping:
 
         assert client.get("/data/projects").json() == {"ok": True}
         assert len(calls) == 3
-
-
-# =============================================================================
-# Authentication and session wiring
-# =============================================================================
 
 
 class TestAuthenticate:
@@ -305,7 +256,6 @@ class TestAuthenticate:
             client.authenticate()
 
     def test_html_body_is_treated_as_invalid_credentials(self) -> None:
-        """XNAT answers a bad login with a 200 + login page, not a 401."""
         client, _ = make_client(
             lambda _r: httpx.Response(200, text="<html><body>Login failed</body></html>"),
             username="user",
@@ -387,8 +337,6 @@ class TestSessionWiring:
         assert calls[0].url.path == "/data/JSESSION"
 
     def test_invalidate_session_clears_token_even_if_logout_fails(self) -> None:
-        """Best-effort logout: a server error must not leave a stale token."""
-
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("refused", request=request)
 
@@ -398,6 +346,35 @@ class TestSessionWiring:
         client.invalidate_session()
 
         assert client.session_token is None
+
+    def test_invalidate_session_survives_any_transport_failure_and_logs_no_token(self) -> None:
+        token = "TOK" + "-SECRET"
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            raise RuntimeError(f"bad cookie JSESSIONID={token}")
+
+        client, _ = make_client(handler)
+        client.session_token = token
+        records: list[logging.LogRecord] = []
+
+        class Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        capture = Capture()
+        client_logger = logging.getLogger("xnatctl.core.client")
+        client_logger.addHandler(capture)
+        try:
+            client.invalidate_session()
+        finally:
+            client_logger.removeHandler(capture)
+
+        assert client.session_token is None
+        (record,) = records
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], DetailsWithheldError)
+        assert str(record.exc_info[1]) == "RuntimeError"
+        assert token not in logging.Formatter().format(record)
 
     def test_invalidate_session_is_a_noop_without_a_token(self) -> None:
         client, calls = make_client(lambda _r: httpx.Response(200, text=""))
@@ -424,46 +401,16 @@ class TestSessionWiring:
         assert client._client is None
 
 
-# =============================================================================
-# The exception contract, enumerated
-# =============================================================================
-
-
 class TestNoHttpxExceptionEscapes:
-    """No httpx exception may leave XNATClient. Checked by enumeration.
-
-    The individual mappings are covered elsewhere. What is checked here is the
-    *closure* of the contract, because the failure mode is an omission rather
-    than a wrong answer: httpx.TooManyRedirects was missing from both transport
-    tuples and escaped raw, past the typed dispatch in cli/common.py, and
-    reached the user as a traceback. Every test naming a specific exception
-    passed the whole time -- nothing was asserting that the list was complete.
-
-    A redirect loop is not a hypothetical for this tool: an uninitialized XNAT
-    bounces essentially every request to /setup, and so does a login-wall proxy
-    or a misconfigured siteUrl.
-
-    Discovered by walking httpx's exception tree rather than by listing names,
-    so an exception added by a future httpx release fails here instead of in
-    somebody's terminal.
-    """
-
     @staticmethod
     def _transport_exceptions() -> list[type[httpx.HTTPError]]:
-        """Every concrete httpx error a transport can raise during a request."""
-
         def leaves(cls: type) -> list[type]:
             subs = cls.__subclasses__()
             return [cls] if not subs else [leaf for sub in subs for leaf in leaves(sub)]
 
-        # Rooted at RequestError, not TransportError: TooManyRedirects and
-        # DecodingError sit outside TransportError, and rooting the walk there
-        # is what let the original leak hide. HTTPStatusError is excluded
-        # because raise_for_status() raises it, never a transport.
         return [c for c in leaves(httpx.RequestError) if not issubclass(c, httpx.HTTPStatusError)]
 
     def test_the_enumeration_is_not_empty(self) -> None:
-        """Guards the test itself: a bad walk would vacuously pass everything."""
         found = self._transport_exceptions()
 
         assert len(found) >= 8, f"only found {[c.__name__ for c in found]}"
@@ -482,8 +429,6 @@ class TestNoHttpxExceptionEscapes:
             client.get_json("/data/projects")
 
     def test_a_redirect_loop_is_not_retried(self) -> None:
-        """Retrying a loop just makes the user wait to see the same failure."""
-
         def handler(_request: httpx.Request) -> httpx.Response:
             raise httpx.TooManyRedirects("simulated")
 

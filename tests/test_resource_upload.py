@@ -1,5 +1,3 @@
-"""Tests for resource upload CLI behavior."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,12 +6,11 @@ import pytest
 from click.testing import CliRunner
 
 from xnatctl.cli.main import cli
+from xnatctl.core.config import Config
 from xnatctl.models.hierarchy import ExperimentRef, ScanRef
 
 
 class FakeClient:
-    """Minimal authenticated client stub."""
-
     is_authenticated = True
 
     def whoami(self) -> dict[str, str]:
@@ -21,8 +18,6 @@ class FakeClient:
 
 
 class ResourceServiceSpy:
-    """Capture ResourceService usage in CLI commands."""
-
     last_instance: ResourceServiceSpy | None = None
     raise_on_upload: str | None = None
 
@@ -102,7 +97,7 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture
-def auth_client(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
+def auth_client(monkeypatch: pytest.MonkeyPatch, example_profile: Config) -> FakeClient:
     client = FakeClient()
 
     def fake_get_client(self) -> FakeClient:
@@ -123,109 +118,115 @@ def test_resource_upload_file_routes_through_service(
     runner: CliRunner,
     auth_client: FakeClient,
     resource_service_spy: type[ResourceServiceSpy],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with runner.isolated_filesystem():
-        file_path = Path("example.txt")
-        file_path.write_text("payload")
+    monkeypatch.chdir(tmp_path)
+    file_path = Path("example.txt")
+    file_path.write_text("payload")
 
-        result = runner.invoke(
-            cli,
-            [
-                "resource",
-                "upload",
-                "XNAT_E00001",
-                "DICOM",
-                str(file_path),
-                "--scan",
-                "1",
-                "--content",
-                "raw",
-                "--format",
-                "NIFTI",
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        [
+            "resource",
+            "upload",
+            "XNAT_E00001",
+            "DICOM",
+            str(file_path),
+            "--scan",
+            "1",
+            "--content",
+            "raw",
+            "--format",
+            "NIFTI",
+        ],
+    )
 
-        assert result.exit_code == 0
-        assert "Uploaded to DICOM" in result.output
+    assert result.exit_code == 0
+    assert "Uploaded to DICOM" in result.output
 
-        service = resource_service_spy.last_instance
-        assert service is not None
-        scan_parent = ScanRef(
-            experiment=ExperimentRef(experiment="XNAT_E00001", project_id=None), scan_id="1"
-        )
-        assert service.create_calls == [
-            {
-                "resource_label": "DICOM",
-                "parent": scan_parent,
-                "format": "NIFTI",
-                "content": "raw",
-            }
-        ]
-        assert service.upload_directory_calls == []
-        assert len(service.upload_file_calls) == 1
-        assert service.upload_file_calls[0]["file_path"] == file_path
-        assert service.upload_file_calls[0]["parent"] == scan_parent
-        assert service.upload_file_calls[0]["extract"] is False
-        assert service.upload_file_calls[0]["overwrite"] is False
+    service = resource_service_spy.last_instance
+    assert service is not None
+    scan_parent = ScanRef(
+        experiment=ExperimentRef(experiment="XNAT_E00001", project_id=None), scan_id="1"
+    )
+    assert service.create_calls == [
+        {
+            "resource_label": "DICOM",
+            "parent": scan_parent,
+            "format": "NIFTI",
+            "content": "raw",
+        }
+    ]
+    assert service.upload_directory_calls == []
+    assert len(service.upload_file_calls) == 1
+    assert service.upload_file_calls[0]["file_path"] == file_path
+    assert service.upload_file_calls[0]["parent"] == scan_parent
+    assert service.upload_file_calls[0]["extract"] is False
+    assert service.upload_file_calls[0]["overwrite"] is False
 
 
 def test_resource_upload_directory_routes_through_service(
     runner: CliRunner,
     auth_client: FakeClient,
     resource_service_spy: type[ResourceServiceSpy],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with runner.isolated_filesystem():
-        directory_path = Path("bids")
-        directory_path.mkdir()
-        (directory_path / "sample.txt").write_text("payload")
+    monkeypatch.chdir(tmp_path)
+    directory_path = Path("bids")
+    directory_path.mkdir()
+    (directory_path / "sample.txt").write_text("payload")
 
-        result = runner.invoke(
-            cli,
-            [
-                "resource",
-                "upload",
-                "XNAT_E00002",
-                "BIDS",
-                str(directory_path),
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        [
+            "resource",
+            "upload",
+            "XNAT_E00002",
+            "BIDS",
+            str(directory_path),
+        ],
+    )
 
-        assert result.exit_code == 0
-        assert "Uploaded to BIDS" in result.output
+    assert result.exit_code == 0
+    assert "Uploaded to BIDS" in result.output
 
-        service = resource_service_spy.last_instance
-        assert service is not None
-        assert len(service.create_calls) == 1
-        assert service.upload_file_calls == []
-        assert len(service.upload_directory_calls) == 1
-        assert service.upload_directory_calls[0]["directory_path"] == directory_path
-        assert service.upload_directory_calls[0]["parent"] == ExperimentRef(
-            experiment="XNAT_E00002", project_id=None
-        )
-        assert service.upload_directory_calls[0]["overwrite"] is False
+    service = resource_service_spy.last_instance
+    assert service is not None
+    assert len(service.create_calls) == 1
+    assert service.upload_file_calls == []
+    assert len(service.upload_directory_calls) == 1
+    assert service.upload_directory_calls[0]["directory_path"] == directory_path
+    assert service.upload_directory_calls[0]["parent"] == ExperimentRef(
+        experiment="XNAT_E00002", project_id=None
+    )
+    assert service.upload_directory_calls[0]["overwrite"] is False
 
 
 def test_resource_upload_failure_returns_click_exception(
     runner: CliRunner,
     auth_client: FakeClient,
     resource_service_spy: type[ResourceServiceSpy],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resource_service_spy.raise_on_upload = "file"
 
-    with runner.isolated_filesystem():
-        file_path = Path("broken.txt")
-        file_path.write_text("payload")
+    monkeypatch.chdir(tmp_path)
+    file_path = Path("broken.txt")
+    file_path.write_text("payload")
 
-        result = runner.invoke(
-            cli,
-            [
-                "resource",
-                "upload",
-                "XNAT_E00003",
-                "BROKEN",
-                str(file_path),
-            ],
-        )
+    result = runner.invoke(
+        cli,
+        [
+            "resource",
+            "upload",
+            "XNAT_E00003",
+            "BROKEN",
+            str(file_path),
+        ],
+    )
 
-        assert result.exit_code != 0
-        assert "Upload failed: kaboom" in result.output
+    assert result.exit_code != 0
+    assert "Upload failed: kaboom" in result.output

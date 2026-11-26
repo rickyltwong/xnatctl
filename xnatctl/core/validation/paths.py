@@ -20,10 +20,6 @@ from urllib.parse import quote
 
 from xnatctl.core.exceptions import InvalidIdentifierError, PathValidationError
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 ALLOWED_ARCHIVE_EXTENSIONS = {".zip", ".tar", ".tar.gz", ".tgz"}
 
 # Windows reserved device basenames -- matched case-insensitively, and
@@ -42,40 +38,10 @@ WINDOWS_RESERVED_BASENAMES = frozenset(
     | {"COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"}
 )
 
-# Characters Windows filesystem APIs reject in a filename outright (':' is
-# checked separately above, with its own message about drive/ADS syntax).
-# Rejected on every platform, not just when actually running on Windows:
-# a value legal on XNAT but unwritable on Windows should fail the same way
-# regardless of which machine runs the download, not only there.
 WINDOWS_INVALID_FILENAME_CHARS = frozenset('<>"|?*')
 
 
-# =============================================================================
-# Path Segment Quoting
-# =============================================================================
-
-
 def _reject_empty_or_dot_only_segment(value: str) -> None:
-    """Shared guard for both path-segment quoting helpers below.
-
-    Raises:
-        InvalidIdentifierError: If ``value`` is empty, whitespace-only, or
-            composed entirely of dots (``.``, ``..``, ...).
-
-            Empty matters because a raw call site that skips ref
-            construction (``quote_path_segment(project_id)`` directly, say)
-            would otherwise build a COLLECTION route instead of an item
-            route -- ``ProjectService.delete("")`` silently turning into
-            ``DELETE /data/projects/`` rather than failing on a bad ID.
-
-            Dot-only matters because ``quote()`` treats ``.`` as unreserved,
-            so leaving dots literal (required for real labels containing
-            them) would otherwise let a bare ``..`` segment through
-            unescaped -- the one shape that still means something to an
-            HTTP path resolver even after this function's other
-            reserved-character encoding. Mirrors the same rule in
-            :func:`validate_xnat_label`.
-    """
     if value.strip() == "":
         raise InvalidIdentifierError("path segment", value, "cannot be empty or whitespace-only")
     if value.strip(".") == "":
@@ -326,11 +292,6 @@ def verify_directory_contained_in(candidate: Path, trusted_root: Path, label: st
             "(possibly a pre-existing symlink) -- refusing to use it",
         )
     return resolved_candidate
-
-
-# =============================================================================
-# Path Validation
-# =============================================================================
 
 
 def validate_path_exists(

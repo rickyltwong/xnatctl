@@ -12,66 +12,25 @@ class BaseService:
     """Base service class with common functionality."""
 
     def __init__(self, client: XNATClient) -> None:
-        """Initialize service with XNAT client.
-
-        Args:
-            client: Authenticated XNATClient instance
-        """
         self.client = client
 
     def _get(self, path: str, **kwargs: Any) -> Any:
-        """Execute GET request and return JSON data.
-
-        Args:
-            path: API endpoint path
-            **kwargs: Additional request parameters
-
-        Returns:
-            Parsed JSON response data
-        """
         resp = self.client.get(path, **kwargs)
         return resp.json()
 
     def _post(self, path: str, **kwargs: Any) -> Any:
-        """Execute POST request and return response.
-
-        Args:
-            path: API endpoint path
-            **kwargs: Additional request parameters
-
-        Returns:
-            Parsed JSON response or response text
-        """
         resp = self.client.post(path, **kwargs)
         if resp.headers.get("content-type", "").startswith("application/json"):
             return resp.json()
         return resp.text
 
     def _put(self, path: str, **kwargs: Any) -> Any:
-        """Execute PUT request and return response.
-
-        Args:
-            path: API endpoint path
-            **kwargs: Additional request parameters
-
-        Returns:
-            Parsed JSON response or response text
-        """
         resp = self.client.put(path, **kwargs)
         if resp.headers.get("content-type", "").startswith("application/json"):
             return resp.json()
         return resp.text
 
     def _delete(self, path: str, **kwargs: Any) -> bool:
-        """Execute DELETE request.
-
-        Args:
-            path: API endpoint path
-            **kwargs: Additional request parameters
-
-        Returns:
-            True if successful
-        """
         self.client.delete(path, **kwargs)
         return True
 
@@ -80,15 +39,6 @@ class BaseService:
         data: dict[str, Any],
         result_key: str = "ResultSet.Result",
     ) -> list[dict[str, Any]]:
-        """Extract results from XNAT response.
-
-        Args:
-            data: Raw API response data
-            result_key: Dot-notation key to extract results
-
-        Returns:
-            List of result items
-        """
         results = data
         for key in result_key.split("."):
             if isinstance(results, dict):

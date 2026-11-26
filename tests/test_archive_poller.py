@@ -1,5 +1,3 @@
-"""Tests for the background archive poller and the drain/resolve functions."""
-
 from __future__ import annotations
 
 import tempfile
@@ -25,15 +23,11 @@ from xnatctl.services.transfer.poller import (
 )
 
 FAST_POLL = 0.05
-# Deadline-based waits, so a generous timeout is free: the happy path still
-# finishes in milliseconds and only genuine failures wait the full duration.
-# pytest-timeout (120s, pyproject.toml) is the real hang backstop.
 WAIT_TIMEOUT = 10.0
 
 
 @pytest.fixture
 def mock_executor() -> MagicMock:
-    """Create a mock TransferExecutor with safe defaults."""
     executor = MagicMock(spec=TransferExecutor)
     executor.list_prearchive_entries.return_value = []
     executor.count_dest_scans.return_value = 0
@@ -41,7 +35,6 @@ def mock_executor() -> MagicMock:
 
 
 def _make_entity(label: str = "EXP001") -> DiscoveredEntity:
-    """Create a minimal DiscoveredEntity for testing."""
     return DiscoveredEntity(
         local_id=f"XNAT_E_{label}",
         local_label=label,
@@ -55,17 +48,6 @@ def _make_deferred(
     dicom_scan_count: int = 3,
     timeout_at: float | None = None,
 ) -> DeferredExperiment:
-    """Create a DeferredExperiment for testing.
-
-    Args:
-        label: Experiment label.
-        dest_project: Destination project ID.
-        dicom_scan_count: Number of DICOM scans expected.
-        timeout_at: Monotonic deadline; defaults to far future.
-
-    Returns:
-        A DeferredExperiment with real threading.Event objects.
-    """
     return DeferredExperiment(
         exp=_make_entity(label),
         subject=_make_entity(f"SUB_{label}"),
@@ -81,10 +63,7 @@ def _make_deferred(
 
 
 class TestArchivePoller:
-    """Tests for ArchivePoller background polling behaviour."""
-
     def test_poller_detects_prearchive_ready(self, mock_executor: MagicMock) -> None:
-        """needs_archive_action is set when snapshot has status=READY."""
         mock_executor.list_prearchive_entries.return_value = [
             {"name": "EXP001", "folderName": "EXP001", "status": "READY"},
         ]
@@ -98,7 +77,6 @@ class TestArchivePoller:
             poller.stop()
 
     def test_poller_detects_prearchive_conflict(self, mock_executor: MagicMock) -> None:
-        """needs_archive_action is set when snapshot has status=CONFLICT."""
         mock_executor.list_prearchive_entries.return_value = [
             {"name": "EXP001", "folderName": "EXP001", "status": "CONFLICT"},
         ]
@@ -112,7 +90,6 @@ class TestArchivePoller:
             poller.stop()
 
     def test_poller_clears_on_no_prearchive(self, mock_executor: MagicMock) -> None:
-        """prearchive_cleared is set when snapshot has no matching entry."""
         mock_executor.list_prearchive_entries.return_value = []
         item = _make_deferred()
         assert not item.prearchive_cleared
@@ -128,7 +105,6 @@ class TestArchivePoller:
             poller.stop()
 
     def test_poller_sets_archive_ready_on_scan_count(self, mock_executor: MagicMock) -> None:
-        """archive_ready is set when count_dest_scans >= expected."""
         mock_executor.list_prearchive_entries.return_value = []
         mock_executor.count_dest_scans.return_value = 3
         item = _make_deferred(dicom_scan_count=3)
@@ -141,7 +117,6 @@ class TestArchivePoller:
             poller.stop()
 
     def test_poller_timeout_unblocks(self, mock_executor: MagicMock) -> None:
-        """archive_ready is set after archive_timeout_at deadline."""
         mock_executor.list_prearchive_entries.return_value = []
         mock_executor.count_dest_scans.return_value = 0
         item = _make_deferred(timeout_at=time.monotonic() - 1)
@@ -154,7 +129,6 @@ class TestArchivePoller:
             poller.stop()
 
     def test_poller_removes_from_pending_on_ready(self, mock_executor: MagicMock) -> None:
-        """pending_count decrements after archive completes."""
         mock_executor.list_prearchive_entries.return_value = []
         mock_executor.count_dest_scans.return_value = 5
         item = _make_deferred(dicom_scan_count=3)
@@ -172,7 +146,6 @@ class TestArchivePoller:
             poller.stop()
 
     def test_poller_handles_http_errors_gracefully(self, mock_executor: MagicMock) -> None:
-        """count_dest_scans raising does not crash the poller; retries next cycle."""
         mock_executor.list_prearchive_entries.return_value = []
         mock_executor.count_dest_scans.side_effect = ConnectionError("network down")
         item = _make_deferred()
@@ -188,7 +161,6 @@ class TestArchivePoller:
             poller.stop()
 
     def test_poller_distinguishes_zero_vs_error(self, mock_executor: MagicMock) -> None:
-        """count_dest_scans raising does not increment zero_scan_cycles; returning 0 does."""
         mock_executor.list_prearchive_entries.return_value = []
 
         call_count = 0
@@ -207,9 +179,6 @@ class TestArchivePoller:
         poller.enqueue(item)
         poller.start()
         try:
-            # Wait for at least one zero-return cycle to be processed, not just
-            # for the mock to be called. Main-thread observation of call_count
-            # is racy against the poller updating item.zero_scan_cycles.
             deadline = time.monotonic() + WAIT_TIMEOUT
             while item.zero_scan_cycles < 1 and time.monotonic() < deadline:
                 time.sleep(FAST_POLL)
@@ -219,12 +188,6 @@ class TestArchivePoller:
             poller.stop()
 
     def test_poller_stop_exits_cleanly(self, mock_executor: MagicMock) -> None:
-        """stop() interrupts the poll wait instead of blocking for a full cycle."""
-        # A long poll_interval makes this assertion mean something: the run loop
-        # waits on _stop_event, so stop() must return immediately. A busy-sleep
-        # implementation would block for the interval instead.
-        # Asserting against a small interval only measured scheduler jitter and
-        # flaked on loaded runners.
         long_interval = 30.0
         poller = ArchivePoller(mock_executor, poll_interval=long_interval)
         poller.start()
@@ -236,7 +199,6 @@ class TestArchivePoller:
         assert not poller.is_alive
 
     def test_poller_zero_scan_recheck(self, mock_executor: MagicMock) -> None:
-        """After 3 cycles of 0 scans, prearchive_cleared resets to False."""
         mock_executor.list_prearchive_entries.return_value = []
         mock_executor.count_dest_scans.return_value = 0
         item = _make_deferred()
@@ -269,8 +231,6 @@ def drain_config() -> TransferConfig:
 
 
 class TestServicePrearchiveActions:
-    """Tests for the mutating drain-side prearchive resolution function."""
-
     def test_marks_archive_failure(self, mock_executor: MagicMock) -> None:
         ctx = _make_deferred()
         ctx.needs_archive_action.set()

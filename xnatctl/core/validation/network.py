@@ -16,19 +16,10 @@ from xnatctl.core.exceptions import ConfigurationError, InvalidPortError, Invali
 from xnatctl.core.redact import redact_url_userinfo
 from xnatctl.core.timeouts import DEFAULT_HTTP_TIMEOUT_SECONDS
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 MIN_PORT = 1
 MAX_PORT = 65535
 
 ALLOWED_URL_SCHEMES = {"http", "https"}
-
-
-# =============================================================================
-# URL Validation
-# =============================================================================
 
 
 def validate_server_url(url: str) -> str:
@@ -50,10 +41,6 @@ def validate_server_url(url: str) -> str:
     if not url:
         raise InvalidURLError(url, "URL cannot be empty")
 
-    # Every raise below reports the redacted form: InvalidURLError echoes the
-    # value into its message *and* keeps it as `.value`, so a rejected
-    # `https://admin:s3cret@host` would otherwise leak the password through the
-    # error path it was rejected by.
     safe = redact_url_userinfo(url)
 
     try:
@@ -73,10 +60,6 @@ def validate_server_url(url: str) -> str:
     if not parsed.netloc:
         raise InvalidURLError(safe, "URL must include hostname")
 
-    # Reject embedded credentials rather than stripping them. Stripping would
-    # silently drop credentials the user believed were in effect, and the URL
-    # is copied into `base_url`, which surfaces in error messages, log lines
-    # and `config show`.
     if parsed.username or parsed.password:
         raise InvalidURLError(
             safe,
@@ -92,11 +75,6 @@ def validate_url_or_none(url: str | None) -> str | None:
     if url is None or (isinstance(url, str) and not url.strip()):
         return None
     return validate_server_url(url)
-
-
-# =============================================================================
-# Port Validation
-# =============================================================================
 
 
 def validate_port(port: int | str | None, allow_none: bool = False) -> int | None:
@@ -128,17 +106,12 @@ def validate_port(port: int | str | None, allow_none: bool = False) -> int | Non
     return port_int
 
 
-# =============================================================================
-# Configuration Validation
-# =============================================================================
-
-
 def validate_timeout(
     value: int | float | str | None,
     field_name: str = "timeout",
     *,
     min_value: int = 1,
-    max_value: int = 86400 * 30,  # 30 days
+    max_value: int = 86400 * 30,
     default: int = DEFAULT_HTTP_TIMEOUT_SECONDS,
 ) -> int:
     """Validate timeout value in seconds.

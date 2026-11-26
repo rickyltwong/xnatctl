@@ -40,15 +40,12 @@ def test_classify_exam_root_splits_dicom_resources_and_misc(tmp_path: Path) -> N
     exam = tmp_path / "P001_20240517"
     exam.mkdir()
 
-    # DICOM series directory
     _touch(exam / "1_series" / "a.dcm")
-    _touch(exam / "1_series" / "b")  # extensionless DICOM-like
+    _touch(exam / "1_series" / "b")
 
-    # Top-level non-DICOM directories
     _touch(exam / "Physio" / "trace.txt")
     _touch(exam / "Protocol" / "proto.pdf")
 
-    # Top-level non-DICOM file
     _touch(exam / "notes.txt", payload="hello")
 
     result = _classify(exam)

@@ -23,16 +23,6 @@ from pydantic import ValidationError
 if TYPE_CHECKING:
     from pathlib import Path
 
-    # Only the two service packages that themselves import this module at
-    # their own module scope (services.downloads.transport, and every
-    # services.upload transport module -- rest_batch.py, gradual.py,
-    # resources.py -- import XNATClient eagerly) stay TYPE_CHECKING-only
-    # here; importing them for real at module scope would close
-    # core.client -> services.{downloads,upload} -> core.client.
-    # ExamUploadService (services.exam_upload) does NOT import core.client
-    # at its own module scope -- it defers UploadService/ResourceService
-    # inside its methods for a test-mocking reason, not a cycle -- so it is
-    # imported directly below like every other service accessor.
     from xnatctl.services.downloads import DownloadService
     from xnatctl.services.upload import UploadService
 
@@ -48,6 +38,7 @@ from xnatctl.core.exceptions import (
 from xnatctl.core.exceptions import (
     RequestTimeoutError as XNATTimeoutError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR, withhold_details
 from xnatctl.core.redact import redact_url_query
 from xnatctl.core.retry import PERMANENT_TRANSPORT_ERRORS, RETRYABLE_TRANSPORT_ERRORS
 from xnatctl.core.server_version import probe_server_version
@@ -69,10 +60,6 @@ from xnatctl.services.scans import ScanService
 from xnatctl.services.sessions import SessionService
 from xnatctl.services.subjects import SubjectService
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 DEFAULT_TIMEOUT = DEFAULT_HTTP_TIMEOUT_SECONDS
 DEFAULT_MAX_RETRIES = 3
 _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
@@ -80,11 +67,6 @@ _AUTH_LOGGED_IN_RE = re.compile(r"User '([^']+)' is logged in")
 logger = logging.getLogger(__name__)
 
 _ServiceT = TypeVar("_ServiceT")
-
-
-# =============================================================================
-# XNATClient
-# =============================================================================
 
 
 @dataclass
@@ -100,35 +82,18 @@ class XNATClient:
     verify_ssl: bool = True
     ca_bundle: str | None = None
     auto_reauth: bool = False
-    # Injection seam for the underlying HTTP transport. Standard httpx practice
-    # for library consumers, and what lets tests drive real request/response
-    # cycles through httpx.MockTransport instead of mocking the client.
     transport: httpx.BaseTransport | None = None
     _client: httpx.Client | None = field(init=False, default=None, repr=False)
     _ssl_context: ssl.SSLContext | None = field(init=False, default=None, repr=False)
-    # Lazily-built service objects, cached per client instance so repeated
-    # ``client.projects`` access returns the same bound service.
     _services: dict[str, Any] = field(init=False, default_factory=dict, repr=False)
-    # Serializes session refresh across parallel streams: without it, N workers
-    # hitting one expiry each open their own fresh session, which is exactly
-    # the concurrent-session exhaustion that locks out shared service accounts.
     _reauth_lock: threading.Lock = field(init=False, default_factory=threading.Lock, repr=False)
-    # Cache for `server_version` below. A separate probed flag (rather than
-    # treating a None cache as "not yet probed") is what lets a failed probe
-    # be cached too -- otherwise a server with a broken buildInfo endpoint
-    # would be re-probed on every gated call.
     _server_version_cache: tuple[int, int, int] | None = field(init=False, default=None, repr=False)
     _server_version_probed: bool = field(init=False, default=False, repr=False)
-    # Guards the check/probe/set sequence in `server_version` below: without
-    # it, two threads racing past the `not self._server_version_probed` check
-    # both probe. The common (already-cached) case never touches this lock --
-    # only the first access(es), before the probe result is in.
     _server_version_lock: threading.Lock = field(
         init=False, default_factory=threading.Lock, repr=False
     )
 
     def __post_init__(self) -> None:
-        """Validate and normalize URL."""
         self.base_url = validate_server_url(self.base_url)
 
     @classmethod
@@ -155,16 +120,9 @@ class XNATClient:
         Raises:
             ProfileNotFoundError: If the named profile does not exist.
         """
-        # Function-local to avoid the core.connect -> core.client import cycle:
-        # connect imports this module, so this module cannot import connect at
-        # module scope.
         from xnatctl.core.connect import build_client_from_profile
 
         return build_client_from_profile(name, config_path=config_path)
-
-    # =========================================================================
-    # Client Management
-    # =========================================================================
 
     def httpx_verify(self) -> ssl.SSLContext | bool:
         """TLS verification value for any httpx client that speaks for this one.
@@ -180,15 +138,12 @@ class XNATClient:
         path's per-thread client cache, which keys on this value.
         """
         if self.ca_bundle:
-            # Unlocked memoization: callers grab this on the main thread before
-            # spawning workers, and the worst race builds the context twice.
             if self._ssl_context is None:
                 self._ssl_context = ssl.create_default_context(cafile=self.ca_bundle)
             return self._ssl_context
         return self.verify_ssl
 
     def _get_client(self) -> httpx.Client:
-        """Get or create HTTP client."""
         if self._client is None:
             if not self.verify_ssl and not self.ca_bundle:
                 logger.warning(
@@ -197,9 +152,6 @@ class XNATClient:
                 )
             self._client = httpx.Client(
                 base_url=self.base_url,
-                # Structured timeout: a short connect phase so a
-                # blackholed host fails in seconds, with the long read ceiling
-                # preserved for large transfers.
                 timeout=build_httpx_timeout(self.timeout),
                 verify=self.httpx_verify(),
                 follow_redirects=True,
@@ -215,11 +167,6 @@ class XNATClient:
             self._client = None
 
     def __enter__(self) -> XNATClient:
-        # Authenticate on entry only when a password login is both possible and
-        # needed: credentials present and no token yet. An env or cached token
-        # already authenticates the client, so entering must not spend a login
-        # round-trip -- and a token-only client (no password) has nothing to log
-        # in with.
         if self.session_token is None and self.username and self.password:
             self.authenticate()
         return self
@@ -227,19 +174,7 @@ class XNATClient:
     def __exit__(self, *args: Any) -> None:
         self.close()
 
-    # =========================================================================
-    # Service Accessors
-    # =========================================================================
-
     def _service(self, name: str, factory: Callable[[XNATClient], _ServiceT]) -> _ServiceT:
-        """Return the cached service for ``name``, building it once on first use.
-
-        Holds the per-instance cache so repeated access (``client.projects``,
-        ...) returns one object. ``downloads``/``uploads`` import their
-        service class function-locally instead of passing an already-imported
-        class in, to avoid the core -> services import cycle those two
-        packages close (see the module-level ``TYPE_CHECKING`` comment above).
-        """
         service = self._services.get(name)
         if service is None:
             service = factory(self)
@@ -310,10 +245,6 @@ class XNATClient:
         """Bound :class:`ExamUploadService` for this client (cached)."""
         return self._service("exam_uploads", ExamUploadService)
 
-    # =========================================================================
-    # Authentication
-    # =========================================================================
-
     @property
     def is_authenticated(self) -> bool:
         """Check if client has a session token."""
@@ -339,26 +270,21 @@ class XNATClient:
                 auth=(self.username, self.password),
             )
         except httpx.ConnectTimeout as e:
-            # Connect-phase timeout: same typed, fail-fast contract as _request.
             raise XNATTimeoutError(self.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
         except httpx.ConnectError as e:
             raise ServerUnreachableError(self.base_url) from e
         except httpx.TimeoutException as e:
             raise NetworkError(self.base_url, f"Timeout: {e}") from e
         except (*RETRYABLE_TRANSPORT_ERRORS, *PERMANENT_TRANSPORT_ERRORS) as e:
-            # Same contract as _request: no raw httpx error escapes. Login is a
-            # single attempt, so transient and permanent collapse to one branch.
             raise NetworkError(self.base_url, f"{type(e).__name__}: {e}") from e
 
         if resp.status_code != 200:
             raise AuthenticationError(self.base_url, f"HTTP {resp.status_code}")
 
-        # XNAT returns HTML on auth failure
         if "<html" in resp.text.lower():
             raise AuthenticationError(self.base_url, "Invalid credentials or password expired")
 
         self.session_token = resp.text.strip()
-        # Never the token itself -- only that one was obtained.
         logger.debug("Authenticated as %s at %s", self.username, redact_url_query(self.base_url))
         return self.session_token
 
@@ -371,26 +297,25 @@ class XNATClient:
                 # deprecates `cookies=` on individual calls.
                 client.cookies.set("JSESSIONID", self.session_token)
                 client.delete("/data/JSESSION")
-            except Exception:  # noqa: BLE001 -- best-effort logout, must not block client cleanup
-                pass  # Best effort
+            # Best effort, through whatever transport the caller supplied. The
+            # failure's text can quote the session token.
+            except Exception as e:
+                logger.exception(
+                    "Session logout failed",
+                    exc_info=withhold_details(e),
+                    extra={FILE_ONLY_ATTR: True},
+                )
             finally:
                 self.session_token = None
-                # Do not leave the dead credential sitting on the client.
                 if self._client is not None:
                     self._client.cookies.delete("JSESSIONID")
 
-    # =========================================================================
-    # HTTP Methods
-    # =========================================================================
-
     def _get_cookies(self) -> dict[str, str]:
-        """Get cookies for request."""
         if self.session_token:
             return {"JSESSIONID": self.session_token}
         return {}
 
     def _get_auth(self) -> tuple[str, str] | None:
-        """Get basic auth tuple if no session token."""
         if not self.session_token and self.username and self.password:
             return (self.username, self.password)
         return None
@@ -453,42 +378,6 @@ class XNATClient:
         retry_non_idempotent: bool = False,
         max_retries: int | None = None,
     ) -> httpx.Response:
-        """Execute HTTP request with retry logic.
-
-        Args:
-            method: HTTP method.
-            path: API path.
-            params: Query parameters.
-            json: JSON body.
-            data: Form data or raw body.
-            content: Raw request body (bytes, str, iterator, or file object).
-                Use this for streaming raw file uploads instead of ``data``.
-            files: Files to upload.
-            headers: Additional headers.
-            timeout: Request timeout override.
-            retry_non_idempotent: Allow read-phase retries for a method outside
-                :data:`IDEMPOTENT_METHODS`. Opt in per call site, only where the
-                operation is provably safe to repeat -- a retried POST can mean a
-                double archive or a double pipeline launch.
-            max_retries: Per-call retry budget, overriding the client's. Pass 0
-                for a single-shot call. ``timeout`` alone does not bound
-                wall-clock: the ladder honours ``Retry-After`` up to 300s an
-                attempt, so a call that must not delay other work needs both.
-
-        Returns:
-            HTTP response (2xx only; error statuses raise typed exceptions).
-
-        Raises:
-            SessionExpiredError: On 401 when reauth is unavailable/exhausted.
-            PermissionDeniedError: On 403.
-            ResourceNotFoundError: On 404.
-            ClientRequestError: On any other 4xx.
-            ServerError: On a 5xx that is not retryable or after retries drain.
-            RequestTimeoutError: On a connect-phase timeout (fails fast, not retried),
-                or on a read-phase timeout for a non-idempotent method.
-            RetryExhaustedError: When retryable statuses or connect/read-timeout
-                failures exhaust ``max_retries``.
-        """
         return transport.request(
             self,
             method,
@@ -606,10 +495,6 @@ class XNATClient:
             max_retries=max_retries,
         )
 
-    # =========================================================================
-    # Convenience Methods
-    # =========================================================================
-
     def get_json(
         self,
         path: str,
@@ -648,10 +533,6 @@ class XNATClient:
                     try:
                         self._server_version_cache = probe_server_version(self)
                     finally:
-                        # Set even if probe_server_version somehow raised, so a
-                        # broken endpoint is never re-probed -- probing itself
-                        # is documented to be total, but the cache invariant
-                        # must hold regardless.
                         self._server_version_probed = True
         return self._server_version_cache
 
@@ -733,7 +614,6 @@ class XNATClient:
         return None
 
     def _get_user_details(self, username: str) -> UserInfo | None:
-        """Fetch user details for a resolved username, if available."""
         try:
             data = self.get_json(f"/xapi/users/{quote(username, safe='')}")
         except (XNATCtlError, json.JSONDecodeError):
@@ -743,10 +623,6 @@ class XNATClient:
             return None
 
         payload = dict(data)
-        # The payload's own username wins when present and usable (matching
-        # the old dict.get fallback); a missing/blank/non-string username in
-        # the payload falls back to the already-resolved one instead of
-        # sinking an otherwise-good payload over one bad field.
         payload_username = payload.get("username")
         if not isinstance(payload_username, str) or not payload_username.strip():
             payload["username"] = username
@@ -754,13 +630,6 @@ class XNATClient:
         try:
             return UserInfo.model_validate(payload)
         except ValidationError:
-            # A genuinely unusable payload (some field violates the model in
-            # a way the field validators don't absorb) must not be discarded
-            # wholesale -- it may still carry a perfectly good `enabled`
-            # value. Salvage it here if it is at least a real bool;
-            # otherwise default to False (fail-closed: report the account
-            # as not-confirmed-enabled rather than inventing an active
-            # one).
             enabled = payload.get("enabled")
             return UserInfo(
                 username=username,
@@ -768,7 +637,6 @@ class XNATClient:
             )
 
     def _apply_username_hint(self, username: str) -> str:
-        """Preserve configured/cached username casing when it matches."""
         if self.username and self.username.casefold() == username.casefold():
             return self.username
         return username

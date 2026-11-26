@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.retry import upload_with_retry
 from xnatctl.core.timeouts import build_httpx_timeout
 from xnatctl.services.import_service import IMPORT_ENDPOINT, build_import_params
@@ -25,9 +26,6 @@ from .shared import SessionRefresher, session_cookie_header
 
 logger = logging.getLogger(__name__)
 
-# Gradual-DICOM uses one HTTP request per DICOM file; creating a new httpx.Client
-# per file is expensive and can trigger transient ConnectError bursts under high
-# concurrency. Reuse a persistent client per worker thread (keep-alive).
 _GRADUAL_HTTP_TIMEOUT_SECONDS = 120.0
 
 
@@ -57,12 +55,12 @@ class GradualClientPool:
             if client is not None:
                 try:
                     client.close()
-                except Exception:  # noqa: BLE001  # best-effort cleanup: closing a stale httpx client must not fail the operation
+                except OSError:
                     pass
 
             client = httpx.Client(
                 base_url=base_url,
-                timeout=build_httpx_timeout(_GRADUAL_HTTP_TIMEOUT_SECONDS),  # connect fails fast
+                timeout=build_httpx_timeout(_GRADUAL_HTTP_TIMEOUT_SECONDS),
                 verify=verify_ssl,
                 limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
             )
@@ -75,13 +73,8 @@ class GradualClientPool:
 
     def close_all(self) -> None:
         """Close every thread-local client this pool has created."""
-        # Best-effort clear for the current thread so sequential operations don't
-        # accidentally reuse a closed client.
-        try:
-            self._local.client = None
-            self._local.key = None
-        except Exception:  # noqa: BLE001  # best-effort cleanup: clearing thread-local client refs
-            pass
+        self._local.client = None
+        self._local.key = None
 
         with self._registry_lock:
             clients = list(self._registry)
@@ -89,7 +82,7 @@ class GradualClientPool:
         for c in clients:
             try:
                 c.close()
-            except Exception:  # noqa: BLE001  # best-effort cleanup: closing pooled httpx clients must not fail teardown
+            except OSError:
                 pass
 
     @contextlib.contextmanager
@@ -126,30 +119,6 @@ def _upload_single_file_gradual(
     direct_archive: bool = True,
     cancel_token: CancellationToken = NULL_TOKEN,
 ) -> tuple[str, bool, str]:
-    """Upload a single file via the gradual-DICOM import handler.
-
-    Uses the pool's thread-local httpx client to reuse keep-alive connections
-    per worker thread. On HTTP 401, refreshes the session token via
-    *session_refresher* and retries once.
-
-    Args:
-        pool: Client pool for this upload operation.
-        base_url: XNAT server base URL.
-        session_refresher: Thread-safe token manager for reauth on 401.
-        verify_ssl: Whether to verify SSL certificates.
-        display_path: Path shown in progress and error messages, when it
-            should differ from ``file_path`` (e.g. relative to the upload root).
-        file_path: Path to the DICOM file.
-        project: Target project ID.
-        subject: Target subject label.
-        session: Target session label.
-        direct_archive: Use direct archive vs prearchive (default: True).
-        cancel_token: Checked by the retry ladder so an interrupted upload
-            abandons its backoff instead of waiting it out.
-
-    Returns:
-        Tuple of (filename, success, error_message).
-    """
     name = display_path or file_path.name
 
     try:
@@ -199,26 +168,17 @@ def _upload_single_file_gradual(
             return name, True, ""
 
         return name, False, _extract_error_detail(resp)
-    except Exception as e:  # noqa: BLE001  # per-file worker-pool isolation: any failure becomes a documented (name, False, msg) tuple
+    except Exception as e:
+        logger.exception("Gradual upload failed", extra={FILE_ONLY_ATTR: True})
         return name, False, str(e)
 
 
 def _extract_error_detail(resp: httpx.Response) -> str:
-    """Build the failure detail for a non-2xx import response.
-
-    Includes a small snippet of the server response for debugging (XNAT often
-    returns useful details for 4xx/5xx in plain text or HTML).
-
-    Args:
-        resp: The non-2xx response.
-
-    Returns:
-        "HTTP <status>", with a body snippet appended when one is readable.
-    """
     snippet = ""
     try:
         snippet = resp.text.strip().replace("\n", " ")
-    except Exception:  # noqa: BLE001  # best-effort debug-info extraction: must not crash the error-reporting path itself
+    except Exception:
+        logger.exception("Could not read the error response body", extra={FILE_ONLY_ATTR: True})
         snippet = ""
     if snippet:
         snippet = snippet[:200]

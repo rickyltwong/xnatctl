@@ -1,14 +1,3 @@
-"""Ctrl+C must actually stop a parallel operation.
-
-Before this, every batch was submitted to the pool up front and the interrupt
-unwound into ``ThreadPoolExecutor.__exit__``, whose ``shutdown(wait=True)``
-runs the entire queue to completion first. The user asked it to stop and it
-kept uploading.
-
-Synchronisation here is by :class:`threading.Event`, never by sleeping and
-hoping -- these are thread tests and the suite has a 120s per-test backstop.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -43,7 +32,6 @@ class TestCancellationToken:
         assert CancellationToken().sleep(0.01) is False
 
     def test_sleep_returns_immediately_once_cancelled(self) -> None:
-        """The point of the whole exercise: no waiting out a backoff."""
         token = CancellationToken()
         token.cancel()
 
@@ -77,11 +65,6 @@ class TestCancellationToken:
 
 class TestCancellablePool:
     def test_queued_work_never_runs_after_an_interrupt(self) -> None:
-        """The core guarantee: the backlog is dropped, not drained.
-
-        One worker occupies the single thread and blocks. The remaining 49 sit
-        in the queue. An interrupt in the body must strand them.
-        """
         first_running = threading.Event()
         release = threading.Event()
         ran: list[int] = []
@@ -103,21 +86,15 @@ class TestCancellablePool:
                 release.set()
                 raise KeyboardInterrupt
 
-        # Task 0 was already running, so it completes. A couple more may have
-        # been picked up in the race before the queue was dropped; what matters
-        # is that the backlog did not drain.
         assert len(ran) < 50, f"the whole queue ran anyway: {len(ran)} tasks"
         assert token.cancelled is True
 
     def test_the_token_is_cancelled_for_workers(self) -> None:
-        """Workers can see the request, so in-flight units can bail early."""
         observed: list[bool] = []
         running = threading.Event()
 
         def work(token: CancellationToken) -> None:
             running.set()
-            # Waiting on the token is the mechanism itself: the worker is
-            # released by the cancellation, not by a test-only event.
             token.sleep(10)
             observed.append(token.cancelled)
 
@@ -127,11 +104,9 @@ class TestCancellablePool:
                 assert running.wait(5), "worker never started"
                 raise KeyboardInterrupt
 
-        # The pool is joined on the way out, so the worker has already run.
         assert observed == [True]
 
     def test_normal_completion_runs_everything(self) -> None:
-        """No interrupt, no behaviour change: this replaces the plain pool."""
         with cancellable_pool(4) as (executor, token):
             futures = [executor.submit(lambda n=n: n * 2) for n in range(20)]
             results = sorted(f.result() for f in as_completed(futures))
@@ -140,11 +115,6 @@ class TestCancellablePool:
         assert token.cancelled is False
 
     def test_workers_finish_before_the_body_returns(self) -> None:
-        """Callers delete temp archives in their own ``finally``.
-
-        Returning while a worker still holds one open would trade a slow exit
-        for a corrupt one, so the pool is always joined.
-        """
         done = threading.Event()
 
         with cancellable_pool(2) as (executor, _token):
@@ -153,7 +123,6 @@ class TestCancellablePool:
         assert done.is_set()
 
     def test_an_ordinary_exception_also_cancels(self) -> None:
-        """Not only KeyboardInterrupt -- any escape means stop queuing work."""
         with pytest.raises(ValueError):
             with cancellable_pool(2) as (_executor, token):
                 raise ValueError("boom")
@@ -161,7 +130,6 @@ class TestCancellablePool:
         assert token.cancelled is True
 
     def test_a_shared_token_links_two_pools(self) -> None:
-        """The gradual upload's retry pass reuses the main pass's token."""
         token = CancellationToken()
 
         with cancellable_pool(2, token) as (_executor, first):
@@ -174,23 +142,11 @@ class TestCancellablePool:
 
 
 class TestUploadRetryLadderIsCancellable:
-    """The retry backoff is where an interrupt would hang.
-
-    The ladder is 2+4+8+16+32s. Without a cancellable wait, a Ctrl+C during a
-    failing upload waits out the remaining rungs per in-flight batch.
-    """
-
     @staticmethod
     def _always_503() -> httpx.Response:
         return httpx.Response(503, request=httpx.Request("POST", "https://x/import"))
 
     def test_a_cancelled_token_stops_the_ladder_immediately(self) -> None:
-        """Already cancelled: no request is made, and the reason is not faked.
-
-        Reaching the end with no response is normally "all retries exhausted",
-        which would blame the server for the user's Ctrl+C. Cancellation gets
-        its own typed error instead.
-        """
         from xnatctl.core.exceptions import OperationCancelledError
         from xnatctl.core.retry import upload_with_retry
 
@@ -227,15 +183,11 @@ class TestUploadRetryLadderIsCancellable:
         resp = upload_with_retry(attempt, label="t", cancel_token=token)
         elapsed = time.monotonic() - started
 
-        # One attempt, then the 2s backoff returns immediately and the loop
-        # breaks rather than climbing to 4, 8, 16, 32.
         assert calls == [1]
         assert elapsed < 1.0
-        # The last response is still returned -- cancellation is not a crash.
         assert resp.status_code == 503
 
     def test_without_a_token_the_ladder_is_unchanged(self, monkeypatch) -> None:
-        """The default must not alter existing retry behaviour."""
         from xnatctl.core.retry import upload_with_retry
 
         slept: list[float] = []
@@ -257,11 +209,6 @@ class TestUploadRetryLadderIsCancellable:
 
 class TestBatchWorkerHonoursCancellation:
     def test_a_cancelled_batch_is_marked_cancelled_not_failed(self, tmp_path) -> None:
-        """A dropped batch is not an error the server rejected.
-
-        Reporting it as a failure would tell the user their data was refused
-        when in fact they stopped it themselves.
-        """
         from xnatctl.services.upload.rest_batch import (
             _BatchUploadConfig,
             _create_and_upload_batch,
@@ -301,13 +248,11 @@ class TestBatchWorkerHonoursCancellation:
         assert result.cancelled is True
         assert result.success is False
         assert result.batch_id == 7
-        # No archive was built: the point is that it did no work at all.
         assert not (tmp_path / "batch.zip").exists()
         assert result.archive_size == 0
 
 
 def test_cancellation_maps_to_the_user_cancelled_exit_code() -> None:
-    """A cancelled run must not look like a general error to a script."""
     from xnatctl.cli.common import ExitCode, exit_code_for
     from xnatctl.core.exceptions import OperationCancelledError
 
@@ -315,7 +260,6 @@ def test_cancellation_maps_to_the_user_cancelled_exit_code() -> None:
 
 
 def _service() -> Any:
-    """An UploadService whose client is never actually called."""
     from xnatctl.core.client import XNATClient
     from xnatctl.services.upload import UploadService
 
@@ -330,29 +274,12 @@ def _service() -> Any:
 
 
 class TestTheSalvagePassIsAlsoCancellable:
-    """The retry pass shipped with cancellation missing.
-
-    ``upload_dicom_gradual_files`` makes a second, lower-concurrency pass over
-    files that failed the first time. Its pool was built from the shared token
-    but ``_submit_retry`` never passed ``cancel_token`` down, so every worker
-    ran on ``NULL_TOKEN``: after Ctrl+C each in-flight file sat out its whole
-    2+4+8+16+32s retry ladder before the pool could shut down. Precisely the
-    wait cooperative cancellation exists to remove -- reintroduced in the one
-    pass whose files are already known to be failing, which is where a user is
-    most likely to give up and press Ctrl+C.
-
-    The end-to-end check that signed this feature off only exercised the main
-    pass, so it saw nothing.
-    """
-
     def test_the_retry_worker_is_given_the_shared_token(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import xnatctl.services.upload.gradual as uploads
         from xnatctl.core.cancellation import NULL_TOKEN
 
-        # The first five files are the warmup batch; they must succeed or the
-        # circuit-breaker aborts the whole upload before any salvage happens.
         warmup = 5
         failing = {"0007.dcm", "0008.dcm"}
         captured: list[tuple[str, object]] = []
@@ -361,7 +288,7 @@ class TestTheSalvagePassIsAlsoCancellable:
             name = Path(str(kwargs["file_path"])).name
             captured.append((name, kwargs.get("cancel_token")))
             already_tried = sum(1 for seen, _tok in captured if seen == name) > 1
-            ok = name not in failing or already_tried  # succeeds on the retry
+            ok = name not in failing or already_tried
             return (name, ok, "" if ok else "transient 400")
 
         monkeypatch.setattr(uploads, "_upload_single_file_gradual", fake_upload)
@@ -382,9 +309,6 @@ class TestTheSalvagePassIsAlsoCancellable:
         assert NULL_TOKEN not in retries, (
             "the salvage pass runs uncancellable: Ctrl+C would wait out every retry ladder"
         )
-        # Baseline is a main-pass file, not captured[0]: the first five are the
-        # sequential warmup, which deliberately carries no token (Ctrl+C
-        # interrupts it on the main thread directly).
         main_pass_tokens = [tok for name, tok in captured[5:] if name not in failing]
         assert main_pass_tokens, "no main-pass upload to compare against"
         assert all(tok is main_pass_tokens[0] for tok in retries), (

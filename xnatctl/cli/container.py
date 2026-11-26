@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from datetime import UTC, datetime
-from typing import IO, Any
+from typing import IO, Any, cast
 
 import click
 
@@ -19,33 +20,14 @@ from xnatctl.cli.common import (
 )
 from xnatctl.core.exceptions import InputValidationError, XNATCtlError
 from xnatctl.core.output import OutputFormat, print_output, print_success
-from xnatctl.services.containers import ContainerService
+from xnatctl.services.containers import ContainerService, is_terminal_status
 
-#: Placeholder shown when no started-time field is present on a container
-#: row -- see _started_display().
 _UNKNOWN = "-"
 
-#: Container statuses treated as terminal by `container launch --wait` and
-#: `container logs --follow`. NOT verified live -- this integration stack's
-#: Docker-less server never lets a container reach any of these (see
-#: services/containers.py's module docstring). Chosen from XNAT Container
-#: Service's publicly documented status vocabulary, following the same
-#: unverified-but-necessary precedent as PipelineService.wait's own
-#: hardcoded terminal_states set (xnatctl/services/pipelines.py).
-_TERMINAL_CONTAINER_STATUSES = frozenset({"Complete", "Failed", "Killed", "Died"})
-
-#: Poll interval for `--wait` and `--follow`, in seconds.
 _POLL_INTERVAL_SECONDS = 5.0
 
 
 def _parsed_instant(raw: str) -> datetime | None:
-    """Parse a Container Service timestamp, or ``None`` if it is not one.
-
-    The DTO serializes ``yyyy-MM-dd'T'HH:mm:ss.SSSZ`` -- an ISO-ish string
-    whose UTC offset is written without a colon (``-0400``).
-    ``fromisoformat`` accepts that form on the Python versions this project
-    supports; ``strptime`` is the backstop for anything it rejects.
-    """
     try:
         return datetime.fromisoformat(raw)
     except ValueError:
@@ -178,6 +160,35 @@ def container_show(ctx: Context, container_id: str) -> None:
     print_output(data, format=ctx.output_format, quiet=ctx.quiet, id_field="id")
 
 
+def _accepts_bytes(stream: Any, default: bool) -> bool:
+    try:
+        stream.write(b"")
+    except Exception:  # noqa: BLE001 -- any failure means "not this stream", as in Click's probe
+        try:
+            stream.write("")
+        except Exception:  # noqa: BLE001 -- takes neither type: unprobeable, use the default
+            return default
+        return False
+    return True
+
+
+def _binary_stdout() -> IO[bytes]:
+    """Return the stdout stream that accepts bytes, as ``click.get_binary_stream`` did.
+
+    Click 8.5 deprecated that helper, so this repeats the probe it ran:
+    ``sys.stdout`` itself when an empty bytes write succeeds, otherwise its
+    ``buffer``, which counts as binary when it cannot be probed (a closed
+    one, say). A text-only stdout is refused before the log is fetched.
+    """
+    stdout: Any = sys.stdout
+    if _accepts_bytes(stdout, default=False):
+        return cast(IO[bytes], stdout)
+    buffer = getattr(stdout, "buffer", None)
+    if buffer is not None and _accepts_bytes(buffer, default=True):
+        return cast(IO[bytes], buffer)
+    raise click.ClickException("stdout does not accept bytes, so the raw log cannot be written")
+
+
 def _follow_logs(
     service: ContainerService,
     container_id: str,
@@ -187,26 +198,16 @@ def _follow_logs(
 ) -> None:
     """Poll the plain logs endpoint and print only newly-appeared bytes.
 
-    Container Service 3.7.2 does have a ``logSince/{file}`` route (verified
-    live: it reaches its handler and 404s cleanly for an unknown
-    container), but its ``since`` parameter's CONTENT semantics -- what
-    subset of a real, running container's log it actually returns -- could
-    not be verified: this integration stack has no reachable Docker daemon
-    (see ``services/containers.py``'s module docstring), so no container
-    here has ever produced log output to probe against. What WAS verified
-    live about ``since``: it takes an ISO-8601 timestamp with a ``Z`` or
-    colon-delimited offset suffix (Python's ``datetime.isoformat()`` on a
-    tz-aware value works directly), and rejects both epoch numbers and the
-    compact, colon-less offset the DTOs themselves use for ``status-time``/
-    ``time-recorded`` -- but that says nothing about what log content comes
-    back for a given ``since``. Rather than build ``--follow`` on that
-    unverified assumption, this re-fetches the full log each interval via
-    the already-verified plain ``logs/{stream}`` endpoint and writes out
-    only the suffix bytes not already printed -- a documented simpler
-    mechanism instead of a guessed clever one.
+    Container Service 3.7.2 has a ``logSince/{file}`` route (verified live:
+    it reaches its handler), but what log content it returns for a given
+    ``since`` could not be verified, because the integration stack has no
+    Docker daemon and so no container with log output. Rather than build
+    ``--follow`` on that unverified behaviour, this re-fetches the full log
+    each interval from the verified ``logs/{stream}`` endpoint and writes
+    only the bytes not already printed.
 
-    Stops when the container reaches a terminal status (see
-    ``_TERMINAL_CONTAINER_STATUSES``) or on ``KeyboardInterrupt``.
+    Stops when the container reaches a terminal status (see ``is_terminal_status``)
+    or on ``KeyboardInterrupt``.
     """
     seen = 0
     try:
@@ -218,7 +219,7 @@ def _follow_logs(
                 sink.flush()
                 seen = len(body)
             status = str(service.get(container_id).get("status", ""))
-            if status in _TERMINAL_CONTAINER_STATUSES:
+            if is_terminal_status(status):
                 return
             time.sleep(interval)
     except KeyboardInterrupt:
@@ -236,9 +237,6 @@ def _follow_logs(
 )
 @click.option(
     "--interval",
-    # Strictly positive: the follow loop issues two requests per pass (log
-    # fetch + status), so `--interval 0` is not "poll fast", it is an
-    # unthrottled loop against XNAT for as long as the container runs.
     type=click.FloatRange(min=0, min_open=True),
     default=_POLL_INTERVAL_SECONDS,
     show_default=True,
@@ -273,7 +271,7 @@ def container_logs(
     """
     service = ContainerService(ctx.get_client())
     stream_name = "stderr" if stderr_stream else "stdout"
-    sink = click.get_binary_stream("stdout")
+    sink = _binary_stdout()
 
     if follow:
         _follow_logs(service, container_id, stream_name, sink, interval)
@@ -285,21 +283,6 @@ def container_logs(
 
 
 def _parse_params(pairs: tuple[str, ...]) -> dict[str, str]:
-    """Parse repeated ``--param KEY=VALUE`` options into a dict.
-
-    Args:
-        pairs: Raw ``--param`` values, one per occurrence.
-
-    Returns:
-        Dict of key to value. A value may itself contain ``=`` -- only the
-        first ``=`` in each raw string is treated as the separator.
-
-    Raises:
-        InputValidationError: If a value has no ``=``, an empty key, or a
-            key repeated across more than one ``--param``. Silently letting
-            the last one win would hide a launch-parameter typo -- exactly
-            the sort of mistake this flag exists to make explicit.
-    """
     params: dict[str, str] = {}
     for raw in pairs:
         if "=" not in raw:
@@ -570,7 +553,7 @@ def _wait_for_launch(
         status = str(container.get("status", ""))
         if not ctx.quiet:
             click.echo(f"  Status: {status}", err=True)
-        if status in _TERMINAL_CONTAINER_STATUSES:
+        if is_terminal_status(status):
             return container
         if time.monotonic() >= deadline:
             raise click.ClickException(
@@ -710,12 +693,6 @@ def container_launch(
     )
     result = service.launch(resolved_project, wrapper_id, launch_params)
 
-    # LaunchReport.Failure is declared on the plugin's own DTO (see
-    # services/containers.py's module docstring) but was never observed
-    # live -- every launch this project sent queued as "success" regardless
-    # of validity. Still, treating a declared failure as a queued launch
-    # would exit 0 and, with --wait, poll forever for a workflow-id of
-    # "None".
     if str(result.get("status", "")).lower() == "failure":
         message = result.get("message") or "no message returned"
         raise click.ClickException(f"Launch failed: {message}")
@@ -763,11 +740,6 @@ def container_kill(ctx: Context, container_id: str, dry_run: bool) -> None:
     service = ContainerService(ctx.get_client())
 
     if dry_run:
-        # The same existence check `kill_container`'s own POST would
-        # surface as a 404 -- run here too so `--dry-run` reports the
-        # identical refusal for an unknown container id that execution
-        # would (verified live: POST .../kill 404s cleanly for a bad id,
-        # see ContainerService.kill_container).
         service.get(container_id)
         click.echo(f"[DRY-RUN] Would kill container {container_id}", err=True)
         return

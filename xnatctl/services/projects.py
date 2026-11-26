@@ -15,19 +15,10 @@ from xnatctl.models.project import Project
 from .base import BaseService
 from .hierarchy import HierarchyService
 
-# Project membership roles, as accepted on the CLI/library surface. XNAT's
-# actual group ID for each is the SINGULAR form ``{project}_{role}`` -- e.g.
-# ``PROJ01_owner`` -- confirmed against xnat-web:
-# DefaultGroupsAndPermissionsCache.java (queries group ids with
-# ``LIKE '%_owner'`` / ``projectId + "_collaborator"`` / ``projectId +
-# "_member"``) and matches the existing ``AdminService.add_user_to_groups``
-# convention (``f"{project}_{role}"``). It is NOT the plural
-# ``owners``/``members``/``collaborators`` form.
 _VALID_PROJECT_ROLES = ("owner", "member", "collaborator")
 
 
 def _validate_project_role(role: str) -> str:
-    """Validate a project membership role, raising with the valid set on failure."""
     if role not in _VALID_PROJECT_ROLES:
         raise InputValidationError(
             f"Invalid role '{role}'. Valid roles: {', '.join(_VALID_PROJECT_ROLES)}",
@@ -38,21 +29,10 @@ def _validate_project_role(role: str) -> str:
 
 
 def _row_login(row: dict[str, Any]) -> str:
-    """Extract a users-listing row's username, tolerating a couple of key spellings."""
     return str(row.get("login") or row.get("username") or row.get("ID") or "").strip()
 
 
 def _row_group_id(row: dict[str, Any]) -> str:
-    """Extract a users-listing row's XNAT group ID.
-
-    ``GROUP_ID`` is the canonical column -- confirmed against xnat-web's
-    ``ProjectUserListResource``/``ProjectMemberResource`` (``SELECT g.id AS
-    "GROUP_ID", displayname, login, firstname, lastname, email FROM
-    xdat_userGroup g ...``), which is also the exact segment
-    ``/data/projects/{P}/users/{GROUP_ID}/{USER_ID}`` expects back for a
-    mutation. The looser fallbacks exist only for defensiveness against a
-    server fork that renders the column differently.
-    """
     return str(row.get("GROUP_ID") or row.get("groupname") or row.get("group") or "").strip()
 
 
@@ -78,13 +58,13 @@ class ProjectService(BaseService):
 
         if accessible:
             params["accessible"] = "true"
-        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+        if limit is not None:
             params["limit"] = str(limit)
 
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit is not None:  # belt-and-braces: some XNAT endpoints ignore `limit`
+        if limit is not None:
             results = results[:limit]
 
         return [Project(**r) for r in results]
@@ -204,7 +184,7 @@ class ProjectService(BaseService):
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+        if limit is not None:
             results = results[:limit]
 
         return results
@@ -229,7 +209,7 @@ class ProjectService(BaseService):
         data = self._get(path, params=params)
         results = HierarchyService.extract_rows(data)
 
-        if limit is not None:  # not truthy -- limit=0 must mean 0 results, not "unlimited"
+        if limit is not None:
             results = results[:limit]
 
         return results
@@ -390,15 +370,6 @@ class ProjectService(BaseService):
         if isinstance(data, list):
             return data
         return HierarchyService.extract_rows(data) if isinstance(data, dict) else []
-
-    # -------------------------------------------------------------------------
-    # Raw-row accessors
-    #
-    # These return the untyped rows XNAT sends so the CLI can render every key
-    # it prints today. The typed ``list``/``get`` above drop unknown keys
-    # (``extra="ignore"``) and issue a different query (``accessible=true``),
-    # which would change both the wire request and the rendered output.
-    # -------------------------------------------------------------------------
 
     def list_rows(self, columns: str) -> builtins.list[dict[str, Any]]:
         """Return raw project rows for the requested columns."""

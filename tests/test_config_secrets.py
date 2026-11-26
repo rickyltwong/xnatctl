@@ -1,13 +1,3 @@
-"""Password-handling tests for Config/Profile.
-
-`config.yaml` could hold a plaintext password with nothing but file permissions
-protecting it, and `Config.save`'s docstring claimed the opposite ("excludes
-secrets"). These tests pin the keychain path that replaced it.
-
-The `keyring` module is always faked here -- never install a real backend into
-the test environment and never touch a real keychain.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -35,8 +25,6 @@ URL = "https://xnat.example.org"
 
 
 class FakeKeyring:
-    """Minimal stand-in for the keyring module's two functions."""
-
     def __init__(self, entries: dict[tuple[str, str], str] | None = None):
         self.entries: dict[tuple[str, str], str] = entries or {}
 
@@ -49,7 +37,6 @@ class FakeKeyring:
 
 @pytest.fixture
 def fake_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeKeyring]:
-    """Inject a fake `keyring` module for the duration of the test."""
     fake = FakeKeyring()
     monkeypatch.setitem(sys.modules, "keyring", fake)
     yield fake
@@ -59,13 +46,7 @@ def _profile(**kwargs: Any) -> Profile:
     return Profile(url=URL, name="prod", **kwargs)
 
 
-# =============================================================================
-# Serialization
-# =============================================================================
-
-
 def test_keyring_profile_never_serializes_a_password() -> None:
-    """The whole point of moving the secret is that it stops being written."""
     profile = _profile(password="s3cret", password_source=PASSWORD_SOURCE_KEYRING)
 
     data = profile.to_dict()
@@ -75,7 +56,6 @@ def test_keyring_profile_never_serializes_a_password() -> None:
 
 
 def test_inline_password_still_serializes() -> None:
-    """Existing configs keep working; keyring support adds an option, not a removal."""
     assert _profile(password="s3cret").to_dict()["password"] == "s3cret"
 
 
@@ -95,9 +75,6 @@ def test_password_source_round_trips_through_yaml(tmp_path: Path) -> None:
 
 
 def test_loaded_profiles_know_their_own_name(tmp_path: Path) -> None:
-    """The keyring key is built from the profile name, so the name has to
-    survive deserialization.
-    """
     path = tmp_path / "config.yaml"
     path.write_text(yaml.dump({"default_profile": "prod", "profiles": {"prod": {"url": URL}}}))
 
@@ -105,15 +82,7 @@ def test_loaded_profiles_know_their_own_name(tmp_path: Path) -> None:
 
 
 def test_profile_without_password_source_omits_the_key() -> None:
-    """An untouched profile must not gain a new key -- a future change will version the
-    schema, and until then the file should stay as it was.
-    """
     assert "password_source" not in _profile().to_dict()
-
-
-# =============================================================================
-# Resolution
-# =============================================================================
 
 
 def test_inline_password_resolves_without_touching_the_keychain() -> None:
@@ -145,11 +114,6 @@ def test_unnamed_keyring_profile_raises_rather_than_guessing() -> None:
     assert "no name" in str(exc_info.value)
 
 
-# =============================================================================
-# get_credentials -- the chokepoint every client construction goes through
-# =============================================================================
-
-
 def test_get_credentials_reads_the_keychain(
     fake_keyring: FakeKeyring, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -164,19 +128,11 @@ def test_get_credentials_reads_the_keychain(
 def test_env_password_wins_and_skips_the_keychain(
     fake_keyring: FakeKeyring, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An env password must short-circuit before the keychain: with no entry
-    stored, consulting it would raise.
-    """
     monkeypatch.setenv("XNAT_PASS", "from-env")
     monkeypatch.delenv("XNAT_USER", raising=False)
     profile = _profile(username="admin", password_source=PASSWORD_SOURCE_KEYRING)
 
     assert get_credentials(profile) == ("admin", "from-env")
-
-
-# =============================================================================
-# Load-time exposure warning
-# =============================================================================
 
 
 @pytest.mark.skipif(
@@ -227,13 +183,6 @@ def test_world_readable_config_without_a_password_does_not_warn(
 def test_no_permission_warning_where_modes_are_meaningless(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """On Windows the mode check is skipped entirely.
-
-    ``os.stat`` reports 0o666 for every writable file there, so the check would
-    fire on every command and tell the user to run a ``chmod`` that neither
-    exists on that platform nor would help. Exercised by patching the flag, so
-    the behaviour stays covered on the POSIX machines that run this suite.
-    """
     path = tmp_path / "config.yaml"
     path.write_text(yaml.dump({"profiles": {"prod": {"url": URL, "password": "s3cret"}}}))
     os.chmod(path, 0o644)

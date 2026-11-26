@@ -1,5 +1,3 @@
-"""Tests for SessionRefresher and 401-retry in gradual-DICOM uploads."""
-
 from __future__ import annotations
 
 import threading
@@ -12,8 +10,6 @@ from xnatctl.services.upload.shared import SessionRefresher
 
 
 class TestSessionRefresher:
-    """Tests for SessionRefresher token management."""
-
     def test_returns_initial_token(self) -> None:
         refresher = SessionRefresher(
             base_url="https://xnat.example.org",
@@ -50,7 +46,6 @@ class TestSessionRefresher:
         assert refresher.token == "fresh-token"
 
     def test_refresh_skips_when_already_refreshed(self) -> None:
-        """If another thread already refreshed, return the new token without hitting the server."""
         refresher = SessionRefresher(
             base_url="https://xnat.example.org",
             verify_ssl=True,
@@ -101,7 +96,6 @@ class TestSessionRefresher:
         assert result == "stale-token"
 
     def test_concurrent_refresh_only_authenticates_once(self) -> None:
-        """Multiple threads hitting 401 simultaneously should result in a single reauth."""
         refresher = SessionRefresher(
             base_url="https://xnat.example.org",
             verify_ssl=True,
@@ -144,8 +138,6 @@ class TestSessionRefresher:
 
 
 class TestGradualUpload401Retry:
-    """Test that _upload_single_file_gradual retries on 401."""
-
     def test_retries_on_401_with_refreshed_token(self, tmp_path: Path) -> None:
         from xnatctl.services.upload.gradual_client import _upload_single_file_gradual
 
@@ -171,16 +163,14 @@ class TestGradualUpload401Retry:
         call_tokens: list[str | None] = []
 
         def fake_retry(fn: object, **kwargs: object) -> MagicMock:
-            """Intercept upload_with_retry to track which token was used."""
-            # The fn closure captures cookies; call it to get the response
-            return fn()  # type: ignore[operator]
+            return fn()
 
         mock_client = MagicMock()
         call_count = 0
 
         def mock_post(*args: object, **kwargs: object) -> MagicMock:
             nonlocal call_count
-            cookie = kwargs.get("headers", {}).get("Cookie", "")  # type: ignore[attr-defined]
+            cookie = kwargs.get("headers", {}).get("Cookie", "")
             call_tokens.append(cookie.removeprefix("JSESSIONID=") or None)
             call_count += 1
             if call_count == 1:
@@ -194,8 +184,6 @@ class TestGradualUpload401Retry:
         auth_response.text = "fresh-token"
 
         class _FakePool:
-            """Stands in for GradualClientPool: always hands back mock_client."""
-
             def get_client(self, *, base_url: str, verify_ssl: object) -> MagicMock:
                 return mock_client
 
@@ -213,7 +201,7 @@ class TestGradualUpload401Retry:
             mock_auth_client_cls.return_value = mock_auth_client
 
             name, ok, err = _upload_single_file_gradual(
-                pool=_FakePool(),  # type: ignore[arg-type]
+                pool=_FakePool(),
                 base_url="https://xnat.example.org",
                 session_refresher=refresher,
                 verify_ssl=True,
@@ -230,12 +218,6 @@ class TestGradualUpload401Retry:
 
 
 class TestGradualUploadErrorDetail:
-    """Pin the non-2xx error-detail and same-token-refresh branches.
-
-    These two paths run the real `_upload_single_file_gradual` body; most
-    other tests monkeypatch the function out entirely.
-    """
-
     @staticmethod
     def _run_with_response(
         tmp_path: Path, responses: list[MagicMock], refresher: object
@@ -257,9 +239,9 @@ class TestGradualUploadErrorDetail:
             side_effect=lambda fn, **kwargs: fn(),
         ):
             name, ok, err = _upload_single_file_gradual(
-                pool=_FakePool(),  # type: ignore[arg-type]
+                pool=_FakePool(),
                 base_url="https://xnat.example.org",
-                session_refresher=refresher,  # type: ignore[arg-type]
+                session_refresher=refresher,
                 verify_ssl=True,
                 file_path=dcm,
                 project="PROJ",

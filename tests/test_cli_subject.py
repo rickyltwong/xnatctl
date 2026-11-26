@@ -1,5 +1,3 @@
-"""Tests for xnatctl CLI subject commands."""
-
 from __future__ import annotations
 
 import json
@@ -17,12 +15,10 @@ from xnatctl.core.exceptions import ResourceNotFoundError, ServerError
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
 def _mock_config() -> Config:
-    """Build a mock Config with a default profile including default_project."""
     return Config(
         default_profile="default",
         profiles={
@@ -38,7 +34,6 @@ def _mock_config() -> Config:
 
 
 def _mock_client() -> MagicMock:
-    """Build a mock XNATClient."""
     client = MagicMock()
     client.is_authenticated = True
     client.base_url = "https://xnat.example.org"
@@ -47,8 +42,6 @@ def _mock_client() -> MagicMock:
 
 
 class TestSubjectList:
-    """Tests for subject list command."""
-
     def test_subject_list_with_project(self, runner: CliRunner) -> None:
         client = _mock_client()
         client.get_json.side_effect = [
@@ -71,6 +64,33 @@ class TestSubjectList:
 
         assert result.exit_code == 0
         assert "SUB001" in result.output
+
+    def test_subject_list_shows_a_failed_count_as_unknown_and_goes_on(
+        self, runner: CliRunner
+    ) -> None:
+        client = _mock_client()
+        client.get_json.side_effect = [
+            {
+                "ResultSet": {
+                    "Result": [
+                        {"ID": "XNAT_S001", "label": "SUB001", "src": ""},
+                        {"ID": "XNAT_S002", "label": "SUB002", "src": ""},
+                    ]
+                }
+            },
+            AttributeError("malformed row"),
+            {"ResultSet": {"Result": [{"ID": "EXP2"}, {"ID": "EXP3"}]}},
+        ]
+
+        with core_config_seam(_mock_config()):
+            with config_seam(_mock_config()):
+                with patch("xnatctl.cli.common.XNATClient", return_value=client):
+                    result = runner.invoke(
+                        cli, ["subject", "list", "--project", "TESTPROJ", "-o", "json"]
+                    )
+
+        assert result.exit_code == 0, result.output
+        assert [row["sessions"] for row in json.loads(result.stdout)] == ["?", 2]
 
     def test_subject_list_uses_default_project(self, runner: CliRunner) -> None:
         client = _mock_client()
@@ -158,14 +178,6 @@ class TestSubjectList:
         assert "CTL001" not in result.output
 
     def test_subject_list_sort_by_sessions_sees_the_enriched_field(self, runner: CliRunner) -> None:
-        """--sort-by sessions must see the count AFTER enrichment.
-
-        Running list controls BEFORE the per-subject session count is
-        added to each row would make sorting/filtering by "sessions" a
-        silent no-op (the field wouldn't exist yet). SUB001 has fewer
-        sessions than SUB002 but sorts first in the raw API order, so a
-        correct descending sort must reverse that order.
-        """
         client = _mock_client()
         client.get_json.side_effect = [
             {
@@ -209,14 +221,6 @@ class TestSubjectList:
     def test_subject_list_narrow_filter_on_large_project_still_gets_session_counts(
         self, runner: CliRunner
     ) -> None:
-        """A --filter on label narrows BEFORE the 50-subject enrichment cap
-        is checked, so a big project with a narrow filter still gets the
-        sessions column for its (small) surviving set.
-
-        An enrichment gate keyed on the project's raw, pre-filter subject
-        count -- 60 subjects here -- would skip enrichment outright even
-        though only 10 subjects actually survive --filter.
-        """
         client = _mock_client()
         base_rows = {
             "ResultSet": {
@@ -252,17 +256,12 @@ class TestSubjectList:
 
         assert result.exit_code == 0
         rows = json.loads(result.output[result.output.index("[") :])
-        assert len(rows) == 10  # SUB000..SUB009
+        assert len(rows) == 10
         assert all(r["sessions"] == 1 for r in rows)
 
     def test_subject_list_filter_by_sessions_on_large_project_raises_clear_error(
         self, runner: CliRunner
     ) -> None:
-        """--filter/--sort-by 'sessions' has nothing to narrow the working
-        set by before enrichment, so on a project too large to enrich
-        outright it must raise a clear error rather than silently produce a
-        blank "sessions" column or an opaque "Unknown filter field" error.
-        """
         client = _mock_client()
         client.get_json.return_value = {
             "ResultSet": {
@@ -286,10 +285,6 @@ class TestSubjectList:
     def test_subject_list_large_project_drops_sessions_column_with_note(
         self, runner: CliRunner
     ) -> None:
-        """When enrichment is skipped for size, the "sessions" column must
-        be DROPPED (not rendered as silent blanks), and a one-line stderr
-        note must explain why.
-        """
         client = _mock_client()
         client.get_json.return_value = {
             "ResultSet": {
@@ -314,17 +309,6 @@ class TestSubjectList:
     def test_subject_list_mixed_label_filter_and_sessions_sort_narrows_first(
         self, runner: CliRunner
     ) -> None:
-        """--filter on label must narrow the working set BEFORE the
-        enrichment cap is checked even when --sort-by (a different option)
-        targets "sessions" -- the presence of a sessions-targeting control
-        anywhere must not suppress narrowing by a control that doesn't need
-        it.
-
-        A sessions-targeting --sort-by that skips the --filter narrowing
-        pass would make this exact combination (60 subjects, filter
-        narrows to 10) raise the same "too many subjects" error as
-        filtering by "sessions" itself would.
-        """
         client = _mock_client()
         base_rows = {
             "ResultSet": {
@@ -367,10 +351,7 @@ class TestSubjectList:
 
 
 class TestSubjectShow:
-    """Tests for subject show command."""
-
     def test_subject_show_items_response(self, runner: CliRunner) -> None:
-        """Subject show handles `items[]` detail responses."""
         client = _mock_client()
         client.get_json.side_effect = [
             {
@@ -391,9 +372,6 @@ class TestSubjectShow:
                     ]
                 }
             },
-            # `subject show` now also lists the projects the subject is
-            # shared into: GET /data/subjects/{id}/projects. Only the primary
-            # project comes back here, so nothing renders as a share.
             {"ResultSet": {"Result": [{"ID": "TESTPROJ", "label": "SUB001"}]}},
         ]
 
@@ -416,9 +394,6 @@ class TestSubjectShow:
                     ]
                 }
             },
-            # `subject show` now also lists the projects the subject is
-            # shared into: GET /data/subjects/{id}/projects. Only the primary
-            # project comes back here, so nothing renders as a share.
             {"ResultSet": {"Result": [{"ID": "TESTPROJ", "label": "SUB001"}]}},
         ]
 
@@ -431,18 +406,10 @@ class TestSubjectShow:
         assert "SUB001" in result.output
 
     def test_subject_show_sessions_listing_failure_is_not_silent(self, runner: CliRunner) -> None:
-        """A session-listing failure must be visible, not indistinguishable from "no sessions".
-
-        A bare ``except Exception: session_labels = []`` around the
-        session-count fetch would render a transient 500 identically --
-        silently -- to a subject that genuinely has no sessions.
-        """
         client = _mock_client()
         client.get_json.side_effect = [
             {"ResultSet": {"Result": [{"ID": "XNAT_S001", "label": "SUB001"}]}},
             ServerError(500, "GET", "/data/projects/TESTPROJ/subjects/XNAT_S001/experiments"),
-            # The shared-projects listing that follows must still be attempted:
-            # one failed sub-fetch must not cascade into skipping the next.
             {"ResultSet": {"Result": [{"ID": "TESTPROJ", "label": "SUB001"}]}},
         ]
 
@@ -467,8 +434,6 @@ class TestSubjectShow:
 
 
 class TestSubjectDelete:
-    """Tests for subject delete command."""
-
     def test_subject_delete_dry_run(self, runner: CliRunner) -> None:
         client = _mock_client()
 
@@ -541,7 +506,6 @@ class TestSubjectDelete:
         assert result.exit_code != 0
 
     def test_subject_delete_prompt_abort_no_mutation(self, runner: CliRunner) -> None:
-        """Declining the confirmation prompt must not call the client."""
         client = _mock_client()
 
         with core_config_seam(_mock_config()):
@@ -576,8 +540,6 @@ class TestSubjectDelete:
 
 
 class TestSubjectDeleteBatch:
-    """Tests for `subject delete --batch`."""
-
     def test_batch_stdin_deletes_each_id(self, runner: CliRunner) -> None:
         client = _mock_client()
         mock_resp = MagicMock()
@@ -673,19 +635,6 @@ class TestSubjectDeleteBatch:
         assert client.delete.call_count == 2
 
     def test_batch_continues_past_a_raising_id(self, runner: CliRunner) -> None:
-        """A failing ID mid-batch must not abandon the IDs after it.
-
-        The client layer returns 2xx only and raises a typed exception for
-        every error status, so a 404 on the second of three subjects arrives
-        as an exception, not as a response to inspect. If that is not caught
-        per subject, the third ID is silently never attempted -- the caller
-        sees one success, one error, and no word at all about the rest of
-        the list they handed in.
-
-        A single-subject delete deliberately does NOT swallow the exception:
-        with no rest of the list to protect, the real error class is worth
-        more than a failure count, both on stderr and in the audit record.
-        """
         client = _mock_client()
         ok = MagicMock(status_code=200)
         client.delete.side_effect = [
@@ -747,12 +696,6 @@ class TestSubjectDeleteBatch:
     def test_batch_dash_empty_stdin_does_not_delete_positional_subject(
         self, runner: CliRunner
     ) -> None:
-        """--batch - with empty stdin must not read as "no --batch given"
-        and fall through to deleting the positional SUBJECT_ID -- --batch
-        was given, so this is mutual-exclusion territory, and an empty batch
-        is its own clear error either way. Either reading must leave SUB001
-        undeleted.
-        """
         client = _mock_client()
 
         with core_config_seam(_mock_config()):
@@ -777,10 +720,6 @@ class TestSubjectDeleteBatch:
         client.delete.assert_not_called()
 
     def test_batch_validates_all_ids_before_deleting_any(self, runner: CliRunner) -> None:
-        """A malformed ID anywhere in the batch must abort the whole command
-        BEFORE any subject is deleted -- not after the earlier, valid IDs in
-        the same batch have already been removed.
-        """
         client = _mock_client()
         mock_resp = MagicMock(status_code=200)
         client.delete.return_value = mock_resp
@@ -815,8 +754,6 @@ class TestSubjectDeleteBatch:
 
 
 class TestSubjectRename:
-    """Tests for subject rename command."""
-
     def test_rename_requires_a_method(self, runner: CliRunner) -> None:
         client = _mock_client()
 
@@ -1023,8 +960,6 @@ class TestSubjectRename:
                             "TESTPROJ",
                             "--pattern",
                             r"^(.+)$",
-                            # A target with a path separator is rejected as an
-                            # illegal XNAT label.
                             "--to",
                             "bad/{1}",
                         ],
@@ -1077,7 +1012,6 @@ class TestSubjectRename:
         client.put.assert_not_called()
 
     def test_rename_patterns_file_infers_single_project(self, runner: CliRunner, tmp_path) -> None:
-        """With no -P and no profile default, a single-project patterns file is used as-is."""
         client = _mock_client()
         patterns_file = tmp_path / "patterns.json"
         patterns_file.write_text(
@@ -1255,8 +1189,6 @@ class TestSubjectRename:
                             ],
                         )
 
-        # SUB001_visit1 merges into existing SUB001? No SUB001 exists here, so
-        # it renames; SUB002 does not match the pattern; SUB003_visit1 renames.
         assert result.exit_code == 0
         assert "Renamed: 2" in result.output
 
@@ -1309,7 +1241,6 @@ class TestSubjectRename:
 def _resolved_subject_document(
     subject_id: str = "XNAT_S00001", label: str = "SUB001", project: str = "TESTPROJ"
 ) -> dict:
-    """A minimal format=json document HierarchyService.resolve_subject can parse."""
     return {
         "items": [
             {
@@ -1322,8 +1253,6 @@ def _resolved_subject_document(
 
 
 class TestSubjectShare:
-    """Tests for `subject share`."""
-
     def test_share_puts_flat_accession_path(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = _resolved_subject_document()
         authenticated_cli.client.put.return_value = MagicMock(status_code=200)
@@ -1367,7 +1296,6 @@ class TestSubjectShare:
         assert "Subject not found: GONE" in result.output
 
     def test_share_rejects_invalid_label(self, authenticated_cli: AuthenticatedCLI) -> None:
-        """A --label containing a path/URL-reserved character fails locally, not on the wire."""
         result = authenticated_cli.invoke(
             ["subject", "share", "SUB001", "--into", "OTHERPROJ", "--label", "bad%label", "--yes"]
         )
@@ -1378,8 +1306,6 @@ class TestSubjectShare:
 
 
 class TestSubjectUnshare:
-    """Tests for `subject unshare`."""
-
     def test_unshare_deletes_flat_accession_path(self, authenticated_cli: AuthenticatedCLI) -> None:
         authenticated_cli.client.get_json.return_value = _resolved_subject_document()
         authenticated_cli.client.delete.return_value = MagicMock(status_code=200)
@@ -1406,7 +1332,6 @@ class TestSubjectUnshare:
     def test_unshare_from_primary_project_refused(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """Real execution refuses unsharing FROM the subject's own primary project."""
         authenticated_cli.client.get_json.return_value = _resolved_subject_document(
             project="TESTPROJ"
         )
@@ -1422,12 +1347,6 @@ class TestSubjectUnshare:
     def test_unshare_from_primary_project_refused_dry_run_agrees(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """`--dry-run` must refuse the same case execution refuses, not report success.
-
-        A dry-run that returns before the primary-project comparison would
-        report "would remove" for a call execution actually refuses
-        (because XNAT would delete the subject outright).
-        """
         authenticated_cli.client.get_json.return_value = _resolved_subject_document(
             project="TESTPROJ"
         )
@@ -1444,7 +1363,6 @@ class TestSubjectUnshare:
     def test_unshare_from_primary_project_refused_with_padded_target(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """Padded ``--from`` input must not slip past the primary-project guard."""
         authenticated_cli.client.get_json.return_value = _resolved_subject_document(
             project="TESTPROJ"
         )
@@ -1459,8 +1377,6 @@ class TestSubjectUnshare:
 
 
 class TestSubjectVars:
-    """Tests for `subject vars` (read)."""
-
     def _fields_document(self, fields: list[tuple[str, str]]) -> dict:
         return {
             "items": [
@@ -1524,10 +1440,7 @@ class TestSubjectVars:
 
 
 class TestSubjectVarsSet:
-    """Tests for `subject vars set`."""
-
     def _subject_document(self) -> dict:
-        """Minimal ``format=json`` document satisfying the existence preflight."""
         return {"items": [{"data_fields": {"ID": "XNAT_S00001", "label": "SUB001"}, "meta": {}}]}
 
     def test_set_single_pair(self, authenticated_cli: AuthenticatedCLI) -> None:
@@ -1592,12 +1505,6 @@ class TestSubjectVarsSet:
     def test_set_dry_run_confirms_subject_exists_no_put(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """Dry-run runs the same existence preflight execution does, and skips only the PUT.
-
-        This replaces a prior assertion that dry-run makes NO HTTP call at
-        all -- that was the bug: dry-run "approved" a typo'd subject ID
-        because it never checked whether the subject existed.
-        """
         authenticated_cli.client.get.return_value = make_response(self._subject_document())
 
         result = authenticated_cli.invoke(
@@ -1614,13 +1521,6 @@ class TestSubjectVarsSet:
     def test_set_dry_run_nonexistent_subject_refused(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """`--dry-run` must refuse a subject it can't find, matching execution.
-
-        A dry-run that makes no HTTP call at all would report "Would set"
-        for a subject that doesn't exist -- see
-        test_set_execute_nonexistent_subject_refused below for what
-        execution does with the same typo.
-        """
         authenticated_cli.client.get.side_effect = ResourceNotFoundError("subject", "GONE")
 
         result = authenticated_cli.invoke(
@@ -1634,14 +1534,6 @@ class TestSubjectVarsSet:
     def test_set_execute_nonexistent_subject_refused(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """Execution must refuse a nonexistent subject, not silently create it.
-
-        Regression test: ``SubjectService.set_vars`` PUTs to the same
-        create-or-update route ``SubjectService.create`` uses, and XNAT
-        answers a nonexistent subject with 201, not 404 (verified live
-        against 1.9.2.1) -- an unguarded typo'd subject ID would succeed
-        and create an empty phantom subject in the project.
-        """
         authenticated_cli.client.get.side_effect = ResourceNotFoundError("subject", "GONE")
 
         result = authenticated_cli.invoke(
@@ -1652,7 +1544,6 @@ class TestSubjectVarsSet:
         authenticated_cli.client.put.assert_not_called()
 
     def test_set_duplicate_key_is_usage_error(self, authenticated_cli: AuthenticatedCLI) -> None:
-        """Silently keeping only the last value would send less than the user asked for."""
         result = authenticated_cli.invoke(
             ["subject", "vars", "set", "SUB001", "studytag=one", "studytag=two", "--yes"]
         )
@@ -1663,7 +1554,6 @@ class TestSubjectVarsSet:
     def test_set_dry_run_rejects_invalid_field_name(
         self, authenticated_cli: AuthenticatedCLI
     ) -> None:
-        """Dry-run must reject what execution rejects, not report a false success."""
         result = authenticated_cli.invoke(
             ["subject", "vars", "set", "SUB001", "a/b=value", "--dry-run"]
         )

@@ -20,7 +20,6 @@ from xnatctl.cli.common import (
     require_auth,
     resolve_workers_from_context,
 )
-from xnatctl.cli.session import session
 from xnatctl.core.output import (
     OutputFormat,
     print_error,
@@ -43,16 +42,7 @@ def _upload_dicom_store(
     tls_cert: str | None = None,
     tls_key: str | None = None,
 ) -> None:
-    """Upload via DICOM C-STORE protocol."""
-
     def _emit_preflight_json(message: str) -> None:
-        # These guards run before the upload_dicom_store try/except below,
-        # so without this they'd exit with no JSON at all in JSON mode --
-        # the same silent-failure shape the try/except fixes for everything
-        # downstream of it. Only the JSON side: each guard below prints its
-        # own human-mode text (a plain `print_error` for the ones that raise
-        # SystemExit directly, or Click's own usage-error rendering for the
-        # ones that raise UsageError -- printing both here would double it).
         if ctx.output_format == OutputFormat.JSON:
             TransferSummary(
                 operation="upload",
@@ -83,9 +73,6 @@ def _upload_dicom_store(
         print_error(message)
         raise SystemExit(1)
 
-    # Deferred: tests monkeypatch xnatctl.services.upload.UploadService to
-    # intercept the lookup; a module-scope import would bind the real class
-    # before the patch runs (see tests/test_upload_exit_codes.py).
     from xnatctl.services.upload import UploadService
 
     if tls_key and not tls_cert:
@@ -104,8 +91,6 @@ def _upload_dicom_store(
             err=True,
         )
         if not tls:
-            # Said once, plainly, on stderr. Sites that mean to do this are not
-            # helped by a warning; sites that did not know need to be told.
             click.echo(
                 "  Note: DICOM C-STORE is unencrypted. Use --tls if the server supports it.",
                 err=True,
@@ -114,10 +99,6 @@ def _upload_dicom_store(
     client = ctx.get_client()
     service = UploadService(client)
 
-    # No -P/-S/-E on this command: C-STORE is native DICOM network transfer,
-    # and where each file lands is decided by the receiver's own routing
-    # rules, not by anything xnatctl passes -- there is no session/project to
-    # report (see the C-STORE section of docs/uploading.rst).
     upload_start = time.time()
     try:
         summary = service.upload_dicom_store(
@@ -133,7 +114,7 @@ def _upload_dicom_store(
             tls_cert=tls_cert,
             tls_key=tls_key,
         )
-    except Exception as exc:  # noqa: BLE001  # emits JSON failure summary before re-raising unchanged
+    except Exception as exc:
         if ctx.output_format == OutputFormat.JSON:
             TransferSummary(
                 operation="upload",
@@ -153,8 +134,6 @@ def _upload_dicom_store(
         TransferSummary(
             operation="upload",
             source=str(source_path),
-            # `sent` is the service's own successfully-transferred count,
-            # distinct from `total_files` (everything scanned, sent or not).
             files=summary.sent,
             duration_seconds=round(time.time() - upload_start, 3),
             status=transfer_status(
@@ -180,12 +159,11 @@ def _upload_dicom_store(
             )
             click.echo(f"Check logs in: {summary.log_dir}", err=True)
 
-    # Format-independent failure exit: -o json must also return nonzero.
     if not summary.success:
         raise SystemExit(1)
 
 
-@session.command("upload-dicom")
+@click.command("upload-dicom")
 @click.argument("input_path", type=click.Path(exists=True))
 @click.option(
     "--host",

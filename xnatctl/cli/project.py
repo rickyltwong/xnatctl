@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import click
@@ -23,10 +24,13 @@ from xnatctl.cli.common import (
     resolve_workers_from_context,
 )
 from xnatctl.core.exceptions import XNATCtlError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.output import print_error, print_output, print_success
 from xnatctl.core.validation import validate_project_id
 from xnatctl.models.transfer import TransferConfig
 from xnatctl.services.projects import ProjectService
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -59,7 +63,6 @@ def project_list(
     service = ProjectService(ctx.get_client())
     results = service.list_rows("ID,name,pi_lastname,description")
 
-    # Transform for output
     projects = []
     for r in results:
         projects.append(
@@ -100,14 +103,12 @@ def project_show(ctx: Context, project_id: str) -> None:
     project_id = validate_project_id(project_id)
     service = ProjectService(ctx.get_client())
 
-    # Get project details
     project_data = service.get_detail(project_id)
 
     if not project_data:
         print_error(f"Project not found: {project_id}")
         raise SystemExit(1)
 
-    # Get counts
     try:
         subject_count: int | str = len(service.subject_rows(project_id))
     except (XNATCtlError, ValueError):
@@ -181,13 +182,6 @@ def project_create(
 
 
 def _display_role(project: str, group_id: str) -> str:
-    """Strip a project's ``{project}_`` prefix off a GROUP_ID for display.
-
-    ``owner``/``member``/``collaborator`` reads better in a table than the
-    raw XNAT group ID (``PROJ01_owner``). A group ID that doesn't carry the
-    expected prefix (a server-specific group, say) is shown verbatim rather
-    than mangled.
-    """
     prefix = f"{project}_"
     return group_id[len(prefix) :] if group_id.startswith(prefix) else group_id
 
@@ -394,11 +388,6 @@ def project_requests(ctx: Context, project: str) -> None:
     )
 
 
-# =============================================================================
-# Transfer Commands
-# =============================================================================
-
-
 @project.command("transfer")
 @click.option("-P", "--project", "source_project", required=True, help="Source project ID")
 @click.option("--dest-project", required=True, help="Destination project ID")
@@ -431,14 +420,6 @@ def project_transfer(
         xnatctl project transfer -P SRC --dest-profile staging --dest-project DST
         xnatctl project transfer -P SRC --dest-profile staging --dest-project DST --dry-run
     """
-    # Deferred as a group: TransferOrchestrator alone pulls in the whole
-    # transfer subsystem (conflicts/discovery/executor/filter/scan_pipeline/
-    # verifier -- several thousand lines). cli/main.py loads this module
-    # unconditionally to register the `project` group, so a module-scope
-    # import here would make every `project list`/`show`/`create` invocation
-    # pay to parse the transfer pipeline too. CONFIG_DIR costs little on its
-    # own but is grouped with it for locality (same feature, same call
-    # sites -- see transfer-status/-history below).
     from xnatctl.core.config import CONFIG_DIR
     from xnatctl.core.state import TransferStateStore
     from xnatctl.services.transfer.orchestrator import TransferOrchestrator
@@ -526,7 +507,6 @@ def project_transfer_status(ctx: Context, source_project: str) -> None:
     Example:
         xnatctl project transfer-status -P MYPROJECT
     """
-    # Deferred: see the comment on the transfer imports in project_transfer above.
     from xnatctl.core.config import CONFIG_DIR
     from xnatctl.core.state import TransferStateStore
 
@@ -578,7 +558,6 @@ def project_transfer_history(ctx: Context, source_project: str) -> None:
         xnatctl project transfer-history -P MYPROJECT
         xnatctl project transfer-history -P MYPROJECT -o json
     """
-    # Deferred: see the comment on the transfer imports in project_transfer above.
     from xnatctl.core.config import CONFIG_DIR
     from xnatctl.core.state import TransferStateStore
 
@@ -673,7 +652,8 @@ def project_transfer_check(
                 "detail": src_info.version or "",
             }
         )
-    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
+    except Exception as e:
+        logger.exception("Source connectivity check failed", extra={FILE_ONLY_ATTR: True})
         checks.append(
             {
                 "check": "Source connectivity",
@@ -691,7 +671,8 @@ def project_transfer_check(
                 "detail": src_user.username,
             }
         )
-    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
+    except Exception as e:
+        logger.exception("Source auth check failed", extra={FILE_ONLY_ATTR: True})
         checks.append({"check": "Source auth", "status": "FAIL", "detail": str(e)})
 
     try:
@@ -704,7 +685,8 @@ def project_transfer_check(
                 "detail": dst_info.version or "",
             }
         )
-    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
+    except Exception as e:
+        logger.exception("Dest connectivity check failed", extra={FILE_ONLY_ATTR: True})
         checks.append(
             {
                 "check": "Dest connectivity",
@@ -722,7 +704,8 @@ def project_transfer_check(
                 "detail": dst_user.username,
             }
         )
-    except Exception as e:  # noqa: BLE001 -- a probe's own failure is the FAIL result
+    except Exception as e:
+        logger.exception("Dest auth check failed", extra={FILE_ONLY_ATTR: True})
         checks.append({"check": "Dest auth", "status": "FAIL", "detail": str(e)})
 
     dest_client.close()

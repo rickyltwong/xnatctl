@@ -1,5 +1,3 @@
-"""Tests for XsyncService request shapes and secret handling (issue #15)."""
-
 from __future__ import annotations
 
 import json
@@ -10,19 +8,16 @@ import pytest
 
 from xnatctl.services.xsync import XsyncService
 
-# A throwaway password used to assert that nothing under test echoes it.
 SECRET: str = "hunter2-supersecret-NEVER-LOG"
 
 
 def _mock_client() -> MagicMock:
-    """Build a MagicMock that mimics XNATClient's get/post surface."""
     return MagicMock()
 
 
 def _mock_response(
     *, json_payload: Any = None, text: str = "", content_type: str = ""
 ) -> MagicMock:
-    """Build a MagicMock httpx.Response stand-in."""
     resp = MagicMock()
     resp.json.return_value = json_payload
     resp.text = text
@@ -31,8 +26,6 @@ def _mock_response(
 
 
 class TestReadEndpoints:
-    """GET endpoints hit the right URL and surface the parsed JSON."""
-
     def test_list_projects(self) -> None:
         client = _mock_client()
         client.get.return_value = _mock_response(
@@ -82,8 +75,6 @@ class TestReadEndpoints:
 
 
 class TestWriteEndpoints:
-    """POST endpoints send the right payload + content type."""
-
     def test_sync(self) -> None:
         client = _mock_client()
         client.post.return_value = _mock_response(
@@ -105,7 +96,6 @@ class TestWriteEndpoints:
         client.post.assert_called_once_with("/xapi/xsync/syncsubject/XNAT_E00001")
 
     def test_remote_rest_uses_json_body(self) -> None:
-        """RemoteREST is sent as application/json with the full credential payload."""
         client = _mock_client()
         client.post.return_value = _mock_response(
             json_payload={"alias": "alias-1", "secret": "secret-1", "xdatUserId": 42},
@@ -128,14 +118,11 @@ class TestWriteEndpoints:
             "username": "alice",
             "password": SECRET,
         }
-        # The service does NOT call data= or headers= on remoteREST; httpx
-        # sets application/json from the json= kwarg automatically.
         assert "data" not in call_args[1]
         assert "headers" not in call_args[1]
         assert result["alias"] == "alias-1"
 
     def test_save_credentials_uses_text_plain(self) -> None:
-        """credentials/save body is text/plain even though it is JSON-shaped."""
         client = _mock_client()
         client.post.return_value = _mock_response(text="saved", content_type="text/plain")
 
@@ -147,11 +134,9 @@ class TestWriteEndpoints:
         assert args == ("/xapi/xsync/credentials/save/projects/PROJ",)
         assert kwargs["headers"] == {"Content-Type": "text/plain"}
         assert kwargs["data"] == json.dumps(payload)
-        # Must NOT be sent via json= (would force application/json).
         assert "json" not in kwargs or kwargs.get("json") is None
 
     def test_check_credentials_uses_text_plain(self) -> None:
-        """credentials/check body is text/plain even though it is JSON-shaped."""
         client = _mock_client()
         client.post.return_value = _mock_response(
             text="JSESSIONID-token", content_type="text/plain"
@@ -167,11 +152,8 @@ class TestWriteEndpoints:
 
 
 class TestRefreshCredentialsOrchestration:
-    """refresh_credentials composes the three-step flow in order."""
-
     @pytest.fixture
     def primed_client(self) -> MagicMock:
-        """Return a client whose POSTs return the canonical XSync response shapes."""
         client = _mock_client()
 
         def _post_side_effect(path: str, **kwargs: Any) -> MagicMock:
@@ -191,7 +173,6 @@ class TestRefreshCredentialsOrchestration:
         return client
 
     def test_issues_three_posts_in_order(self, primed_client: MagicMock) -> None:
-        """RemoteREST -> credentials/save -> credentials/check, in that order."""
         XsyncService(primed_client).refresh_credentials(
             project_id="PROJ",
             remote_url="https://remote.example.org",
@@ -211,7 +192,6 @@ class TestRefreshCredentialsOrchestration:
     def test_save_payload_contains_remote_credentials_under_text_plain(
         self, primed_client: MagicMock
     ) -> None:
-        """The save POST carries the alias/secret as a JSON-shaped text/plain body."""
         XsyncService(primed_client).refresh_credentials(
             project_id="PROJ",
             remote_url="https://remote.example.org",
@@ -234,7 +214,6 @@ class TestRefreshCredentialsOrchestration:
         assert body["syncNew"] is False
 
     def test_check_payload_text_plain(self, primed_client: MagicMock) -> None:
-        """The check POST also uses text/plain and includes host + localProject."""
         XsyncService(primed_client).refresh_credentials(
             project_id="PROJ",
             remote_url="https://remote.example.org",
@@ -250,7 +229,6 @@ class TestRefreshCredentialsOrchestration:
         assert body == {"host": "https://remote.example.org", "localProject": "PROJ_LOCAL"}
 
     def test_return_value_omits_secret(self, primed_client: MagicMock) -> None:
-        """The summary dict does not echo the remote password or the minted secret."""
         summary = XsyncService(primed_client).refresh_credentials(
             project_id="PROJ",
             remote_url="https://remote.example.org",
@@ -267,7 +245,6 @@ class TestRefreshCredentialsOrchestration:
         assert summary["checked"] is True
 
     def test_password_only_in_remote_rest_body(self, primed_client: MagicMock) -> None:
-        """The remote password appears in exactly one request body (remoteREST)."""
         XsyncService(primed_client).refresh_credentials(
             project_id="PROJ",
             remote_url="https://remote.example.org",
@@ -277,7 +254,6 @@ class TestRefreshCredentialsOrchestration:
             remote_project="PROJ",
         )
 
-        # Check every call's serialized body.
         bodies: list[str] = []
         for call in primed_client.post.call_args_list:
             kwargs = call.kwargs
@@ -287,5 +263,4 @@ class TestRefreshCredentialsOrchestration:
                 bodies.append(str(kwargs["data"]))
 
         secret_hits = [body for body in bodies if SECRET in body]
-        # Exactly one hit: the remoteREST JSON payload.
         assert len(secret_hits) == 1

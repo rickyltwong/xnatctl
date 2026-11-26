@@ -43,7 +43,6 @@ def rewrite_experiment_xml(
     Returns:
         Cleaned XML string suitable for PUT overlay.
     """
-    # Strip HTML comments (hidden_fields, internal DB refs)
     xml_text = re.sub(r"<!--.*?-->", "", xml_text, flags=re.DOTALL)
 
     root = DefusedET.fromstring(xml_text)
@@ -64,15 +63,6 @@ def rewrite_experiment_xml(
 
 
 def _collect_namespace_map(root: ET.Element) -> dict[str, str]:
-    """Map the xnat/xsi prefixes to the namespace URIs used in the document.
-
-    Args:
-        root: Parsed experiment XML root.
-
-    Returns:
-        prefix -> URI map, containing only the recognized prefixes.
-    """
-    # Collect all namespace URIs used in the document (tags + attributes)
     ns_uris: set[str] = set()
     for elem in root.iter():
         tag = elem.tag
@@ -82,7 +72,6 @@ def _collect_namespace_map(root: ET.Element) -> dict[str, str]:
             if attr_name.startswith("{"):
                 ns_uris.add(attr_name[1 : attr_name.index("}")])
 
-    # Build namespace map: prefix -> URI
     ns_map: dict[str, str] = {}
     for uri in ns_uris:
         if "xnat" in uri:
@@ -93,13 +82,6 @@ def _collect_namespace_map(root: ET.Element) -> dict[str, str]:
 
 
 def _strip_internal_elements(root: ET.Element, xnat_ns: str) -> None:
-    """Remove file/catalog and internal-reference elements in place.
-
-    Args:
-        root: Parsed experiment XML root.
-        xnat_ns: XNAT namespace URI ("" when absent).
-    """
-    # Elements to remove (direct children or nested within scans)
     remove_local_names = {
         "file",
         "subject_ID",
@@ -109,24 +91,15 @@ def _strip_internal_elements(root: ET.Element, xnat_ns: str) -> None:
         "fields",
     }
 
-    # Remove session-level resources (but not scan-level resources)
-    # Session-level resources are direct children of root
     if xnat_ns:
         for tag_name in ("resources",):
             for child in root.findall(f"{{{xnat_ns}}}{tag_name}"):
                 root.remove(child)
 
-    # Recursively remove targeted elements
     _remove_elements_recursive(root, remove_local_names, xnat_ns)
 
 
 def _strip_schema_location(root: ET.Element, xsi_ns: str) -> None:
-    """Remove the xsi:schemaLocation attribute in place.
-
-    Args:
-        root: Parsed experiment XML root.
-        xsi_ns: XMLSchema-instance namespace URI ("" when absent).
-    """
     if xsi_ns:
         schema_attr = f"{{{xsi_ns}}}schemaLocation"
         if schema_attr in root.attrib:
@@ -138,21 +111,11 @@ def _rewrite_identity_attributes(
     dest_experiment_id: str | None,
     dest_project: str | None,
 ) -> None:
-    """Rewrite ID/project and strip label on the root element, in place.
-
-    Args:
-        root: Parsed experiment XML root.
-        dest_experiment_id: Destination experiment accession ID.
-        dest_project: Destination project ID.
-    """
-    # Rewrite root ID and project attributes
     if dest_experiment_id is not None and "ID" in root.attrib:
         root.attrib["ID"] = dest_experiment_id
     if dest_project is not None and "project" in root.attrib:
         root.attrib["project"] = dest_project
 
-    # Strip label to avoid 400 "Label must be modified through separate URI"
-    # TODO: rewrite label instead of stripping when label transformation is supported
     if "label" in root.attrib:
         del root.attrib["label"]
 
@@ -162,13 +125,6 @@ def _remove_elements_recursive(
     local_names: set[str],
     xnat_ns: str,
 ) -> None:
-    """Remove elements matching local names from parent and descendants.
-
-    Args:
-        parent: Parent XML element.
-        local_names: Set of local tag names to remove.
-        xnat_ns: XNAT namespace URI.
-    """
     to_remove: list[ET.Element] = []
     for child in parent:
         tag = child.tag

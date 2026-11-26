@@ -1,5 +1,3 @@
-"""Tests for xnatctl.core.auth module."""
-
 from __future__ import annotations
 
 import json
@@ -13,16 +11,9 @@ import pytest
 from xnatctl.core.auth import SESSION_CACHE_VERSION, AuthManager, CachedSession
 from xnatctl.core.fsutil import exclusive_lock
 
-# =============================================================================
-# CachedSession Tests
-# =============================================================================
-
 
 class TestCachedSession:
-    """Tests for CachedSession dataclass."""
-
     def test_create_session(self):
-        """Test creating a cached session."""
         now = datetime.now()
         session = CachedSession(
             token="test-token",
@@ -37,7 +28,6 @@ class TestCachedSession:
         assert session.created_at == now
 
     def test_is_expired_false(self):
-        """Test is_expired returns False for valid session."""
         now = datetime.now()
         session = CachedSession(
             token="test-token",
@@ -49,7 +39,6 @@ class TestCachedSession:
         assert session.is_expired() is False
 
     def test_is_expired_true(self):
-        """Test is_expired returns True for expired session."""
         now = datetime.now()
         session = CachedSession(
             token="test-token",
@@ -61,7 +50,6 @@ class TestCachedSession:
         assert session.is_expired() is True
 
     def test_is_expired_no_expiry(self):
-        """Test is_expired returns False when no expiry set."""
         session = CachedSession(
             token="test-token",
             url="https://xnat.example.org",
@@ -72,7 +60,6 @@ class TestCachedSession:
         assert session.is_expired() is False
 
     def test_to_dict(self):
-        """Test to_dict serialization."""
         now = datetime.now()
         expires = now + timedelta(hours=12)
         session = CachedSession(
@@ -90,7 +77,6 @@ class TestCachedSession:
         assert data["expires_at"] == expires.isoformat()
 
     def test_to_dict_no_expiry(self):
-        """Test to_dict with no expiry."""
         session = CachedSession(
             token="test-token",
             url="https://xnat.example.org",
@@ -102,7 +88,6 @@ class TestCachedSession:
         assert data["expires_at"] is None
 
     def test_from_dict(self):
-        """Test from_dict deserialization."""
         now = datetime.now()
         expires = now + timedelta(hours=12)
         data = {
@@ -118,7 +103,6 @@ class TestCachedSession:
         assert session.username == "testuser"
 
     def test_from_dict_no_expiry(self):
-        """Test from_dict with no expiry."""
         data = {
             "token": "test-token",
             "url": "https://xnat.example.org",
@@ -130,7 +114,6 @@ class TestCachedSession:
         assert session.expires_at is None
 
     def test_roundtrip(self):
-        """Test to_dict/from_dict roundtrip."""
         now = datetime.now()
         original = CachedSession(
             token="test-token",
@@ -146,27 +129,17 @@ class TestCachedSession:
         assert restored.username == original.username
 
 
-# =============================================================================
-# AuthManager Tests
-# =============================================================================
-
-
 class TestAuthManager:
-    """Tests for AuthManager class."""
-
     def test_init_default_cache_file(self):
-        """Test default cache file path."""
         manager = AuthManager()
         assert manager.cache_file.name == ".session"
 
     def test_init_custom_cache_file(self, temp_dir: Path):
-        """Test custom cache file path."""
         cache_file = temp_dir / ".session"
         manager = AuthManager(cache_file=cache_file)
         assert manager.cache_file == cache_file
 
     def test_get_credentials_from_env(self, monkeypatch: pytest.MonkeyPatch):
-        """Test getting credentials from environment."""
         monkeypatch.setenv("XNAT_USER", "envuser")
         monkeypatch.setenv("XNAT_PASS", "envpass")
 
@@ -176,7 +149,6 @@ class TestAuthManager:
         assert password == "envpass"
 
     def test_get_credentials_not_set(self, monkeypatch: pytest.MonkeyPatch):
-        """Test getting credentials when not set."""
         monkeypatch.delenv("XNAT_USER", raising=False)
         monkeypatch.delenv("XNAT_PASS", raising=False)
 
@@ -186,7 +158,6 @@ class TestAuthManager:
         assert password is None
 
     def test_get_token_from_env(self, monkeypatch: pytest.MonkeyPatch):
-        """Test getting token from environment."""
         monkeypatch.setenv("XNAT_TOKEN", "env-token")
 
         manager = AuthManager()
@@ -194,7 +165,6 @@ class TestAuthManager:
         assert token == "env-token"
 
     def test_get_token_from_env_not_set(self, monkeypatch: pytest.MonkeyPatch):
-        """Test getting token when not set."""
         monkeypatch.delenv("XNAT_TOKEN", raising=False)
 
         manager = AuthManager()
@@ -202,7 +172,6 @@ class TestAuthManager:
         assert token is None
 
     def test_save_session(self, temp_dir: Path):
-        """Test saving session to cache."""
         cache_file = temp_dir / ".session"
         manager = AuthManager(cache_file=cache_file)
 
@@ -222,7 +191,6 @@ class TestAuthManager:
         assert payload["sessions"]["prod"]["token"] == "test-token"
 
     def test_load_session(self, temp_dir: Path):
-        """Test loading session from cache."""
         cache_file = temp_dir / ".session"
         manager = AuthManager(cache_file=cache_file)
 
@@ -236,7 +204,6 @@ class TestAuthManager:
         assert session.url == "https://xnat.example.org"
 
     def test_load_session_no_cache(self, temp_dir: Path):
-        """Test loading session when no cache exists."""
         cache_file = temp_dir / ".session"
         manager = AuthManager(cache_file=cache_file)
 
@@ -256,7 +223,6 @@ class TestAuthManager:
         assert manager.load_session("prod", "https://other.example.org", "testuser") is None
 
     def test_load_session_expired(self, temp_dir: Path):
-        """Test loading expired session returns None."""
         cache_file = temp_dir / ".session"
         manager = AuthManager(cache_file=cache_file)
 
@@ -276,7 +242,6 @@ class TestAuthManager:
         assert not cache_file.exists()
 
     def test_load_session_invalid_json(self, temp_dir: Path):
-        """Test loading session with invalid JSON."""
         cache_file = temp_dir / ".session"
         manager = AuthManager(cache_file=cache_file)
 
@@ -288,7 +253,6 @@ class TestAuthManager:
         assert not cache_file.exists()
 
     def test_clear_session(self, temp_dir: Path):
-        """Test clearing session cache."""
         cache_file = temp_dir / ".session"
         manager = AuthManager(cache_file=cache_file)
 
@@ -302,7 +266,6 @@ class TestAuthManager:
         assert not cache_file.exists()
 
     def test_clear_session_no_cache(self, temp_dir: Path):
-        """Test clearing session when no cache exists."""
         cache_file = temp_dir / ".session"
         manager = AuthManager(cache_file=cache_file)
 
@@ -310,7 +273,6 @@ class TestAuthManager:
         assert result is False
 
     def test_get_session_token_from_env(self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch):
-        """Test get_session_token prefers environment variable."""
         monkeypatch.setenv("XNAT_TOKEN", "env-token")
 
         cache_file = temp_dir / ".session"
@@ -320,12 +282,10 @@ class TestAuthManager:
             "prod", token="cached-token", url="https://xnat.example.org", username="testuser"
         )
 
-        # Environment token takes priority
         token = manager.get_session_token("prod", "https://xnat.example.org", "testuser")
         assert token == "env-token"
 
     def test_get_session_token_from_cache(self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch):
-        """Test get_session_token falls back to cache."""
         monkeypatch.delenv("XNAT_TOKEN", raising=False)
 
         cache_file = temp_dir / ".session"
@@ -339,7 +299,6 @@ class TestAuthManager:
         assert token == "cached-token"
 
     def test_get_session_token_none(self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch):
-        """Test get_session_token returns None when nothing available."""
         monkeypatch.delenv("XNAT_TOKEN", raising=False)
 
         cache_file = temp_dir / ".session"
@@ -349,11 +308,9 @@ class TestAuthManager:
         assert token is None
 
     def test_get_session_info(self, temp_dir: Path):
-        """Test getting session info for display."""
         cache_file = temp_dir / ".session"
         manager = AuthManager(cache_file=cache_file)
 
-        # No session
         info = manager.get_session_info("prod", "https://xnat.example.org", "testuser")
         assert info is None
 

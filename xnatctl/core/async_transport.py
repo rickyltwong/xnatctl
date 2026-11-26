@@ -34,27 +34,25 @@ from xnatctl.core.exceptions import (
     ResourceNotFoundError,
     RetryExhaustedError,
     ServerError,
-    ServerUnreachableError,
 )
 from xnatctl.core.exceptions import (
     RequestTimeoutError as XNATTimeoutError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.redact import redact_url_query
 from xnatctl.core.retry import (
     _AMBIGUOUS_RETRY_CODES,
     IDEMPOTENT_METHODS,
-    PERMANENT_TRANSPORT_ERRORS,
     RETRYABLE_STATUS_CODES,
-    RETRYABLE_TRANSPORT_ERRORS,
     _backoff_delay,
     _retry_after_seconds,
 )
-from xnatctl.core.timeouts import DEFAULT_CONNECT_TIMEOUT_SECONDS, build_httpx_timeout
+from xnatctl.core.timeouts import build_httpx_timeout
 from xnatctl.core.transport import (
-    _STREAM_TRANSPORT_ERRORS,
+    _TRANSPORT_ERRORS,
     _body_snippet,
     _raise_for_xnat_status,
-    _stream_transport_error,
+    _transport_error,
 )
 
 if TYPE_CHECKING:
@@ -64,16 +62,10 @@ logger = logging.getLogger(__name__)
 
 
 async def _aread_stream_body(resp: httpx.Response) -> None:
-    """Buffer a streaming response's body so ``.text`` is available for errors.
-
-    Async twin of :func:`xnatctl.core.transport._read_stream_body`: the sync
-    version's ``resp.read()`` is not valid on a response opened through
-    ``httpx.AsyncClient``, which requires ``await resp.aread()`` instead.
-    """
     try:
         await resp.aread()
-    except Exception:  # noqa: BLE001 -- a truncated error body must not eclipse the status it describes
-        pass
+    except Exception:
+        logger.exception("could not read the error response body", extra={FILE_ONLY_ATTR: True})
 
 
 @asynccontextmanager
@@ -122,8 +114,8 @@ async def stream(
                 timeout=request_timeout,
             )
             response = await http_client.send(request, auth=auth, stream=True)
-        except _STREAM_TRANSPORT_ERRORS as e:
-            last_error = _stream_transport_error(
+        except _TRANSPORT_ERRORS as e:
+            last_error = _transport_error(
                 client.base_url,
                 e,
                 method_upper=method_upper,
@@ -154,9 +146,6 @@ async def stream(
             if code == 401 and can_reauth:
                 await response.aclose()
                 async with client._reauth_lock:
-                    # A parallel task may have refreshed the session while
-                    # this request was in flight; reuse its token instead of
-                    # opening yet another server session.
                     if client.session_token == token_at_send:
                         await client.authenticate()
                 did_reauth = True
@@ -198,8 +187,6 @@ async def stream(
                 raise RetryExhaustedError("request", client.max_retries + 1, last_error)
 
             if code >= 400:
-                # Terminal error: read the body so the typed exception can
-                # quote it, then map and raise through the shared helper.
                 await _aread_stream_body(response)
                 try:
                     _raise_for_xnat_status(client.base_url, response, method, path)
@@ -209,8 +196,6 @@ async def stream(
             try:
                 yield response
             except httpx.TimeoutException as e:
-                # Mid-body failures are translated but never retried: a
-                # partially consumed stream cannot be resumed.
                 raise XNATTimeoutError(
                     client.base_url,
                     read_timeout,
@@ -226,7 +211,6 @@ async def stream(
                 await response.aclose()
             return
 
-        # Transport failure left a retryable ``last_error``; back off.
         if attempt < client.max_retries:
             delay = _backoff_delay(attempt)
             logger.warning(
@@ -244,7 +228,7 @@ async def stream(
     raise RetryExhaustedError("request", client.max_retries + 1, last_error)
 
 
-async def request(  # noqa: C901 -- mirrors xnatctl.core.transport.request; see that function's own noqa
+async def request(
     client: AsyncXNATClient,
     method: str,
     path: str,
@@ -278,10 +262,6 @@ async def request(  # noqa: C901 -- mirrors xnatctl.core.transport.request; see 
 
     attempt = 0
     while attempt <= retry_budget:
-        # Captured before the request goes out so the 401 handler below can
-        # tell "my token was the one that got rejected" from "a concurrent
-        # task already refreshed it while I was in flight" -- same token-at-
-        # send recheck the stream() ladder uses.
         token_at_send = client.session_token
         # Set the session cookie on the client instance rather than passing
         # ``cookies=`` per request (httpx 0.28 deprecates per-request
@@ -333,10 +313,6 @@ async def request(  # noqa: C901 -- mirrors xnatctl.core.transport.request; see 
                 if can_reauth:
                     logger.debug("401 on %s %s; re-authenticating and retrying once", method, path)
                     async with client._reauth_lock:
-                        # A parallel task may have refreshed the session
-                        # while this request was in flight; reuse its token
-                        # instead of opening yet another server session --
-                        # same collapse-to-one-login behaviour as stream().
                         if client.session_token == token_at_send:
                             await client.authenticate()
                     did_reauth = True
@@ -393,35 +369,18 @@ async def request(  # noqa: C901 -- mirrors xnatctl.core.transport.request; see 
 
             return resp
 
-        except httpx.ConnectTimeout as e:
-            raise XNATTimeoutError(client.base_url, DEFAULT_CONNECT_TIMEOUT_SECONDS) from e
-        except httpx.ConnectError:
-            last_error = ServerUnreachableError(client.base_url)
-        except httpx.TimeoutException as e:
-            if not may_retry_after_send:
-                raise XNATTimeoutError(
-                    client.base_url,
-                    read_timeout,
-                    f"{method.upper()} {path} timed out after the request was sent; "
-                    "it may have partially executed on the server. Not retried "
-                    "automatically - check server state before repeating it.",
-                ) from e
-            last_error = NetworkError(client.base_url, f"Timeout after {read_timeout}s")
-        except PERMANENT_TRANSPORT_ERRORS as e:
-            raise NetworkError(client.base_url, f"{type(e).__name__}: {e}") from e
-        except RETRYABLE_TRANSPORT_ERRORS as e:
-            if not may_retry_after_send:
-                raise NetworkError(
-                    client.base_url,
-                    f"{type(e).__name__} on {method.upper()} {path} after the request "
-                    "was sent; it may have partially executed on the server. "
-                    "Not retried automatically.",
-                ) from e
-            last_error = NetworkError(client.base_url, f"{type(e).__name__}: {e}")
+        except _TRANSPORT_ERRORS as e:
+            last_error = _transport_error(
+                client.base_url,
+                e,
+                method_upper=method.upper(),
+                path=path,
+                read_timeout=read_timeout,
+                may_retry_after_send=may_retry_after_send,
+            )
         except (AuthenticationError, ResourceNotFoundError):
             raise
 
-        # Retry with full-jitter backoff.
         if attempt < retry_budget:
             delay = _backoff_delay(attempt)
             logger.warning(

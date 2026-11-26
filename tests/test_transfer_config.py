@@ -1,5 +1,3 @@
-"""Tests for transfer configuration models."""
-
 from __future__ import annotations
 
 import pytest
@@ -115,13 +113,6 @@ class TestImagingSessionFilter:
 
 
 class TestOutOfScopeFilterSectionsAreRejected:
-    """Filter keys for data the transfer never moves must fail loudly.
-
-    The base model's ``extra="ignore"`` would otherwise accept them in
-    silence, leaving a config that claims control over data that is not
-    transferred.
-    """
-
     @pytest.mark.parametrize(
         "section", ["project_resources", "subject_resources", "subject_assessors"]
     )
@@ -138,7 +129,7 @@ class TestOutOfScopeFilterSectionsAreRejected:
     def test_from_yaml_names_the_offending_section(self, tmp_path: object) -> None:
         from xnatctl.core.exceptions import TransferConfigError
 
-        path = tmp_path / "transfer.yaml"  # type: ignore[operator]
+        path = tmp_path / "transfer.yaml"
         path.write_text(
             yaml.dump(
                 {
@@ -153,15 +144,12 @@ class TestOutOfScopeFilterSectionsAreRejected:
             TransferConfig.from_yaml(path)
 
     def test_a_non_dict_mapping_is_rejected_too(self) -> None:
-        """Pydantic accepts arbitrary Mappings; the guard must too."""
         from collections import UserDict
 
         with pytest.raises(ValueError, match="unsupported filtering section.*project_resources"):
             FilterConfig.model_validate(UserDict({"project_resources": {"sync_type": "all"}}))
 
     def test_a_mapping_with_lying_contains_is_still_rejected(self) -> None:
-        """The guard checks the same materialized dict pydantic validates."""
-
         class Sneaky(dict):
             def __contains__(self, key: object) -> bool:
                 return False
@@ -170,7 +158,6 @@ class TestOutOfScopeFilterSectionsAreRejected:
             FilterConfig.model_validate(Sneaky({"project_resources": {"sync_type": "all"}}))
 
     def test_an_unknown_key_is_still_ignored(self) -> None:
-        """Only the named out-of-scope keys are rejected; extra=ignore stands."""
         config = FilterConfig.model_validate({"unrelated_future_key": 1})
         assert config.imaging_sessions.sync_type == FilterSyncType.ALL
 
@@ -200,7 +187,7 @@ class TestTransferConfig:
                 },
             },
         }
-        path = tmp_path / "transfer.yaml"  # type: ignore[operator]
+        path = tmp_path / "transfer.yaml"
         path.write_text(yaml.dump(yaml_content))
 
         config = TransferConfig.from_yaml(path)
@@ -228,8 +215,8 @@ class TestTransferConfig:
     def test_from_yaml_invalid_file(self, tmp_path: object) -> None:
         from xnatctl.core.exceptions import TransferConfigError
 
-        path = tmp_path / "bad.yaml"  # type: ignore[operator]
-        path.write_text("source_project: 123\n")  # missing dest_project
+        path = tmp_path / "bad.yaml"
+        path.write_text("source_project: 123\n")
 
         with pytest.raises(TransferConfigError, match="Invalid transfer config"):
             TransferConfig.from_yaml(path)
@@ -237,7 +224,7 @@ class TestTransferConfig:
     def test_from_yaml_missing_file(self, tmp_path: object) -> None:
         from xnatctl.core.exceptions import TransferConfigError
 
-        path = tmp_path / "nonexistent.yaml"  # type: ignore[operator]
+        path = tmp_path / "nonexistent.yaml"
 
         with pytest.raises(TransferConfigError, match="Failed to load"):
             TransferConfig.from_yaml(path)

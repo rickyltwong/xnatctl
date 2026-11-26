@@ -1,5 +1,3 @@
-"""Tests for xnatctl.services.upload shared utility functions."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,14 +14,8 @@ from xnatctl.services.upload import (
 )
 from xnatctl.services.upload.gradual_client import GradualClientPool
 
-# =============================================================================
-# collect_dicom_files Tests
-# =============================================================================
-
 
 class TestCollectDicomFiles:
-    """Tests for collect_dicom_files function."""
-
     def test_collects_dcm_files(self, temp_dir: Path):
         (temp_dir / "file1.dcm").write_text("dcm1")
         (temp_dir / "file2.dcm").write_text("dcm2")
@@ -105,12 +97,9 @@ class TestCollectDicomFiles:
         assert files == []
 
     def test_skips_broken_symlinks(self, temp_dir: Path):
-        """Broken symlinks should be skipped."""
-        # Create a valid file
         valid_file = temp_dir / "valid.dcm"
         valid_file.write_text("valid")
 
-        # Create a broken symlink
         broken_link = temp_dir / "broken.dcm"
         broken_link.symlink_to(temp_dir / "nonexistent.dcm")
 
@@ -120,29 +109,18 @@ class TestCollectDicomFiles:
         assert files[0].name == "valid.dcm"
 
     def test_follows_valid_symlinks(self, temp_dir: Path):
-        """Valid symlinks pointing to real files should be included."""
-        # Create a real file
         real_file = temp_dir / "real.dcm"
         real_file.write_text("content")
 
-        # Create a symlink to it
         link_file = temp_dir / "link.dcm"
         link_file.symlink_to(real_file)
 
         files = collect_dicom_files(temp_dir)
 
-        # Both the real file and symlink should be found
         assert len(files) == 2
 
 
-# =============================================================================
-# split_into_batches Tests
-# =============================================================================
-
-
 class TestSplitIntoBatches:
-    """Tests for split_into_batches function."""
-
     def test_splits_evenly(self, temp_dir: Path):
         files = [Path(f"file{i}.dcm") for i in range(10)]
 
@@ -190,21 +168,13 @@ class TestSplitIntoBatches:
         assert len(batches) == 1
 
 
-# =============================================================================
-# split_into_n_batches Tests
-# =============================================================================
-
-
 class TestSplitIntoNBatches:
-    """Tests for split_into_n_batches function."""
-
     def test_round_robin_distribution(self):
         files = [Path(f"file{i}.dcm") for i in range(10)]
 
         batches = split_into_n_batches(files, num_batches=3)
 
         assert len(batches) == 3
-        # Round-robin: 0,1,2,0,1,2,0,1,2,0 -> [4,3,3]
         assert len(batches[0]) == 4
         assert len(batches[1]) == 3
         assert len(batches[2]) == 3
@@ -214,7 +184,6 @@ class TestSplitIntoNBatches:
 
         batches = split_into_n_batches(files, num_batches=5)
 
-        # Only 2 batches created (one per file)
         assert len(batches) == 2
         assert len(batches[0]) == 1
         assert len(batches[1]) == 1
@@ -240,11 +209,6 @@ class TestSplitIntoNBatches:
         assert len(batches[0]) == 10
 
 
-# =============================================================================
-# is_retryable_status Tests
-# =============================================================================
-
-
 class TestIsRetryableStatus:
     def test_server_errors_are_retryable(self):
         for code in (500, 502, 503, 504):
@@ -266,11 +230,6 @@ class TestIsRetryableStatus:
         assert is_retryable_status(404) is False
 
 
-# =============================================================================
-# upload_with_retry Tests
-# =============================================================================
-
-
 class TestUploadWithRetry:
     def _make_response(self, status_code: int) -> MagicMock:
         resp = MagicMock(spec=httpx.Response)
@@ -288,7 +247,6 @@ class TestUploadWithRetry:
         assert fn.call_count == 1
 
     def test_returns_immediately_on_non_retryable_client_error(self):
-        """Non-retryable 4xx errors (e.g. 404) should NOT be retried."""
         resp_404 = self._make_response(404)
         fn = MagicMock(return_value=resp_404)
 
@@ -298,7 +256,6 @@ class TestUploadWithRetry:
         assert fn.call_count == 1
 
     def test_retries_on_400(self):
-        """400 should be retried."""
         resp_400 = self._make_response(400)
         resp_200 = self._make_response(200)
         fn = MagicMock(side_effect=[resp_400, resp_200])
@@ -309,14 +266,13 @@ class TestUploadWithRetry:
         assert fn.call_count == 2
 
     def test_retries_on_server_error(self):
-        """5xx should be retried, then return last response if exhausted."""
         resp_502 = self._make_response(502)
         fn = MagicMock(return_value=resp_502)
 
         result = upload_with_retry(fn, max_retries=2, backoff_base=0)
 
         assert result.status_code == 502
-        assert fn.call_count == 3  # initial + 2 retries
+        assert fn.call_count == 3
 
     def test_retries_on_429(self):
         resp_429 = self._make_response(429)
@@ -328,7 +284,6 @@ class TestUploadWithRetry:
         assert fn.call_count == 2
 
     def test_succeeds_after_transient_failure(self):
-        """Retryable error followed by success should return success."""
         resp_503 = self._make_response(503)
         resp_200 = self._make_response(200)
         fn = MagicMock(side_effect=[resp_503, resp_200])
@@ -357,10 +312,6 @@ class TestUploadWithRetry:
         assert fn.call_count == 2
 
     def test_connect_timeout_fails_fast_without_retry(self):
-        """A connect-phase timeout must not burn retries (fail on attempt 1).
-
-        Contrast with the transient ConnectError above, which stays retryable.
-        """
         fn = MagicMock(side_effect=httpx.ConnectTimeout("connect timed out"))
 
         with pytest.raises(httpx.ConnectTimeout):
@@ -385,7 +336,6 @@ class TestUploadWithRetry:
         assert fn.call_count == 2
 
     def test_does_not_retry_non_transient_exceptions(self):
-        """Exceptions other than Timeout/ConnectError should propagate immediately."""
         fn = MagicMock(side_effect=ValueError("bad data"))
 
         with pytest.raises(ValueError, match="bad data"):

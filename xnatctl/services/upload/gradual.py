@@ -24,6 +24,7 @@ from typing import Any
 
 from xnatctl.core.cancellation import NULL_TOKEN, CancellationToken, cancellable_pool
 from xnatctl.core.client import XNATClient
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.server_version import MIN_VERSION_DIRECT_ARCHIVE, require_server_version
 from xnatctl.models.progress import OperationPhase, UploadProgress, UploadSummary
 
@@ -66,12 +67,6 @@ class GradualUploadRun:
     failed_paths: set[Path] = field(init=False, default_factory=set)
     error_by_path: dict[Path, str] = field(init=False, default_factory=dict)
     total_files: int = field(init=False, default=0)
-    # Set once the first run() call has started. Lets a second run() on a
-    # reused instance re-stamp start_time (so its duration is not inflated by
-    # everything since construction) without disturbing the first call, whose
-    # constructor-supplied start_time deliberately predates run() -- it is set
-    # before this run's files were even scanned/extracted, and that scan time
-    # belongs in the reported duration.
     _has_run: bool = field(init=False, default=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -81,8 +76,6 @@ class GradualUploadRun:
             token=self.client.session_token,
             username=self.client.username,
             password=self.client.password,
-            # So the phases that run after this upload inherit the refreshed
-            # token instead of the one it started with.
             owner=self.client,
         )
 
@@ -116,13 +109,11 @@ class GradualUploadRun:
         )
 
     def _scan_id_for(self, path: Path) -> str | None:
-        """Extract scan ID from standard session layout paths, if present."""
         try:
             rel = path.relative_to(self.display_root)
         except ValueError:
             return None
         parts = rel.parts
-        # Expected layout: scans/<scan_id>/resources/DICOM/files/<...>
         if (
             len(parts) >= 6
             and parts[0] == "scans"
@@ -141,12 +132,6 @@ class GradualUploadRun:
             return (1, 0, scan_id)
 
     def _partition_warmup(self, file_list: list[Path]) -> tuple[list[Path], list[Path]]:
-        """Pick a small warm-up set before going wide-parallel.
-
-        XNAT can return transient HTTP 400s when a session/scan is being
-        created in prearchive. With high concurrency, multiple workers can
-        hit that "cold start" race at the same time.
-        """
         scan_groups: dict[str, list[Path]] = {}
         other_files: list[Path] = []
         for p in file_list:
@@ -160,8 +145,6 @@ class GradualUploadRun:
         remaining_files: list[Path] = []
 
         if scan_groups:
-            # Warm up one file per scan (capped) and interleave remaining uploads
-            # across scans to reduce per-scan contention under high worker counts.
             queues: dict[str, deque[Path]] = {
                 sid: deque(paths) for sid, paths in scan_groups.items()
             }
@@ -177,7 +160,6 @@ class GradualUploadRun:
                 if q:
                     warmup_files.append(q.popleft())
 
-            # Round-robin remaining files across scan queues
             scan_order = deque(scan_ids)
             while scan_order:
                 sid = scan_order.popleft()
@@ -191,7 +173,6 @@ class GradualUploadRun:
                 else:
                     queues.pop(sid, None)
         else:
-            # Fallback: warm up a few files in provided order
             warmup_n = min(5, self.total_files)
             warmup_files = file_list[:warmup_n]
             remaining_files = file_list[warmup_n:]
@@ -199,12 +180,6 @@ class GradualUploadRun:
         return warmup_files, remaining_files
 
     def _run_warmup(self, warmup_files: list[Path]) -> None:
-        """Upload the warm-up set sequentially.
-
-        No cancel_token here on purpose: the warmup is sequential and runs on
-        the main thread, so Ctrl+C interrupts its retry sleep directly. The
-        token only earns its place where work happens in worker threads.
-        """
         for p in warmup_files:
             _name, ok, err = self._upload_one(p)
             self.completed += 1
@@ -225,15 +200,6 @@ class GradualUploadRun:
             )
 
     def _warmup_circuit_breaker(self, warmup_files: list[Path]) -> UploadSummary | None:
-        """Abort early when the server rejected every warm-up file identically.
-
-        The warmup exists to try a small, deterministic set before opening the
-        throttle; if the server refused every one of them for the same reason,
-        the remaining files will be refused for that reason too. Stopping here
-        is the difference between one round of errors and hours of them: the
-        wide-parallel phase plus two salvage passes would otherwise retry
-        every file in a 100k-file directory before reporting the same message.
-        """
         if not (warmup_files and len(self.failed_paths) == len(warmup_files)):
             return None
 
@@ -261,11 +227,6 @@ class GradualUploadRun:
         )
 
     def _run_main_pass(self, remaining_files: list[Path], workers: int) -> CancellationToken:
-        """Parallel per-file upload with a bounded in-flight window.
-
-        Returns the cancel token used, so the salvage pass can share it and
-        honour a Ctrl+C that happened during this phase.
-        """
         with cancellable_pool(workers) as (executor, gradual_token):
             prefetch = max(1, workers * 2)
             file_iter = iter(remaining_files)
@@ -274,9 +235,6 @@ class GradualUploadRun:
             future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
 
             def _submit_one(path: Path) -> None:
-                # This pass refills its window as files complete, so without
-                # this check a cancelled run would keep feeding itself the rest
-                # of the directory one file at a time.
                 if gradual_token.cancelled:
                     raise StopIteration
                 fut: Future[tuple[str, bool, str]] = executor.submit(
@@ -301,7 +259,10 @@ class GradualUploadRun:
 
                     try:
                         _name, ok, err = future.result()
-                    except Exception as e:  # noqa: BLE001  # worker-pool isolation: future.result() can re-raise anything the upload task raised
+                    except Exception as e:
+                        logger.exception(
+                            "Gradual upload task failed for %s", p, extra={FILE_ONLY_ATTR: True}
+                        )
                         ok = False
                         err = str(e)
 
@@ -330,10 +291,6 @@ class GradualUploadRun:
         return gradual_token
 
     def _run_salvage_pass(self, workers: int, gradual_token: CancellationToken) -> None:
-        """Retry a bounded number of failed files at lower concurrency.
-
-        This helps when XNAT returns transient 400s under high parallel load.
-        """
         max_salvage = min(5000, max(500, int(self.total_files * 0.01)))
         if not (self.failed_paths and len(self.failed_paths) <= max_salvage):
             return
@@ -357,13 +314,6 @@ class GradualUploadRun:
             retry_future_to_path: dict[Future[tuple[str, bool, str]], Path] = {}
 
             def _submit_retry(path: Path) -> None:
-                # Same two guards as the main pass. Without them the
-                # salvage pass ran on NULL_TOKEN: after Ctrl+C every
-                # in-flight file sat out its full 2+4+8+16+32s retry
-                # ladder before shutdown(wait=True) could return -- the
-                # exact wait cooperative cancellation exists to remove,
-                # reintroduced in the one pass whose files are already
-                # known to be failing.
                 if gradual_token.cancelled:
                     raise StopIteration
                 fut: Future[tuple[str, bool, str]] = retry_executor.submit(
@@ -386,7 +336,10 @@ class GradualUploadRun:
                     p = retry_future_to_path.pop(future)
                     try:
                         _name, ok, err = future.result()
-                    except Exception as e:  # noqa: BLE001  # worker-pool isolation: future.result() re-raise, salvage pass
+                    except Exception as e:
+                        logger.exception(
+                            "Gradual salvage task failed for %s", p, extra={FILE_ONLY_ATTR: True}
+                        )
                         ok = False
                         err = str(e)
 
@@ -405,7 +358,6 @@ class GradualUploadRun:
         self.failed_paths = remaining_failed
 
     def _run_final_retry(self) -> None:
-        """Sequential last-chance retry when only a handful of files remain failed."""
         if not (self.failed_paths and len(self.failed_paths) <= 50):
             return
 
@@ -605,8 +557,6 @@ def upload_dicom_gradual(
                     errors=["No DICOM files found"],
                 )
 
-            # Prefer stable relative paths in logs/errors (especially for ZIP
-            # extractions into a temp directory).
             display_root = Path(temp_dir) if temp_dir else source_path
 
             run = GradualUploadRun(

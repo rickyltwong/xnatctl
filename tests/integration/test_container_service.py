@@ -1,22 +1,3 @@
-"""Container Service, checked against a real server.
-
-Every endpoint the unit suite for xnatctl.services.commands/containers/
-docker_admin mocks was verified once, by hand, against this same stack (see
-the ground-truth notes that rewrite was built from). This file is what keeps
-that verification from going stale: it registers a real command, and checks
-that CommandService parses what Container Service 3.7.2 actually sends back
--- particularly the two things that were wrong before that rewrite, wrappers
-embedded under "xnat" rather than a server-side listing endpoint, and a
-wrapper config route that takes a bare wrapper ID.
-
-A *successful* container launch/kill needs a reachable Docker daemon, which
-this stack does not provide (see services/containers.py's module
-docstring), so ``TestContainerLaunchAndKill`` below covers everything
-reachable WITHOUT one: wrapper resolution, the launch route's real
-request/response shape and its lack of server-side validation, the
-project-existence preflight, and kill/logs against a nonexistent container.
-"""
-
 from __future__ import annotations
 
 import time
@@ -33,6 +14,7 @@ from xnatctl.core.exceptions import (
     ServerError,
     SessionExpiredError,
     XNATConnectionError,
+    XNATCtlError,
 )
 from xnatctl.services.commands import CommandService
 from xnatctl.services.containers import ContainerService
@@ -43,9 +25,6 @@ from xnatctl.services.containers import ContainerService
 # would otherwise be killed at 120s with its diagnostic unreported.
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-#: A minimal but complete command.json, confirmed live against this stack to
-#: register (201, body is the bare new numeric ID) and to produce a wrapper
-#: reachable through every documented config-read form.
 PROBE_COMMAND = {
     "name": "xnatctl-it-probe",
     "label": "xnatctl integration probe",
@@ -65,23 +44,10 @@ PROBE_COMMAND = {
 }
 
 
-#: How long a just-booted Container Service gets to start answering its
-#: routes before the module fails with the last response as evidence.
-#: 210 rather than the module timeout's 300: together with the
-#: iteration-budget gate on the loop it guarantees the poll, the last
-#: iteration, and the teardown logout all land before pytest-timeout's axe,
-#: so the diagnostic pytest.fail is never lost to SIGALRM.
 _CS_READY_TIMEOUT_S = 210
 
-#: Worst case of one poll iteration: login + absence GET + DELETE + (on a
-#: 401) invalidate_session's logout at ~25s each (10s connect + 15s read on
-#: the probe client) plus the 5s sleep.
 _CS_ITERATION_BUDGET_S = 105
 
-#: Command id the readiness probe DELETEs. Deleting a nonexistent command
-#: answers success (verified live), so this is side-effect-free as long as
-#: the id stays unused -- command ids auto-increment from 1, and the
-#: fixture proves the id is absent before the first DELETE.
 _CS_PROBE_SENTINEL_ID = 999_999_999
 
 
@@ -89,28 +55,6 @@ _CS_PROBE_SENTINEL_ID = 999_999_999
 def container_service_ready(
     xnat_server: str, credentials: tuple[str, str], xnat_client: Any
 ) -> Iterator[None]:
-    """Give the shared client a session the Container Service accepts mutations from.
-
-    On the CI runner, three 2026-08-27 cold boots answered 401 to every
-    POST/DELETE on ``/xapi/commands`` for the whole span of this module
-    while GETs on the same route and every core route worked fine with the
-    same session. A GET probe therefore proves nothing (the third run's
-    did exactly that: passed instantly, tests still 401'd) -- the probe
-    has to be the admin-gated mutating path itself. ``DELETE`` of a
-    nonexistent command id is that path with no side effect: verified live,
-    the Container Service answers success for an unknown id.
-
-    The 401s look like per-session authority staleness: a session logged in
-    at boot-second-zero, before first-boot role wiring settles, never
-    carries the authority the plugin's mutating routes demand. So the
-    staleness belongs to the *session*, not the server -- which is why this
-    probes on its own short-timeout client (no iteration can outlive the
-    loop: the shared client's 300s timeout could) and, once the probe's
-    session passes, transplants that proven session onto the shared client
-    the tests use. The shared client's own possibly-stale session is
-    abandoned, not retired -- one orphan on a throwaway stack beats an
-    unbounded logout call here.
-    """
     from xnatctl.core.client import XNATClient
 
     user, password = credentials
@@ -120,19 +64,10 @@ def container_service_ready(
         deadline = time.monotonic() + _CS_READY_TIMEOUT_S
         last = "no attempt made"
         absence_proven = False
-        # Enter an iteration only when its worst case (login + GET + DELETE
-        # at ~25s each: 10s connect + 15s read, plus the 5s sleep) still
-        # fits the budget -- otherwise a final iteration starting at
-        # deadline-epsilon overruns the module's pytest-timeout and the
-        # diagnostic below is lost to SIGALRM.
         while time.monotonic() + _CS_ITERATION_BUDGET_S < deadline:
             try:
                 if not probe.session_token:
                     probe.authenticate()
-                # Before the first DELETE, *prove* the sentinel is absent --
-                # a collision would delete a real command, so nothing weaker
-                # than a definitive 404 unlocks the DELETE phase. Inconclusive
-                # answers land in the handlers below and retry.
                 if not absence_proven:
                     try:
                         probe.get(f"/xapi/commands/{_CS_PROBE_SENTINEL_ID}", max_retries=0)
@@ -146,47 +81,22 @@ def container_service_ready(
                         )
                 probe.delete(f"/xapi/commands/{_CS_PROBE_SENTINEL_ID}", max_retries=0)
             except SessionExpiredError as exc:
-                # Ordered before AuthenticationError, its base class.
                 last = f"{type(exc).__name__}: {exc}"
-                # Retire the rejected session server-side; the cleared token
-                # makes the next iteration log in afresh.
                 probe.invalidate_session()
             except PermissionDeniedError:
-                # A 403 is a real authorization verdict, not warmup -- and
-                # also an AuthenticationError subclass, so it must be
-                # re-raised here or the next branch would poll on it.
                 raise
             except AuthenticationError as exc:
-                # authenticate() maps every non-200 login response here, so
-                # only the definitive bad-credentials signature (a 200 with
-                # XNAT's login page) fails fast; login 5xx/429 keep polling.
                 if "Invalid credentials" in str(exc):
                     pytest.fail(f"login rejected -- a credential problem, not warmup: {exc}")
                 last = f"login failed: {exc}"
             except (XNATConnectionError, ServerError) as exc:
-                # Transport failures (NetworkError/RequestTimeoutError/
-                # RetryExhaustedError are all XNATConnectionError) and 5xx
-                # are what a still-warming server emits; anything else
-                # (404 = plugin missing, other 4xx) is permanent and
-                # propagates out of the fixture immediately.
                 last = f"{type(exc).__name__}: {exc}"
             else:
-                # A falsy token here means the DELETE succeeded on the
-                # basic-auth fallback (contrived: a 200 login with an empty
-                # body). Transplanting "" would silently flip the whole
-                # run's shared client to per-request basic auth -- the
-                # session-churn pattern that exhausts shared servers -- so
-                # fail loudly instead.
                 if not probe.session_token:
                     pytest.fail(
                         "login answered 200 with an empty session token; "
                         "refusing to transplant it onto the shared client"
                     )
-                # Drop the shared client's httpx client (and with it the
-                # cookie jar holding the old host-scoped JSESSIONID -- a
-                # plain token assignment would send BOTH cookies and let
-                # Tomcat keep picking the stale session); the next request
-                # rebuilds it and sets the transplanted token.
                 xnat_client.close()
                 xnat_client.session_token = probe.session_token
                 transplanted = True
@@ -200,8 +110,6 @@ def container_service_ready(
             )
         yield
     finally:
-        # The probe's session lives on in the shared client when it was
-        # transplanted; only an unused one gets retired with the probe.
         if not transplanted:
             probe.invalidate_session()
         probe.close()
@@ -209,13 +117,6 @@ def container_service_ready(
 
 @pytest.fixture
 def probe_command(xnat_client: Any) -> Iterator[int]:
-    """Register PROBE_COMMAND, yield its new ID, delete it afterward.
-
-    ``POST /xapi/commands`` answers 201 with the new ID as a bare integer
-    body (not JSON), so this reads ``resp.json()`` rather than going through
-    ``get_json``, which always sends ``format=json`` -- a POST response
-    doesn't take that query param.
-    """
     resp = xnat_client.post("/xapi/commands", json=PROBE_COMMAND)
     command_id = int(resp.json())
     try:
@@ -223,13 +124,11 @@ def probe_command(xnat_client: Any) -> Iterator[int]:
     finally:
         try:
             xnat_client.delete(f"/xapi/commands/{command_id}")
-        except Exception as exc:  # noqa: BLE001  # teardown must not mask a test result
+        except XNATCtlError as exc:
             print(f"\nWARNING: could not delete probe command {command_id}: {exc}")
 
 
 class TestCommandRegistration:
-    """Registration, and that CommandService parses the real response shapes."""
-
     def test_list_commands_sees_the_registered_command(
         self, xnat_client: Any, probe_command: int
     ) -> None:
@@ -249,17 +148,12 @@ class TestCommandRegistration:
 
         assert command["name"] == "xnatctl-it-probe"
         assert command["image"] == "busybox:latest"
-        # The real key holding embedded wrappers -- not "xnat-wrappers".
         assert "xnat" in command
         assert command["xnat"][0]["name"] == "xnatctl-it-probe-wrapper"
 
     def test_derived_wrapper_list_finds_the_embedded_wrapper(
         self, xnat_client: Any, probe_command: int
     ) -> None:
-        """There is no server-side wrapper-listing endpoint (GET /xapi/wrappers is
-        404; GET /xapi/commands/{id}/wrappers is 405) -- list_wrappers() must derive
-        the wrapper from the command's own "xnat" array.
-        """
         service = CommandService(xnat_client)
 
         wrappers = service.list_wrappers(command_id=probe_command)
@@ -280,9 +174,6 @@ class TestCommandRegistration:
     def test_wrapper_config_get_returns_the_observed_shape(
         self, xnat_client: Any, probe_command: int
     ) -> None:
-        """GET /xapi/wrappers/{wrapperId}/config -- the form CommandService uses. Its
-        real shape has explicit nulls for unset fields, not absent keys.
-        """
         service = CommandService(xnat_client)
         wrapper_id, _ = service.resolve_wrapper("xnatctl-it-probe-wrapper")
 
@@ -296,9 +187,6 @@ class TestCommandRegistration:
         assert session_input["description"] is None
 
     def test_deleting_a_command_removes_it(self, xnat_client: Any) -> None:
-        """Registers and deletes its own command rather than reusing the
-        probe_command fixture, so its teardown does not double-delete.
-        """
         resp = xnat_client.post("/xapi/commands", json=PROBE_COMMAND)
         command_id = int(resp.json())
         service = CommandService(xnat_client)
@@ -311,14 +199,6 @@ class TestCommandRegistration:
 
 
 class TestMutatingVerbs:
-    """The mutating half: create, update, enable/disable, config set, delete.
-
-    Each test registers and cleans up its own command rather than sharing
-    ``probe_command`` -- several of these mutate the command itself (update
-    replaces it, delete removes it), which would break that fixture's own
-    teardown if shared.
-    """
-
     def test_create_then_delete_command(self, xnat_client: Any) -> None:
         service = CommandService(xnat_client)
 
@@ -332,18 +212,12 @@ class TestMutatingVerbs:
             service.get_command(command_id)
 
     def test_delete_unknown_command_raises_not_found(self, xnat_client: Any) -> None:
-        """Verifies the existence-check guard: DELETE alone answers 204 for
-        any ID, verified live -- delete_command() must not trust that.
-        """
         service = CommandService(xnat_client)
 
         with pytest.raises(ResourceNotFoundError):
             service.delete_command(999_999_999)
 
     def test_update_replaces_the_definition_and_can_wipe_wrappers(self, xnat_client: Any) -> None:
-        """Verifies the full-replace behavior: updating without ``xnat`` in
-        the payload wipes the wrapper the command was created with.
-        """
         service = CommandService(xnat_client)
         command_id = service.create_command(PROBE_COMMAND)
         try:
@@ -361,9 +235,6 @@ class TestMutatingVerbs:
             service.delete_command(command_id)
 
     def test_update_unknown_command_raises_not_found(self, xnat_client: Any) -> None:
-        """The real server answers 500 (Hibernate exception) for this, not
-        404 -- verifies the existence-check guard converts it cleanly.
-        """
         service = CommandService(xnat_client)
 
         with pytest.raises(ResourceNotFoundError):
@@ -396,11 +267,6 @@ class TestMutatingVerbs:
     def test_set_wrapper_config_then_read_it_back(
         self, xnat_client: Any, probe_command: int
     ) -> None:
-        """Verified live: the server does not persist every field of an
-        input configuration (e.g. ``description``) -- this only asserts on
-        the field that does persist (``user-settable``), rather than
-        asserting a full round-trip the server itself does not provide.
-        """
         service = CommandService(xnat_client)
         wrapper_id, _ = service.resolve_wrapper("xnatctl-it-probe-wrapper")
 
@@ -416,10 +282,6 @@ class TestMutatingVerbs:
     def test_set_wrapper_config_unknown_pair_raises_not_found(
         self, xnat_client: Any, probe_command: int
     ) -> None:
-        """The route itself does NOT validate the wrapper ID (a nonexistent
-        one still answers 201, verified live) -- this is entirely the
-        service's own existence-check guard.
-        """
         service = CommandService(xnat_client)
 
         with pytest.raises(ResourceNotFoundError):
@@ -428,16 +290,6 @@ class TestMutatingVerbs:
     def test_set_wrapper_config_does_not_re_enable_a_disabled_project_wrapper(
         self, xnat_client: Any, probe_command: int, integration_project: str
     ) -> None:
-        """Regression test for a real re-enable bug, reproduced live 2026-08-25.
-
-        The project-scoped enable route is inert until the wrapper is also
-        enabled at site scope -- two earlier probes missed this bug entirely
-        because they skipped that step and saw no visible change. The
-        sequence below is the one that actually reproduces it: enable at
-        site, enable at project, disable at project, then write
-        configuration with no ``enable`` param. Before this fix, the config
-        write silently flipped ``enabled-for-project`` back to ``true``.
-        """
         service = CommandService(xnat_client)
         wrapper_id, _ = service.resolve_wrapper("xnatctl-it-probe-wrapper")
 
@@ -464,18 +316,6 @@ class TestMutatingVerbs:
 
 
 class TestContainerLaunchAndKill:
-    """`container launch`/`kill`: everything reachable without a Docker daemon.
-
-    A container never runs to completion on this stack (see the module
-    docstring), so nothing here asserts on a populated Container object or a
-    successful kill. What IS asserted is real, reproducible server behavior:
-    the launch route's shape, its total lack of server-side validation
-    (verified live -- a real regression risk this project's client-side
-    checks exist specifically to cover), and that both ``kill`` and
-    ``logs``/``get`` answer a clean 404 for an unknown container id rather
-    than something uglier.
-    """
-
     def test_resolve_wrapper_by_id_and_name_agree(
         self, xnat_client: Any, probe_command: int
     ) -> None:
@@ -495,7 +335,6 @@ class TestContainerLaunchAndKill:
     def test_list_containers_site_and_project_scoped(
         self, xnat_client: Any, integration_project: str
     ) -> None:
-        """No container has ever run here -- both scopes stay real, verified empties."""
         service = ContainerService(xnat_client)
 
         assert service.list() == []
@@ -522,11 +361,6 @@ class TestContainerLaunchAndKill:
     def test_preflight_launch_unknown_project_raises_not_found(
         self, xnat_client: Any, probe_command: int
     ) -> None:
-        """The raw launch route answers an unhelpful 500 for a bad project
-        (verified live: "There was an error in the request : null") --
-        preflight_launch exists specifically to turn that into a clean,
-        typed not-found before anything is sent.
-        """
         service = ContainerService(xnat_client)
         _wrapper_id, wrapper = service.resolve_wrapper("xnatctl-it-probe-wrapper")
 
@@ -536,12 +370,6 @@ class TestContainerLaunchAndKill:
     def test_launch_queues_and_echoes_params_back(
         self, xnat_client: Any, probe_command: int, integration_project: str
     ) -> None:
-        """Verified live: the launch route answers 200 with a LaunchReport --
-        "status", "params" (echoed back unchanged), "command-id",
-        "wrapper-id", "workflow-id". No "container-id" key exists on this
-        response (see services/containers.py's module docstring) -- nothing
-        here asserts on one.
-        """
         service = ContainerService(xnat_client)
         wrapper_id, wrapper = service.resolve_wrapper("xnatctl-it-probe-wrapper")
         params = service.build_launch_params(wrapper, {}, experiment="XNAT_E00001")
@@ -557,12 +385,6 @@ class TestContainerLaunchAndKill:
     def test_launch_does_not_validate_wrapper_id_server_side(
         self, xnat_client: Any, integration_project: str
     ) -> None:
-        """Regression guard for the exact gap ContainerService.resolve_wrapper
-        exists to cover client-side: the server queues (200 "success") a
-        launch against a wrapper ID that does not exist at all, rather than
-        rejecting it. If this ever starts raising instead, the client-side
-        resolve-before-launch guard in cli/container.py can be relaxed.
-        """
         service = ContainerService(xnat_client)
 
         result = service.launch(integration_project, 999_999_999, {})
@@ -576,9 +398,6 @@ class TestContainerLaunchAndKill:
             service.kill_container("999999")
 
     def test_kill_route_is_post_only(self, xnat_client: Any) -> None:
-        """GET/PUT on the kill path answer 405 -- confirms POST is a real,
-        registered route rather than a catch-all matched by any method.
-        """
         with pytest.raises(ClientRequestError):
             xnat_client.get("/xapi/containers/999999/kill")
         with pytest.raises(ClientRequestError):

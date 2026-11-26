@@ -1,12 +1,3 @@
-"""Pin the public surface of the ``xnatctl.cli.common`` package.
-
-Other CLI modules (and tests) reach for a handful of exceptions and helpers
-by name from ``xnatctl.cli.common``, whose ``__init__`` re-exports them from
-its submodules (a package, one submodule per concern). This test pins the
-expected set explicitly so a split or refactor cannot drop (or silently add)
-a name without the diff surfacing here.
-"""
-
 from __future__ import annotations
 
 import xnatctl.cli.common as common
@@ -67,7 +58,6 @@ EXPECTED_PUBLIC_SURFACE = {
 
 
 def test_all_matches_expected_public_surface() -> None:
-    """``__all__`` is exactly the pinned set -- no silent drops or additions."""
     actual = set(common.__all__)
     missing = EXPECTED_PUBLIC_SURFACE - actual
     extra = actual - EXPECTED_PUBLIC_SURFACE
@@ -79,7 +69,6 @@ def test_all_matches_expected_public_surface() -> None:
 
 
 def test_all_names_are_actually_importable() -> None:
-    """Every name listed in ``__all__`` must resolve on the module -- ``__all__`` is a promise, not a wish."""
     missing = [name for name in common.__all__ if not hasattr(common, name)]
     assert not missing, (
         f"xnatctl.cli.common.__all__ lists names that are not bound on the module: {missing}."
@@ -87,7 +76,6 @@ def test_all_names_are_actually_importable() -> None:
 
 
 def test_all_excludes_private_helpers() -> None:
-    """No underscore-prefixed helper is advertised as part of the public surface."""
     private = [name for name in common.__all__ if name.startswith("_")]
     assert not private, (
         f"xnatctl.cli.common.__all__ lists private helpers, which should stay "

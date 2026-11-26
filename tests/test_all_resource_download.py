@@ -1,11 +1,3 @@
-"""Tests for all-resource download support.
-
-Covers:
-- session download --resource / --exclude-resource / --session-resources flags
-- scan download multiple --resource support
-- download_scan service layer default (resource=None)
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,31 +11,18 @@ from xnatctl.cli.main import cli
 from xnatctl.models.progress import DownloadSummary
 from xnatctl.services.downloads import DownloadOutcome
 
-# =============================================================================
-# Fixtures
-# =============================================================================
-
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """Create a CLI test runner."""
     return CliRunner()
 
 
-# =============================================================================
-# Session download CLI flag tests
-# =============================================================================
-
-
 class TestSessionDownloadResourceFlags:
-    """Tests for session download --resource / --exclude-resource flags."""
-
     def test_dry_run_with_resource_filter(
         self,
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """Dry run with --resource shows resource types."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
@@ -87,7 +66,6 @@ class TestSessionDownloadResourceFlags:
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """Dry run with --exclude-resource shows excluded types."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
@@ -127,7 +105,6 @@ class TestSessionDownloadResourceFlags:
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """Dry run with --session-resources shows flag status."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
@@ -166,7 +143,6 @@ class TestSessionDownloadResourceFlags:
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """--resource and --exclude-resource cannot be combined."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
@@ -204,7 +180,6 @@ class TestSessionDownloadResourceFlags:
         assert "mutually exclusive" in result.output
 
     def test_help_shows_resource_flags(self, runner: CliRunner) -> None:
-        """Help text includes --resource, --exclude-resource, --session-resources."""
         result = runner.invoke(cli, ["session", "download", "--help"])
 
         assert result.exit_code == 0
@@ -217,7 +192,6 @@ class TestSessionDownloadResourceFlags:
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """--resource with workers=1 still uses parallel path."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
@@ -235,9 +209,6 @@ class TestSessionDownloadResourceFlags:
             authenticated_seams(ctx, mock_client),
             patch(
                 "xnatctl.services.downloads.DownloadService.download_session_fast",
-                # A bare MagicMock's .failed is truthy, and the command now
-                # reads that field to decide its exit code -- a stand-in has to
-                # honour the return contract or it fakes a failed download.
                 return_value=DownloadOutcome(succeeded=1, failed=[], files=3),
             ) as mock_fast,
         ):
@@ -269,7 +240,6 @@ class TestSessionDownloadResourceFlags:
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """--exclude-resource with workers=1 still uses parallel path."""
         ctx, mock_client = make_authenticated_context()
         mock_client.get_json.return_value = {
             "ResultSet": {
@@ -287,9 +257,6 @@ class TestSessionDownloadResourceFlags:
             authenticated_seams(ctx, mock_client),
             patch(
                 "xnatctl.services.downloads.DownloadService.download_session_fast",
-                # A bare MagicMock's .failed is truthy, and the command now
-                # reads that field to decide its exit code -- a stand-in has to
-                # honour the return contract or it fakes a failed download.
                 return_value=DownloadOutcome(succeeded=1, failed=[], files=3),
             ) as mock_fast,
         ):
@@ -317,20 +284,12 @@ class TestSessionDownloadResourceFlags:
         assert call_kwargs["exclude_resources"] == ("SNAPSHOTS",)
 
 
-# =============================================================================
-# Scan download CLI flag tests
-# =============================================================================
-
-
 class TestScanDownloadMultiResource:
-    """Tests for scan download multiple --resource support."""
-
     def test_multiple_resources_rejected(
         self,
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """Multiple -r flags are rejected with a clear error."""
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -360,7 +319,6 @@ class TestScanDownloadMultiResource:
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """Single -r passes resource filter to service."""
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
@@ -406,7 +364,6 @@ class TestScanDownloadMultiResource:
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """No -r flag passes resource=None (all resources)."""
         ctx, mock_client = make_authenticated_context()
         mock_summary = DownloadSummary(
             success=True,
@@ -450,7 +407,6 @@ class TestScanDownloadMultiResource:
         runner: CliRunner,
         tmp_path: Path,
     ) -> None:
-        """Multiple -r flags are rejected even with --dry-run."""
         ctx, mock_client = make_authenticated_context()
 
         with authenticated_seams(ctx, mock_client):
@@ -477,16 +433,8 @@ class TestScanDownloadMultiResource:
         assert "Only one --resource" in result.output
 
 
-# =============================================================================
-# DownloadService.download_scan tests
-# =============================================================================
-
-
 class TestDownloadScanDefault:
-    """Tests for download_scan service method with resource=None."""
-
     def test_resource_none_delegates_to_download_scans(self) -> None:
-        """download_scan with resource=None delegates to download_scans."""
         from xnatctl.services.downloads import DownloadService
 
         mock_client = MagicMock()
@@ -523,7 +471,6 @@ class TestDownloadScanDefault:
         assert result.success is True
 
     def test_resource_string_delegates_to_download_resource(self) -> None:
-        """download_scan with resource string delegates to download_resource."""
         from xnatctl.services.downloads import DownloadService
 
         mock_client = MagicMock()

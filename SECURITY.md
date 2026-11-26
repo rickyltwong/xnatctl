@@ -91,7 +91,7 @@ history, and `AuditLogger` (`core/logging.py`) records them for the same
 reason -- an audit trail that only starts once the operator remembers to turn
 it on is useless.
 
-**DICOM tag *values* read out of files are different and are never logged.**
+**Outside an exception's text and the dependency logs listed below, DICOM tag *values* read out of files never reach a log.**
 `PatientName`, `PatientID`, `PatientBirthDate`, `PatientSex`,
 `AccessionNumber`, `InstitutionName` and the rest of the identifying tag set
 are parsed in exactly one place in the codebase: `cli/dicom_cmd.py` (`dicom
@@ -108,8 +108,28 @@ name assembled at runtime (e.g. string concatenation), which is a real,
 documented gap in the test's own module docstring, not a claim of
 completeness. `services/upload/dicom_store.py` (the C-STORE transport) does
 parse DICOM files with `pydicom`, but only to populate missing SOP UIDs
-before sending -- its batch logs record file paths and DICOM status codes,
-never a tag value.
+before sending -- its batch logs record file paths, DICOM status codes and,
+when a send raises, the exception's text, which names the dataset's SOP Class
+UID when the peer accepted no presentation context for it.
+
+Exceptions are where a value can still get through: pydicom builds some
+exception messages from an element's value. A command that reports such a
+failure shows its text, `dicom validate` in its report on stdout and `dicom
+anonymize` on stderr. When `dicom validate`, `dicom anonymize` or a C-STORE
+send fails on one file and goes on to the next, the `--log-file` record of
+that failure keeps the traceback and the exception's type but not its text
+(`withhold_details` in `core/logging.py`). An exception the command does not
+catch is different: it ends the command, and its text is printed on stderr and
+kept in the diagnostics file's `Command failed` record, as `dicom inspect`
+failing to convert a malformed value shows. The frames are the live ones: a handler that captures frame
+locals, which xnatctl's own formatters do not, sees the values in them, as it
+would in any traceback. The CLI never shows pydicom's own log lines, whose
+text can quote an element's value. Two other channels still reach stderr:
+pydicom's Python warnings, which can quote one too, and pynetdicom's own log.
+That log names the SOP Class of a dataset the peer accepted no presentation
+context for, prints the traceback of a dataset it cannot encode for the
+accepted transfer syntax (whose text can quote the element's value), and,
+under `session upload-dicom --verbose`, names each instance's SOP Instance UID.
 
 Two things worth knowing about the boundaries of this:
 
@@ -141,11 +161,15 @@ Two things worth knowing about the boundaries of this:
 (`core/redact.py`, `core/logging.py`) scrub secret-shaped URL query
 parameters (`password`, `token`, `api_key`, and the rest of
 `SECRET_QUERY_KEYS`) and the password half of a `user:pass@host` authority,
-applied to every log record's formatted message. Two honest limits: it does
-not cover exception tracebacks (the CLI's own traceback path in
-`cli/common.py` redacts separately; a `Formatter`-level fix is future log-file
-work), and it does not redact DICOM/patient content -- because, per the audit
-above, none is ever placed in a log message to begin with.
+applied to every log record's formatted message, along with `JSESSIONID`
+session cookies. The `--log-file` diagnostics formatter applies the same
+redaction to every field it writes, exception tracebacks included. Two honest
+limits: a traceback printed to stderr is not scrubbed by the filter (the
+CLI's own `-v` traceback in `cli/common/errors.py` redacts URL secrets
+separately, but not session cookies), and it does not redact DICOM/patient
+content: xnatctl's own log calls place none in a message (see above), but the
+`Command failed` record of an exception a `dicom` command does not catch keeps
+that exception's text.
 
 ## Session Cache on Windows
 

@@ -1,10 +1,3 @@
-"""Service-seam tests for ExamUploadService.
-
-These drive the orchestration directly -- no CliRunner -- mocking the upload and
-resource services it delegates to. The JSON-shape assertions pin the ``-o json``
-contract the CLI serializes so scripting consumers do not break.
-"""
-
 from __future__ import annotations
 
 import json
@@ -26,7 +19,6 @@ from xnatctl.services.exam_upload import (
 def _make_exam(
     root: Path, *, dicom: bool = True, resource_dir: bool = True, misc: bool = True
 ) -> Path:
-    """Build an exam root tree that classify_exam_root will split as intended."""
     root.mkdir(parents=True, exist_ok=True)
     if dicom:
         scan = root / "DICOM" / "scan"
@@ -46,8 +38,6 @@ def _ok_summary(n: int) -> UploadSummary:
 
 
 class _UploadStub:
-    """Stub UploadService recording the gradual-files call."""
-
     last_files: tuple[Path, ...] | None = None
 
     def __init__(self, client: Any) -> None:
@@ -59,8 +49,6 @@ class _UploadStub:
 
 
 class _ResourceSpy:
-    """Spy ResourceService recording attachment calls."""
-
     calls: list[tuple[str, dict[str, Any]]] = []
 
     def __init__(self, client: Any) -> None:
@@ -88,7 +76,6 @@ class _ResourceSpy:
 
 @pytest.fixture(autouse=True)
 def _seams(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Route the service's delegated services to the stubs and neutralize sleep."""
     _UploadStub.last_files = None
     _ResourceSpy.calls = []
     monkeypatch.setattr("xnatctl.services.upload.UploadService", _UploadStub)
@@ -142,7 +129,6 @@ def test_happy_path_uploads_dicom_and_attaches_resources(tmp_path: Path, monkeyp
     assert result.attached_resource_dirs == 1
     assert result.attached_misc_files == 1
     assert _UploadStub.last_files == plan.classification.dicom_files
-    # Physio dir (create + upload_directory) then MISC (create + upload_file extract).
     assert _ResourceSpy.calls == [
         ("create", {"label": "Physio", "session": "EXPT_1"}),
         ("upload_directory", {"label": "Physio"}),
@@ -180,7 +166,6 @@ def test_a_failed_dicom_upload_aggregates_the_error(tmp_path: Path, monkeypatch)
     result = _upload(service, plan)
 
     assert result.outcome is ExamOutcome.DICOM_FAILED
-    # First three errors joined; counts reported.
     assert result.error_message == "DICOM upload failed (1/3 succeeded): boom-a; boom-b; boom-c"
 
 
@@ -194,11 +179,10 @@ def test_attach_only_skips_dicom_upload(tmp_path: Path, monkeypatch) -> None:
     assert result.outcome is ExamOutcome.COMPLETE
     assert result.attach_only is True
     assert result.dicom_uploaded == 0
-    assert _UploadStub.last_files is None  # no upload attempted
+    assert _UploadStub.last_files is None
 
 
 def test_attach_only_with_no_dicom_is_not_an_error(tmp_path: Path, monkeypatch) -> None:
-    """The no-DICOM guard is nested under the upload branch: attach-only skips it."""
     service = _service()
     plan = service.plan(_make_exam(tmp_path / "exam", dicom=False), "MISC")
     monkeypatch.setattr(service, "_resolve_experiment_id", lambda project, session: "EXPT_1")
@@ -217,7 +201,7 @@ def test_skip_resources_returns_no_resources(tmp_path: Path) -> None:
     result = _upload(service, plan, skip_resources=True)
 
     assert result.outcome is ExamOutcome.NO_RESOURCES
-    assert _ResourceSpy.calls == []  # nothing attached
+    assert _ResourceSpy.calls == []
 
 
 def test_nothing_attachable_returns_no_resources(tmp_path: Path) -> None:
@@ -227,8 +211,6 @@ def test_nothing_attachable_returns_no_resources(tmp_path: Path) -> None:
     result = _upload(service, plan)
 
     assert result.outcome is ExamOutcome.NO_RESOURCES
-    # Unlike --skip-resources, this reports "skipped": False -- there was
-    # nothing to skip, and consumers distinguish the two.
     assert result.to_json_dict()["resources"] == {
         "skipped": False,
         "resource_dirs": 0,
@@ -242,19 +224,17 @@ def test_unarchived_session_degrades_to_a_pending_result(tmp_path: Path, monkeyp
     plan = service.plan(_make_exam(tmp_path / "exam"), "MISC")
     monkeypatch.setattr(service, "_resolve_experiment_id", lambda project, session: None)
 
-    # wait=0 skips the poll loop and goes straight to the not-archived branch.
     result = _upload(service, plan, wait=0)
 
     assert result.outcome is ExamOutcome.NOT_ARCHIVED
-    assert result.pending == 2  # one resource dir + one misc file
+    assert result.pending == 2
     assert result.rerun == (
         f"xnatctl session upload-exam '{plan.exam_root}' -P P -S S -E E --attach-only"
     )
-    assert _ResourceSpy.calls == []  # nothing attached
+    assert _ResourceSpy.calls == []
 
 
 def test_wait_loop_sleeps_and_rechecks_until_archived(tmp_path: Path, monkeypatch) -> None:
-    """The poll loop sleeps min(interval, remaining) and re-resolves after each sleep."""
     service = _service()
     plan = service.plan(_make_exam(tmp_path / "exam"), "MISC")
 
@@ -267,8 +247,6 @@ def test_wait_loop_sleeps_and_rechecks_until_archived(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(service, "_resolve_experiment_id", fake_resolve)
 
-    # deadline set at t=0 with wait=30; loop checks at t=0 (remaining 30) and
-    # t=10 (remaining 20), finding the experiment on the second re-resolve.
     ticks = iter([0.0, 0.0, 10.0])
     monkeypatch.setattr("xnatctl.services.exam_upload.time.monotonic", lambda: next(ticks))
     sleeps: list[float] = []
@@ -277,8 +255,8 @@ def test_wait_loop_sleeps_and_rechecks_until_archived(tmp_path: Path, monkeypatc
     result = _upload(service, plan, wait=30, wait_interval=5)
 
     assert result.outcome is ExamOutcome.COMPLETE
-    assert sleeps == [5, 5]  # min(interval, remaining) both times
-    assert len(resolve_calls) == 3  # initial + one after each sleep
+    assert sleeps == [5, 5]
+    assert len(resolve_calls) == 3
 
 
 def test_wait_loop_gives_up_at_the_deadline(tmp_path: Path, monkeypatch) -> None:
@@ -286,7 +264,6 @@ def test_wait_loop_gives_up_at_the_deadline(tmp_path: Path, monkeypatch) -> None
     plan = service.plan(_make_exam(tmp_path / "exam"), "MISC")
     monkeypatch.setattr(service, "_resolve_experiment_id", lambda project, session: None)
 
-    # monotonic: first call sets the deadline at 0, the loop check jumps past it.
     ticks = iter([0.0, 9999.0])
     monkeypatch.setattr("xnatctl.services.exam_upload.time.monotonic", lambda: next(ticks))
 
@@ -295,15 +272,7 @@ def test_wait_loop_gives_up_at_the_deadline(tmp_path: Path, monkeypatch) -> None
     assert result.outcome is ExamOutcome.NOT_ARCHIVED
 
 
-# ---------------------------------------------------------------------------
-# JSON-shape contract (the -o json payload the CLI serializes)
-# ---------------------------------------------------------------------------
-
-
 def _assert_json_payload(result: ExamUploadResult, expected: dict[str, Any]) -> None:
-    """Pin the payload including KEY ORDER: json.dumps preserves insertion
-    order, so the serialized wire bytes only match if the order does too.
-    """
     assert result.to_json_dict() == expected
     assert json.dumps(result.to_json_dict(), indent=2) == json.dumps(expected, indent=2)
 

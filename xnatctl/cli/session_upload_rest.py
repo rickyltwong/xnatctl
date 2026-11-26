@@ -28,7 +28,6 @@ from xnatctl.cli.common import (
     resolve_overwrite_from_context,
     resolve_workers_from_context,
 )
-from xnatctl.cli.session import session
 from xnatctl.core.config import get_credentials
 from xnatctl.core.output import (
     OutputFormat,
@@ -42,22 +41,17 @@ from xnatctl.core.validation import validate_project_id, validate_session_id, va
 from xnatctl.models.progress import TransferItemResult, TransferSummary, transfer_status
 
 if TYPE_CHECKING:
-    # Only for the progress_callback(p: UploadProgress) annotations below --
-    # never constructed here -- so it stays under TYPE_CHECKING rather than
-    # a real import (which `from __future__ import annotations` makes
-    # unnecessary at runtime anyway).
     from xnatctl.models.progress import UploadProgress
 
 
 def _echo_error_overflow(errors: list[str], *, limit: int = 5) -> None:
-    """Echo the first *limit* errors to stderr, then a '... and N more' line."""
     for err in errors[:limit]:
         click.echo(f"  - {err}", err=True)
     if len(errors) > limit:
         click.echo(f"  ... and {len(errors) - limit} more errors", err=True)
 
 
-@session.command("upload")
+@click.command("upload")
 @click.argument("input_path", type=click.Path(exists=True))
 @click.option("--project", "-P", help="Project ID (defaults to profile default_project)")
 @click.option("--subject", "-S", required=True, help="Subject ID")
@@ -156,9 +150,6 @@ def session_upload(
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --workers 16
         xnatctl session upload ./dicoms -P MYPROJ -S SUB001 -E SESS001 --mode gradual -w 40
     """
-    # A password value on argv is refused by the --password callback;
-    # stdin is the only explicit per-command source. Downstream fallbacks
-    # (XNAT_PASS, prompt) live in _upload_directory_parallel.
     password = read_password_stdin("--password-stdin") if password_stdin else None
 
     project = require_project_from_context(ctx, project)
@@ -167,7 +158,6 @@ def session_upload(
     overwrite = resolve_overwrite_from_context(ctx, overwrite)
     direct_archive = resolve_direct_archive_from_context(ctx, direct_archive)
 
-    # Map mode to internal gradual/archive_format
     gradual = mode == "gradual"
     archive_format = mode if mode in ("tar", "zip") else "tar"
 
@@ -178,7 +168,6 @@ def session_upload(
 
     source_path = Path(input_path)
 
-    # Dry run handling
     if dry_run:
         if ctx.output_format == OutputFormat.JSON:
             plan: dict[str, object] = {
@@ -208,7 +197,6 @@ def session_upload(
             click.echo(f"  Direct archive: {direct_archive}", err=True)
         return
 
-    # Gradual per-file upload
     if gradual:
         _upload_gradual_dicom(
             ctx=ctx,
@@ -221,9 +209,7 @@ def session_upload(
         )
         return
 
-    # REST transport
     if source_path.is_file():
-        # Single archive upload
         _upload_single_archive(
             ctx=ctx,
             archive_path=source_path,
@@ -236,7 +222,6 @@ def session_upload(
             zip_to_tar=zip_to_tar,
         )
     elif source_path.is_dir():
-        # Directory upload with parallel batching
         _upload_directory_parallel(
             ctx=ctx,
             source_dir=source_path,
@@ -263,10 +248,6 @@ def _upload_gradual_dicom(
     workers: int = 4,
     direct_archive: bool = True,
 ) -> None:
-    """Upload DICOM files using gradual-DICOM handler (parallel per-file)."""
-    # Deferred: tests monkeypatch xnatctl.services.upload.UploadService to
-    # intercept the lookup; a module-scope import would bind the real class
-    # before the patch runs (see tests/test_session_upload.py).
     from xnatctl.services.upload import UploadService
 
     gradual_start = time.time()
@@ -292,11 +273,7 @@ def _upload_gradual_dicom(
             direct_archive=direct_archive,
             progress_callback=progress_callback if not ctx.quiet else None,
         )
-    except Exception as e:  # noqa: BLE001  # stays broad on purpose -- corrupt-ZIP/permission errors still produce a JSON summary before propagating (see comment above)
-        # Not narrowed to ValueError/FileNotFoundError (the two documented
-        # raises): a corrupt ZIP or an unreadable source directory surfaces
-        # as BadZipFile/PermissionError, and those must still produce a
-        # JSON summary in JSON mode rather than exit silently on stdout.
+    except Exception as e:
         if ctx.output_format == OutputFormat.JSON:
             TransferSummary(
                 operation="upload",
@@ -310,13 +287,8 @@ def _upload_gradual_dicom(
                 items=[TransferItemResult(id="gradual-dicom", status="failed", error=str(e))],
             ).emit()
         if isinstance(e, (ValueError, FileNotFoundError)):
-            # Byte-identical to this function's pre-existing human-mode
-            # behavior for its two documented raises: a plain one-line
-            # error, not @handle_errors' "Unexpected error: ..." wrapper.
             print_error(str(e))
             raise SystemExit(1) from e
-        # Anything else (BadZipFile, PermissionError, ...) re-raises
-        # unchanged so @handle_errors classifies its exit code normally.
         raise
 
     if ctx.output_format == OutputFormat.JSON:
@@ -350,8 +322,6 @@ def _upload_gradual_dicom(
             )
             _echo_error_overflow(summary.errors)
 
-    # Exit code must not depend on the output format: a failed upload has to
-    # return nonzero under -o json too, or automation reports success.
     if not summary.success:
         raise SystemExit(1)
 
@@ -367,16 +337,11 @@ def _upload_single_archive(
     ignore_unparsable: bool,
     zip_to_tar: bool,
 ) -> None:
-    """Upload a single archive file."""
-    # Deferred: tests patch xnatctl.services.upload.upload_archive_or_raise
-    # to intercept the lookup; a module-scope import would bind the real
-    # function before the patch runs (see tests/test_transfer_summary_json.py).
     from xnatctl.services.upload import upload_archive_or_raise
 
     upload_start = time.time()
     client = ctx.get_client()
 
-    # Only show progress for table output and not quiet
     show_progress = ctx.output_format == OutputFormat.TABLE and not ctx.quiet
 
     try:
@@ -409,7 +374,7 @@ def _upload_single_archive(
                 ignore_unparsable,
                 zip_to_tar,
             )
-    except Exception as exc:  # noqa: BLE001  # emits JSON failure summary before re-raising unchanged
+    except Exception as exc:
         if ctx.output_format == OutputFormat.JSON:
             TransferSummary(
                 operation="upload",
@@ -455,9 +420,6 @@ def _upload_directory_parallel(
     direct_archive: bool,
     ignore_unparsable: bool,
 ) -> None:
-    """Upload a directory of DICOM files using parallel batching."""
-    # Deferred: see the comment on the UploadService import in
-    # _upload_gradual_dicom above (test-monkeypatch seam).
     from xnatctl.services.upload import UploadService
 
     client = ctx.get_client()
@@ -499,14 +461,11 @@ def _upload_directory_parallel(
                 BarColumn(),
                 TextColumn("{task.completed}/{task.total}"),
                 transient=True,
-                # A bare Progress() builds its own Console, blind to the
-                # --no-color flag and CLICOLOR=0 state on the shared consoles.
                 console=err_console,
             ) as progress:
                 task_id = progress.add_task("Preparing...", total=None)
 
                 def progress_callback(p: UploadProgress) -> None:
-                    """Update the Rich progress UI for parallel uploads."""
                     if p.total > 0:
                         progress.update(task_id, total=p.total, completed=p.current)
                     progress.update(task_id, description=f"[{p.phase.value}] {p.message}")
@@ -541,23 +500,16 @@ def _upload_directory_parallel(
                 direct_archive=direct_archive,
                 ignore_unparsable=ignore_unparsable,
             )
-    except Exception as exc:  # noqa: BLE001  # emits JSON failure summary before re-raising unchanged
+    except Exception as exc:
         _emit_failed_summary(exc)
         raise
 
-    # Output results. `errors` isn't keyed to batch index, so this is one
-    # aggregate item for the whole directory upload -- not one fabricated
-    # item per batch, which would misattribute which batch each error
-    # belongs to.
     if ctx.output_format == OutputFormat.JSON:
         TransferSummary(
             operation="upload",
             session_id=session,
             project=project,
             source=str(source_dir),
-            # `total_files`/`total_size_mb` count everything the run
-            # attempted across all batches, not only what succeeded -- only
-            # trustworthy as "transferred" when every batch did.
             files=summary.total_files if summary.success else None,
             bytes=round(summary.total_size_mb * 1024 * 1024) if summary.success else None,
             duration_seconds=round(summary.duration, 3),
@@ -587,6 +539,5 @@ def _upload_directory_parallel(
             )
             _echo_error_overflow(summary.errors)
 
-    # Format-independent failure exit: -o json must also return nonzero.
     if not summary.success:
         raise SystemExit(1)

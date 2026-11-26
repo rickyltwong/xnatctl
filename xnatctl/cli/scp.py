@@ -117,20 +117,12 @@ def scp_create(
     """
     ae_title = validate_ae_title(ae_title)
     validated_port = validate_port(port)
-    assert (
-        validated_port is not None
-    )  # port is a required option; allow_none=False never returns None
+    assert validated_port is not None
     port = validated_port
 
     service = DicomScpService(ctx.get_client())
-    # Same lookup resolve_identifier() would run inside create_scp() -- a
-    # dry run must reject an unknown/ambiguous --identifier exactly as
-    # execution would, not silently accept it and skip the check.
     resolved_identifier = service.resolve_identifier(identifier)
 
-    # The server accepts a duplicate port silently (see docstring) -- check
-    # for a collision ourselves so a dry run catches it too, not just a real
-    # create.
     conflict = next((r for r in service.list_scps() if r.get("port") == port), None)
     if conflict is not None:
         raise ResourceExistsError(
@@ -169,9 +161,6 @@ def scp_delete(ctx: Context, scp_id: int, dry_run: bool) -> None:
     service = DicomScpService(ctx.get_client())
 
     if dry_run:
-        # Execution's own DELETE already 404s cleanly on an unknown id (see
-        # DicomScpService.delete_scp), but dry-run must not mutate to find
-        # that out -- this runs the identical existence check as a plain read.
         service.get_scp(scp_id)
         click.echo(f"[DRY-RUN] Would delete DICOM SCP receiver {scp_id}", err=True)
         return
@@ -197,8 +186,6 @@ def scp_enable(ctx: Context, scp_id: int, dry_run: bool) -> None:
     service = DicomScpService(ctx.get_client())
 
     if dry_run:
-        # Same preflight set_enabled() runs before its PUT (a nonexistent id
-        # answers a raw 500 there, not a clean 404 -- see DicomScpService).
         service.get_scp(scp_id)
         click.echo(f"[DRY-RUN] Would enable DICOM SCP receiver {scp_id}", err=True)
         return

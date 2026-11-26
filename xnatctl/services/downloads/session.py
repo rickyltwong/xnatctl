@@ -17,6 +17,7 @@ from typing import NamedTuple
 
 from xnatctl.core.cancellation import cancellable_pool
 from xnatctl.core.exceptions import ResourceNotFoundError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.validation import (
     check_no_casefold_collision,
     quote_path_segment,
@@ -57,10 +58,33 @@ class DownloadOutcome(NamedTuple):
     skipped_unsafe_entries: int = 0
 
 
-class _SessionDownloadMixin(BaseService):
-    """Mixin providing session-scoped download methods."""
+def _download_tasks(
+    scan_ids: list[str], include_resources: tuple[str, ...]
+) -> list[tuple[str, str | None]]:
+    download_tasks: list[tuple[str, str | None]] = []
+    if include_resources:
+        for sid in scan_ids:
+            for res in include_resources:
+                download_tasks.append((sid, res))
+    else:
+        for sid in scan_ids:
+            download_tasks.append((sid, None))
+    return download_tasks
 
-    def download_session_fast(  # noqa: C901  # pre-existing; see pyproject
+
+def _scan_status(resource_label: str | None, extracted: int, renamed: int) -> str:
+    parts = []
+    if resource_label:
+        parts.append(resource_label)
+    if extracted == 0:
+        parts.append("empty")
+    if renamed:
+        parts.append(f"renamed {renamed} duplicates")
+    return ", ".join(parts) if parts else ""
+
+
+class _SessionDownloadMixin(BaseService):
+    def download_session_fast(
         self,
         *,
         session_project: str,
@@ -111,31 +135,15 @@ class _SessionDownloadMixin(BaseService):
         results = SessionService(self.client).scan_rows(resolved_session_id)
         scan_ids = [r["ID"] for r in results if r.get("ID")]
 
-        # Checked once, sequentially, before any download starts (and before
-        # the parallel pool below, which is why this doesn't need a lock) --
-        # a case collision between two scan IDs is a structural problem with
-        # the whole batch, not a single scan's failure.
         seen_scan_dirs: set[str] = set()
         for sid in scan_ids:
             check_no_casefold_collision(sid, seen_scan_dirs, "scan_id")
 
-        # Created once here, single-threaded, before any worker starts --
-        # not left for each worker's own `_extract_scan_zip` to create on
-        # first use. Every scan's `scan_base` (`session_dir/scans/{id}`)
-        # shares this one parent; on Windows, `Path.resolve()` only
-        # canonicalizes (corrects case, expands any 8.3 short name, follows
-        # a substituted drive/junction) the deepest ALREADY-EXISTING
-        # ancestor of a path, appending anything below that literally
-        # (`ntpath._getfinalpathname_nonstrict`). If this call raced two
-        # workers both creating `scans/` for the first time, one worker's
-        # `verify_directory_contained_in` below could resolve `scan_base`
-        # against a `scans/` that only *partially* existed at that instant,
-        # then disagree with `session_dir`'s own (fully resolved) form and
-        # fail containment on a perfectly safe directory -- exactly the
-        # class of bug `_extract_scan_zip`'s own early `scan_base.mkdir()`
-        # fixes for ITS internal resolve, but that fix runs too late to help
-        # this earlier check. Creating the shared parent up front, before
-        # any thread touches it, removes the race outright.
+        # Created once here, before any worker starts, not left to each worker.
+        # On Windows, Path.resolve() canonicalizes only the deepest existing
+        # ancestor, so two workers racing to create scans/ could resolve the
+        # same scan_base differently and fail the containment check below on a
+        # safe directory.
         (session_dir / "scans").mkdir(parents=True, exist_ok=True)
 
         if on_start is not None:
@@ -145,22 +153,12 @@ class _SessionDownloadMixin(BaseService):
             return DownloadOutcome(succeeded=0, failed=[], files=0)
 
         exclude_set = frozenset(exclude_resources)
-
-        # Two-tier task list: (scan_id, resource_label_or_None)
-        download_tasks: list[tuple[str, str | None]] = []
-        if include_resources:
-            for sid in scan_ids:
-                for res in include_resources:
-                    download_tasks.append((sid, res))
-        else:
-            for sid in scan_ids:
-                download_tasks.append((sid, None))
+        download_tasks = _download_tasks(scan_ids, include_resources)
 
         def download_and_extract(
             scan_id: str,
             resource_label: str | None,
         ) -> ScanResult:
-            """Download a scan ZIP and extract into standard layout."""
             base = (
                 f"/data/projects/{quote_path_segment(session_project)}"
                 f"/subjects/{quote_path_segment(subject)}"
@@ -172,30 +170,15 @@ class _SessionDownloadMixin(BaseService):
             else:
                 scan_url = f"{base}/files"
 
-            # One shared XNATClient across worker threads: httpx.Client is
-            # thread-safe and XNATClient.stream sends the session cookie per call
-            # instead of mutating shared state, so the retry/auth/typed-error path
-            # is reused here without a per-thread raw client.
             try:
                 with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
                     tmp_path = Path(tmp.name)
 
                 try:
                     stream_to_file(self.client, scan_url, tmp_path, params={"format": "zip"})
-                    # `scan_id` is server-reported (scan_rows), not caller
-                    # input, but a misconfigured/malicious server could still
-                    # hand back something traversal-shaped -- a hostile ID
-                    # fails this one scan (caught below) rather than being
-                    # silently aliased onto a generic local folder.
                     scan_base = (
                         session_dir / "scans" / validate_local_path_component(scan_id, "scan_id")
                     )
-                    # A pre-existing symlink at exactly this path (a prior
-                    # run, a race, deliberate planting) would resolve
-                    # OUTSIDE session_dir -- _extract_scan_zip's own
-                    # containment check then anchors to that escaped
-                    # location and passes trivially. Verified one level up,
-                    # against the true caller-supplied root.
                     verify_directory_contained_in(scan_base, session_dir, "scan directory")
                     extracted, renamed, skipped = _extract_scan_zip(
                         tmp_path,
@@ -212,23 +195,15 @@ class _SessionDownloadMixin(BaseService):
                 finally:
                     tmp_path.unlink(missing_ok=True)
 
-                parts = []
-                if resource_label:
-                    parts.append(resource_label)
-                if extracted == 0:
-                    parts.append("empty")
-                if renamed:
-                    parts.append(f"renamed {renamed} duplicates")
-                status = ", ".join(parts) if parts else ""
+                status = _scan_status(resource_label, extracted, renamed)
                 return ScanResult(scan_id, True, extracted, status, len(skipped))
             except ResourceNotFoundError:
-                # A scan with no files of the requested type is normal under -r, so
-                # this is not an error -- but it downloaded nothing, and the zero is
-                # what stops an all-404 session (XNAT answers a mis-routed URL with
-                # a silent 404/empty 200) reading as a complete download.
                 label_desc = f" ({resource_label})" if resource_label else ""
                 return ScanResult(scan_id, True, 0, f"no files{label_desc}")
-            except Exception as e:  # noqa: BLE001 -- per-scan worker-pool isolation
+            except Exception as e:
+                logger.exception(
+                    "scan download failed for %s", scan_id, extra={FILE_ONLY_ATTR: True}
+                )
                 return ScanResult(scan_id, False, 0, str(e))
 
         succeeded: list[str] = []
@@ -352,13 +327,6 @@ class _SessionDownloadMixin(BaseService):
         seen_resource_names: set[str] = set()
         for res in sess_resources:
             label = res.get("label", "resource")
-            # `label` is server-reported, not caller input, but a resource
-            # label is still attacker-influenceable in principle (whoever
-            # created it on the server) -- a hostile label fails this
-            # resource's download (see the method's Raises) rather than being
-            # silently aliased onto a generic local filename, while the raw
-            # label is still what the URL and the returned tuple use (the
-            # verification manifest keys on the literal label).
             safe_name = validate_local_path_component(label, "resource label")
             check_no_casefold_collision(safe_name, seen_resource_names, "resource label")
             zip_path = session_dir / f"resources_{safe_name}.zip"

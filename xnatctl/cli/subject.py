@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import click
 
@@ -28,6 +30,7 @@ from xnatctl.core.exceptions import (
     ResourceNotFoundError,
     XNATCtlError,
 )
+from xnatctl.core.logging import FILE_ONLY_ATTR
 from xnatctl.core.output import print_error, print_output, print_success
 from xnatctl.core.validation import (
     validate_project_id,
@@ -39,11 +42,11 @@ from xnatctl.models.hierarchy import SubjectRef
 from xnatctl.services.hierarchy import HierarchyService
 from xnatctl.services.subjects import SubjectService
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class _RenameRule:
-    """A single subject rename rule loaded from a patterns JSON file."""
-
     project: str
     match: str
     to: str
@@ -51,20 +54,12 @@ class _RenameRule:
 
 
 def _targets_field(expr: str | None, field: str) -> bool:
-    """Whether a ``--filter``/``--sort-by`` expression names *field*.
-
-    A lightweight pre-check (field name only, no validation of the rest of
-    the expression) used to decide filter/enrichment ORDER in ``subject
-    list`` before the real, validating :func:`apply_filter`/
-    :func:`apply_sort_limit` run.
-    """
     if not expr:
         return False
     return expr.split(":", 1)[0].strip() == field
 
 
 def _apply_template(*, template: str, project: str, groups: tuple[str | None, ...]) -> str:
-    """Apply {project} and {1}/{2}/... substitutions to a template string."""
     target = template.replace("{project}", project)
     for i, g in enumerate(groups, start=1):
         target = target.replace(f"{{{i}}}", g or "")
@@ -72,13 +67,6 @@ def _apply_template(*, template: str, project: str, groups: tuple[str | None, ..
 
 
 def _validate_rename_target(target: str) -> str | None:
-    """Reject a rename target that is not a legal XNAT label.
-
-    Every rename target here is derived text -- a regex substitution, a
-    template expansion, or a raw value from a user-supplied mapping/patterns
-    JSON file -- none of it XNAT has validated yet. Returns an error message
-    if invalid, or ``None`` if the target is safe to use.
-    """
     try:
         validate_xnat_label(target, "subject label")
     except InvalidIdentifierError as e:
@@ -87,7 +75,6 @@ def _validate_rename_target(target: str) -> str | None:
 
 
 def _projects_in_patterns_file(path: str) -> set[str]:
-    """Extract the unique project IDs referenced by a patterns JSON file."""
     with open(path) as f:
         data = json.load(f)
 
@@ -111,11 +98,6 @@ def _projects_in_patterns_file(path: str) -> set[str]:
 def _load_patterns_file(
     *, path: str, project: str
 ) -> list[tuple[re.Pattern[str], str, str | None]]:
-    """Load and compile rename rules for a single project.
-
-    Returns:
-        List of (compiled_regex, to_template, description) tuples.
-    """
     with open(path) as f:
         data = json.load(f)
 
@@ -144,6 +126,196 @@ def _load_patterns_file(
         raise ValueError(f"no patterns found for project '{project}'")
 
     return compiled
+
+
+def _rename_project(ctx: Context, project: str | None, patterns_file: str | None) -> str:
+    if not project:
+        project = default_project_from_context(ctx)
+        if not project and patterns_file:
+            try:
+                projects = _projects_in_patterns_file(patterns_file)
+            except (OSError, json.JSONDecodeError) as e:
+                raise click.ClickException(f"Failed to read patterns file: {e}") from e
+
+            if len(projects) == 1:
+                project = next(iter(projects))
+            elif len(projects) > 1:
+                profile_name = ctx.profile_name or (
+                    ctx.config.default_profile if ctx.config else "default"
+                )
+                raise click.ClickException(
+                    "Project required. Pass --project/-P or set default_project in profile "
+                    f"'{profile_name}'. Patterns file contains multiple projects: {', '.join(sorted(projects))}"
+                )
+        project = require_project_from_context(ctx, project)
+
+    return validate_project_id(require_project_from_context(ctx, project))
+
+
+@dataclass
+class _RenameRun:
+    """One ``subject rename`` run; ``current_labels`` follows the project as subjects change."""
+
+    service: SubjectService
+    project: str
+    dry_run: bool
+    quiet: bool
+    current_labels: set[str]
+    renamed: dict[str, str] = field(default_factory=dict)
+    merged: dict[str, str] = field(default_factory=dict)
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+
+    def apply(self, label: str, target: str, description: str | None = None) -> None:
+        invalid_reason = _validate_rename_target(target)
+        if invalid_reason is not None:
+            self.skipped.append((label, f"invalid target label: {invalid_reason}"))
+            return
+
+        target_exists = target in self.current_labels
+        if self.dry_run:
+            if target_exists:
+                self.merged[label] = target
+            else:
+                self.renamed[label] = target
+            if description and not self.quiet:
+                click.echo(f"  Rule: {description}")
+            return
+
+        if target_exists:
+            self._merge(label, target, description)
+        else:
+            self._rename(label, target, description)
+
+    def _merge(self, label: str, target: str, description: str | None) -> None:
+        try:
+            result = self.service.merge_subjects(
+                project=self.project,
+                source_label=label,
+                target_label=target,
+                dry_run=False,
+            )
+            self.merged[label] = target
+            self.current_labels.discard(label)
+            if not self.quiet:
+                desc = f" ({description})" if description else ""
+                click.echo(
+                    f"  Merged {label} -> {target} ({result['experiments_moved']} experiments){desc}"
+                )
+        except Exception as e:
+            logger.exception(
+                "Merging subject %s into %s failed", label, target, extra={FILE_ONLY_ATTR: True}
+            )
+            self.skipped.append((label, f"merge failed: {e}"))
+
+    def _rename(self, label: str, target: str, description: str | None) -> None:
+        resp = self.service.rename_raw(self.project, label, target)
+        if resp.status_code == 200:
+            self.renamed[label] = target
+            self.current_labels.discard(label)
+            self.current_labels.add(target)
+            if description and not self.quiet:
+                click.echo(f"  Renamed {label} -> {target} ({description})")
+        else:
+            self.skipped.append((label, f"failed: {resp.status_code}"))
+
+
+def _rename_by_patterns_file(
+    run: _RenameRun, subjects: list[dict[str, Any]], patterns_file: str
+) -> None:
+    try:
+        rules = _load_patterns_file(path=patterns_file, project=run.project)
+    except (OSError, json.JSONDecodeError, ValueError, ConfigurationError) as e:
+        print_error(f"Failed to load patterns file: {e}")
+        raise SystemExit(1) from e
+
+    for subj in subjects:
+        label = subj.get("label")
+        if not isinstance(label, str) or not label:
+            continue
+        if label not in run.current_labels:
+            continue
+
+        match = None
+        matched_to = None
+        matched_desc = None
+        for regex, to_tmpl, desc in rules:
+            m = regex.fullmatch(label)
+            if m:
+                match = m
+                matched_to = to_tmpl
+                matched_desc = desc
+                break
+
+        if not match or not matched_to:
+            continue
+
+        target = _apply_template(template=matched_to, project=run.project, groups=match.groups())
+        if target == label:
+            run.skipped.append((label, "already matches"))
+            continue
+        run.apply(label, target, matched_desc)
+
+
+def _rename_by_mapping(run: _RenameRun, mapping: str) -> None:
+    with open(mapping) as f:
+        rename_map = json.load(f)
+
+    for old_label, new_label in rename_map.items():
+        if old_label not in run.current_labels:
+            run.skipped.append((old_label, "not found"))
+            continue
+
+        if old_label == new_label:
+            run.skipped.append((old_label, "same label"))
+            continue
+
+        if not isinstance(new_label, str):
+            run.skipped.append((old_label, "invalid target label: must be a string"))
+            continue
+
+        run.apply(old_label, new_label)
+
+
+def _rename_by_pattern(
+    run: _RenameRun, subjects: list[dict[str, Any]], pattern: str, to_template: str
+) -> None:
+    regex = validate_regex_pattern(pattern)
+
+    for subj in subjects:
+        label = subj["label"]
+        match = regex.fullmatch(label)
+        if not match:
+            continue
+
+        target = _apply_template(template=to_template, project=run.project, groups=match.groups())
+        if target == label:
+            run.skipped.append((label, "already matches"))
+            continue
+        run.apply(label, target)
+
+
+def _print_rename_report(run: _RenameRun) -> None:
+    prefix = "[DRY-RUN] " if run.dry_run else ""
+
+    if run.renamed:
+        click.echo(f"\n{prefix}Renamed ({len(run.renamed)}):")
+        for old, new in run.renamed.items():
+            click.echo(f"  {old} -> {new}")
+
+    if run.merged:
+        click.echo(f"\n{prefix}Merged ({len(run.merged)}):")
+        for old, new in run.merged.items():
+            click.echo(f"  {old} -> {new}")
+
+    if run.skipped:
+        click.echo(f"\nSkipped ({len(run.skipped)}):")
+        for label, reason in run.skipped:
+            click.echo(f"  {label}: {reason}")
+
+    if not run.dry_run:
+        print_success(
+            f"Renamed: {len(run.renamed)}, Merged: {len(run.merged)}, Skipped: {len(run.skipped)}"
+        )
 
 
 @click.group()
@@ -189,30 +361,16 @@ def subject_list(
     project = validate_project_id(require_project_from_context(ctx, project))
     service = SubjectService(ctx.get_client())
 
-    # Get subjects
     results = service.list_rows(project, columns="ID,label,src")
 
-    # Transform for output
     subjects = [{"id": r.get("ID", ""), "label": r.get("label", "")} for r in results]
 
-    # A --filter targeting "sessions" cannot run on id/label alone -- there
-    # is nothing to narrow the working set by until enrichment (below) has
-    # happened, so it is deferred. Everything else narrows NOW, regardless
-    # of what --sort-by (a separate option) happens to target -- a --filter
-    # on id/label must narrow the set before the enrichment cap is checked
-    # even when --sort-by is what's asking for "sessions".
     filter_targets_sessions = _targets_field(filter_expr, "sessions")
     sort_targets_sessions = _targets_field(sort_by, "sessions")
     needs_sessions_for_controls = filter_targets_sessions or sort_targets_sessions
     if not filter_targets_sessions:
         subjects = apply_filter(subjects, filter_expr)
 
-    # Get session counts (if not too many subjects, after the narrowing
-    # above). Quiet mode never computes it (its output is id/label lines
-    # only), which is an independent reason to skip enrichment from the
-    # size cap below -- conflating the two would misreport "too many
-    # subjects" for a small, quiet-mode project that was never going to get
-    # the column anyway.
     enriched = False
     if ctx.quiet:
         if needs_sessions_for_controls:
@@ -224,7 +382,12 @@ def subject_list(
         for subj in subjects:
             try:
                 subj["sessions"] = len(service.experiment_rows(project, subj["id"]))
-            except Exception:  # noqa: BLE001  # per-subject isolation while enriching list with session counts
+            except Exception:
+                logger.exception(
+                    "Counting sessions of subject %s failed",
+                    subj.get("id"),
+                    extra={FILE_ONLY_ATTR: True},
+                )
                 subj["sessions"] = "?"
         enriched = True
     elif needs_sessions_for_controls:
@@ -234,9 +397,6 @@ def subject_list(
             "Narrow further with --filter on id/label, or use 'subject show' per-subject."
         )
     else:
-        # Neither control needs it, but the project is still too big to
-        # enrich -- say so once rather than rendering silent blanks for a
-        # column the caller never explicitly asked to filter/sort by.
         click.echo(
             f"session counts omitted: project has {len(subjects)} subjects "
             "(> 50); narrow with --filter to see them",
@@ -280,14 +440,12 @@ def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
     hierarchy = HierarchyService(client)
     service = SubjectService(client)
 
-    # Get subject details
     try:
         resolved = hierarchy.resolve_subject(SubjectRef(subject=subject_id, project_id=project))
     except ResourceNotFoundError:
         print_error(f"Subject not found: {subject_id}")
         raise SystemExit(1) from None
 
-    # Get sessions
     try:
         sessions = service.experiment_rows(project, resolved.subject_id)
         session_labels = [s.get("label", s.get("ID", "")) for s in sessions]
@@ -318,7 +476,7 @@ def subject_show(ctx: Context, subject_id: str, project: str | None) -> None:
         "label": resolved.subject_label or subject_id,
         "project": resolved.project_id or project,
         "session_count": len(session_labels),
-        "sessions": session_labels[:10],  # Limit to first 10
+        "sessions": session_labels[:10],
         "shared_projects": shared_projects,
     }
 
@@ -356,11 +514,6 @@ def subject_delete(
         xnatctl subject delete SUB001 -P MYPROJ --dry-run
         xnatctl subject list -P MYPROJ -q | xnatctl subject delete -P MYPROJ --batch - --yes
     """
-    # `batch_ids is not None` is presence ("--batch was given"), not
-    # truthiness of the parsed list -- @batch_option already refuses an
-    # empty-but-given batch, but these checks stay presence-based rather
-    # than relying on that guarantee, so a positional SUBJECT_ID can never
-    # slip past mutual exclusion just because the batch happened to be empty.
     if subject_id and batch_ids is not None:
         raise click.UsageError("provide SUBJECT_ID or --batch, not both")
     ids = batch_ids if batch_ids is not None else ([subject_id] if subject_id else None)
@@ -368,24 +521,9 @@ def subject_delete(
         raise click.UsageError("provide SUBJECT_ID or --batch")
 
     project = validate_project_id(require_project_from_context(ctx, project))
-    # Validate every ID up front, before any mutation: a malformed ID
-    # anywhere in the batch must abort the whole command, not surface only
-    # after earlier IDs in the same batch have already been deleted.
     validated_ids = [validate_subject_id(raw_id) for raw_id in ids]
     service = SubjectService(ctx.get_client())
 
-    # Every non-2xx status arrives here as a typed exception, not as a
-    # response to inspect: the client layer raises on 404/403/5xx and only
-    # ever returns 2xx. So one bad ID in the middle of a list has to be
-    # caught per subject, otherwise it aborts the run and silently leaves
-    # every later ID untouched. The status check below still stands for the
-    # 2xx-but-not-200/204 case.
-    #
-    # Isolation applies only when there IS a rest of the list. With a single
-    # subject the exception propagates to @handle_errors, which renders the
-    # real cause ("Permission denied on SUB001") and records that class in
-    # the audit trail -- swallowing it here would replace both with a
-    # generic failure count.
     isolate_failures = len(validated_ids) > 1
     failed: list[tuple[str, str]] = []
     for sid in validated_ids:
@@ -395,7 +533,7 @@ def subject_delete(
 
         try:
             resp = service.delete_raw(project, sid)
-        except Exception as e:  # noqa: BLE001  # per-subject isolation across a multi-subject list
+        except Exception as e:
             if not isolate_failures:
                 raise
             failed.append((sid, str(e)))
@@ -430,7 +568,7 @@ def subject_delete(
 @global_options
 @handle_errors
 @require_auth
-def subject_rename(  # noqa: C901  # pre-existing; see pyproject
+def subject_rename(
     ctx: Context,
     project: str | None,
     patterns_file: str | None,
@@ -454,27 +592,7 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
         # Using a patterns file (rules are filtered by -P project)
         xnatctl subject rename -P MYPROJ --patterns-file patterns.json --dry-run
     """
-    if not project:
-        project = default_project_from_context(ctx)
-        if not project and patterns_file:
-            try:
-                projects = _projects_in_patterns_file(patterns_file)
-            except (OSError, json.JSONDecodeError) as e:
-                raise click.ClickException(f"Failed to read patterns file: {e}") from e
-
-            if len(projects) == 1:
-                project = next(iter(projects))
-            elif len(projects) > 1:
-                profile_name = ctx.profile_name or (
-                    ctx.config.default_profile if ctx.config else "default"
-                )
-                raise click.ClickException(
-                    "Project required. Pass --project/-P or set default_project in profile "
-                    f"'{profile_name}'. Patterns file contains multiple projects: {', '.join(sorted(projects))}"
-                )
-        project = require_project_from_context(ctx, project)
-
-    project = validate_project_id(require_project_from_context(ctx, project))
+    project = _rename_project(ctx, project, patterns_file)
     subject_svc = SubjectService(ctx.get_client())
 
     if patterns_file:
@@ -485,225 +603,20 @@ def subject_rename(  # noqa: C901  # pre-existing; see pyproject
         print_error("Must provide --patterns-file, --mapping file, or --pattern with --to template")
         raise SystemExit(1)
 
-    # Get current subjects
     subjects = subject_svc.list_rows(project)
-    current_labels = {s["label"] for s in subjects}
-
-    renamed = {}
-    merged = {}
-    skipped = []
+    run = _RenameRun(
+        service=subject_svc,
+        project=project,
+        dry_run=dry_run,
+        quiet=ctx.quiet,
+        current_labels={s["label"] for s in subjects},
+    )
 
     if patterns_file:
-        # Load per-project rules and apply the first matching rule per subject.
-        try:
-            rules = _load_patterns_file(path=patterns_file, project=project)
-        except (OSError, json.JSONDecodeError, ValueError, ConfigurationError) as e:
-            print_error(f"Failed to load patterns file: {e}")
-            raise SystemExit(1) from e
-
-        for subj in subjects:
-            label = subj.get("label")
-            if not isinstance(label, str) or not label:
-                continue
-            if label not in current_labels:
-                continue
-
-            match = None
-            matched_to = None
-            matched_desc = None
-            for regex, to_tmpl, desc in rules:
-                m = regex.fullmatch(label)
-                if m:
-                    match = m
-                    matched_to = to_tmpl
-                    matched_desc = desc
-                    break
-
-            if not match or not matched_to:
-                continue
-
-            target = _apply_template(template=matched_to, project=project, groups=match.groups())
-            if target == label:
-                skipped.append((label, "already matches"))
-                continue
-
-            invalid_reason = _validate_rename_target(target)
-            if invalid_reason is not None:
-                skipped.append((label, f"invalid target label: {invalid_reason}"))
-                continue
-
-            target_exists = target in current_labels
-            if dry_run:
-                if target_exists:
-                    merged[label] = target
-                else:
-                    renamed[label] = target
-                if matched_desc and not ctx.quiet:
-                    click.echo(f"  Rule: {matched_desc}")
-                continue
-
-            if target_exists:
-                try:
-                    result = subject_svc.merge_subjects(
-                        project=project,
-                        source_label=label,
-                        target_label=target,
-                        dry_run=False,
-                    )
-                    merged[label] = target
-                    current_labels.discard(label)
-                    if not ctx.quiet:
-                        desc = f" ({matched_desc})" if matched_desc else ""
-                        click.echo(
-                            f"  Merged {label} -> {target} ({result['experiments_moved']} experiments){desc}"
-                        )
-                except Exception as e:  # noqa: BLE001  # per-subject isolation in a patterns/mapping merge loop
-                    skipped.append((label, f"merge failed: {e}"))
-            else:
-                resp = subject_svc.rename_raw(project, label, target)
-                if resp.status_code == 200:
-                    renamed[label] = target
-                    current_labels.discard(label)
-                    current_labels.add(target)
-                    if matched_desc and not ctx.quiet:
-                        click.echo(f"  Renamed {label} -> {target} ({matched_desc})")
-                else:
-                    skipped.append((label, f"failed: {resp.status_code}"))
-
+        _rename_by_patterns_file(run, subjects, patterns_file)
     elif mapping:
-        # Load mapping from file
-        with open(mapping) as f:
-            rename_map = json.load(f)
-
-        for old_label, new_label in rename_map.items():
-            if old_label not in current_labels:
-                skipped.append((old_label, "not found"))
-                continue
-
-            if old_label == new_label:
-                skipped.append((old_label, "same label"))
-                continue
-
-            if not isinstance(new_label, str):
-                skipped.append((old_label, "invalid target label: must be a string"))
-                continue
-
-            invalid_reason = _validate_rename_target(new_label)
-            if invalid_reason is not None:
-                skipped.append((old_label, f"invalid target label: {invalid_reason}"))
-                continue
-
-            target_exists = new_label in current_labels
-
-            if dry_run:
-                if target_exists:
-                    merged[old_label] = new_label
-                else:
-                    renamed[old_label] = new_label
-            else:
-                # Execute rename/merge
-                if target_exists:
-                    # Merge: move all experiments from source to target
-                    try:
-                        result = subject_svc.merge_subjects(
-                            project=project,
-                            source_label=old_label,
-                            target_label=new_label,
-                            dry_run=False,
-                        )
-                        merged[old_label] = new_label
-                        current_labels.discard(old_label)
-                        if not ctx.quiet:
-                            click.echo(
-                                f"  Merged {old_label} -> {new_label} ({result['experiments_moved']} experiments)"
-                            )
-                    except Exception as e:  # noqa: BLE001  # per-subject isolation in a patterns/mapping merge loop
-                        skipped.append((old_label, f"merge failed: {e}"))
-                else:
-                    resp = subject_svc.rename_raw(project, old_label, new_label)
-                    if resp.status_code == 200:
-                        renamed[old_label] = new_label
-                        current_labels.discard(old_label)
-                        current_labels.add(new_label)
-                    else:
-                        skipped.append((old_label, f"failed: {resp.status_code}"))
-
+        _rename_by_mapping(run, mapping)
     elif pattern and to_template:
-        # Pattern-based rename
-        regex = validate_regex_pattern(pattern)
+        _rename_by_pattern(run, subjects, pattern, to_template)
 
-        for subj in subjects:
-            label = subj["label"]
-            match = regex.fullmatch(label)
-            if not match:
-                continue
-
-            # Build target name from template
-            groups = match.groups()
-            target = to_template.replace("{project}", project)
-            for i, g in enumerate(groups, start=1):
-                target = target.replace(f"{{{i}}}", g or "")
-
-            if target == label:
-                skipped.append((label, "already matches"))
-                continue
-
-            invalid_reason = _validate_rename_target(target)
-            if invalid_reason is not None:
-                skipped.append((label, f"invalid target label: {invalid_reason}"))
-                continue
-
-            target_exists = target in current_labels
-
-            if dry_run:
-                if target_exists:
-                    merged[label] = target
-                else:
-                    renamed[label] = target
-            else:
-                if target_exists:
-                    # Merge: move all experiments from source to target
-                    try:
-                        result = subject_svc.merge_subjects(
-                            project=project,
-                            source_label=label,
-                            target_label=target,
-                            dry_run=False,
-                        )
-                        merged[label] = target
-                        current_labels.discard(label)
-                        if not ctx.quiet:
-                            click.echo(
-                                f"  Merged {label} -> {target} ({result['experiments_moved']} experiments)"
-                            )
-                    except Exception as e:  # noqa: BLE001  # per-subject isolation in a patterns/mapping merge loop
-                        skipped.append((label, f"merge failed: {e}"))
-                else:
-                    resp = subject_svc.rename_raw(project, label, target)
-                    if resp.status_code == 200:
-                        renamed[label] = target
-                        current_labels.discard(label)
-                        current_labels.add(target)
-                    else:
-                        skipped.append((label, f"failed: {resp.status_code}"))
-
-    # Output results
-    prefix = "[DRY-RUN] " if dry_run else ""
-
-    if renamed:
-        click.echo(f"\n{prefix}Renamed ({len(renamed)}):")
-        for old, new in renamed.items():
-            click.echo(f"  {old} -> {new}")
-
-    if merged:
-        click.echo(f"\n{prefix}Merged ({len(merged)}):")
-        for old, new in merged.items():
-            click.echo(f"  {old} -> {new}")
-
-    if skipped:
-        click.echo(f"\nSkipped ({len(skipped)}):")
-        for label, reason in skipped:
-            click.echo(f"  {label}: {reason}")
-
-    if not dry_run:
-        print_success(f"Renamed: {len(renamed)}, Merged: {len(merged)}, Skipped: {len(skipped)}")
+    _print_rename_report(run)

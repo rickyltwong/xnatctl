@@ -20,15 +20,11 @@ if TYPE_CHECKING:
 
 
 class _ExecutorAttrs:
-    """Declares cross-mixin attributes/methods shared by all executor mixins."""
-
     source: XNATClient
     dest: XNATClient
 
     def validate_zip(self, zip_path: Path) -> bool:
-        """Declared here; implemented by ``_ResourceTransferMixin``."""
         raise NotImplementedError
 
     def count_dest_scans(self, dest_project: str, subject_label: str, experiment_label: str) -> int:
-        """Declared here; implemented by ``_HierarchyMixin``."""
         raise NotImplementedError

@@ -1,19 +1,9 @@
-"""Diagnostic-logging tests for the client and auth layers.
-
-Before this, `xnatctl -v` told you nothing about HTTP: the client had no
-per-request logging, the retry loop slept silently (so a retry storm looked
-like a hang), and setup_logging pinned httpx/httpcore to WARNING even under
---verbose. The auth layer had no logger at all, so "which credential did it
-actually use?" was unanswerable without a debugger.
-
-Every assertion here doubles as a redaction check: these are the log lines
-the RedactionFilter exists to protect.
-"""
-
 from __future__ import annotations
 
+import io
 import logging
-from collections.abc import Callable, Iterator
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -27,39 +17,18 @@ Handler = Callable[[httpx.Request], httpx.Response]
 
 SECRET = "s3cret-token-value"
 CLIENT_LOGGER = "xnatctl.core.client"
-# The retry-ladder implementation (per-attempt/retry/reauth logging) lives in
-# xnatctl.core.transport, not xnatctl.core.client -- XNATClient.stream()/
-# _request() are thin wrappers around it. Tests asserting on those lines must
-# raise this logger's level too, or the DEBUG ones are silently dropped
-# before they ever reach caplog's handler.
 TRANSPORT_LOGGER = "xnatctl.core.transport"
 AUTH_LOGGER = "xnatctl.core.auth"
 
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Retry backoff must not cost wall-clock here."""
     monkeypatch.setattr("xnatctl.core.client.time.sleep", lambda _s: None)
 
 
 @pytest.fixture(autouse=True)
 def no_debug_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A developer's own XNATCTL_DEBUG must not change these results."""
     monkeypatch.delenv("XNATCTL_DEBUG", raising=False)
-
-
-@pytest.fixture
-def clean_root() -> Iterator[None]:
-    """Snapshot and restore the loggers setup_logging mutates."""
-    root = logging.getLogger()
-    saved = (list(root.handlers), root.level)
-    saved_levels = {n: logging.getLogger(n).level for n in ("httpx", "httpcore")}
-    try:
-        yield
-    finally:
-        root.handlers, root.level = saved[0], saved[1]
-        for name, lvl in saved_levels.items():
-            logging.getLogger(name).setLevel(lvl)
 
 
 def make_client(handler: Handler, *, max_retries: int = 3, **kwargs: object) -> XNATClient:
@@ -67,17 +36,12 @@ def make_client(handler: Handler, *, max_retries: int = 3, **kwargs: object) -> 
         base_url="https://xnat.example.org",
         max_retries=max_retries,
         transport=httpx.MockTransport(handler),
-        **kwargs,  # type: ignore[arg-type]
+        **kwargs,
     )
 
 
 def messages(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records]
-
-
-# =============================================================================
-# Per-request visibility
-# =============================================================================
 
 
 def test_each_attempt_logs_method_path_status_and_timing(
@@ -101,9 +65,6 @@ def test_each_attempt_logs_method_path_status_and_timing(
 def test_retries_are_logged_at_warning_with_the_backoff(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A retry storm must be visible -- an invisible one is the single
-    most common cause of "xnatctl is hanging".
-    """
     attempts = {"n": 0}
 
     def flaky(request: httpx.Request) -> httpx.Response:
@@ -159,11 +120,6 @@ def test_transport_failure_retry_names_the_error(caplog: pytest.LogCaptureFixtur
     assert "retrying in" in messages(caplog)[0]
 
 
-# =============================================================================
-# Reauth path
-# =============================================================================
-
-
 def test_reauth_decision_is_logged(caplog: pytest.LogCaptureFixture) -> None:
     calls = {"n": 0}
 
@@ -185,7 +141,6 @@ def test_reauth_decision_is_logged(caplog: pytest.LogCaptureFixture) -> None:
 
 
 def test_refusal_to_reauth_explains_why(caplog: pytest.LogCaptureFixture) -> None:
-    """A bare SessionExpiredError gave no clue which precondition was missing."""
     from xnatctl.core.exceptions import SessionExpiredError
 
     client = make_client(lambda r: httpx.Response(401, json={}))
@@ -202,15 +157,7 @@ def test_refusal_to_reauth_explains_why(caplog: pytest.LogCaptureFixture) -> Non
     assert "credentials=False" in line
 
 
-# =============================================================================
-# Secrets must never reach the log
-# =============================================================================
-
-
 def test_request_logging_redacts_query_secrets(caplog: pytest.LogCaptureFixture) -> None:
-    """The per-attempt line logs the full URL, so it is the most likely place
-    for a token to leak.
-    """
     client = make_client(lambda r: httpx.Response(200, json={}))
 
     with (
@@ -253,11 +200,6 @@ def test_auth_manager_logs_presence_not_values(
     assert "XNAT_PASS=set" in joined
 
 
-# =============================================================================
-# Session cache diagnostics
-# =============================================================================
-
-
 def test_session_cache_miss_is_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     manager = AuthManager(cache_file=tmp_path / ".session")
 
@@ -281,7 +223,6 @@ def test_session_cache_hit_is_logged(tmp_path: Path, caplog: pytest.LogCaptureFi
 
 
 def test_url_mismatch_is_logged_as_a_miss(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """Pointing at a second server silently ignores the cache; -v should say so."""
     manager = AuthManager(cache_file=tmp_path / ".session")
     manager.save_session("prod", "TOK", "https://a.example.org", "alice")
 
@@ -304,11 +245,6 @@ def test_user_mismatch_is_logged_as_a_miss(
     assert any("cached for user alice, wanted bob" in m for m in messages(caplog))
 
 
-# =============================================================================
-# setup_logging verbosity tiers
-# =============================================================================
-
-
 @pytest.mark.usefixtures("clean_root")
 def test_default_keeps_httpx_quiet() -> None:
     setup_logging()
@@ -318,9 +254,6 @@ def test_default_keeps_httpx_quiet() -> None:
 
 @pytest.mark.usefixtures("clean_root")
 def test_verbose_raises_httpx_to_info() -> None:
-    """-v must not leave httpx pinned at WARNING, where it could never
-    show wire activity.
-    """
     setup_logging(verbose=True)
 
     assert logging.getLogger().level == logging.DEBUG
@@ -347,9 +280,65 @@ def test_falsey_debug_env_does_not_enable_tracing(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.usefixtures("clean_root")
 def test_quiet_wins_over_debug_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An explicit flag beats an ambient env var."""
     monkeypatch.setenv("XNATCTL_DEBUG", "1")
     setup_logging(quiet=True)
 
     assert logging.getLogger().level == logging.ERROR
     assert logging.getLogger("httpcore").level == logging.WARNING
+
+
+@pytest.mark.usefixtures("clean_root")
+def test_the_console_handler_writes_to_the_current_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logging.getLogger().handlers = []
+    setup_logging(logging.WARNING)
+
+    for run in ("first", "second"):
+        stderr = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", stderr)
+        logging.getLogger("xnatctl.test").warning("%s run", run)
+
+        assert f"{run} run" in stderr.getvalue()
+
+
+class _BrokenPipe(io.StringIO):
+    def write(self, _text: str) -> int:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+@pytest.mark.usefixtures("clean_root")
+@pytest.mark.parametrize("stderr_kind", ["closed", "broken-pipe"])
+def test_an_unusable_stderr_does_not_turn_a_warning_into_an_error(
+    monkeypatch: pytest.MonkeyPatch, stderr_kind: str
+) -> None:
+    logging.getLogger().handlers = []
+    setup_logging(logging.WARNING)
+    stderr: io.StringIO = _BrokenPipe()
+    if stderr_kind == "closed":
+        stderr = io.StringIO()
+        stderr.close()
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    logging.getLogger("xnatctl.test").warning("nowhere to go")
+
+
+@pytest.mark.usefixtures("clean_root")
+def test_a_failed_console_write_does_not_print_the_exception_being_handled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = "0123456789ABCDEF0123456789ABCDEF"
+    logging.getLogger().handlers = []
+    setup_logging(logging.WARNING)
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(raw, encoding="ascii", errors="strict"))
+
+    try:
+        raise ValueError(f"JSESSIONID={token}")
+    except ValueError:
+        logging.getLogger("xnatctl.test").warning("caf\u00e9")
+    sys.stderr.flush()
+
+    output = raw.getvalue().decode("ascii")
+    assert token not in output
+    assert "xnatctl: could not write a log message:" in output

@@ -25,52 +25,30 @@ import re
 from typing import TYPE_CHECKING
 
 from xnatctl.core.exceptions import UnsupportedServerVersionError, XNATCtlError
+from xnatctl.core.logging import FILE_ONLY_ATTR
 
 if TYPE_CHECKING:
     from xnatctl.core.client import XNATClient
 
 logger = logging.getLogger(__name__)
 
-#: (major, minor, patch) -- the trailing XNAT build number (e.g. the ``.1``
-#: in ``1.9.2.1``) is not part of this tuple; see :func:`parse_server_version`.
 ServerVersion = tuple[int, int, int]
 
-#: Read-timeout ceiling for the version probe alone. Deliberately short and
-#: independent of the client's configured timeout (often the 6-hour transfer
-#: default): a stalled buildInfo endpoint must fail in seconds, not hang an
-#: upload that hasn't even started yet. Paired with ``max_retries=0`` at the
-#: call site -- a short timeout alone does not bound the call, because the
-#: retry ladder sleeps on Retry-After between attempts.
 PROBE_TIMEOUT_SECONDS = 5
 
-# Anchored to the entire (already-stripped) response body via `fullmatch`,
-# not searched for anywhere inside it -- a `.search()` over arbitrary text
-# treats any embedded "N.N" pair as a version, so a garbage or unrelated body
-# such as an "HTTP/1.1 404 Not Found" page (e.g. from a proxy in front of a
-# misconfigured buildInfo endpoint) would parse as XNAT "1.1.0" and then
-# wrongly block a perfectly good upload. Each numeric component is capped at
-# 4 digits, and each dash/dot-delimited suffix token (the ``-SNAPSHOT``/
-# ``.dev0``/trailing-build-number part) is capped at 20 characters: XNAT
-# versions and their build suffixes are short, and both caps together keep a
-# garbage or adversarial response -- including one that tries to hide an
-# oversized digit run inside what looks like a suffix -- from ever reaching
-# `int()` with more than a handful of digits. Python's int-from-str
-# conversion rejects an oversized digit string past its own limit; excluding
-# that shape at the regex means parsing genuinely cannot raise, rather than
-# merely being unlikely to.
+# Matched against the whole stripped body with `fullmatch`, never searched for
+# inside it: a search would read the "1.1" in an "HTTP/1.1 404 Not Found" page
+# (say, from a proxy in front of a misconfigured buildInfo endpoint) as XNAT
+# 1.1.0 and wrongly block a good upload. Each numeric component is capped at 4
+# digits and each suffix token at 20 characters, so a garbage or adversarial
+# body can never hand int() an oversized digit string.
 _VERSION_PREFIX = r"(?:[A-Za-z][A-Za-z ]*\s+)?"
 _VERSION_SUFFIX = r"(?:[.\-][A-Za-z0-9]{1,20})*"
 _VERSION_RE = re.compile(
     rf"{_VERSION_PREFIX}(\d{{1,4}})\.(\d{{1,4}})(?:\.(\d{{1,4}}))?{_VERSION_SUFFIX}"
 )
 
-# =============================================================================
-# Feature floors
-# =============================================================================
 
-#: Direct-to-archive uploads (``Direct-Archive=true`` on the import service)
-#: require XNAT 1.8.3+ -- see docs/xnat-compatibility.rst and the caveat in
-#: ``services/import_service.archive_destination_params``.
 MIN_VERSION_DIRECT_ARCHIVE: ServerVersion = (1, 8, 3)
 
 
@@ -103,9 +81,6 @@ def parse_server_version(raw: str | None) -> ServerVersion | None:
     try:
         return (int(major), int(minor), int(patch) if patch is not None else 0)
     except ValueError:
-        # Unreachable given _VERSION_RE's per-component digit cap; kept so
-        # this function is provably total rather than relying on the regex
-        # alone to guarantee it.
         return None
 
 
@@ -129,10 +104,6 @@ def probe_server_version(client: XNATClient) -> ServerVersion | None:
         failure.
     """
     try:
-        # Single-shot, not just short-timeout. The retry ladder honours
-        # Retry-After up to 300s per attempt, so a 503-ing buildInfo endpoint
-        # would otherwise stall an upload for many minutes behind a probe
-        # whose entire contract is to be cheap and skippable.
         resp = client.get(
             "/xapi/siteConfig/buildInfo/version",
             timeout=PROBE_TIMEOUT_SECONDS,
@@ -142,7 +113,8 @@ def probe_server_version(client: XNATClient) -> ServerVersion | None:
     except XNATCtlError as e:
         logger.debug("Could not probe server version: %s", e)
         return None
-    except Exception as e:  # noqa: BLE001 -- version probing must never break a working command
+    except Exception as e:
+        logger.exception("Server version probe failed", extra={FILE_ONLY_ATTR: True})
         logger.debug("Could not probe server version: %s", e)
         return None
 

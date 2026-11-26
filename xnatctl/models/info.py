@@ -47,16 +47,4 @@ class UserInfo(BaseModel):
     @field_validator("firstname", "lastname", "email", mode="before")
     @classmethod
     def _blank_unusable_optional_str(cls, value: object) -> object:
-        """Normalize an unusable optional-string value to "".
-
-        XNAT routinely sends an explicit ``null`` for these fields on
-        service/API accounts that never had a name or email set -- that is
-        normal server output, not a malformed payload. A field's default
-        only applies when the key is ABSENT, not when it is present with
-        value ``None``, so without this a real ``null`` would fail
-        validation and (upstream, in ``XNATClient``) sink the whole
-        payload. Coerce ``None`` -- and any other non-string junk a server
-        might send here -- to "" so the field's own "" default effectively
-        governs either way.
-        """
         return value if isinstance(value, str) else ""

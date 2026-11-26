@@ -1,12 +1,3 @@
-"""README.md's "Use as a Python library" section stays runnable.
-
-The quickstart and exception-handling code blocks are parsed straight out of
-README.md at test time -- not retyped here -- so a rename, signature change,
-or exception rename in the real API makes the README wrong *and* fails this
-test, rather than the two silently drifting apart. The idiom: read the real
-doc, don't hand-copy it.
-"""
-
 from __future__ import annotations
 
 import re
@@ -57,7 +48,6 @@ def _zip_bytes(filename: str, content: bytes) -> bytes:
 
 
 def _mock_download_transport() -> httpx.MockTransport:
-    """A transport that serves whatever ZIP download_resource() asks for."""
     body = _zip_bytes("scan1/IM001.dcm", b"fake dicom bytes")
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -72,22 +62,13 @@ def test_readme_quickstart_runs_against_a_mocked_client(
     monkeypatch: pytest.MonkeyPatch,
     _readme_code_blocks: list[str],
 ) -> None:
-    """The exact quickstart block from README.md downloads and extracts.
-
-    ``XNATClient.from_profile`` is intercepted at its one function-local
-    import seam (``xnatctl.core.connect.build_client_from_profile``) so the
-    snippet still calls the real classmethod, gets a real ``XNATClient``, and
-    exercises the real ``client.downloads.download_resource`` -- only the
-    wire is faked, via ``httpx.MockTransport``, matching how the rest of this
-    suite tests wire behavior.
-    """
     quickstart = _readme_code_blocks[0]
     assert "XNATClient.from_profile" in quickstart
     assert "download_resource" in quickstart
 
     fake_client = xnatctl.XNATClient(
         base_url="https://xnat.example.org",
-        session_token="cached-session-token",  # skip login on __enter__
+        session_token="cached-session-token",
         transport=_mock_download_transport(),
     )
 
@@ -95,11 +76,9 @@ def test_readme_quickstart_runs_against_a_mocked_client(
         "xnatctl.core.connect.build_client_from_profile",
         lambda name, *, config_path=None, **_kw: fake_client,
     )
-    # The snippet writes to the relative path "./data" -- run it inside
-    # tmp_path so that's where the download actually lands.
     monkeypatch.chdir(tmp_path)
 
-    exec(compile(quickstart, "README.md:quickstart", "exec"), {})  # noqa: S102
+    exec(compile(quickstart, "README.md:quickstart", "exec"), {})
 
     extracted = tmp_path / "data" / "DICOM" / "scan1" / "IM001.dcm"
     assert extracted.read_bytes() == b"fake dicom bytes"
@@ -109,14 +88,6 @@ def test_readme_exception_example_catches_the_real_exception(
     monkeypatch: pytest.MonkeyPatch,
     _readme_code_blocks: list[str],
 ) -> None:
-    """The except clause names a real, importable xnatctl exception.
-
-    ``client.projects.get`` is made to raise the exact exception
-    ``SessionExpiredError`` that download/upload paths raise on an expired
-    session, and the snippet's ``except xnatctl.SessionExpiredError`` must
-    actually catch it -- proving the name in README.md still resolves to the
-    class the library really raises, not just that it parses.
-    """
     exception_example = _readme_code_blocks[1]
     assert "except xnatctl." in exception_example
 
@@ -127,7 +98,7 @@ def test_readme_exception_example_catches_the_real_exception(
         lambda *_a, **_kw: (_ for _ in ()).throw(SessionExpiredError("session expired")),
     )
 
-    exec(  # noqa: S102
+    exec(
         compile(exception_example, "README.md:exception-example", "exec"),
         {"xnatctl": xnatctl, "client": client},
     )
