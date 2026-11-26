@@ -1002,6 +1002,21 @@ class TestDiagnosticsFileFailures:
 
         logging.getLogger("xnatctl.test").error("boom", extra={FILE_ONLY_ATTR: True})
 
+    def test_a_failed_write_prints_nothing_when_logging_errors_are_off(
+        self,
+        tmp_path: Path,
+        clean_root: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        install_log_file(tmp_path / "diag.jsonl")
+        _diagnostics_handler().stream = _FailingStream(OSError(28, "No space left on device"))
+        monkeypatch.setattr(logging, "raiseExceptions", False)
+
+        logging.getLogger("xnatctl.test").error("boom", extra={FILE_ONLY_ATTR: True})
+
+        assert "could not write the diagnostics file" not in capsys.readouterr().err
+
     def test_withheld_details_keep_the_frames_and_type_but_not_the_text(self) -> None:
         patient_id = "DOE" + "^JANE"
         try:

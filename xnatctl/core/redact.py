@@ -143,13 +143,13 @@ def redact_url_query(text: str) -> str:
 # whitespace, ";", "," or closing bracket. Only an escape, never literal
 # whitespace, may follow the quotes, so an empty value ("" or '') is never
 # taken for one. A b is a bytes prefix when a quote follows it and then, behind
-# any whitespace escapes, either another quote (``b''``) or a value; otherwise
-# it is a value of b, as in ``(b'Set-Cookie', b'JSESSIONID=b')``. A space
-# is whitespace or a backslash run with an optional whitespace escape after
-# it; a whitespace escape is \t, \n or \r, or JSON's four-digit form of tab,
-# newline, return or space, at any escaping depth. Each character before the
-# value has one way to match, so the scan stays linear. Matching the quotes
-# themselves would need a rule per escaping depth.
+# any whitespace escapes, either the same quote at the same depth (``b''``) or
+# a value; otherwise it is a value of b, as in
+# ``(b'Set-Cookie', b'JSESSIONID=b')``. A space is whitespace or a backslash
+# run with an optional whitespace escape after it; a whitespace escape is \t,
+# \n or \r, or JSON's four-digit form of tab, newline, return or space, at any
+# escaping depth. Each character before the value has one way to match, so the
+# scan stays linear.
 _ESCAPED_SPACE = r"(?:[tnr]|u00(?:0[9ad]|20))"
 _SPACE = r"(?:\\++" + _ESCAPED_SPACE + r"?|\s)"
 _SESSION_COOKIE_RE = re.compile(
@@ -168,9 +168,11 @@ _SESSION_COOKIE_RE = re.compile(
       """
     + _SPACE
     + r"""*+
-      (?:b(?=\\*['"](?:\\++"""
+      (?:b(?=(?P<bs>\\*)(?P<bq>['"])(?:\\++"""
     + _ESCAPED_SPACE
-    + r""")*(?:\\*['"]|[^\s\\'";,)\]}])))?+
+    + r""")*+(?:(?P=bs)(?P=bq)|(?:\\*+['"])*+(?:\\++"""
+    + _ESCAPED_SPACE
+    + r""")*+[^\s\\'";,)\]}])))?+
       (?:\\*+['"])*+
       (?:\\++"""
     + _ESCAPED_SPACE
